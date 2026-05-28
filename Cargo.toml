@@ -22,6 +22,11 @@ members = [
     # it is dev-tooling, not a shipped product. `scripts/smoke.sh`
     # runs it via `cargo run --bin smoke-client`.
     "tools/smoke-client",
+    # Task 17: shared integration-test harness. Dev-deps-only crate —
+    # callers pin it as a `[dev-dependencies]` path entry. Lives in the
+    # workspace so `cargo test --workspace` builds its self-tests but
+    # nothing in the production build links against it.
+    "crates/test-harness",
 ]
 default-members = ["crates/core", "crates/cli"]
 

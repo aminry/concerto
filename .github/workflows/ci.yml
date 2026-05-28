@@ -48,15 +48,15 @@ jobs:
           pnpm build
       - uses: Swatinem/rust-cache@v2
       # Per tasks/README.md §2, V0.1 desktop is macOS-only and the V0.1
-      # smoke gate runs on Linux/macOS only. Both `concerto-desktop`
-      # (Tauri 2; needs icons/icon.ico we don't ship) and
-      # `concerto-smoke-client` (UDS via tokio::net::UnixStream) fail to
-      # compile on Windows. Exclude them from Windows; macOS + Linux
-      # build the full workspace.
+      # smoke gate runs on Linux/macOS only. `concerto-desktop` (Tauri 2;
+      # needs icons/icon.ico we don't ship), `concerto-smoke-client`, and
+      # `concerto-test-harness` (both use `tokio::net::UnixStream` — UDS)
+      # fail to compile on Windows. Exclude them from Windows; macOS +
+      # Linux build the full workspace.
       - name: cargo check
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo check --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client
+            cargo check --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness
           else
             cargo check --workspace --all-targets
           fi
@@ -64,7 +64,7 @@ jobs:
       - name: cargo clippy
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo clippy --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client -- -D warnings
+            cargo clippy --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness -- -D warnings
           else
             cargo clippy --workspace --all-targets -- -D warnings
           fi
@@ -72,7 +72,7 @@ jobs:
       - name: cargo test
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo test --workspace --no-fail-fast --exclude concerto-desktop --exclude concerto-smoke-client
+            cargo test --workspace --no-fail-fast --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness
           else
             cargo test --workspace --no-fail-fast
           fi

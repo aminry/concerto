@@ -96,13 +96,13 @@ Add a `crates/test-harness/README.md` documenting:
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Existing Task 13 integration test successfully migrated to harness.
-- [ ] Concurrent harness instances verified isolation-safe.
-- [ ] `crates/test-harness/README.md` documents usage.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Existing Task 13 integration test successfully migrated to harness.
+- [x] Concurrent harness instances verified isolation-safe.
+- [x] `crates/test-harness/README.md` documents usage.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/test-harness/Cargo.toml` (new)
@@ -125,7 +125,21 @@ Refs: tasks/17-integration-test-harness.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** harness spawns a full Core subprocess; in-process Core variant for fast unit tests deferred.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **`workspaces_client()` / `workareas_client()` / `sessions_client()` accessors NOT shipped.** Task 07 added the messages but the gRPC *services* arrive in Phase 2 (Tasks 19/20/23). Per the orchestrator brief Option (b), only `runtime_client()` is exposed; Phase 2 tasks add the other accessors as the services they front come online. README documents the omission and the upgrade path. Outputs list unchanged.
+  - **Package name `concerto-test-harness`** (lib name `concerto_test_harness`) per workspace naming convention; Task spec's pseudocode used `test-harness`. Dev-deps pin path `crates/test-harness`.
+  - **Subprocess handle is `tokio::process::Child`, not `std::process::Child`.** Spawn / wait paths are `async`; `Drop` uses `Child::start_kill()` (tokio's documented sync-safe SIGKILL queue) plus the `Command::kill_on_drop(true)` belt-and-suspenders. SIGTERM is sent via `libc::kill(pid, SIGTERM)` because `Child::kill` is SIGKILL.
+  - **Stale-socket test kept in-process.** `crates/core/tests/grpc_runtime.rs::stale_socket_file_is_replaced` exercises the actor's stale-socket-handling branch by planting a socket file *before* the Core starts. The harness owns its tempdir only after `spawn()` returns, so the pre-state can't be expressed via the harness's surface. The other three tests in `grpc_runtime.rs` (`get_capabilities_returns_uds_transport`, `get_status_reports_uptime`, `socket_permissions_are_owner_only`) migrated cleanly.
+  - **`Handle::exited()` uses `libc::kill(pid, 0)` (ESRCH probe) instead of `Child::try_wait`.** `try_wait` takes `&mut Child`; the polling loop in `wait_for_socket` holds `&self`. The probe loses the actual exit code, but the caller only uses it to decide whether to bail with `EarlyExit` — the synthesised exit-code-0 `ExitStatus` is diagnostics-only.
+  - **`spawn()` does NOT invoke `cargo build` itself.** It relies on `assert_cmd::cargo::cargo_bin("concerto-core")` returning a pre-built binary path. Within `cargo test --workspace` this is automatic via the workspace dependency graph; for ad-hoc runs the README documents `cargo build -p concerto-core` first.
+  - **`db()` returns a read-only pool (`SqliteConnectOptions::read_only(true)`)** rather than the read+write pool the task signature implied. WAL allows concurrent readers while the Core's writer is live; opening writable would race the Core's writer connection. `max_connections(2)` is enough for assertion patterns.
+  - **`assert_cmd = "2"`, `sqlx` (`runtime-tokio + sqlite`), `thiserror`, `libc` (cfg-unix) added to `crates/test-harness` deps.** All MIT/Apache-2.0; cargo-deny clean. `tempfile`, `tonic`, `tower`, `hyper-util`, `tokio`, `tracing`, `concerto-proto` come from the workspace and pre-existing pins.
+  - **`crates/test-harness` is `publish = false`.** Dev-deps-only — should never land on crates.io even if the workspace ever publishes.
+  - **`concerto-core`'s `[dev-dependencies]` gained `concerto-test-harness = { path = "../test-harness" }`.** Required for the migrated `grpc_runtime.rs` tests. No production-graph cycle: test-harness only depends on `concerto-proto`, and is consumed under `dev-dependencies`.
+  - **Self-test wall-clock target.** Task spec called out `<5s/spawn` on a clean machine. Observed on this machine: 5 sequential self-tests (each: spawn + RPC + shutdown) in ~0.08s wall-clock after warm cache; 4 migrated `grpc_runtime` tests in ~1.55s. Well under the budget.
+- **Open questions for next task:**
+  - **Task 19 / 20 / 23 add the `Workspaces` / `Workareas` / `Sessions` services.** The matching client accessors should land alongside each service in the same task, following the `runtime_client` pattern in `crates/test-harness/src/clients.rs`. Each accessor is ~8 lines (declare a `pub type FooClient = ...`, add a `pub async fn foo_client` that calls into `uds_channel`).
+  - **In-process harness variant (the "fast spawn") is deferred to V1.5** per the task spec's Scope — out. The current subprocess-based harness is the only blessed integration-test entry point for V0.1.
+  - **`Handle::exited()`'s synthesised `ExitStatus` is diagnostics-only.** If a future caller needs the real exit code on early-exit, switch the poll loop to take `&mut self` and use `try_wait` directly; the change is local.
+- **Deliberate debt:** harness spawns a full Core subprocess; in-process Core variant for fast unit tests deferred to V1.5 per scope. `Handle::exited()` synthesises an `ExitStatus` via `kill(pid, 0)` rather than reaping a real exit code — diagnostics-only path, intentional (see Drift). No `TODO`/`FIXME`/`todo!()` markers in new code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still uses `tools/smoke-client/` (not the harness) per the orchestrator brief; the smoke gate's scope and runtime are untouched. Re-ran `scripts/smoke.sh` after this task — green.
