@@ -68,14 +68,14 @@ Add the UI to create a workspace (modal) and a workarea inside it (button on the
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Three-level sidebar tree renders correctly.
-- [ ] Workspace + workarea creation works end-to-end.
-- [ ] Event-driven updates propagate to sidebar.
-- [ ] First-run claude probe shows toast on missing CLI.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Three-level sidebar tree renders correctly.
+- [x] Workspace + workarea creation works end-to-end.
+- [x] Event-driven updates propagate to sidebar.
+- [x] First-run claude probe shows toast on missing CLI.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `apps/desktop/src/components/NewWorkspaceModal.tsx` (new)
@@ -103,7 +103,18 @@ Refs: tasks/25-desktop-create-workspace-flow.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** workarea detail panel shows JSON; terminal arrives Task 26. Full first-run setup screen V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **shadcn CLI still skipped.** Per the orchestrator pre-decision (and continuing Task 24's drift), `Dialog`, `Input`, and `Progress` are hand-rolled in `apps/desktop/src/components/ui/` with hard-coded Tailwind class strings. No `@radix-ui/react-dialog`, no `clsx`/`tw-merge`. Phase 3 polish (Task 46+) is the natural place to swap in the real shadcn set.
+  - **`Repositories.ListByProject` RPC added to proto.** The Desktop "Add Repository" form needs to render the existing repos so the New Workspace modal's picker has data. The new `ListRepositoriesRequest` / `ListRepositoriesResponse` messages and the third Repositories RPC are appended to `crates/proto/proto/concerto/v1/repositories.proto`; existing field numbers and RPC ordering are untouched. Field numbers FROZEN as of Task 25 for the new messages. The handler reuses the existing `RepoManager` (added `list_by_project` passthrough) so no new persistence path was needed.
+  - **`clone_repository` Tauri command added** as a dedicated streaming bridge for the `Repositories.Clone` server-stream. The generic `concerto_subscribe` bridge speaks `Streams.Event` keyed by subject; clone is a typed `CloneProgress` stream with no pub/sub subject. The command drains the stream and emits each frame as `concerto/clone-progress/<repository_id>`. Resolves once the stream terminates. UFCS (`RepositoriesClient::<Channel>::clone`) is required because the generated method name collides with `Clone::clone`.
+  - **`check_command` Tauri command added** — runs `which <name>` (Unix only). Rejects names containing `/`, `\`, newline, or NUL up front so the surface is predictable. Windows path (`where`) deferred to V1.0 per the orchestrator pre-decision.
+  - **`tokio` gains the `process` feature** in `apps/desktop/src-tauri/Cargo.toml` to back `check_command`. No other dep adds.
+  - **`useUiStore` grew `selectedWorkareaId`, `expandedWorkspaces: Set<string>`, `newWorkspaceModalOpen`, `settingsOpen`** plus the toggle/setters. `setSelectedWorkspace` now clears `selectedWorkareaId` (selection invariants: picking a workspace drops the active workarea). The selection trio (`selectedProjectId`, `selectedWorkspaceId`, `selectedWorkareaId`) is the locked canonical UI selection state.
+  - **Repository list rendering lives in `AddRepositoryForm.tsx`** rather than a separate `RepositoryList.tsx`; the form and the list share the same `["repositories", projectId]` cache key and clone-progress map, so co-locating them keeps the state thin.
+  - **Workspace creation expansion side-effect.** `WorkspaceDetail.tsx`'s "+ New Workarea" mutation calls `setWorkspaceExpanded(id, true)` on success so the new workarea is immediately visible under its parent. The workarea then appears on the next `workarea.events` invalidation pass.
+- **Open questions for next task:**
+  - **Task 26 (session terminal)** plugs into `WorkareaDetail.tsx`: when `selectedWorkareaId` is set, the JSON `<pre>` is replaced by the xterm.js panel. The detail-panel routing in `App.tsx::DetailRouter` already prefers workarea > workspace, so Task 26 only needs to swap the panel body, not the route logic.
+  - **`Repositories.Clone` re-clone behavior.** V0.1 lets the user kick off a clone for a repo whose `last_fetch_at` is already populated; the gix-wrap layer will likely fail with "destination already exists". The UI shows the resulting `CloneClientError::Rpc` string. Task 28 (fsmonitor + maintenance) is the natural place to add an explicit "is already cloned" check or to route a re-clone through a separate Fetch RPC.
+  - **First-run probe binds to `claude` only.** `design/15 §3.13` lists `gh`, `claude`, and others. V0.1 only probes `claude` per the task spec; the toast surface is generic (`FirstRunClaudeToast`) and Task 33+ can extend it to a checklist.
+- **Deliberate debt:** workarea detail panel shows JSON; terminal arrives Task 26. Full first-run setup screen V1.0. Repository list and Add Repository form co-located in one component. Workarea branch name is auto-derived; no rename hook. Clone-progress event channel is per-repo; no global "all clones" feed. Settings panel is single-section (Add Repository) — full settings tree is V1.0. Hand-rolled Dialog/Input/Progress primitives carry forward the Task 24 shadcn-skip drift. New Workspace modal enforces single-repo per the V0.1 server contract (multi-repo is V1.0).
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0 with "Smoke gate v1: PASSED". Task 27 promotes the gate to v2.

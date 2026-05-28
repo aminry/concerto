@@ -39,6 +39,8 @@ fn main() {
             commands::concerto_rpc,
             commands::concerto_subscribe,
             commands::concerto_unsubscribe,
+            commands::clone_repository,
+            commands::check_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running concerto-desktop");

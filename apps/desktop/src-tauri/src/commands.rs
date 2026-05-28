@@ -26,13 +26,16 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use concerto_proto::v1::projects_client::ProjectsClient;
+use concerto_proto::v1::repositories_client::RepositoriesClient;
 use concerto_proto::v1::runtime_client::RuntimeClient;
 use concerto_proto::v1::sessions_client::SessionsClient;
 use concerto_proto::v1::streams_client::StreamsClient;
 use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
-    ListProjectsRequest, ListWorkspacesRequest, SubscribeRequest, WorkareaId as ProtoWorkareaId,
+    AddRepoRequest, CloneRequest, CreateWorkareaRequest, CreateWorkspaceRequest,
+    ListProjectsRequest, ListRepositoriesRequest, ListWorkareasRequest, ListWorkspacesRequest,
+    PermissionMode, SubscribeRequest, WorkareaId as ProtoWorkareaId,
     WorkspaceId as ProtoWorkspaceId,
 };
 use serde::Deserialize;
@@ -185,6 +188,127 @@ pub async fn concerto_unsubscribe(
     Ok(())
 }
 
+/// Renderer → shell — opens the server-streaming
+/// `Repositories.Clone(repository_id)` RPC and forwards every
+/// `CloneProgress` frame to the renderer as a Tauri event named
+/// `"concerto/clone-progress/<repository_id>"`. Returns once the
+/// stream completes (either cleanly or with an error). Unlike the
+/// generic [`concerto_subscribe`] bridge, this command does not
+/// register a subscription id; the Tauri await contract is sufficient
+/// because clone is a one-shot operation.
+///
+/// Why a dedicated command instead of routing through
+/// `concerto_subscribe`? `Streams.Subscribe` carries `Event` frames
+/// keyed by subject name, but `Repositories.Clone` is a typed
+/// server-stream of `CloneProgress` — its own RPC, no pub/sub subject.
+/// Mirroring it as a one-shot Tauri command keeps the wire shape
+/// honest.
+#[tauri::command]
+pub async fn clone_repository(app: AppHandle, payload: Value) -> Result<Value, CoreClientError> {
+    let req: CloneRepositoryPayload = serde_json::from_value(payload)
+        .map_err(|e| CoreClientError::Rpc(format!("invalid payload for clone_repository: {e}")))?;
+    let socket_path = default_socket_path().ok_or_else(|| {
+        CoreClientError::Transport("HOME not set — cannot resolve ~/.concerto/core.sock".into())
+    })?;
+    let channel = match get_or_connect(&socket_path).await {
+        Ok(ch) => ch,
+        Err(e) => {
+            reset_channel();
+            return Err(e);
+        }
+    };
+    let mut client = RepositoriesClient::new(channel);
+    // UFCS: the generated `RepositoriesClient::clone` method shadows
+    // `Clone::clone` under normal method resolution. Spelling it out
+    // through the type path picks the inherent gRPC method we want.
+    let stream = RepositoriesClient::<tonic::transport::Channel>::clone(
+        &mut client,
+        CloneRequest {
+            repository_id: req.repository_id.clone(),
+        },
+    )
+    .await
+    .map_err(|s| {
+        reset_channel();
+        CoreClientError::Rpc(format!("{}: {}", s.code(), s.message()))
+    })?
+    .into_inner();
+
+    let event_name = format!("concerto/clone-progress/{}", req.repository_id);
+    tokio::pin!(stream);
+    let mut last_done = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(progress) => {
+                last_done = progress.done;
+                if let Err(e) = app.emit(&event_name, &progress) {
+                    tracing::warn!(
+                        repository_id = %req.repository_id,
+                        error = %e,
+                        "failed to emit clone-progress event; dropping stream"
+                    );
+                    break;
+                }
+            }
+            Err(status) => {
+                reset_channel();
+                return Err(CoreClientError::Rpc(format!(
+                    "{}: {}",
+                    status.code(),
+                    status.message()
+                )));
+            }
+        }
+    }
+    Ok(json!({ "done": last_done }))
+}
+
+/// Renderer → shell — probe `PATH` for an executable. Returns the
+/// resolved absolute path or `null` when the binary is not on `PATH`.
+/// V0.1 ships macOS-only desktop, so `which` is sufficient; Windows
+/// would route through `where` in V1.0.
+#[tauri::command]
+pub async fn check_command(name: String) -> Result<Option<String>, CoreClientError> {
+    if name.is_empty() {
+        return Err(CoreClientError::Rpc("name is required".into()));
+    }
+    // Guard against shell-meta in the name — `which` doesn't interpret
+    // them, but rejecting up front keeps the surface predictable.
+    if name.contains(['/', '\\', '\n', '\0']) {
+        return Err(CoreClientError::Rpc(
+            "name must be a bare executable, not a path".into(),
+        ));
+    }
+    let output = tokio::process::Command::new("which")
+        .arg(&name)
+        .output()
+        .await
+        .map_err(|e| CoreClientError::Transport(format!("which {name}: {e}")))?;
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(path))
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+/// Normalise a `PermissionMode` ordinal carried in a payload. Any
+/// numeric value that doesn't match a known variant is dropped to
+/// `None` so the Core's `permission_mode is required` validation
+/// surfaces cleanly. The `Unspecified` ordinal is treated as "no
+/// override".
+fn normalize_permission_mode(v: i32) -> Option<i32> {
+    match PermissionMode::try_from(v) {
+        Ok(PermissionMode::Unspecified) => None,
+        Ok(_) => Some(v),
+        Err(_) => None,
+    }
+}
+
 /// Optional payload wrapper for `Workspaces.ListWorkspaces`.
 #[derive(Debug, Deserialize)]
 struct ListWorkspacesPayload {
@@ -202,6 +326,60 @@ struct IdPayload {
 struct ListSessionsPayload {
     #[allow(dead_code)]
     workarea_id: String,
+}
+
+/// Payload wrapper for `Workspaces.CreateWorkspace`. Mirrors
+/// `concerto.v1.CreateWorkspaceRequest`; `permission_mode` carries the
+/// proto enum ordinal as an integer (matches `PermissionMode`).
+#[derive(Debug, Deserialize)]
+struct CreateWorkspacePayload {
+    name: String,
+    project_id: String,
+    repository_ids: Vec<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    permission_mode: Option<i32>,
+}
+
+/// Payload wrapper for `Workareas.CreateWorkarea`. V0.1 takes no extra
+/// inputs beyond the parent workspace; `permission_mode` defaults to
+/// whatever the workspace inherits.
+#[derive(Debug, Deserialize)]
+struct CreateWorkareaPayload {
+    workspace_id: String,
+    #[serde(default)]
+    permission_mode: Option<i32>,
+}
+
+/// Payload wrapper for `Workareas.ListWorkareas`.
+#[derive(Debug, Deserialize)]
+struct ListWorkareasPayload {
+    workspace_id: String,
+    #[serde(default)]
+    include_archived: bool,
+}
+
+/// Payload wrapper for `Repositories.AddRepository`.
+#[derive(Debug, Deserialize)]
+struct AddRepositoryPayload {
+    project_id: String,
+    name: String,
+    url: String,
+    #[serde(default)]
+    default_branch: String,
+}
+
+/// Payload wrapper for `Repositories.ListByProject`.
+#[derive(Debug, Deserialize)]
+struct ListRepositoriesPayload {
+    project_id: String,
+}
+
+/// Payload wrapper for the [`clone_repository`] streaming command.
+#[derive(Debug, Deserialize)]
+struct CloneRepositoryPayload {
+    repository_id: String,
 }
 
 /// Method-dispatch core, factored out of the Tauri command so it can
@@ -280,6 +458,75 @@ pub(crate) async fn dispatch(
             let mut client = WorkareasClient::new(channel);
             client
                 .get_workarea(ProtoWorkareaId { value: req.id })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Workareas.ListWorkareas" => {
+            let req: ListWorkareasPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ListWorkareas: {e}"))
+            })?;
+            let mut client = WorkareasClient::new(channel);
+            client
+                .list_workareas(ListWorkareasRequest {
+                    workspace_id: req.workspace_id,
+                    include_archived: req.include_archived,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Workareas.CreateWorkarea" => {
+            let req: CreateWorkareaPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for CreateWorkarea: {e}"))
+            })?;
+            let mut client = WorkareasClient::new(channel);
+            client
+                .create_workarea(CreateWorkareaRequest {
+                    workspace_id: req.workspace_id,
+                    permission_mode: req.permission_mode.and_then(normalize_permission_mode),
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Workspaces.CreateWorkspace" => {
+            let req: CreateWorkspacePayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for CreateWorkspace: {e}"))
+            })?;
+            let mut client = WorkspacesClient::new(channel);
+            client
+                .create_workspace(CreateWorkspaceRequest {
+                    project_id: req.project_id,
+                    name: req.name,
+                    repository_ids: req.repository_ids,
+                    permission_mode: req.permission_mode.and_then(normalize_permission_mode),
+                    description: req.description,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Repositories.AddRepository" => {
+            let req: AddRepositoryPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for AddRepository: {e}"))
+            })?;
+            let mut client = RepositoriesClient::new(channel);
+            client
+                .add_repository(AddRepoRequest {
+                    project_id: req.project_id,
+                    name: req.name,
+                    url: req.url,
+                    default_branch: req.default_branch,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Repositories.ListByProject" => {
+            let req: ListRepositoriesPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ListByProject: {e}"))
+            })?;
+            let mut client = RepositoriesClient::new(channel);
+            client
+                .list_by_project(ListRepositoriesRequest {
+                    project_id: req.project_id,
+                })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }

@@ -14,7 +14,12 @@ export type RpcMethod =
   | "Projects.ListProjects"
   | "Workspaces.ListWorkspaces"
   | "Workspaces.GetWorkspace"
+  | "Workspaces.CreateWorkspace"
   | "Workareas.GetWorkarea"
+  | "Workareas.ListWorkareas"
+  | "Workareas.CreateWorkarea"
+  | "Repositories.AddRepository"
+  | "Repositories.ListByProject"
   | "Sessions.ListSessions";
 
 export async function callRpc<TRequest, TResponse>(
@@ -41,3 +46,43 @@ export async function onConcertoEvent<T>(
 ): Promise<UnlistenFn> {
   return listen<T>(`concerto/${subject}`, (event) => callback(event.payload));
 }
+
+/// Probe `PATH` for `name`. Returns the absolute path string when the
+/// binary is found, or null when it isn't. The Tauri shell only runs
+/// `which`; Windows fallback (`where`) lands when Desktop ships
+/// cross-platform.
+export async function checkCommand(name: string): Promise<string | null> {
+  return invoke<string | null>("check_command", { name });
+}
+
+/// Trigger a server-streaming `Repositories.Clone` and forward each
+/// `CloneProgress` frame to the renderer via the
+/// `concerto/clone-progress/<id>` event bus. The promise resolves once
+/// the stream terminates (cleanly or with `done: true`).
+export async function cloneRepository(
+  repositoryId: string,
+): Promise<{ done: boolean }> {
+  return invoke<{ done: boolean }>("clone_repository", {
+    payload: { repository_id: repositoryId },
+  });
+}
+
+export async function onCloneProgress(
+  repositoryId: string,
+  callback: (payload: CloneProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<CloneProgressEvent>(
+    `concerto/clone-progress/${repositoryId}`,
+    (event) => callback(event.payload),
+  );
+}
+
+/// Mirrors `concerto.v1.CloneProgress`. Prost-serde keeps the proto's
+/// snake_case naming on the wire.
+export type CloneProgressEvent = {
+  phase: string;
+  objects_received: number;
+  total_objects: number;
+  bytes_received: number;
+  done: boolean;
+};

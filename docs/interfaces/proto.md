@@ -127,12 +127,29 @@ message CloneProgress {
 }
 ```
 
+### message `ListRepositoriesRequest`
+
+```proto
+message ListRepositoriesRequest {
+  string project_id = 1;
+}
+```
+
+### message `ListRepositoriesResponse`
+
+```proto
+message ListRepositoriesResponse {
+  repeated Repository repositories = 1;
+}
+```
+
 ### service `Repositories`
 
 ```proto
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
+  rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
 }
 ```
 

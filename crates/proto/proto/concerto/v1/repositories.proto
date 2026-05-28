@@ -1,5 +1,5 @@
-// Repositories service — V0.1 surface for adding a repository to a project
-// and cloning it onto disk.
+// Repositories service — V0.1 surface for adding a repository to a project,
+// cloning it onto disk, and listing per-project memberships.
 //
 // Owned in design by `02_Repository_Manager.md`. V0.1 ships full clone only:
 // no sparse, no blobless, no treeless. Future tasks extend with sparse cones
@@ -7,7 +7,9 @@
 // estimate (`EstimateConeSize`) — all locked at higher field numbers so they
 // land additively.
 //
-// Field numbers in this file are FROZEN as of Task 18.
+// Field numbers in this file are FROZEN as of Task 18; Task 25 adds the
+// read-side `ListByProject` RPC + accompanying request / response messages
+// without re-numbering the existing fields.
 
 syntax = "proto3";
 
@@ -66,7 +68,19 @@ message CloneProgress {
   bool done = 5;
 }
 
+// Inputs for `Repositories.ListByProject` (Task 25). The Desktop "Add
+// Repository" form uses this to render the list of repos already attached
+// to the active project so the New Workspace modal's repo picker has data.
+message ListRepositoriesRequest {
+  string project_id = 1;
+}
+
+message ListRepositoriesResponse {
+  repeated Repository repositories = 1;
+}
+
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
+  rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
 }

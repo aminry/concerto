@@ -1,9 +1,6 @@
-// Sidebar — top-level project node + nested workspace list.
-//
-// V0.1 scope: project + workspaces only. Workareas (the third tree
-// level per `design/15 §3.4`) land in Task 25; sessions arrive in
-// Task 26. The right panel renders the selected workspace's JSON
-// (`WorkspaceDetail.tsx`) as a placeholder.
+// Sidebar — three-level tree (project → workspaces → workareas) per
+// `design/15 §3.4`. Task 25 extends Task 24's project+workspace tree
+// with the workarea level and adds the "New Workspace" button.
 //
 // "Current project" model: V0.1 has no project-creation UI. The
 // sidebar picks the first project returned by `Projects.ListProjects`
@@ -19,6 +16,8 @@ import { useWorkspaces } from "../hooks/useWorkspaces";
 import { useEventSubscription } from "../hooks/useEventSubscription";
 import { useUiStore } from "../state/useUiStore";
 import { Button } from "./ui/button";
+import { WorkareaList } from "./WorkareaList";
+import type { Workspace } from "../api/workspaces";
 
 export function Sidebar(): JSX.Element {
   const queryClient = useQueryClient();
@@ -26,6 +25,12 @@ export function Sidebar(): JSX.Element {
   const setSelectedWorkspace = useUiStore((s) => s.setSelectedWorkspace);
   const selectedProjectId = useUiStore((s) => s.selectedProjectId);
   const setSelectedProject = useUiStore((s) => s.setSelectedProject);
+  const expandedWorkspaces = useUiStore((s) => s.expandedWorkspaces);
+  const toggleExpanded = useUiStore((s) => s.toggleWorkspaceExpanded);
+  const setNewWorkspaceModalOpen = useUiStore(
+    (s) => s.setNewWorkspaceModalOpen,
+  );
+  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
 
   const projectsQuery = useProjects();
   const project =
@@ -49,8 +54,15 @@ export function Sidebar(): JSX.Element {
     void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
   });
 
+  // `workarea.events` invalidates the per-workspace workarea list so
+  // creating + archiving propagates without polling.
+  useEventSubscription("workarea.events", () => {
+    void queryClient.invalidateQueries({ queryKey: ["workareas"] });
+  });
+
   function onRefresh(): void {
     void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+    void queryClient.invalidateQueries({ queryKey: ["workareas"] });
     void queryClient.invalidateQueries({ queryKey: ["projects"] });
   }
 
@@ -60,9 +72,14 @@ export function Sidebar(): JSX.Element {
         <h1 className="text-sm font-semibold tracking-wider uppercase text-slate-300">
           Concerto
         </h1>
-        <Button variant="outline" onClick={onRefresh}>
-          Refresh
-        </Button>
+        <div className="flex gap-1">
+          <Button variant="outline" onClick={onRefresh}>
+            Refresh
+          </Button>
+          <Button variant="ghost" onClick={() => setSettingsOpen(true)}>
+            Settings
+          </Button>
+        </div>
       </header>
 
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-3">
@@ -87,9 +104,17 @@ export function Sidebar(): JSX.Element {
             </p>
             <p className="px-2 text-sm text-slate-200 mb-2">{project.name}</p>
 
-            <p className="px-2 text-xs uppercase tracking-wider text-slate-500 mb-1">
-              Workspaces
-            </p>
+            <div className="flex items-center justify-between px-2 mb-1">
+              <p className="text-xs uppercase tracking-wider text-slate-500">
+                Workspaces
+              </p>
+              <Button
+                variant="ghost"
+                onClick={() => setNewWorkspaceModalOpen(true)}
+              >
+                +
+              </Button>
+            </div>
             {workspacesQuery.isLoading && (
               <p className="px-2 text-xs text-slate-500">Loading…</p>
             )}
@@ -98,34 +123,70 @@ export function Sidebar(): JSX.Element {
                 Failed to load workspaces: {String(workspacesQuery.error)}
               </p>
             )}
-            {workspacesQuery.data && workspacesQuery.data.workspaces.length === 0 && (
-              <p className="px-2 text-xs text-slate-500">No workspaces yet.</p>
-            )}
+            {workspacesQuery.data &&
+              workspacesQuery.data.workspaces.length === 0 && (
+                <p className="px-2 text-xs text-slate-500">No workspaces yet.</p>
+              )}
             <ul className="space-y-0.5">
-              {workspacesQuery.data?.workspaces.map((ws) => {
-                const active = ws.id === selectedWorkspaceId;
-                const buttonClass = active
-                  ? "w-full text-left px-2 py-1 rounded text-sm bg-slate-800 text-slate-100"
-                  : "w-full text-left px-2 py-1 rounded text-sm text-slate-300 hover:bg-slate-900";
-                return (
-                  <li key={ws.id}>
-                    <button
-                      type="button"
-                      className={buttonClass}
-                      onClick={() => setSelectedWorkspace(ws.id)}
-                    >
-                      <span className="block truncate">{ws.name}</span>
-                      <span className="block text-xs text-slate-500 truncate">
-                        {ws.slug}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
+              {workspacesQuery.data?.workspaces.map((ws) => (
+                <WorkspaceNode
+                  key={ws.id}
+                  workspace={ws}
+                  active={ws.id === selectedWorkspaceId}
+                  expanded={expandedWorkspaces.has(ws.id)}
+                  onSelect={() => setSelectedWorkspace(ws.id)}
+                  onToggleExpanded={() => toggleExpanded(ws.id)}
+                />
+              ))}
             </ul>
           </section>
         )}
       </nav>
     </aside>
+  );
+}
+
+type WorkspaceNodeProps = {
+  workspace: Workspace;
+  active: boolean;
+  expanded: boolean;
+  onSelect: () => void;
+  onToggleExpanded: () => void;
+};
+
+function WorkspaceNode({
+  workspace,
+  active,
+  expanded,
+  onSelect,
+  onToggleExpanded,
+}: WorkspaceNodeProps): JSX.Element {
+  const buttonClass = active
+    ? "flex-1 text-left px-2 py-1 rounded text-sm bg-slate-800 text-slate-100"
+    : "flex-1 text-left px-2 py-1 rounded text-sm text-slate-300 hover:bg-slate-900";
+  return (
+    <li>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          className="px-1 text-slate-500 hover:text-slate-200"
+          onClick={onToggleExpanded}
+          aria-label={expanded ? "Collapse" : "Expand"}
+        >
+          {expanded ? "▾" : "▸"}
+        </button>
+        <button type="button" className={buttonClass} onClick={onSelect}>
+          <span className="block truncate">{workspace.name}</span>
+          <span className="block text-xs text-slate-500 truncate">
+            {workspace.slug}
+          </span>
+        </button>
+      </div>
+      {expanded && (
+        <div className="pl-6 pt-1">
+          <WorkareaList workspaceId={workspace.id} />
+        </div>
+      )}
+    </li>
   );
 }

@@ -113,6 +113,14 @@ impl RepoManager {
         concerto_persist::repositories::get(self.persistence.readers(), id).await
     }
 
+    /// List every repository attached to `project_id`. Read-only. The
+    /// Desktop "Add Repository" form (Task 25) renders this list so the
+    /// New Workspace modal's repo picker has something to show.
+    pub async fn list_by_project(&self, project_id: &str) -> Result<Vec<Repository>> {
+        concerto_persist::repositories::list_by_project(self.persistence.readers(), project_id)
+            .await
+    }
+
     /// Acquire (creating on first use) the per-repo write mutex.
     ///
     /// The returned `Arc<Mutex<()>>` is cloned out before the outer
