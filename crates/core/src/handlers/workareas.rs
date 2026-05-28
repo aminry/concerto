@@ -11,11 +11,16 @@
 //!   `archived_at`).
 
 use async_trait::async_trait;
-use concerto_persist::{WorkareaId as PersistWorkareaId, WorkspaceId as PersistWorkspaceId};
+use concerto_persist::{
+    RepositoryId as PersistRepositoryId, WorkareaId as PersistWorkareaId,
+    WorkspaceId as PersistWorkspaceId,
+};
 use concerto_proto::v1::workareas_server::Workareas as WorkareasService;
 use concerto_proto::v1::{
-    CreateWorkareaRequest, ListWorkareasRequest, ListWorkareasResponse, PermissionMode,
-    Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
+    CreateWorkareaRequest, DiffHunk as ProtoDiffHunk, DiffKind as ProtoDiffKind,
+    DiffPayload as ProtoDiffPayload, FileDiff as ProtoFileDiff, GetDiffRequest,
+    ListWorkareasRequest, ListWorkareasResponse, PermissionMode, Workarea as ProtoWorkarea,
+    WorkareaId as ProtoWorkareaId,
 };
 use tonic::{Request, Response, Status};
 
@@ -95,6 +100,28 @@ impl WorkareasService for WorkareasHandler {
         }))
     }
 
+    #[tracing::instrument(skip_all, name = "Workareas::GetWorkareaRepoDiff")]
+    async fn get_workarea_repo_diff(
+        &self,
+        request: Request<GetDiffRequest>,
+    ) -> Result<Response<ProtoDiffPayload>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        let wa_id = PersistWorkareaId(req.workarea_id);
+        let repo_id = PersistRepositoryId(req.repository_id);
+        let payload = self
+            .workarea_manager
+            .get_repo_diff(&wa_id, &repo_id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(diff_payload_to_proto(payload)))
+    }
+
     #[tracing::instrument(skip_all, name = "Workareas::ArchiveWorkarea")]
     async fn archive_workarea(
         &self,
@@ -149,6 +176,49 @@ fn permission_mode_from_i32(v: i32) -> Result<String, Status> {
         PermissionMode::Auto => Ok("auto".to_string()),
         PermissionMode::Yolo => Ok("yolo".to_string()),
     }
+}
+
+/// Convert the Rust [`concerto_gix_wrap::DiffPayload`] into its proto
+/// equivalent. The two types intentionally mirror each other one-to-one;
+/// the conversion is a flat field-by-field copy plus enum mapping.
+fn diff_payload_to_proto(p: concerto_gix_wrap::DiffPayload) -> ProtoDiffPayload {
+    ProtoDiffPayload {
+        files: p.files.into_iter().map(file_diff_to_proto).collect(),
+    }
+}
+
+fn file_diff_to_proto(f: concerto_gix_wrap::FileDiff) -> ProtoFileDiff {
+    let path = path_to_string(&f.path);
+    let old_path = f.old_path.as_deref().map(path_to_string);
+    ProtoFileDiff {
+        path,
+        kind: diff_kind_to_i32(&f.kind),
+        old_path,
+        hunks: f.hunks.into_iter().map(diff_hunk_to_proto).collect(),
+    }
+}
+
+fn diff_hunk_to_proto(h: concerto_gix_wrap::DiffHunk) -> ProtoDiffHunk {
+    ProtoDiffHunk {
+        old_start: h.old_start,
+        old_lines: h.old_lines,
+        new_start: h.new_start,
+        new_lines: h.new_lines,
+        body: h.body,
+    }
+}
+
+fn diff_kind_to_i32(k: &concerto_gix_wrap::DiffKind) -> i32 {
+    match k {
+        concerto_gix_wrap::DiffKind::Added => ProtoDiffKind::Added as i32,
+        concerto_gix_wrap::DiffKind::Deleted => ProtoDiffKind::Deleted as i32,
+        concerto_gix_wrap::DiffKind::Modified => ProtoDiffKind::Modified as i32,
+        concerto_gix_wrap::DiffKind::Renamed => ProtoDiffKind::Renamed as i32,
+    }
+}
+
+fn path_to_string(p: &std::path::Path) -> String {
+    p.to_string_lossy().into_owned()
 }
 
 fn permission_mode_to_i32(s: &str) -> i32 {

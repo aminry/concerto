@@ -29,3 +29,13 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "fs", "time", "sync"] }
 tempfile = "3"
+# Task 29: Criterion harness for `benches/status.rs`. `html_reports`
+# pulls in `plotters` (MIT/Apache-2.0) which is fine; CI does not run
+# the benches (only `cargo bench --no-run` validates compile).
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Task 29: bench harness. `harness = false` defers test running to
+# criterion's `criterion_main!` macro.
+[[bench]]
+name = "status"
+harness = false

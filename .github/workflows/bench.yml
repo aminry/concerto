@@ -1,0 +1,29 @@
+name: bench
+
+# Task 29: validate the criterion benchmarks in `crates/gix-wrap`
+# *compile*. Actual measurements are too slow for routine CI (multiple
+# minutes per fixture); developers run `cargo bench -p concerto-gix-wrap`
+# on workstations or release runners on demand.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'crates/gix-wrap/**'
+      - '.github/workflows/bench.yml'
+
+jobs:
+  bench-compile:
+    name: cargo bench --no-run (gix-wrap)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo bench --no-run -p concerto-gix-wrap
+        run: cargo bench -p concerto-gix-wrap --no-run

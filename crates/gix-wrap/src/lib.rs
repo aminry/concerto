@@ -22,16 +22,28 @@
 //! - [`api::stop_fsmonitor`] — `git fsmonitor--daemon stop` (idempotent).
 //! - [`api::register_maintenance`] — `git maintenance start` (best-effort).
 //!
+//! Task 29 adds the status + diff hot path; signatures frozen:
+//!
+//! - [`status::status`] — `git status --porcelain=v1 -z` parsed into a
+//!   [`status::StatusReport`].
+//! - [`diff::diff_head`] — worktree-vs-HEAD diff as a [`diff::DiffPayload`].
+//! - [`diff::diff_to_main`] — worktree-vs-`<branch>` diff.
+//!
 //! Sparse-checkout and blobless / treeless clones remain V1.0.
 
 pub mod api;
 pub mod cmd;
+pub mod diff;
+pub mod status;
 
 pub use api::{
     apply_perf_config, clone_full, fetch, is_fsmonitor_alive, list_branches, register_maintenance,
     rev_parse_head, start_fsmonitor, stop_fsmonitor, worktree_add, BranchRef, CloneProgressEvent,
     FetchReport, ProgressSink,
 };
+// Task 29 hot-path surface — status + diff against HEAD / a branch.
+pub use diff::{diff_head, diff_to_main, DiffHunk, DiffKind, DiffPayload, FileDiff};
+pub use status::{status, StatusEntry, StatusReport, StatusState};
 
 #[cfg(test)]
 mod tests {
