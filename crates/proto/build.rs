@@ -56,6 +56,10 @@ fn main() -> io::Result<()> {
         "concerto.v1.Session.ended_at",
         // Task 18.
         "concerto.v1.Repository.last_fetch_at",
+        // Task 23 — Streams `Event.at` is a per-event publish timestamp;
+        // every `Event` carries one regardless of which `body` variant
+        // is set.
+        "concerto.v1.Event.at",
     ];
 
     let mut builder = tonic_build::configure()

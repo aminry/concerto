@@ -133,12 +133,12 @@ Expose the agent-spawning surface via gRPC. After this task, a client can call `
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Echo agent end-to-end via gRPC (create, subscribe, stop).
-- [ ] Unknown stream subject returns INVALID_ARGUMENT with a clear error.
-- [ ] No `TODO` / `FIXME` in new code beyond explicit Phase 3 placeholders (noted in Handoff).
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Echo agent end-to-end via gRPC (create, subscribe, stop).
+- [x] Unknown stream subject returns INVALID_ARGUMENT with a clear error.
+- [x] No `TODO` / `FIXME` in new code beyond explicit Phase 3 placeholders (noted in Handoff).
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/proto/proto/concerto/v1/sessions.proto` (modified — adds service)
@@ -163,7 +163,80 @@ Refs: tasks/23-sessions-grpc-service.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** no offset/ack/ring-buffer (V1.0); SessionEvent.kind oneof has only 3 variants in V0.1 — Phase 3 adds the rest.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Per-session replay buffer added to the supervisor.** The task
+    spec's pre-decision (9d) accepted that subscribers attaching after
+    `CreateSession` returns may miss the `AgentStarted` frame. In
+    practice the echo agent finishes in microseconds — the entire
+    session is gone before a client can dial the `Streams.Subscribe`
+    RPC. To keep the V0.1 `Streams` surface honest without inventing a
+    full V1.0 ring buffer, `AgentSupervisorHandle` gained
+    `subscribe_events_with_replay` / `subscribe_session_io_with_replay`
+    helpers that return a snapshot of recent events (cap
+    `MAX_REPLAY_EVENTS = MAX_REPLAY_IO = 64`) alongside a live
+    broadcast receiver. The `StreamsHandler` emits the replay first,
+    then chains the live stream. The original `subscribe_events` API is
+    unchanged. Side effect: session entries stay in the supervisor's
+    in-memory map after the host's `AgentExited` frame (DB row is
+    still marked `finished`); `stop_session` is the explicit hook that
+    evicts them. The socket file and child handle are reaped on the
+    `AgentExited` path so disk and PID accounting are unaffected.
+  - **`agent_kind` parsing returns `INVALID_ARGUMENT` not `Validation`.**
+    Per pre-decision (12), the proto string `"codex" | "gemini"`
+    rejects in `parse_agent_kind` BEFORE delegating to the supervisor,
+    so the wire code is `agent.unsupported` (a `Status::invalid_argument`
+    error from the handler) — not the supervisor's own `Validation`
+    error. The supervisor still has its own `agent.not_implemented`
+    error for direct (non-gRPC) callers; both paths converge on
+    `INVALID_ARGUMENT` on the wire.
+  - **`Sessions.CreateSession` does NOT expose `echo_text`.** The
+    proto's `CreateSessionRequest` is the spec-locked shape
+    (`workarea_id`, `agent_kind`, `model`, `permission_mode`). The
+    echo path uses the supervisor's default payload (`"hello"`); the
+    integration test asserts on that literal. Production echo is a
+    test-only path so no client needs to override the payload.
+  - **`StreamsHandler` registration requires three managers.** The
+    `Streams` service backs four subjects (`session.events.<sid>`,
+    `session.io.<sid>`, `workspace.events`, `workarea.events`); all
+    four are served from a single handler. `api_server.rs` only
+    registers the service when the agent supervisor + workspace
+    manager + workarea manager are ALL present. `Sessions` is
+    registered when the agent supervisor + workarea manager are
+    present (Sessions does not need the workspace manager). Both
+    services skip cleanly when wiring is incomplete (e.g. integration
+    tests that use the no-managers `ApiServerActor::new` path).
+  - **`AgentSupervisorHandle::persistence()` added.** Task 22's
+    handle held the `Arc<Persistence>` privately; the Sessions
+    handler needs it for `Get` / `List` direct reads, so a cheap
+    `Arc::clone` getter was added rather than threading a separate
+    `Arc<Persistence>` argument through `with_managers` and the
+    actor's factory closure.
+- **Open questions for next task:**
+  - Task 24 (Desktop workspace list) consumes
+    `Streams.Subscribe(workspace.events)` — the V0.1 `WorkspaceEvent`
+    proto message is `{ workspace_id, kind }` where `kind` is the
+    string `"created" | "archived"`. Phase 3 may want a richer
+    payload; field numbers are FROZEN so the new payload arrives at
+    higher field numbers, not by repurposing existing ones.
+  - The per-subject offset counter lives on the `StreamsHandler` —
+    two clients subscribing to the same subject see the SAME offset
+    sequence (the counter is shared). V1.0's ring-buffer + ack design
+    assumes per-subject offsets are an attribute of the BUFFER, not
+    the subscriber. The V0.1 implementation keeps that invariant
+    (subject → counter) so V1.0 promotion is a refactor, not a
+    redesign.
+  - `Sessions.SendMessage` writes payload bytes verbatim through the
+    bridge as a `StdinBytes` frame. There is no validation; the
+    agent host writes them to the PTY master. A misuse (e.g. sending
+    raw control bytes) is the caller's responsibility until Task 33
+    introduces the per-CLI parser packs.
+- **Deliberate debt:** no `since_offset` resume (V1.0 ring buffer);
+  no `AckOffset` RPC; no `GapDetected` event; no per-subject ring
+  buffer beyond the small in-process replay cap; Sessions service
+  does not enforce the workspace→workarea→session permission-mode
+  inheritance chain (Task 32). `SessionEvent.kind` ships 3 oneof
+  variants — Phase 3 adds `ToolCall`, `ToolResult`,
+  `AwaitingApproval`, `CheckpointCreated`, `TurnComplete`,
+  `ContextUsage`, `Error`, `Crashed`.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0
+  with "Smoke gate v1: PASSED". Task 27 promotes the gate to v2.

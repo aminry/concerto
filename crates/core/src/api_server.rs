@@ -62,14 +62,12 @@ pub struct ApiServerActor {
     /// Optional Workarea Manager handle. When `Some`, the gRPC
     /// `Workareas` service is registered. Task 20 wires this up.
     workarea_manager: Option<WorkareaManager>,
-    /// Optional Agent Supervisor handle. Task 22 wires this up so the
-    /// gRPC `Sessions` service (Task 23) can route `StartSession` calls
-    /// into the in-process supervisor. The handle is held for forwarding
-    /// to the (future) `SessionsHandler`; V0.1 has no gRPC service to
-    /// register against it yet — the option is here so Task 23's wiring
-    /// is purely additive.
+    /// Optional Agent Supervisor handle. When `Some` AND the workarea
+    /// manager is also `Some`, the gRPC `Sessions` and `Streams`
+    /// services are registered (Task 23). The Streams service piggy-backs
+    /// on the workspace + workarea managers' broadcast channels for
+    /// `workspace.events` / `workarea.events`.
     #[cfg(unix)]
-    #[allow(dead_code)]
     agent_supervisor: Option<AgentSupervisorHandle>,
 }
 
@@ -146,11 +144,6 @@ impl Actor for ApiServerActor {
                 let cfg = ctx.config.read().await;
                 cfg.socket_path.clone()
             };
-            // The agent_supervisor handle is held for the future Task 23
-            // `Sessions` gRPC service; V0.1 has no service to register
-            // against it, so reference it under `_` here so the supervisor
-            // doesn't drop until the actor's `run` ends.
-            let _agent_supervisor = self.agent_supervisor;
             run_uds(
                 socket_path,
                 self.started_at,
@@ -158,6 +151,7 @@ impl Actor for ApiServerActor {
                 self.repo_manager,
                 self.workspace_manager,
                 self.workarea_manager,
+                self.agent_supervisor,
                 ctx.shutdown,
             )
             .await
@@ -190,6 +184,7 @@ async fn run_uds(
     repo_manager: Option<RepoManager>,
     workspace_manager: Option<WorkspaceManager>,
     workarea_manager: Option<WorkareaManager>,
+    agent_supervisor: Option<AgentSupervisorHandle>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -201,10 +196,14 @@ async fn run_uds(
 
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
+    use crate::handlers::sessions::SessionsHandler;
+    use crate::handlers::streams::StreamsHandler;
     use crate::handlers::workareas::WorkareasHandler;
     use crate::handlers::workspaces::WorkspacesHandler;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
+    use concerto_proto::v1::sessions_server::SessionsServer;
+    use concerto_proto::v1::streams_server::StreamsServer;
     use concerto_proto::v1::workareas_server::WorkareasServer;
     use concerto_proto::v1::workspaces_server::WorkspacesServer;
 
@@ -264,13 +263,38 @@ async fn run_uds(
         let repositories_service = RepositoriesServer::new(RepositoriesHandler::new(repo_manager));
         builder = builder.add_service(repositories_service);
     }
-    if let Some(workspace_manager) = workspace_manager {
+    // The Workspace + Workarea managers may also back `Streams` /
+    // `Sessions`, so register the existing services from clones and keep
+    // the originals available for the Task 23 services below.
+    if let Some(workspace_manager) = workspace_manager.clone() {
         let workspaces_service = WorkspacesServer::new(WorkspacesHandler::new(workspace_manager));
         builder = builder.add_service(workspaces_service);
     }
-    if let Some(workarea_manager) = workarea_manager {
+    if let Some(workarea_manager) = workarea_manager.clone() {
         let workareas_service = WorkareasServer::new(WorkareasHandler::new(workarea_manager));
         builder = builder.add_service(workareas_service);
+    }
+    // Task 23: `Sessions` requires the agent supervisor + workarea
+    // manager (to resolve the workarea's worktree root as the agent's
+    // cwd). `Streams` requires all three of the agent supervisor +
+    // workspace + workarea managers to back the four V0.1 subjects.
+    if let (Some(supervisor), Some(workarea_mgr)) =
+        (agent_supervisor.as_ref(), workarea_manager.as_ref())
+    {
+        let persistence = supervisor.persistence();
+        let sessions_service = SessionsServer::new(SessionsHandler::new(
+            supervisor.clone(),
+            persistence,
+            workarea_mgr.clone(),
+        ));
+        builder = builder.add_service(sessions_service);
+    }
+    if let (Some(supervisor), Some(workspace_mgr), Some(workarea_mgr)) =
+        (agent_supervisor, workspace_manager, workarea_manager)
+    {
+        let streams_service =
+            StreamsServer::new(StreamsHandler::new(supervisor, workspace_mgr, workarea_mgr));
+        builder = builder.add_service(streams_service);
     }
 
     let serve_fut =

@@ -1,0 +1,95 @@
+// Streams service — the single server-streaming RPC that surfaces all
+// in-process event broadcasts to gRPC clients.
+//
+// Owned in design by `10_Local_API_Protocol.md` §3.2 and §5. V0.1 ships a
+// minimal subject catalog (`session.events.<sid>`, `session.io.<sid>`,
+// `workspace.events`, `workarea.events`) and ignores `since_offset` per
+// the design doc's V0.1 row. Ring-buffer + ack + gap-detected semantics
+// land in V1.0.
+//
+// Field numbers in this file are FROZEN as of Task 23. Phase 3 extends
+// `SessionEvent.kind` (ToolCall, ToolResult, AwaitingApproval,
+// CheckpointCreated, TurnComplete, ContextUsage, Error, Crashed) at
+// higher numbers; the V0.1 oneof variants are immutable.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message SubscribeRequest {
+  // Subject string from the locked catalog:
+  //   session.events.<session_id>
+  //   session.io.<session_id>
+  //   workspace.events
+  //   workarea.events
+  string subject = 1;
+  // Optional client-side filter expression. V0.1 ignores; reserved for
+  // future predicate-based subscription.
+  optional string filter = 2;
+  // V0.1 ignores. Ring-buffer + resume semantics arrive in V1.0; the
+  // field is reserved so the wire shape is stable across that change.
+  optional uint64 since_offset = 3;
+}
+
+message Event {
+  // Monotonic per-subject. Assigned at publish time; subscribers MUST
+  // tolerate gaps under V1.0 ring-buffer overflow semantics (V0.1 does
+  // not overflow).
+  uint64 offset = 1;
+  google.protobuf.Timestamp at = 2;
+  oneof body {
+    SessionEvent session = 10;
+    SessionIoChunk session_io = 11;
+    WorkspaceEvent workspace = 12;
+    WorkareaEvent workarea = 13;
+  }
+}
+
+message SessionEvent {
+  string session_id = 1;
+  oneof kind {
+    AgentStarted started = 10;
+    AgentMessage message = 11;
+    AgentExited exited = 12;
+  }
+}
+
+message AgentStarted {
+  string model = 1;
+  string mode = 2;
+}
+
+message AgentMessage {
+  string role = 1;
+  bytes  content = 2;
+}
+
+message AgentExited {
+  optional int32 exit_code = 1;
+}
+
+message SessionIoChunk {
+  string session_id = 1;
+  // "stdout" | "stderr".
+  string stream = 2;
+  bytes  data = 3;
+}
+
+// Minimal V0.1 set: `created` / `archived`. Phase 3 adds richer payloads.
+message WorkspaceEvent {
+  string workspace_id = 1;
+  // "created" | "archived"
+  string kind = 2;
+}
+
+message WorkareaEvent {
+  string workarea_id = 1;
+  // "created" | "archived"
+  string kind = 2;
+}
+
+service Streams {
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+}
