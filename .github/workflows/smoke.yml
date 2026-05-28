@@ -11,4 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      # Phase 1 smoke gate (Task 15) boots `concerto-core` and runs the
+      # `smoke-client` Tonic client. Neither touches Tauri, so the
+      # webkit/gtk Linux deps the desktop crate needs are NOT required
+      # here. If a future phase adds Desktop to the smoke gate, install
+      # them then (see .github/workflows/ci.yml for the apt list).
       - run: scripts/smoke.sh

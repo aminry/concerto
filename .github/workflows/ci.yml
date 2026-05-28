@@ -47,14 +47,16 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - uses: Swatinem/rust-cache@v2
-      # The desktop client is macOS-only in V0.1 per tasks/README.md §2;
-      # Windows + Linux are V1.0. Tauri's build.rs requires icons/icon.ico
-      # on Windows for resource generation, which we don't ship. Exclude
-      # the crate from Windows runs; macOS + Linux build it normally.
+      # Per tasks/README.md §2, V0.1 desktop is macOS-only and the V0.1
+      # smoke gate runs on Linux/macOS only. Both `concerto-desktop`
+      # (Tauri 2; needs icons/icon.ico we don't ship) and
+      # `concerto-smoke-client` (UDS via tokio::net::UnixStream) fail to
+      # compile on Windows. Exclude them from Windows; macOS + Linux
+      # build the full workspace.
       - name: cargo check
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo check --workspace --all-targets --exclude concerto-desktop
+            cargo check --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client
           else
             cargo check --workspace --all-targets
           fi
@@ -62,7 +64,7 @@ jobs:
       - name: cargo clippy
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo clippy --workspace --all-targets --exclude concerto-desktop -- -D warnings
+            cargo clippy --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client -- -D warnings
           else
             cargo clippy --workspace --all-targets -- -D warnings
           fi
@@ -70,7 +72,7 @@ jobs:
       - name: cargo test
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo test --workspace --no-fail-fast --exclude concerto-desktop
+            cargo test --workspace --no-fail-fast --exclude concerto-desktop --exclude concerto-smoke-client
           else
             cargo test --workspace --no-fail-fast
           fi

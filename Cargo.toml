@@ -18,6 +18,10 @@ members = [
     # `crates/desktop-shell` is reserved for shared Rust helpers that
     # the Tauri app will depend on in a later task.
     "apps/desktop/src-tauri",
+    # Task 15: smoke-test client binary. Lives under `tools/` because
+    # it is dev-tooling, not a shipped product. `scripts/smoke.sh`
+    # runs it via `cargo run --bin smoke-client`.
+    "tools/smoke-client",
 ]
 default-members = ["crates/core", "crates/cli"]
 

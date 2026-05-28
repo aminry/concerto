@@ -88,11 +88,11 @@ Make `scripts/smoke.sh` perform a real end-to-end check: boot the Core, connect 
 8. `shellcheck scripts/smoke.sh scripts/lib/common.sh` → clean.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Smoke gate v1 passes locally and in CI.
-- [ ] Force-failure checks confirmed (script fails when it should).
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Smoke gate v1 passes locally and in CI.
+- [x] Force-failure checks confirmed (script fails when it should).
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Single commit created.
 
 ## Outputs
 - `tools/smoke-client/Cargo.toml` (new)
@@ -114,7 +114,13 @@ Refs: tasks/15-smoke-gate-v1.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** smoke gate doesn't exercise Desktop yet — V0.1 keeps Desktop verification manual until Task 27 builds Phase 2's end-to-end.
+- **Drift from plan:**
+  - The crate's binary is `smoke-client` but the package name is `concerto-smoke-client` (workspace naming convention); `cargo run/build` therefore needs `-p concerto-smoke-client --bin smoke-client` rather than the bare `--bin smoke-client` form the task pseudocode used. Same for `concerto-core` (`-p concerto-core`).
+  - Outputs list grew by two files: `.github/workflows/smoke.yml` (added `dtolnay/rust-toolchain@stable`, `arduino/setup-protoc@v3`, and `Swatinem/rust-cache@v2` so the CI runner can compile `concerto-core` and `smoke-client`; the existing one-line `scripts/smoke.sh` step would have failed otherwise) and `Cargo.lock` (automatic — `concerto-smoke-client` added to workspace). `crates/core/src/runtime.rs` did NOT need amendment: Task 11 already wired `CONCERTO_CONFIG_DIR` / `CONCERTO_DATA_DIR` through `RuntimeConfig::default_for_user()`.
+  - Skipped `clap` — `smoke-client` parses a single flag (`--socket`) by hand from `std::env::args()` to avoid pulling a new workspace dep.
+  - The auto-derived `serde::Serialize` on the prost-generated `ServerCapabilities` would emit `transport_kind` as the raw `i32`, but the smoke script greps for the string name `"TRANSPORT_KIND_UDS"`. `smoke-client` builds its own `serde_json::Value` and uses `TransportKind::as_str_name()` for that field.
+- **Open questions for next task:** Task 16 (logging discipline) and Task 17 (integration test harness) inherit a green smoke gate; Task 27's Phase-2 smoke extension can append below the `# Phase 2 checks` marker without restructuring.
+- **Deliberate debt:** smoke gate doesn't exercise Desktop yet — V0.1 keeps Desktop verification manual until Task 27 builds Phase 2's end-to-end. The smoke script pre-builds via `cargo build --quiet` to keep wall-clock predictable; cold-cache CI run is ~3–5 min, warm-cache (`Swatinem/rust-cache@v2`) is well under a minute.
 - **Smoke-gate state:** **v1 active.** Covers: Core boot → UDS up → GetServerCapabilities → clean shutdown.
+  - Force-failure check 5: edited `crates/core/src/handlers/runtime.rs::get_server_capabilities` to return `Status::internal("FORCE_FAILURE_FOR_SMOKE_TEST")`; `scripts/smoke.sh` exited non-zero immediately with `smoke-client: GetServerCapabilities rpc error: status: Internal, message: "FORCE_FAILURE_FOR_SMOKE_TEST"`; reverted before commit.
+  - Force-failure check 6: invoked `wait_for_file` against a path that never appears; it correctly timed out at exactly 15s and returned non-zero (no Core process was required because the timeout path is the only branch under test).

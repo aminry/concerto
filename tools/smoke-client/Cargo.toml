@@ -1,0 +1,27 @@
+[package]
+name = "concerto-smoke-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Tiny gRPC client used by scripts/smoke.sh to verify the Core's UDS spine."
+
+# Task 15: this is the canonical smoke-test client. The smoke gate runs
+# it as `smoke-client --socket <path>`; the binary connects to the UDS,
+# calls `Runtime.GetServerCapabilities`, and prints a small JSON object
+# to stdout. Future tasks extend it with more RPC checks.
+[[bin]]
+name = "smoke-client"
+path = "src/main.rs"
+
+[dependencies]
+# gRPC client over UDS — same Tonic + tower + hyper-util pattern locked
+# in tasks/13 (see `crates/core/tests/grpc_runtime.rs::connect_client`)
+# and reused in tasks/14 (see `apps/desktop/src-tauri/src/core_client.rs`).
+concerto-proto = { path = "../../crates/proto" }
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+tower = { workspace = true }
+hyper-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+serde_json = { workspace = true }
