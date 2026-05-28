@@ -62,6 +62,21 @@ pub enum Error {
     #[error("not_found: {0}")]
     NotFound(String),
 
+    /// Policy precondition failure (e.g. missing or wrong
+    /// acknowledgement string on a permission-mode elevation). Added in
+    /// Task 32. Surfaces as `Code::FailedPrecondition` over gRPC. The
+    /// message body MAY carry a specific wire subcode (e.g.
+    /// `policy.acknowledgement_required`) that clients can switch on.
+    #[error("policy: {0}")]
+    Policy(String),
+
+    /// Org-managed policy lockout (e.g. `managed.json` caps
+    /// `max_permission_mode` below the requested mode). Added in Task
+    /// 32. Surfaces as `Code::PermissionDenied` over gRPC; `wire_code()`
+    /// returns `policy.locked` per `design/12 §3.8`.
+    #[error("policy.locked: {0}")]
+    PolicyLocked(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }

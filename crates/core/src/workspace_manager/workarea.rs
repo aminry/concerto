@@ -98,6 +98,11 @@ pub struct WorkareaManager {
     /// `<data_dir>` — the workarea root is computed as
     /// `<data_dir>/workspaces/<workspace.slug>/<composer>/`.
     data_dir: Arc<PathBuf>,
+    /// `<config_dir>` — used by Task 32's
+    /// [`update_workarea_permission_mode`] /
+    /// [`set_workarea_bypass_destructive_guard`] paths to read
+    /// `managed.json`.
+    config_dir: Arc<PathBuf>,
     events: broadcast::Sender<WorkareaEvent>,
     /// Optional Agent Supervisor handle (Task 31). Held so
     /// [`archive_workarea`] can drive `stop_session(reason=archive)` on
@@ -115,12 +120,14 @@ impl WorkareaManager {
         persistence: Arc<Persistence>,
         repo_manager: RepoManager,
         data_dir: Arc<PathBuf>,
+        config_dir: Arc<PathBuf>,
     ) -> Self {
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
             persistence,
             repo_manager,
             data_dir,
+            config_dir,
             events,
             #[cfg(unix)]
             agent_supervisor: None,
@@ -570,6 +577,120 @@ impl WorkareaManager {
         }
     }
 
+    /// Task 32: change `workareas.permission_mode`.
+    ///
+    /// `mode = Some(m)` writes the SQL string; `None` clears the column
+    /// (inherit-from-workspace). When the requested mode is `yolo`,
+    /// `acknowledgement` MUST equal [`crate::security::ACK_YOLO`]
+    /// (literal `"I understand"`) — otherwise the server rejects with
+    /// `policy:` (FAILED_PRECONDITION). The managed-policy cap is
+    /// enforced after parsing: requesting `yolo` when `managed.json`
+    /// caps to `auto` returns `policy.locked` (PERMISSION_DENIED).
+    ///
+    /// Emits a `tracing::info!` audit event with
+    /// `audit.kind = "permission_mode_changed"`, `audit.scope =
+    /// "workarea"`, and the from→to transition.
+    pub async fn update_workarea_permission_mode(
+        &self,
+        id: &WorkareaId,
+        mode: Option<&str>,
+        acknowledgement: &str,
+    ) -> Result<Workarea> {
+        let existing = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {id} not found")))?;
+
+        let mode_str: Option<String> = match mode {
+            Some(s) => {
+                let parsed = crate::security::parse_permission_mode(s)?;
+                if parsed == crate::security::PermissionMode::Yolo
+                    && !crate::security::ack_for_yolo(acknowledgement)
+                {
+                    return Err(Error::Policy(format!(
+                        "policy.acknowledgement_required: setting permission_mode={} requires acknowledgement={:?}",
+                        parsed.as_str(),
+                        crate::security::ACK_YOLO
+                    )));
+                }
+                let managed = crate::security::load_managed_policy(&self.config_dir);
+                let _capped = crate::security::permission::enforce_managed_cap(parsed, &managed)?;
+                Some(parsed.as_str().to_string())
+            }
+            None => None,
+        };
+
+        let mut writer = self.persistence.writer().await;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::workareas::set_permission_mode(&mut tx, id, mode_str.as_deref()).await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        drop(writer);
+
+        tracing::info!(
+            audit.kind = "permission_mode_changed",
+            audit.scope = "workarea",
+            audit.workarea_id = %id,
+            audit.from = %existing.permission_mode.as_deref().unwrap_or("inherit"),
+            audit.to = %mode_str.as_deref().unwrap_or("inherit"),
+            audit.acknowledgement_provided = !acknowledgement.is_empty(),
+            "workarea permission_mode changed"
+        );
+
+        self.get(id)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("workarea {id} vanished mid-update")))
+    }
+
+    /// Task 32: toggle `workareas.bypass_destructive_guard`.
+    ///
+    /// When `enable = true`, `acknowledgement` MUST equal
+    /// [`crate::security::ACK_BYPASS_DESTRUCTIVE_GUARD`] (literal
+    /// `"I understand the risks"`); otherwise rejected with `policy:`
+    /// (FAILED_PRECONDITION). Disabling does not require an
+    /// acknowledgement. The managed-policy `allow_bypass_destructive_guard`
+    /// flag is enforced: when `false`, `enable = true` returns
+    /// `policy.locked` (PERMISSION_DENIED).
+    pub async fn set_workarea_bypass_destructive_guard(
+        &self,
+        id: &WorkareaId,
+        enable: bool,
+        acknowledgement: &str,
+    ) -> Result<Workarea> {
+        let _existing = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {id} not found")))?;
+
+        if enable && !crate::security::ack_for_bypass_destructive_guard(acknowledgement) {
+            return Err(Error::Policy(format!(
+                "policy.acknowledgement_required: setting bypass_destructive_guard=true requires acknowledgement={:?}",
+                crate::security::ACK_BYPASS_DESTRUCTIVE_GUARD
+            )));
+        }
+        let managed = crate::security::load_managed_policy(&self.config_dir);
+        crate::security::permission::enforce_managed_bypass(enable, &managed)?;
+
+        let mut writer = self.persistence.writer().await;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::workareas::set_bypass_destructive_guard(&mut tx, id, Some(enable))
+            .await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        drop(writer);
+
+        tracing::info!(
+            audit.kind = "bypass_destructive_guard_changed",
+            audit.scope = "workarea",
+            audit.workarea_id = %id,
+            audit.to = enable,
+            audit.acknowledgement_provided = !acknowledgement.is_empty(),
+            "workarea bypass_destructive_guard changed"
+        );
+
+        self.get(id)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("workarea {id} vanished mid-update")))
+    }
+
     /// Internal hook used by [`super::WorkspaceManager::archive`]:
     /// stop the live sessions + (optionally) tear down the worktree for
     /// one workarea, WITHOUT touching the workarea's DB row. The caller
@@ -739,9 +860,10 @@ impl WorkareaManagerActor {
         persistence: Arc<Persistence>,
         repo_manager: RepoManager,
         data_dir: Arc<PathBuf>,
+        config_dir: Arc<PathBuf>,
     ) -> Self {
         Self {
-            handle: WorkareaManager::new(persistence, repo_manager, data_dir),
+            handle: WorkareaManager::new(persistence, repo_manager, data_dir, config_dir),
         }
     }
 

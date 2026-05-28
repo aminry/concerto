@@ -161,6 +161,7 @@ async fn echo_round_trip_streams_message_and_marks_finished() {
     let supervisor = AgentSupervisorHandle::new(
         Arc::clone(&persistence),
         Arc::new(data_dir.clone()),
+        Arc::new(data_dir.clone()),
         host_bin(),
     );
 
@@ -220,6 +221,7 @@ async fn codex_kind_returns_not_implemented() {
     let supervisor = AgentSupervisorHandle::new(
         Arc::clone(&persistence),
         Arc::new(data_dir.clone()),
+        Arc::new(data_dir.clone()),
         host_bin(),
     );
 
@@ -245,6 +247,7 @@ async fn unknown_workarea_errors_not_found() {
     let (_tmp, persistence, data_dir) = make_persistence().await;
     let supervisor = AgentSupervisorHandle::new(
         Arc::clone(&persistence),
+        Arc::new(data_dir.clone()),
         Arc::new(data_dir.clone()),
         host_bin(),
     );

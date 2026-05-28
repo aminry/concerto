@@ -60,6 +60,12 @@ pub fn error_to_status(err: Error) -> Status {
         "validation" => Code::InvalidArgument,
         // Caller-facing missing-entity failure (Task 19).
         "not_found" => Code::NotFound,
+        // Policy precondition (Task 32 — wrong acknowledgement string
+        // on a permission-mode elevation).
+        "policy" => Code::FailedPrecondition,
+        // Org-managed policy lockout (Task 32 — `managed.json` caps
+        // `max_permission_mode` below the requested mode).
+        "policy.locked" => Code::PermissionDenied,
         // Catch-all for invariants the type system can't capture.
         "internal" => Code::Internal,
         // Future variants get logged so we notice an unmapped code in

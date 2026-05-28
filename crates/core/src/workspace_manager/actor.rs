@@ -88,18 +88,26 @@ pub struct WorkspaceManager {
     /// workarea manager before stamping `workspaces.archived_at`. `None`
     /// in the in-process unit tests that don't need the cascade.
     workarea_manager: Option<crate::workspace_manager::WorkareaManager>,
+    /// `<config_dir>` — used by Task 32's
+    /// [`update_workspace_settings`] path to read `managed.json`.
+    config_dir: Arc<PathBuf>,
 }
 
 impl WorkspaceManager {
     /// Build a fresh handle. Normally callers go through
     /// [`WorkspaceManagerActor::new`]; this is `pub` so tests can
     /// construct one without the supervisor.
-    pub fn new(persistence: Arc<Persistence>) -> Self {
+    ///
+    /// `config_dir` is `<config_dir>` (the directory hosting `core.pid`,
+    /// `core.sock`, and `managed.json`). Task 32 uses it for the
+    /// managed-policy cap.
+    pub fn new(persistence: Arc<Persistence>, config_dir: Arc<PathBuf>) -> Self {
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
             persistence,
             events,
             workarea_manager: None,
+            config_dir,
         }
     }
 
@@ -366,6 +374,64 @@ impl WorkspaceManager {
     pub async fn list_repos(&self, workspace_id: &WorkspaceId) -> Result<Vec<RepositoryId>> {
         concerto_persist::workspaces::list_repos(self.persistence.readers(), workspace_id).await
     }
+
+    /// Task 32: patch the mutable subset of `workspaces.*` (V0.1:
+    /// `permission_mode`).
+    ///
+    /// `permission_mode = Some(mode)` sets the column to the lowercase
+    /// SQL string; `Some` of an empty string or `None` clears the column
+    /// (inherit-from-project). The managed-policy cap (`managed.json`)
+    /// is enforced: requesting `yolo` when the cap is `auto` returns
+    /// [`Error::PolicyLocked`] / `PERMISSION_DENIED`.
+    ///
+    /// Emits a `tracing::info!` audit event with
+    /// `audit.kind = "permission_mode_changed"`, `audit.scope =
+    /// "workspace"`, and the from→to transition. Task 44 promotes the
+    /// emission to the JSONL audit log; the field set is the same.
+    pub async fn update_workspace_settings(
+        &self,
+        id: &WorkspaceId,
+        permission_mode: Option<Option<String>>,
+    ) -> Result<Workspace> {
+        let existing = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workspace {id} not found")))?;
+
+        if let Some(req) = permission_mode.as_ref() {
+            // Validate + cap.
+            let new_mode_str: Option<String> = match req {
+                Some(s) => {
+                    let parsed = crate::security::parse_permission_mode(s)?;
+                    let managed = crate::security::load_managed_policy(&self.config_dir);
+                    let _capped =
+                        crate::security::permission::enforce_managed_cap(parsed, &managed)?;
+                    Some(parsed.as_str().to_string())
+                }
+                None => None,
+            };
+
+            let mut writer = self.persistence.writer().await;
+            let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+            concerto_persist::workspaces::set_permission_mode(&mut tx, id, new_mode_str.as_deref())
+                .await?;
+            tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+            drop(writer);
+
+            tracing::info!(
+                audit.kind = "permission_mode_changed",
+                audit.scope = "workspace",
+                audit.workspace_id = %id,
+                audit.from = %existing.permission_mode.as_deref().unwrap_or("inherit"),
+                audit.to = %new_mode_str.as_deref().unwrap_or("inherit"),
+                "workspace permission_mode changed"
+            );
+        }
+
+        self.get(id)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("workspace {id} vanished mid-update")))
+    }
 }
 
 /// Supervised actor wrapper. Holds the shared [`WorkspaceManager`] handle.
@@ -376,9 +442,9 @@ pub struct WorkspaceManagerActor {
 impl WorkspaceManagerActor {
     /// Build a new actor. The handle is constructed eagerly so callers
     /// can grab a clone before spawning.
-    pub fn new(persistence: Arc<Persistence>) -> Self {
+    pub fn new(persistence: Arc<Persistence>, config_dir: Arc<PathBuf>) -> Self {
         Self {
-            handle: WorkspaceManager::new(persistence),
+            handle: WorkspaceManager::new(persistence, config_dir),
         }
     }
 

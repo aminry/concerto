@@ -80,3 +80,33 @@ fn row_to_project(row: sqlx::sqlite::SqliteRow) -> Project {
         archived_at: row.get::<Option<i64>, _>("archived_at"),
     }
 }
+
+/// Read the raw `projects.settings_json` column for `id`. Returns `None`
+/// if the row is missing. Task 32 uses this to fetch
+/// `default_permission_mode` for the inheritance walk.
+pub async fn get_settings_json(pool: &SqlitePool, id: &ProjectId) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT settings_json FROM projects WHERE id = ?")
+        .bind(&id.0)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(row.map(|r| r.get::<String, _>("settings_json")))
+}
+
+/// Overwrite `projects.settings_json` with `payload` (a JSON string the
+/// caller has already serialized). Task 32 uses this for the per-project
+/// `default_permission_mode` knob. Mirrors
+/// [`crate::workareas::set_settings_json`].
+pub async fn set_settings_json(
+    conn: &mut SqliteConnection,
+    id: &ProjectId,
+    payload: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE projects SET settings_json = ? WHERE id = ?")
+        .bind(payload)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}

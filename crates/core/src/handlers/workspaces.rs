@@ -15,7 +15,7 @@ use concerto_persist::WorkspaceId as PersistWorkspaceId;
 use concerto_proto::v1::workspaces_server::Workspaces as WorkspacesService;
 use concerto_proto::v1::{
     CreateWorkspaceRequest, ListWorkspacesRequest, ListWorkspacesResponse, PermissionMode,
-    Workspace as ProtoWorkspace, WorkspaceId as ProtoWorkspaceId,
+    UpdateWorkspaceSettingsRequest, Workspace as ProtoWorkspace, WorkspaceId as ProtoWorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
@@ -130,6 +130,33 @@ impl WorkspacesService for WorkspacesHandler {
         let row = self
             .workspace_manager
             .restore_workspace(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(workspace_to_proto(row)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workspaces::UpdateWorkspaceSettings")]
+    async fn update_workspace_settings(
+        &self,
+        request: Request<UpdateWorkspaceSettingsRequest>,
+    ) -> Result<Response<ProtoWorkspace>, Status> {
+        let req = request.into_inner();
+        if req.workspace_id.is_empty() {
+            return Err(Status::invalid_argument("workspace_id is required"));
+        }
+        let settings = req.settings.ok_or_else(|| {
+            Status::invalid_argument("settings is required (use {} to send a no-op)")
+        })?;
+        // V0.1: a `Some(UNSPECIFIED)` permission_mode is rejected; the
+        // caller signals "no change" by omitting the field entirely.
+        let permission_mode_patch: Option<Option<String>> = match settings.permission_mode {
+            Some(v) => Some(Some(permission_mode_from_i32(v)?)),
+            None => None,
+        };
+        let id = PersistWorkspaceId(req.workspace_id);
+        let row = self
+            .workspace_manager
+            .update_workspace_settings(&id, permission_mode_patch)
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(workspace_to_proto(row)))

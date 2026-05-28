@@ -64,6 +64,26 @@ message ListWorkspacesResponse {
   repeated Workspace workspaces = 1;
 }
 
+// Task 32: caller-supplied workspace settings patch.
+//
+// V0.1 ships a single mutable field — `permission_mode`. The wrapping
+// `WorkspaceSettings` message exists so later tasks can add fields at
+// higher numbers without inventing a new RPC every time. Field numbers
+// here are FROZEN as of Task 32.
+//
+// `permission_mode` is optional: omitted means "no change"; setting it
+// to `PERMISSION_MODE_UNSPECIFIED` is rejected as `INVALID_ARGUMENT`
+// (callers wanting "inherit from project" should omit the field, not
+// send `UNSPECIFIED`).
+message WorkspaceSettings {
+  optional PermissionMode permission_mode = 1;
+}
+
+message UpdateWorkspaceSettingsRequest {
+  string workspace_id = 1;
+  WorkspaceSettings settings = 2;
+}
+
 service Workspaces {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
   rpc GetWorkspace(WorkspaceId) returns (Workspace);
@@ -73,4 +93,7 @@ service Workspaces {
   // individually archived per `design/03 §3.7`; the user restores each
   // explicitly.
   rpc RestoreWorkspace(WorkspaceId) returns (Workspace);
+  // Task 32: patch mutable workspace settings (V0.1: only
+  // `permission_mode`). Returns the updated `Workspace` row.
+  rpc UpdateWorkspaceSettings(UpdateWorkspaceSettingsRequest) returns (Workspace);
 }

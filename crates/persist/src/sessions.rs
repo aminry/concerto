@@ -151,6 +151,23 @@ pub async fn mark_ended(conn: &mut SqliteConnection, id: &SessionId, ended_at: i
     Ok(())
 }
 
+/// Overwrite `sessions.permission_mode` for `id`. `mode` is one of
+/// `strict|normal|auto|yolo` — sessions never carry NULL here. Task 32
+/// uses this for `Sessions.UpdateSessionPermissionMode`.
+pub async fn set_permission_mode(
+    conn: &mut SqliteConnection,
+    id: &SessionId,
+    mode: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE sessions SET permission_mode = ? WHERE id = ?")
+        .bind(mode)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 /// Fetch one session by id (read-only).
 pub async fn get(pool: &SqlitePool, id: &SessionId) -> Result<Option<Session>> {
     let row = sqlx::query(

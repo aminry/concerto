@@ -20,6 +20,7 @@ use concerto_proto::v1::{
     ArchiveWorkareaRequest, CreateWorkareaRequest, DiffHunk as ProtoDiffHunk,
     DiffKind as ProtoDiffKind, DiffPayload as ProtoDiffPayload, FileDiff as ProtoFileDiff,
     GetDiffRequest, ListWorkareasRequest, ListWorkareasResponse, PermissionMode,
+    SetWorkareaBypassDestructiveGuardRequest, UpdateWorkareaPermissionModeRequest,
     Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
 };
 use tonic::{Request, Response, Status};
@@ -172,6 +173,59 @@ impl WorkareasService for WorkareasHandler {
         let row = self
             .workarea_manager
             .restore_workarea(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(workarea_to_proto(row)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workareas::UpdateWorkareaPermissionMode")]
+    async fn update_workarea_permission_mode(
+        &self,
+        request: Request<UpdateWorkareaPermissionModeRequest>,
+    ) -> Result<Response<ProtoWorkarea>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        // V0.1: `PERMISSION_MODE_UNSPECIFIED` clears the override
+        // (inherit-from-workspace) — same convention as the workarea
+        // settings_json field shape. The proto wire is a non-optional
+        // enum so we map UNSPECIFIED → None.
+        let mode: Option<String> = match PermissionMode::try_from(req.permission_mode) {
+            Ok(PermissionMode::Unspecified) => None,
+            Ok(PermissionMode::Strict) => Some("strict".to_string()),
+            Ok(PermissionMode::Normal) => Some("normal".to_string()),
+            Ok(PermissionMode::Auto) => Some("auto".to_string()),
+            Ok(PermissionMode::Yolo) => Some("yolo".to_string()),
+            Err(_) => {
+                return Err(Status::invalid_argument(format!(
+                    "permission_mode {} is not a known enum value",
+                    req.permission_mode
+                )));
+            }
+        };
+        let id = PersistWorkareaId(req.workarea_id);
+        let row = self
+            .workarea_manager
+            .update_workarea_permission_mode(&id, mode.as_deref(), &req.acknowledgement)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(workarea_to_proto(row)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workareas::SetWorkareaBypassDestructiveGuard")]
+    async fn set_workarea_bypass_destructive_guard(
+        &self,
+        request: Request<SetWorkareaBypassDestructiveGuardRequest>,
+    ) -> Result<Response<ProtoWorkarea>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        let id = PersistWorkareaId(req.workarea_id);
+        let row = self
+            .workarea_manager
+            .set_workarea_bypass_destructive_guard(&id, req.enable, &req.acknowledgement)
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(workarea_to_proto(row)))

@@ -288,6 +288,16 @@ message StopSessionRequest {
 }
 ```
 
+### message `UpdateSessionPermissionModeRequest`
+
+```proto
+message UpdateSessionPermissionModeRequest {
+  string session_id = 1;
+  PermissionMode permission_mode = 2;
+  string acknowledgement = 3;
+}
+```
+
 ### service `Sessions`
 
 ```proto
@@ -297,6 +307,9 @@ service Sessions {
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
   rpc StopSession(StopSessionRequest) returns (google.protobuf.Empty);
+  // Task 32: change `sessions.permission_mode` with entry-ceremony +
+  // managed.json cap enforcement. Returns the updated `Session` row.
+  rpc UpdateSessionPermissionMode(UpdateSessionPermissionModeRequest) returns (Session);
 }
 ```
 
@@ -539,6 +552,26 @@ message ArchiveWorkareaRequest {
 }
 ```
 
+### message `UpdateWorkareaPermissionModeRequest`
+
+```proto
+message UpdateWorkareaPermissionModeRequest {
+  string workarea_id = 1;
+  PermissionMode permission_mode = 2;
+  string acknowledgement = 3;
+}
+```
+
+### message `SetWorkareaBypassDestructiveGuardRequest`
+
+```proto
+message SetWorkareaBypassDestructiveGuardRequest {
+  string workarea_id = 1;
+  bool enable = 2;
+  string acknowledgement = 3;
+}
+```
+
 ### service `Workareas`
 
 ```proto
@@ -557,6 +590,13 @@ service Workareas {
   // (default opts = keep worktree).
   rpc ArchiveWorkareaWithOpts(ArchiveWorkareaRequest) returns (google.protobuf.Empty);
   rpc RestoreWorkarea(WorkareaId) returns (Workarea);
+  // Task 32: change `workareas.permission_mode` with entry-ceremony +
+  // managed.json cap enforcement. Returns the updated `Workarea` row.
+  rpc UpdateWorkareaPermissionMode(UpdateWorkareaPermissionModeRequest) returns (Workarea);
+  // Task 32: toggle `workareas.bypass_destructive_guard` with
+  // entry-ceremony + managed.json policy enforcement. Returns the
+  // updated `Workarea` row.
+  rpc SetWorkareaBypassDestructiveGuard(SetWorkareaBypassDestructiveGuardRequest) returns (Workarea);
 }
 ```
 
@@ -615,6 +655,23 @@ message ListWorkspacesResponse {
 }
 ```
 
+### message `WorkspaceSettings`
+
+```proto
+message WorkspaceSettings {
+  optional PermissionMode permission_mode = 1;
+}
+```
+
+### message `UpdateWorkspaceSettingsRequest`
+
+```proto
+message UpdateWorkspaceSettingsRequest {
+  string workspace_id = 1;
+  WorkspaceSettings settings = 2;
+}
+```
+
 ### service `Workspaces`
 
 ```proto
@@ -627,6 +684,9 @@ service Workspaces {
   // individually archived per `design/03 §3.7`; the user restores each
   // explicitly.
   rpc RestoreWorkspace(WorkspaceId) returns (Workspace);
+  // Task 32: patch mutable workspace settings (V0.1: only
+  // `permission_mode`). Returns the updated `Workspace` row.
+  rpc UpdateWorkspaceSettings(UpdateWorkspaceSettingsRequest) returns (Workspace);
 }
 ```
 

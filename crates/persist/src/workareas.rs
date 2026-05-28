@@ -324,6 +324,40 @@ fn row_to_workarea(row: sqlx::sqlite::SqliteRow) -> Workarea {
     }
 }
 
+/// Overwrite `workareas.permission_mode` for `id`. Pass `None` to
+/// restore inherit-from-workspace semantics. Task 32 uses this for
+/// `Workareas.UpdateWorkareaPermissionMode`.
+pub async fn set_permission_mode(
+    conn: &mut SqliteConnection,
+    id: &WorkareaId,
+    mode: Option<&str>,
+) -> Result<()> {
+    sqlx::query("UPDATE workareas SET permission_mode = ? WHERE id = ?")
+        .bind(mode)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+/// Overwrite `workareas.bypass_destructive_guard` for `id`. Pass `None`
+/// to restore inherit-from-workspace semantics. Task 32 uses this for
+/// `Workareas.SetWorkareaBypassDestructiveGuard`.
+pub async fn set_bypass_destructive_guard(
+    conn: &mut SqliteConnection,
+    id: &WorkareaId,
+    bypass: Option<bool>,
+) -> Result<()> {
+    sqlx::query("UPDATE workareas SET bypass_destructive_guard = ? WHERE id = ?")
+        .bind(bypass.map(|b| b as i64))
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 /// Overwrite a workarea's `settings_json` column with `payload` (a JSON
 /// string the caller has already serialized). Used by Task 30's
 /// files-to-copy resolver to stamp the idempotency flag after rules are

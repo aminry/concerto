@@ -172,6 +172,23 @@ pub fn is_unique_violation(err: &sqlx::Error) -> bool {
     }
 }
 
+/// Overwrite `workspaces.permission_mode` for `id`. Pass `None` to
+/// restore inherit-from-project semantics. Task 32 uses this for
+/// `Workspaces.UpdateWorkspaceSettings`.
+pub async fn set_permission_mode(
+    conn: &mut SqliteConnection,
+    id: &WorkspaceId,
+    mode: Option<&str>,
+) -> Result<()> {
+    sqlx::query("UPDATE workspaces SET permission_mode = ? WHERE id = ?")
+        .bind(mode)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 fn row_to_workspace(row: sqlx::sqlite::SqliteRow) -> Workspace {
     Workspace {
         id: WorkspaceId(row.get::<String, _>("id")),
