@@ -36,6 +36,11 @@ pub enum Error {
     #[error("pairing: {0}")]
     Pairing(String),
 
+    /// OS keychain / secret-store failure. Bridged from
+    /// `concerto_keychain::SecretsError` at module boundaries.
+    #[error("secrets: {0}")]
+    Secrets(#[from] concerto_keychain::SecretsError),
+
     #[error("internal: {0}")]
     Internal(String),
 }

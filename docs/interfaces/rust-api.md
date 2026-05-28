@@ -25,8 +25,64 @@ pub enum Error {
     #[error("pairing: {0}")]
     Pairing(String),
 
+    /// OS keychain / secret-store failure. Bridged from
+    /// `concerto_keychain::SecretsError` at module boundaries.
+    #[error("secrets: {0}")]
+    Secrets(#[from] concerto_keychain::SecretsError),
+
     #[error("internal: {0}")]
     Internal(String),
+}
+```
+
+## `crates/keychain/src/api.rs`
+
+### enum `Provider`
+
+```rust
+pub enum Provider {
+    Anthropic,
+    OpenAI,
+    Gemini,
+    Bedrock,
+    Vertex,
+}
+```
+
+### enum `SecretKind`
+
+```rust
+pub enum SecretKind {
+    /// API token for a cloud LLM provider.
+    ProviderToken(Provider),
+    /// GitHub Personal Access Token (used by Task 45's `gh` CLI shell-out).
+    GithubPat,
+    /// Symmetric key for the device-pairing handshake (V1.0; placeholder
+    /// in V0.1).
+    DevicePairingKey,
+    /// Ed25519 private key for the Core's persistent identity (per
+    /// design/00 §6.7).
+    CoreIdentityPrivateKey,
+    /// API key for the Expo push notification service (V1.0; placeholder
+    /// in V0.1).
+    PushExpoApiKey,
+}
+```
+
+### struct `SecretValue`
+
+```rust
+pub struct SecretValue(pub(crate) SecretString);
+```
+
+### struct `Secrets`
+
+```rust
+pub struct Secrets {
+    /// Service name used for every keychain entry. Always `"concerto"` in
+    /// production; tests inject a unique service to avoid colliding with
+    /// real installations.
+    pub(crate) service: std::borrow::Cow<'static, str>,
 }
 ```
 

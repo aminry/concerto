@@ -45,6 +45,14 @@ fn internal_wire_code_and_display() {
 }
 
 #[test]
+fn secrets_wire_code_and_display() {
+    let err: Error = concerto_keychain::SecretsError::NotFound.into();
+    assert_eq!(err.wire_code(), "secrets");
+    assert!(err.to_string().starts_with("secrets: "));
+    assert!(format!("{err:?}").contains("Secrets"));
+}
+
+#[test]
 fn from_std_io_error() {
     let io_err = std::io::Error::other("oops");
     let err: Error = io_err.into();

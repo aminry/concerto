@@ -18,3 +18,8 @@ thiserror.workspace = true
 # types, not runtimes or transports.
 sqlx.workspace = true
 tonic.workspace = true
+# concerto-keychain is a leaf crate (it depends on `thiserror`, `keyring`,
+# `secrecy`, `tracing`, `tokio`) and explicitly does NOT depend on
+# concerto-error, so this dep is acyclic. Carried for the
+# `From<SecretsError>` bridge added in Task 10.
+concerto-keychain = { path = "../keychain" }
