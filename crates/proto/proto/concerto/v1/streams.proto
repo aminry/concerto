@@ -68,6 +68,10 @@ message SessionEvent {
     // detection). V0.1 is best-effort: terminal parsers may miss the
     // boundary; structured parsers (V1.0) are authoritative.
     TurnComplete turn_complete = 16;
+    // Task 34: per-repo checkpoint created at the end of a turn. Multi
+    // repo workareas fire one per repo (V1.0); V0.1 single-repo
+    // workareas always fire exactly one.
+    CheckpointCreated checkpoint_created = 17;
   }
 }
 
@@ -119,6 +123,15 @@ message ToolCall {
 // detection). Currently carries no payload; V1.0 may add context-usage
 // fields.
 message TurnComplete {
+}
+
+// Task 34: a per-repo checkpoint was committed. `checkpoint_id` is the
+// `checkpoints.id` row freshly persisted; `git_ref` is the FROZEN
+// `refs/concerto/checkpoints/<workarea>/<repository>/<n>` form so the
+// client can `git rev-parse` the ref if desired.
+message CheckpointCreated {
+  string checkpoint_id = 1;
+  string git_ref = 2;
 }
 
 message SessionIoChunk {

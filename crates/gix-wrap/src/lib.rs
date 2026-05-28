@@ -37,9 +37,10 @@ pub mod diff;
 pub mod status;
 
 pub use api::{
-    apply_perf_config, clone_full, fetch, is_fsmonitor_alive, list_branches, register_maintenance,
-    rev_parse_head, start_fsmonitor, stop_fsmonitor, worktree_add, BranchRef, CloneProgressEvent,
-    FetchReport, ProgressSink,
+    apply_perf_config, clone_full, commit_index, fetch, hard_reset, is_fsmonitor_alive,
+    list_branches, ref_exists, register_maintenance, rev_parse_head, start_fsmonitor,
+    stop_fsmonitor, update_ref, worktree_add, BranchRef, CloneProgressEvent, FetchReport,
+    ProgressSink,
 };
 // Task 29 hot-path surface — status + diff against HEAD / a branch.
 pub use diff::{diff_head, diff_to_main, DiffHunk, DiffKind, DiffPayload, FileDiff};

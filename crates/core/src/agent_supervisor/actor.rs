@@ -143,6 +143,10 @@ const MAX_REPLAY_IO: usize = 64;
 /// Per-session in-process state held by the supervisor.
 struct SessionEntry {
     workarea_id: WorkareaId,
+    /// `sessions.chat_id` — cached so the read-pump's checkpoint /
+    /// revert paths (Task 34) don't have to round-trip the DB to
+    /// resolve the per-session chat thread.
+    chat_id: String,
     /// 32-byte cookie issued at spawn time. Held in process only — the
     /// schema does not include a slot for it on `sessions` in V0.1, so
     /// the supervisor uses this map for `send_input` /  cookie-aware
@@ -548,6 +552,7 @@ impl AgentSupervisorHandle {
                 session_id.clone(),
                 SessionEntry {
                     workarea_id: req.workarea_id.clone(),
+                    chat_id: chat_id.clone(),
                     cookie,
                     permission_mode: permission_mode_enum,
                     socket_path: socket_path.clone(),
@@ -575,6 +580,8 @@ impl AgentSupervisorHandle {
 
         let pump_persistence = Arc::clone(&self.persistence);
         let pump_session = session_id.clone();
+        let pump_workarea = req.workarea_id.clone();
+        let pump_chat = chat_id.clone();
         let pump_events = events.clone();
         let pump_events_replay = Arc::clone(&events_replay);
         let pump_io = io.clone();
@@ -594,6 +601,8 @@ impl AgentSupervisorHandle {
             run_read_pump(
                 read_half,
                 pump_session,
+                pump_workarea,
+                pump_chat,
                 pump_events,
                 pump_events_replay,
                 pump_io,
@@ -670,6 +679,156 @@ impl AgentSupervisorHandle {
         // Wake the waiter; if it has died (session ended), drop is
         // benign.
         let _ = sender.send(decision);
+        Ok(())
+    }
+
+    /// Task 34: revert a workarea to a checkpoint.
+    ///
+    /// Looks up the checkpoint row → workarea id + chat_message_id,
+    /// stops every live session on the workarea, hard-resets each
+    /// repo's worktree to the checkpoint's `git_ref`, and soft-deletes
+    /// chat messages in the supplied `session_id`'s chat that postdate
+    /// the checkpoint by overwriting `superseded_by` to the
+    /// checkpoint's `chat_message_id`. V0.1 does NOT auto-restart the
+    /// session — the user clicks "Start session" again per
+    /// `tasks/34 §Scope — in`.
+    pub async fn revert_to_checkpoint(
+        &self,
+        checkpoint_id: &str,
+        session_id: &SessionId,
+    ) -> Result<()> {
+        // Look up the checkpoint to find the workarea.
+        let cp = concerto_persist::checkpoints::get(self.persistence.readers(), checkpoint_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("checkpoint {checkpoint_id} not found")))?;
+
+        // Stop every live session on the workarea (Task 22's stop
+        // semantics: kill the host, mark finished). The supervisor's
+        // entry map already mirrors `sessions.ended_at IS NULL`, so we
+        // enumerate the in-process map instead of the DB. The map is
+        // the source of truth for "currently running".
+        let live_sessions: Vec<SessionId> = {
+            let map = self.sessions.lock().await;
+            map.iter()
+                .filter_map(|(sid, entry)| {
+                    if entry.workarea_id == cp.workarea_id
+                        && !entry.finished.load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        Some(sid.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        for sid in &live_sessions {
+            // Stop is idempotent; ignore NotFound — the session may
+            // have exited between our enumeration and the stop call.
+            match self.stop_session(sid, Some("revert".to_string())).await {
+                Ok(_) | Err(Error::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Resolve the chat_id for the caller's session_id. The
+        // soft-delete must scope to *some* chat; the design picks the
+        // initiating session's chat thread. When the session is
+        // unknown, fall back to the head checkpoint's chat: read it
+        // back via `chat_messages`'s chat_id column would require an
+        // extra helper — V0.1's revert path always has a valid
+        // session_id from the gRPC caller, so the unknown-session
+        // branch surfaces as NotFound.
+        let chat_id =
+            crate::agent_supervisor::checkpoint::chat_id_for_session(&self.persistence, session_id)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("session {session_id} not found")))?;
+
+        // Hard-reset every repo in the sibling set + soft-delete the
+        // post-checkpoint messages.
+        let n_reset = crate::agent_supervisor::checkpoint::revert_workarea_to_checkpoint(
+            &self.persistence,
+            checkpoint_id,
+            &chat_id,
+        )
+        .await?;
+
+        tracing::info!(
+            audit.kind = "revert_to_checkpoint",
+            audit.session_id = %session_id,
+            audit.checkpoint_id = %checkpoint_id,
+            audit.workarea_id = %cp.workarea_id,
+            audit.n_repos_reset = n_reset,
+            audit.n_sessions_stopped = live_sessions.len(),
+            "workarea reverted to checkpoint"
+        );
+        Ok(())
+    }
+
+    /// Test-only entry point: drive the read pump as if a parser pack
+    /// had emitted [`crate::agent_supervisor::parsers::ParseEvent::TurnComplete`]
+    /// for `session_id`. The supervisor takes the slow path through the
+    /// same `dispatch_parse_event` branch a real turn-complete would
+    /// hit, so the checkpoint plumbing is exercised end-to-end without
+    /// requiring a real agent CLI that surfaces the boundary.
+    ///
+    /// Documented as "test-only" but exposed `pub` because gating it
+    /// on `#[cfg(test)]` would block the in-process integration test
+    /// (which lives in `crates/core/tests/`, not in the lib's own
+    /// `cfg(test)`). Production paths never call this — there is no
+    /// supported way to trigger a checkpoint without going through a
+    /// `ParseEvent::TurnComplete` from a real parser pack.
+    pub async fn synthesize_turn_complete(&self, session_id: &SessionId) -> Result<()> {
+        let (workarea_id, chat_id) = {
+            let map = self.sessions.lock().await;
+            let entry = map
+                .get(session_id)
+                .ok_or_else(|| Error::NotFound(format!("session {session_id} not running")))?;
+            (entry.workarea_id.clone(), entry.chat_id.clone())
+        };
+        // Inline the same logic as the TurnComplete branch in
+        // `dispatch_parse_event` so the test exercises the production
+        // code path (DB insert → checkpoint create → event emit).
+        let persistence = Arc::clone(&self.persistence);
+        let session_id = session_id.clone();
+        let events_sender = {
+            let map = self.sessions.lock().await;
+            map.get(&session_id).map(|e| e.events.clone())
+        };
+        let events_replay = {
+            let map = self.sessions.lock().await;
+            map.get(&session_id).map(|e| Arc::clone(&e.events_replay))
+        };
+        let events_sender = events_sender
+            .ok_or_else(|| Error::NotFound(format!("session {session_id} not running")))?;
+        let events_replay = events_replay
+            .ok_or_else(|| Error::NotFound(format!("session {session_id} not running")))?;
+
+        let chat_message_id =
+            crate::agent_supervisor::checkpoint::insert_turn_message(&persistence, &chat_id)
+                .await?;
+        let records = crate::agent_supervisor::checkpoint::create_checkpoint_for_workarea(
+            &persistence,
+            &workarea_id,
+            &chat_message_id,
+            &session_id,
+        )
+        .await?;
+        // Mirror the TurnComplete + per-record CheckpointCreated event
+        // emission so subscribers see the same wire shape.
+        let turn = AgentEvent::TurnComplete {
+            session_id: session_id.clone(),
+        };
+        push_replay(&events_replay, turn.clone()).await;
+        let _ = events_sender.send(turn);
+        for rec in records {
+            let ev = AgentEvent::CheckpointCreated {
+                session_id: session_id.clone(),
+                checkpoint_id: rec.checkpoint_id,
+                git_ref: rec.git_ref,
+            };
+            push_replay(&events_replay, ev.clone()).await;
+            let _ = events_sender.send(ev);
+        }
         Ok(())
     }
 
@@ -860,6 +1019,8 @@ async fn bypass_for_session(persistence: &Persistence, session_id: &SessionId) -
 async fn run_read_pump(
     mut read_half: tokio::net::unix::OwnedReadHalf,
     session_id: SessionId,
+    workarea_id: WorkareaId,
+    chat_id: String,
     events: broadcast::Sender<AgentEvent>,
     events_replay: Arc<Mutex<Vec<AgentEvent>>>,
     io: broadcast::Sender<SessionIoChunk>,
@@ -916,6 +1077,8 @@ async fn run_read_pump(
                     dispatch_parse_event(
                         ev,
                         &session_id,
+                        &workarea_id,
+                        &chat_id,
                         &events,
                         &events_replay,
                         &io,
@@ -1150,6 +1313,8 @@ async fn resolve_for_new_session(
 async fn dispatch_parse_event(
     ev: ParseEvent,
     session_id: &SessionId,
+    workarea_id: &WorkareaId,
+    chat_id: &str,
     events: &broadcast::Sender<AgentEvent>,
     events_replay: &Arc<Mutex<Vec<AgentEvent>>>,
     io: &broadcast::Sender<SessionIoChunk>,
@@ -1199,6 +1364,67 @@ async fn dispatch_parse_event(
             };
             push_replay(events_replay, ev.clone()).await;
             let _ = events.send(ev);
+            // Task 34: at every turn boundary, snapshot the worktree
+            // into a per-repo checkpoint ref + DB row, then emit one
+            // AgentEvent::CheckpointCreated per ref. The checkpoint
+            // creation runs on a spawned task so a slow git operation
+            // doesn't block the read pump from draining the next
+            // frame; failures are logged at WARN and the read pump
+            // keeps going (best-effort per `tasks/34 §Scope — in`).
+            let persistence = Arc::clone(persistence);
+            let workarea_id = workarea_id.clone();
+            let chat_id = chat_id.to_string();
+            let session_id = session_id.clone();
+            let events_for_checkpoint = events.clone();
+            let events_replay_for_checkpoint = Arc::clone(events_replay);
+            tokio::spawn(async move {
+                let chat_message_id =
+                    match crate::agent_supervisor::checkpoint::insert_turn_message(
+                        &persistence,
+                        &chat_id,
+                    )
+                    .await
+                    {
+                        Ok(id) => id,
+                        Err(e) => {
+                            tracing::warn!(
+                                session = %session_id,
+                                error = %e,
+                                "checkpoint: failed to insert turn marker"
+                            );
+                            return;
+                        }
+                    };
+                let records =
+                    match crate::agent_supervisor::checkpoint::create_checkpoint_for_workarea(
+                        &persistence,
+                        &workarea_id,
+                        &chat_message_id,
+                        &session_id,
+                    )
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(
+                                session = %session_id,
+                                workarea = %workarea_id,
+                                error = %e,
+                                "checkpoint: create_checkpoint_for_workarea failed"
+                            );
+                            return;
+                        }
+                    };
+                for rec in records {
+                    let ev = AgentEvent::CheckpointCreated {
+                        session_id: session_id.clone(),
+                        checkpoint_id: rec.checkpoint_id,
+                        git_ref: rec.git_ref,
+                    };
+                    push_replay(&events_replay_for_checkpoint, ev.clone()).await;
+                    let _ = events_for_checkpoint.send(ev);
+                }
+            });
         }
         ParseEvent::AwaitingApproval {
             tool,

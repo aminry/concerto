@@ -18,6 +18,8 @@
 //! [`workareas`]; the tables themselves ship in migration 0001.
 
 pub mod api;
+pub mod chat_messages;
+pub mod checkpoints;
 pub mod projects;
 pub mod repositories;
 pub mod sessions;

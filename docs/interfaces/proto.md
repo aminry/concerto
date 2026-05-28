@@ -309,6 +309,15 @@ message ResolveApprovalRequest {
 }
 ```
 
+### message `RevertRequest`
+
+```proto
+message RevertRequest {
+  string checkpoint_id = 1;
+  string session_id = 2;
+}
+```
+
 ### message `UpdateSessionPermissionModeRequest`
 
 ```proto
@@ -335,6 +344,11 @@ service Sessions {
   // parser pack. First-write-wins — a second call on the same
   // `approval_id` returns `FAILED_PRECONDITION`.
   rpc ResolveApproval(ResolveApprovalRequest) returns (google.protobuf.Empty);
+  // Task 34: roll the workarea's worktrees back to a per-repo
+  // checkpoint. Stops the workarea's live sessions, hard-resets each
+  // repo to the checkpoint ref, and soft-deletes chat messages after
+  // the checkpoint. V0.1 does not auto-restart the session.
+  rpc RevertToCheckpoint(RevertRequest) returns (google.protobuf.Empty);
 }
 ```
 
@@ -403,6 +417,10 @@ message SessionEvent {
     // detection). V0.1 is best-effort: terminal parsers may miss the
     // boundary; structured parsers (V1.0) are authoritative.
     TurnComplete turn_complete = 16;
+    // Task 34: per-repo checkpoint created at the end of a turn. Multi
+    // repo workareas fire one per repo (V1.0); V0.1 single-repo
+    // workareas always fire exactly one.
+    CheckpointCreated checkpoint_created = 17;
   }
 }
 ```
@@ -469,6 +487,15 @@ message ToolCall {
 
 ```proto
 message TurnComplete {
+}
+```
+
+### message `CheckpointCreated`
+
+```proto
+message CheckpointCreated {
+  string checkpoint_id = 1;
+  string git_ref = 2;
 }
 ```
 

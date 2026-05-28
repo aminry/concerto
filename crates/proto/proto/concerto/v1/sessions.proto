@@ -104,6 +104,24 @@ message ResolveApprovalRequest {
   ApprovalDecision decision = 3;
 }
 
+// Task 34: inputs for `Sessions.RevertToCheckpoint`.
+//
+// Sent by a client to roll a workarea's worktrees back to the state
+// captured at `checkpoint_id` (one row in the `checkpoints` table).
+// The server stops the workarea's live sessions, `git reset --hard`s
+// each repo to the checkpoint's ref, and soft-deletes every
+// `chat_message` later than the checkpoint by pointing their
+// `superseded_by` at the checkpoint's `chat_message_id`. V0.1 does not
+// auto-restart the session — the user clicks "Start session" again.
+//
+// `session_id` identifies the session whose chat thread the soft-delete
+// runs against. The checkpoint row's `workarea_id` is the source of
+// truth for which repos to reset.
+message RevertRequest {
+  string checkpoint_id = 1;
+  string session_id = 2;
+}
+
 // Task 32: inputs for `Sessions.UpdateSessionPermissionMode`.
 // `permission_mode` is REQUIRED and must NOT be
 // `PERMISSION_MODE_UNSPECIFIED` (sessions never carry NULL — the row
@@ -131,4 +149,9 @@ service Sessions {
   // parser pack. First-write-wins — a second call on the same
   // `approval_id` returns `FAILED_PRECONDITION`.
   rpc ResolveApproval(ResolveApprovalRequest) returns (google.protobuf.Empty);
+  // Task 34: roll the workarea's worktrees back to a per-repo
+  // checkpoint. Stops the workarea's live sessions, hard-resets each
+  // repo to the checkpoint ref, and soft-deletes chat messages after
+  // the checkpoint. V0.1 does not auto-restart the session.
+  rpc RevertToCheckpoint(RevertRequest) returns (google.protobuf.Empty);
 }

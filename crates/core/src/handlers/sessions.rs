@@ -31,8 +31,9 @@ use concerto_persist::{
 use concerto_proto::v1::sessions_server::Sessions as SessionsService;
 use concerto_proto::v1::{
     ApprovalDecision, CreateSessionRequest, ListSessionsRequest, ListSessionsResponse,
-    PermissionMode, ResolveApprovalRequest, SendMessageRequest, Session as ProtoSession,
-    SessionId as ProtoSessionId, StopSessionRequest, UpdateSessionPermissionModeRequest,
+    PermissionMode, ResolveApprovalRequest, RevertRequest, SendMessageRequest,
+    Session as ProtoSession, SessionId as ProtoSessionId, StopSessionRequest,
+    UpdateSessionPermissionModeRequest,
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -208,6 +209,26 @@ impl SessionsService for SessionsHandler {
         let id = PersistSessionId(req.session_id);
         self.supervisor
             .resolve_approval(&id, &req.approval_id, decision, None)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "Sessions::RevertToCheckpoint")]
+    async fn revert_to_checkpoint(
+        &self,
+        request: Request<RevertRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.checkpoint_id.is_empty() {
+            return Err(Status::invalid_argument("checkpoint_id is required"));
+        }
+        if req.session_id.is_empty() {
+            return Err(Status::invalid_argument("session_id is required"));
+        }
+        let id = PersistSessionId(req.session_id);
+        self.supervisor
+            .revert_to_checkpoint(&req.checkpoint_id, &id)
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(()))

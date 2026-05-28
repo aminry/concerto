@@ -274,6 +274,38 @@ pub async fn list_composer_names_in_workspace(
         .collect())
 }
 
+/// List `(repository_id, worktree_path)` pairs attached to a workarea
+/// via `workarea_repos`. Used by Task 34's checkpoint path to iterate
+/// every repo whose worktree state needs snapshotting on a turn-complete
+/// boundary.
+///
+/// Returns rows in repository_id-ascending order so checkpoint creation
+/// is deterministic across multi-repo workareas (V1.0).
+pub async fn list_workarea_repos(
+    pool: &SqlitePool,
+    workarea_id: &WorkareaId,
+) -> Result<Vec<(crate::api::RepositoryId, String)>> {
+    let rows = sqlx::query(
+        "SELECT repository_id, worktree_path
+         FROM workarea_repos
+         WHERE workarea_id = ?
+         ORDER BY repository_id ASC",
+    )
+    .bind(&workarea_id.0)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                crate::api::RepositoryId(r.get::<String, _>("repository_id")),
+                r.get::<String, _>("worktree_path"),
+            )
+        })
+        .collect())
+}
+
 /// Look up the `worktree_path` column on the `workarea_repos` junction
 /// row for a given (workarea, repository) pair. Used by Task 29's
 /// `Workareas.GetWorkareaRepoDiff` handler to resolve the per-repo
