@@ -13,6 +13,11 @@ members = [
     "crates/persist",
     "crates/agent-host",
     "crates/error",
+    # Task 14: Tauri 2 shell. Lives under `apps/desktop/src-tauri/`
+    # because Tauri's scaffolding expects that layout; the existing
+    # `crates/desktop-shell` is reserved for shared Rust helpers that
+    # the Tauri app will depend on in a later task.
+    "apps/desktop/src-tauri",
 ]
 default-members = ["crates/core", "crates/cli"]
 
