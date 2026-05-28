@@ -26,6 +26,8 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
 
+#[cfg(unix)]
+use crate::agent_supervisor::AgentSupervisorHandle;
 use crate::repo_manager::RepoManager;
 use crate::supervisor::{Actor, ActorContext, SupervisorView};
 use crate::workspace_manager::{WorkareaManager, WorkspaceManager};
@@ -60,6 +62,15 @@ pub struct ApiServerActor {
     /// Optional Workarea Manager handle. When `Some`, the gRPC
     /// `Workareas` service is registered. Task 20 wires this up.
     workarea_manager: Option<WorkareaManager>,
+    /// Optional Agent Supervisor handle. Task 22 wires this up so the
+    /// gRPC `Sessions` service (Task 23) can route `StartSession` calls
+    /// into the in-process supervisor. The handle is held for forwarding
+    /// to the (future) `SessionsHandler`; V0.1 has no gRPC service to
+    /// register against it yet — the option is here so Task 23's wiring
+    /// is purely additive.
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    agent_supervisor: Option<AgentSupervisorHandle>,
 }
 
 impl ApiServerActor {
@@ -72,6 +83,8 @@ impl ApiServerActor {
             repo_manager: None,
             workspace_manager: None,
             workarea_manager: None,
+            #[cfg(unix)]
+            agent_supervisor: None,
         }
     }
 
@@ -90,6 +103,8 @@ impl ApiServerActor {
             repo_manager: Some(repo_manager),
             workspace_manager: None,
             workarea_manager: None,
+            #[cfg(unix)]
+            agent_supervisor: None,
         }
     }
 
@@ -105,6 +120,7 @@ impl ApiServerActor {
         repo_manager: Option<RepoManager>,
         workspace_manager: Option<WorkspaceManager>,
         workarea_manager: Option<WorkareaManager>,
+        #[cfg(unix)] agent_supervisor: Option<AgentSupervisorHandle>,
     ) -> Self {
         Self {
             started_at,
@@ -112,6 +128,8 @@ impl ApiServerActor {
             repo_manager,
             workspace_manager,
             workarea_manager,
+            #[cfg(unix)]
+            agent_supervisor,
         }
     }
 }
@@ -128,6 +146,11 @@ impl Actor for ApiServerActor {
                 let cfg = ctx.config.read().await;
                 cfg.socket_path.clone()
             };
+            // The agent_supervisor handle is held for the future Task 23
+            // `Sessions` gRPC service; V0.1 has no service to register
+            // against it, so reference it under `_` here so the supervisor
+            // doesn't drop until the actor's `run` ends.
+            let _agent_supervisor = self.agent_supervisor;
             run_uds(
                 socket_path,
                 self.started_at,

@@ -56,6 +56,21 @@ hostname.workspace = true
 # `kill(pid, 0)`. libc is already a transitive dep of tokio; pinning it
 # explicitly here is cheap and avoids `unsafe` raw syscalls.
 libc = "0.2"
+# Task 22: the Agent Supervisor reuses the host-side CBOR frame codec
+# and HostFrame types instead of duplicating the wire format. The
+# agent-host crate is unix-only (Windows ConPTY is V1.0), so the dep is
+# gated on `cfg(unix)` here for symmetry.
+concerto-agent-host = { path = "../agent-host" }
+# Task 22: tokio's `process` feature backs `tokio::process::Command`,
+# which the Agent Supervisor uses to spawn `concerto-agent-host` with a
+# Unix `pre_exec` hook (`setsid()`) for detachment.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "net", "process"] }
+# Task 22: 32-byte session cookie generated via OS entropy.
+getrandom = { workspace = true }
+# Task 22: CBOR codec used to encode `Hello` frames sent to the host.
+ciborium = "0.2"
+# Task 22: hex-encode the cookie when passing it to the host as `--cookie`.
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
@@ -80,3 +95,7 @@ libc = "0.2"
 # which pulls in tokio::net::UnixStream. UDS is Unix-only; the V0.1
 # Windows port stops at the build matrix (per tasks/README.md §2).
 concerto-test-harness = { path = "../test-harness" }
+# Task 22: `concerto-agent-host` binary path is resolved via
+# `assert_cmd::cargo::cargo_bin` in the in-process agent-spawn test so
+# the test doesn't depend on cwd or the binary being on `$PATH`.
+assert_cmd = "2"

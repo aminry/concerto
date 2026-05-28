@@ -438,3 +438,70 @@ pub struct Workarea {
 }
 ```
 
+### struct `SessionId`
+
+```rust
+pub struct SessionId(pub String);
+```
+
+### struct `NewChat`
+
+```rust
+pub struct NewChat {
+    pub id: String,
+    pub session_id: Option<String>,
+    /// One of `session|maestro`. CHECK enforced at the SQL layer.
+    pub kind: String,
+    pub created_at: i64,
+}
+```
+
+### struct `NewSession`
+
+```rust
+pub struct NewSession {
+    pub id: SessionId,
+    pub workarea_id: WorkareaId,
+    pub chat_id: String,
+    pub agent_kind: String,
+    pub agent_version: Option<String>,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub host_pid: Option<i64>,
+    pub host_socket: Option<String>,
+    pub pty_cookie: Option<Vec<u8>>,
+    pub external_session_id: Option<String>,
+    /// One of `strict|normal|auto|yolo` — never NULL on the sessions row
+    /// (`DEFAULT 'normal'`).
+    pub permission_mode: String,
+    pub bypass_destructive_guard: bool,
+    pub started_at: i64,
+    /// One of `starting|running|awaiting|finished|crashed`.
+    pub status: String,
+}
+```
+
+### struct `Session`
+
+```rust
+pub struct Session {
+    pub id: SessionId,
+    pub workarea_id: WorkareaId,
+    pub chat_id: String,
+    pub agent_kind: String,
+    pub agent_version: Option<String>,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub host_pid: Option<i64>,
+    pub host_socket: Option<String>,
+    pub pty_cookie: Option<Vec<u8>>,
+    pub external_session_id: Option<String>,
+    pub permission_mode: String,
+    pub bypass_destructive_guard: bool,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub last_heartbeat: Option<i64>,
+    pub status: String,
+}
+```
+

@@ -20,11 +20,12 @@
 pub mod api;
 pub mod projects;
 pub mod repositories;
+pub mod sessions;
 pub mod workareas;
 pub mod workspaces;
 
 pub use api::{
-    NewProject, NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
-    PersistenceConfig, Project, ProjectId, Repository, RepositoryId, Workarea, WorkareaId,
-    Workspace, WorkspaceId, WriterGuard,
+    NewChat, NewProject, NewRepository, NewSession, NewWorkarea, NewWorkareaRepo, NewWorkspace,
+    Persistence, PersistenceConfig, Project, ProjectId, Repository, RepositoryId, Session,
+    SessionId, Workarea, WorkareaId, Workspace, WorkspaceId, WriterGuard,
 };
