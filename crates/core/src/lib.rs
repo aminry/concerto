@@ -19,3 +19,4 @@ pub mod logging;
 pub mod pid_file;
 pub mod runtime;
 pub mod signals;
+pub mod supervisor;
