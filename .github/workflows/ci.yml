@@ -23,3 +23,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace --no-fail-fast
+      - name: Check interface summaries are up to date
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          ./scripts/regen-interfaces.sh
+          git diff --exit-code docs/interfaces/
