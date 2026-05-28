@@ -111,3 +111,7 @@ gix = { version = "0.77", default-features = false, features = ["max-performance
 # already pulled transitively, pinning at the workspace level keeps the
 # version honest.
 uuid = { version = "1", features = ["v7"] }
+# Task 22: OS-provided randomness for the 32-byte session cookie the
+# Core supplies to `concerto-agent-host` over the bridge `Hello`.
+# MIT/Apache-2.0; already pulled transitively via sqlx.
+getrandom = "0.2"

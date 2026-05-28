@@ -634,7 +634,10 @@ version = "0.0.1"
 name = "concerto-core"
 version = "0.0.1"
 dependencies = [
+ "assert_cmd",
  "async-trait",
+ "ciborium",
+ "concerto-agent-host",
  "concerto-error",
  "concerto-gix-wrap",
  "concerto-persist",
@@ -642,6 +645,8 @@ dependencies = [
  "concerto-test-harness",
  "fs2",
  "futures",
+ "getrandom 0.2.17",
+ "hex",
  "home",
  "hostname",
  "hyper-util",

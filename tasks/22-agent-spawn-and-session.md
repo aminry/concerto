@@ -86,13 +86,13 @@ Implement the Core-side `AgentSupervisorActor` that spawns `concerto-agent-host`
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Echo round-trip works end-to-end.
-- [ ] Session DB row transitions starting→running→finished.
-- [ ] Per-session log file is created (basic — `$CONCERTO_DATA_DIR/agents/<sid>/stdout.log` per `design/04 §4`).
-- [ ] No `TODO` / `FIXME` / `todo!()` in new code beyond explicitly-deferred placeholders for Phase 3 (note any in Handoff).
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Echo round-trip works end-to-end.
+- [x] Session DB row transitions starting→running→finished.
+- [x] Per-session log file is created (basic — `$CONCERTO_DATA_DIR/agents/<sid>/stdout.log` per `design/04 §4`).
+- [x] No `TODO` / `FIXME` / `todo!()` in new code beyond explicitly-deferred placeholders for Phase 3 (note any in Handoff).
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/core/src/agent_supervisor/mod.rs` (new)
@@ -119,7 +119,79 @@ Refs: tasks/22-agent-spawn-and-session.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** no parser packs, no tool-approval intercept, no checkpoints, no cold/hot resume — Phase 3 covers each.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **`agent_kind = "echo"` is not a DB CHECK value.** Migration 0001's
+    `sessions.agent_kind` CHECK is frozen to
+    `('claude','codex','gemini','maestro')`. Per the task prompt's
+    pre-decision, no new migration was added; the Agent Supervisor's
+    in-process `AgentKind::Echo` writes `'claude'` to the DB while
+    spawning `concerto-agent-host --agent-bin /bin/echo`. The schema
+    kind and the spawn binary are decoupled — production code rejects
+    `Codex`/`Gemini` with `NOT_IMPLEMENTED`; the echo path is a V0.1
+    test fixture that never appears as `"echo"` on disk. The integration
+    test relies on this reuse.
+  - **Cookie stored only in-process.** The `sessions.pty_cookie` BLOB is
+    populated on insert, but the supervisor's in-memory `SessionEntry`
+    keeps the 32 bytes separately so `send_input` / hot-reconnect work
+    (Task 36) doesn't have to re-read the BLOB. The DB column is the
+    persistent fact; the map entry is the runtime fast-path. No schema
+    change.
+  - **`chats` ↔ `sessions` cyclic FK resolved via `PRAGMA defer_foreign_keys = ON`.**
+    `sessions.chat_id NOT NULL REFERENCES chats(id)` and
+    `chats.session_id REFERENCES sessions(id)` form a cycle that
+    immediate FK enforcement rejects regardless of insert order.
+    `start_session` issues `PRAGMA defer_foreign_keys = ON` at the top
+    of its transaction so FK checks run at commit; both rows are
+    visible by then. SQLite scopes the pragma to the current
+    transaction only — no global behaviour change.
+  - **Socket path falls back to `$TMPDIR` when the canonical path
+    overflows `SUN_LEN`.** macOS limits `sockaddr_un.sun_path` to ~104
+    chars; the locked layout
+    `<data_dir>/runtime/agents/<UUIDv7>.sock` can overflow when
+    `data_dir` is a deep tempdir (CI tempdirs nest under
+    `/var/folders/.../T/.tmpXXXX/`). When the canonical path is ≥100
+    chars the supervisor binds at
+    `$TMPDIR/ccs-<sid8>.sock` instead. Logs, `stdout.log`, and
+    `final-info.json` still live at the canonical
+    `<data_dir>/agents/<sid>/` location. Socket is removed on session
+    end. Production paths never hit the fallback. Logged here so Task 23
+    knows the socket path is not deterministic from the session id.
+  - **In-process integration test.** Task 22's prompt called out that
+    the `AgentSupervisorHandle` is not yet reachable through gRPC (Task
+    23 wires that), so the round-trip test sits in
+    `crates/core/tests/agent_spawn.rs` and constructs `Persistence` +
+    `AgentSupervisorHandle` directly. The `concerto-agent-host` binary
+    is located via `assert_cmd::cargo::cargo_bin`. This is the
+    fastest-path proof that the wire protocol is honoured end-to-end
+    without inventing a one-off harness accessor.
+  - **`with_managers` signature gained an optional `agent_supervisor`
+    arg under `#[cfg(unix)]`.** The handle is currently held by
+    `ApiServerActor` but no gRPC service registers against it yet —
+    Task 23's `Sessions` service is the consumer. The plumbing is
+    additive so Task 23 only adds the handler, not the wiring.
+  - **`AgentEvent` is `#[non_exhaustive]`.** Phase 3 (`ToolCall`,
+    `Approval`, `Checkpoint`, `TurnComplete`, …) can extend the enum
+    without a wire-format break; the V0.1 surface ships `Started`,
+    `Message`, `Exited` exactly as the task spec called out.
+- **Open questions for next task:**
+  - Task 23 should add a `concerto-agent-host` resolution helper to the
+    test-harness so its sessions-client tests can spawn an end-to-end
+    Core that actually has the host binary on the path it expects
+    (`current_exe().parent()`). Currently the only consumer is the
+    in-process test in this crate.
+  - Hot-reconnect on a Core restart (`Hello` with `last_seq > 0`) is
+    not wired yet. The cookie is stored in `sessions.pty_cookie` and
+    `host_socket` is recorded, so Task 36 has every persistent fact it
+    needs; the in-memory `SessionEntry` map is intentionally rebuilt
+    from scratch on each boot.
+  - The supervisor does not currently watch for the host PID dying out
+    from under it (the read-pump task observes the bridge `Eof` /
+    `AgentExited` frame). Task 37's cold-resume work is the place to add
+    a `tokio::process::Child::wait()` watcher.
+- **Deliberate debt:** no parser packs, no tool-approval intercept,
+  no checkpoints, no cold/hot resume — Phase 3 covers each.
+  `StderrBytes` frames have a hot path in the read pump but the V0.1
+  agent-host never emits them (`portable-pty` merges stderr into the
+  master); the code is reachable from V1.0.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0
+  with "Smoke gate v1: PASSED". Task 27 promotes the gate to v2.

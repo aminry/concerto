@@ -13,6 +13,8 @@
 
 use std::sync::Arc;
 
+#[cfg(unix)]
+use concerto_core::agent_supervisor::{AgentSupervisorActor, AgentSupervisorConfig};
 use concerto_core::api_server::{ApiServerActor, ApiServerConfig};
 use concerto_core::logging;
 use concerto_core::repo_manager::{RepoManagerActor, RepoManagerConfig};
@@ -157,6 +159,39 @@ async fn run() -> Result<()> {
         )
         .await?;
 
+    // Task 22: spawn the Agent Supervisor. The handle owns session
+    // creation (cookie + UDS + agent-host spawn + Hello/Ready handshake)
+    // and emits `AgentEvent`s on per-session broadcast channels.
+    #[cfg(unix)]
+    let agent_supervisor_handle = {
+        let host_bin = concerto_core::agent_supervisor::spawn::default_host_binary()?;
+        let actor = AgentSupervisorActor::new(
+            Arc::clone(&persistence),
+            Arc::clone(&data_dir),
+            host_bin.clone(),
+        );
+        let handle = actor.handle();
+        drop(actor);
+        let factory_persistence = Arc::clone(&persistence);
+        let factory_data_dir = Arc::clone(&data_dir);
+        let factory_host_bin = host_bin.clone();
+        runtime
+            .supervisor_mut()
+            .expect("supervisor present at boot")
+            .spawn::<AgentSupervisorActor, _>(
+                move || {
+                    AgentSupervisorActor::new(
+                        Arc::clone(&factory_persistence),
+                        Arc::clone(&factory_data_dir),
+                        factory_host_bin.clone(),
+                    )
+                },
+                AgentSupervisorConfig,
+            )
+            .await?;
+        handle
+    };
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
     // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`
@@ -173,6 +208,8 @@ async fn run() -> Result<()> {
     let factory_repo_handle = repo_handle.clone();
     let factory_workspace_handle = workspace_handle.clone();
     let factory_workarea_handle = workarea_handle.clone();
+    #[cfg(unix)]
+    let factory_agent_handle = agent_supervisor_handle.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -184,6 +221,8 @@ async fn run() -> Result<()> {
                     Some(factory_repo_handle.clone()),
                     Some(factory_workspace_handle.clone()),
                     Some(factory_workarea_handle.clone()),
+                    #[cfg(unix)]
+                    Some(factory_agent_handle.clone()),
                 )
             },
             ApiServerConfig { socket_path },

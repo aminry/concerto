@@ -459,6 +459,96 @@ pub struct Workarea {
     pub last_activity_at: Option<i64>,
 }
 
+// ---------------------------------------------------------------------------
+// Sessions + Chats (Task 22).
+//
+// The `sessions` table schema is locked by migration 0001 (Task 09);
+// the helpers live in `crates/persist/src/sessions.rs`. `chat_id` is a
+// NOT NULL FK to `chats`, so every session creation inserts a `chats`
+// row first inside the same transaction.
+// ---------------------------------------------------------------------------
+
+/// Newtype around a `sessions.id` (UUIDv7 string per migration 0001).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionId(pub String);
+
+impl SessionId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Insert-time shape for a `chats` row.
+///
+/// `kind = "session"` for the per-session chat (with `session_id` set to
+/// the new session's UUID); `kind = "maestro"` is the singleton chat
+/// keyed off `session_id IS NULL`.
+#[derive(Debug, Clone)]
+pub struct NewChat {
+    pub id: String,
+    pub session_id: Option<String>,
+    /// One of `session|maestro`. CHECK enforced at the SQL layer.
+    pub kind: String,
+    pub created_at: i64,
+}
+
+/// Insert-time shape for a `sessions` row.
+///
+/// `agent_kind` is one of `claude|codex|gemini|maestro` per the CHECK
+/// constraint in migration 0001. Status starts as `"starting"` and is
+/// transitioned to `"running"` after `Hello/Ready`, then `"finished"` on
+/// clean stop or `"crashed"` on error.
+#[derive(Debug, Clone)]
+pub struct NewSession {
+    pub id: SessionId,
+    pub workarea_id: WorkareaId,
+    pub chat_id: String,
+    pub agent_kind: String,
+    pub agent_version: Option<String>,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub host_pid: Option<i64>,
+    pub host_socket: Option<String>,
+    pub pty_cookie: Option<Vec<u8>>,
+    pub external_session_id: Option<String>,
+    /// One of `strict|normal|auto|yolo` — never NULL on the sessions row
+    /// (`DEFAULT 'normal'`).
+    pub permission_mode: String,
+    pub bypass_destructive_guard: bool,
+    pub started_at: i64,
+    /// One of `starting|running|awaiting|finished|crashed`.
+    pub status: String,
+}
+
+/// Row-shaped projection of a `sessions` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Session {
+    pub id: SessionId,
+    pub workarea_id: WorkareaId,
+    pub chat_id: String,
+    pub agent_kind: String,
+    pub agent_version: Option<String>,
+    pub model: Option<String>,
+    pub mode: Option<String>,
+    pub host_pid: Option<i64>,
+    pub host_socket: Option<String>,
+    pub pty_cookie: Option<Vec<u8>>,
+    pub external_session_id: Option<String>,
+    pub permission_mode: String,
+    pub bypass_destructive_guard: bool,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub last_heartbeat: Option<i64>,
+    pub status: String,
+}
+
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
 ///
 /// Every pragma the design doc lists as mandatory (`journal_mode = WAL`,
