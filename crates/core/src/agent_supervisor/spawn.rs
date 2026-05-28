@@ -59,8 +59,11 @@ pub fn spawn_host(
 ) -> Result<Child> {
     let mut cmd = Command::new(host_bin);
     cmd.arg("--agent-bin").arg(agent_bin);
+    // Use the `=` form so agent-args that start with `-` (e.g. `-c`)
+    // are not parsed by clap as separate flags. The echo path passes
+    // `["-c", "echo hello; sleep 0.1"]` to `/bin/sh`.
     for a in agent_args {
-        cmd.arg("--agent-arg").arg(a);
+        cmd.arg(format!("--agent-arg={a}"));
     }
     cmd.arg("--cwd").arg(cwd);
     cmd.arg("--socket").arg(socket);

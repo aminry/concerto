@@ -29,7 +29,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync", "fs", "signal", "process"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true }
 # `portable-pty = "0.8"` — Wezterm's PTY abstraction. MIT. cargo-deny
 # clean (vetted Task 21).
 portable-pty = "0.8"
