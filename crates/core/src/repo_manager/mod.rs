@@ -12,5 +12,6 @@
 //! auto-recommendation are V1.0 (Task 28+).
 
 pub mod actor;
+pub mod fsmonitor;
 
 pub use actor::{RepoManager, RepoManagerActor, RepoManagerConfig};

@@ -12,14 +12,24 @@
 //! - [`api::rev_parse_head`] — HEAD commit OID.
 //! - [`api::worktree_add`] — `git worktree add`.
 //!
-//! Sparse-checkout, blobless / treeless clones, fsmonitor, and the
-//! maintenance scheduler are all V1.0 (Tasks 28+).
+//! Task 28 adds the fsmonitor + maintenance + performance-config
+//! helpers; signatures frozen:
+//!
+//! - [`api::apply_perf_config`] — `core.fsmonitor` + `core.untrackedCache`
+//!   + `feature.manyFiles` + `core.commitGraph` via `git config`.
+//! - [`api::start_fsmonitor`] — start `git fsmonitor--daemon`, return PID.
+//! - [`api::is_fsmonitor_alive`] — `kill(pid, 0)` probe.
+//! - [`api::stop_fsmonitor`] — `git fsmonitor--daemon stop` (idempotent).
+//! - [`api::register_maintenance`] — `git maintenance start` (best-effort).
+//!
+//! Sparse-checkout and blobless / treeless clones remain V1.0.
 
 pub mod api;
 pub mod cmd;
 
 pub use api::{
-    clone_full, fetch, list_branches, rev_parse_head, worktree_add, BranchRef, CloneProgressEvent,
+    apply_perf_config, clone_full, fetch, is_fsmonitor_alive, list_branches, register_maintenance,
+    rev_parse_head, start_fsmonitor, stop_fsmonitor, worktree_add, BranchRef, CloneProgressEvent,
     FetchReport, ProgressSink,
 };
 

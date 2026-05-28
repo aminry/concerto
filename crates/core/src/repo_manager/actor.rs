@@ -24,6 +24,7 @@ use concerto_gix_wrap as gixw;
 use concerto_persist::{NewRepository, Persistence, Repository, RepositoryId};
 use tokio::sync::Mutex;
 
+use crate::repo_manager::fsmonitor;
 use crate::supervisor::{Actor, ActorContext};
 
 /// Config for the actor's `run` loop. V0.1 carries the on-disk repo
@@ -51,6 +52,11 @@ pub struct RepoManager {
     /// cloned out before the outer guard drops, so two repos can be
     /// in flight simultaneously without holding the outer lock.
     write_locks: Arc<Mutex<HashMap<RepositoryId, Arc<Mutex<()>>>>>,
+    /// Per-repo fsmonitor restart history (Task 28). Shared between the
+    /// `clone_repo` bring-up path and the 30s supervisor loop spawned
+    /// by `RepoManagerActor::run` so a flaky daemon's restart count
+    /// crosses both surfaces.
+    fsmonitor_history: Arc<Mutex<HashMap<RepositoryId, fsmonitor::RestartHistory>>>,
 }
 
 impl RepoManager {
@@ -62,7 +68,24 @@ impl RepoManager {
             persistence,
             repos_root,
             write_locks: Arc::new(Mutex::new(HashMap::new())),
+            fsmonitor_history: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Cloneable handle to the per-repo fsmonitor restart history. The
+    /// `RepoManagerActor::run` task hands this to
+    /// [`fsmonitor::spawn_supervisor`] so the supervisor and the
+    /// clone-time bring-up share one bookkeeping map.
+    pub(crate) fn fsmonitor_history(
+        &self,
+    ) -> Arc<Mutex<HashMap<RepositoryId, fsmonitor::RestartHistory>>> {
+        Arc::clone(&self.fsmonitor_history)
+    }
+
+    /// Cloneable handle to the persistence layer. Used by
+    /// `RepoManagerActor::run` to construct the supervisor loop.
+    pub(crate) fn persistence(&self) -> Arc<Persistence> {
+        Arc::clone(&self.persistence)
     }
 
     /// Persist a new `repositories` row.
@@ -105,6 +128,9 @@ impl RepoManager {
             clone_strategy: "full".to_string(),
             default_branch,
             last_fetch_at: None,
+            // No daemon recorded until `clone_repo` finishes and the
+            // post-clone fsmonitor bring-up persists a PID (Task 28).
+            fs_monitor_pid: None,
         })
     }
 
@@ -157,12 +183,27 @@ impl RepoManager {
         let dest = PathBuf::from(&row.local_path);
         gixw::clone_full(&row.url, &dest, progress).await?;
 
+        // Task 28 — post-clone bring-up:
+        //   1. Apply the four locked `git config` performance keys.
+        //   2. Register OS-level scheduled `git maintenance`.
+        //   3. Start `git fsmonitor--daemon` and capture its PID.
+        // Each step is best-effort: fsmonitor in particular is allowed
+        // to fail on unsupported filesystems and disable gracefully per
+        // `design/02 §8`.
+        let fs_monitor_pid = fsmonitor::bring_up_after_clone(&dest).await;
+
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let mut writer = self.persistence.writer().await;
         concerto_persist::repositories::update_last_fetch(&mut writer, id, now_ms).await?;
+        concerto_persist::repositories::update_fs_monitor_pid(
+            &mut writer,
+            id,
+            fs_monitor_pid.map(|p| p as i64),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -210,10 +251,22 @@ impl Actor for RepoManagerActor {
             "RepoManager ready"
         );
 
-        // V0.1 has no background loop yet (fsmonitor + maintenance land
-        // in Task 28). Park on shutdown.
+        // Task 28: spawn the fsmonitor supervisor loop. It walks every
+        // `repositories` row every 30s and restarts a dead daemon up to
+        // 3 times in 60s before disabling for that repo. The handle is
+        // dropped on shutdown — the spawned task observes the same
+        // CancellationToken and exits cleanly.
+        let supervisor_handle = fsmonitor::spawn_supervisor(
+            self.handle.persistence(),
+            self.handle.fsmonitor_history(),
+            ctx.shutdown.clone(),
+        );
+
         ctx.shutdown.cancelled().await;
         tracing::debug!("RepoManager actor shutting down");
+        // The supervisor honours the cancellation token; aborting is
+        // safe as a backstop in case its tick() is mid-sleep.
+        supervisor_handle.abort();
         Ok(())
     }
 }
