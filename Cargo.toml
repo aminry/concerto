@@ -59,3 +59,10 @@ fs2 = "0.4"
 # tokio-util gives us CancellationToken (broadcast shutdown primitive).
 # Task 11 pin. MIT-licensed.
 tokio-util = "0.7"
+# async-trait powers the `Actor` trait's async `run` method. Task 12 pin.
+# MIT/Apache-2.0. Vetted: zero runtime deps, codegen-only.
+async-trait = "0.1"
+# futures gives us `FutureExt::catch_unwind` (around `AssertUnwindSafe`).
+# Task 12 pin. MIT/Apache-2.0. Default-on is fine here; the supervisor uses
+# the `std` feature only via the `FutureExt` extension trait.
+futures = "0.3"

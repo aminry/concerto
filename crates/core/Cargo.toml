@@ -26,6 +26,9 @@ home.workspace = true
 fs2.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# Task 12: typed Actor trait + catch_unwind for the supervisor.
+async-trait.workspace = true
+futures.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via
@@ -36,6 +39,10 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# Task 12: `start_paused = true` requires tokio's `test-util` feature.
+# Layered as a dev-dep so the prod binary doesn't pull in the testing
+# clock primitives.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "test-util"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"

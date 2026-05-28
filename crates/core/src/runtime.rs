@@ -32,6 +32,7 @@
 //! making the second half visible here.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use concerto_error::{Error, Result};
@@ -40,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::pid_file::{AcquireOutcome, PidFile};
 use crate::signals::{self, ReloadEvent};
+use crate::supervisor::RootSupervisor;
 
 /// Filesystem layout for a running Core.
 ///
@@ -137,10 +139,16 @@ pub enum StartOutcome {
 pub struct Runtime {
     pid_file: Option<PidFile>,
     shutdown: CancellationToken,
-    persistence: Option<Persistence>,
+    /// Persistence is shared with every supervised actor via
+    /// `Arc::clone`. `None` after [`Runtime::stop`] has consumed it.
+    persistence: Option<Arc<Persistence>>,
     signal_listener: Option<tokio::task::JoinHandle<()>>,
     reload_rx: Option<tokio::sync::mpsc::Receiver<ReloadEvent>>,
     shutdown_grace: Duration,
+    /// Task 12 supervision tree. Embedded so subsequent tasks (Task 13
+    /// onward) can register actors via [`Runtime::supervisor_mut`].
+    /// `None` after [`Runtime::stop`] has consumed the supervisor.
+    supervisor: Option<RootSupervisor>,
 }
 
 impl Runtime {
@@ -190,13 +198,18 @@ impl Runtime {
             max_readers = persist_config.max_readers,
             "opening persistence"
         );
-        let persistence = Persistence::open(persist_config).await?;
+        let persistence = Arc::new(Persistence::open(persist_config).await?);
         tracing::info!("persistence ready");
 
         // 4. Signals.
         let shutdown = CancellationToken::new();
         let (signal_listener, reload_rx) = signals::install(shutdown.clone())?;
         tracing::info!("signal handlers installed");
+
+        // 5. Task 12 supervision tree. No actors yet — they are
+        // registered by later tasks via `Runtime::supervisor_mut`.
+        let supervisor = RootSupervisor::new(Arc::clone(&persistence), shutdown.clone());
+        tracing::debug!(actors = supervisor.actor_count(), "RootSupervisor ready");
 
         Ok(StartOutcome::Started(Runtime {
             pid_file: Some(pid_file),
@@ -205,6 +218,7 @@ impl Runtime {
             signal_listener: Some(signal_listener),
             reload_rx: Some(reload_rx),
             shutdown_grace: config.shutdown_grace,
+            supervisor: Some(supervisor),
         }))
     }
 
@@ -237,10 +251,25 @@ impl Runtime {
 
     /// Borrow the persistence handle.
     ///
-    /// V0.1 has no actors yet; this exists so the future supervisor
-    /// (Task 12) can hand the handle to its children.
-    pub fn persistence(&self) -> Option<&Persistence> {
+    /// Returns the `Arc<Persistence>` shared with the supervision tree
+    /// — `None` after [`Runtime::stop`] has consumed it.
+    pub fn persistence(&self) -> Option<&Arc<Persistence>> {
         self.persistence.as_ref()
+    }
+
+    /// Mutable handle to the supervisor.
+    ///
+    /// Callers (Task 13+) register actors via this handle. Returns
+    /// `None` after [`Runtime::stop`] has consumed the supervisor —
+    /// in practice only the test suite ever sees that case.
+    pub fn supervisor_mut(&mut self) -> Option<&mut RootSupervisor> {
+        self.supervisor.as_mut()
+    }
+
+    /// Read-only handle to the supervisor (e.g. for `RuntimeAdmin::GetStatus`
+    /// in Task 13, which only needs `list`).
+    pub fn supervisor(&self) -> Option<&RootSupervisor> {
+        self.supervisor.as_ref()
     }
 
     /// Graceful shutdown.
@@ -248,14 +277,23 @@ impl Runtime {
     /// Sequence per `design/01 §6.4`:
     /// 1. Cancel the shutdown token (idempotent — `wait_for_shutdown`
     ///    may already have observed the cancel that brought us here).
-    /// 2. Wait up to `shutdown_grace` for the signal listener to exit.
-    /// 3. Shut down persistence (closes reader pool + writer conn).
-    /// 4. Drop the PID guard (releases flock, removes the file).
+    /// 2. Drain the supervisor: each actor gets up to 10s
+    ///    (`SHUTDOWN_DRAIN_BUDGET`) to finish before its task is
+    ///    aborted.
+    /// 3. Wait up to `shutdown_grace` for the signal listener to exit.
+    /// 4. Shut down persistence (closes reader pool + writer conn).
+    /// 5. Drop the PID guard (releases flock, removes the file).
     pub async fn stop(mut self) -> Result<()> {
         tracing::info!("runtime shutdown beginning");
         self.shutdown.cancel();
 
-        // Step 2: drain the signal listener. It cancels on first signal
+        // Step 2: supervisor. Consumes the RootSupervisor; it cancels
+        // each child and joins with a per-actor budget.
+        if let Some(supervisor) = self.supervisor.take() {
+            supervisor.shutdown().await?;
+        }
+
+        // Step 3: drain the signal listener. It cancels on first signal
         // and exits; if it was the one that cancelled the token, this
         // is essentially immediate. If we cancelled programmatically,
         // the listener notices on its `select!`.
@@ -272,13 +310,27 @@ impl Runtime {
             }
         }
 
-        // Step 3: persistence.
-        if let Some(persist) = self.persistence.take() {
+        // Step 4: persistence. The `Arc` is shared with actors; by now
+        // they've all been joined (or aborted), so this clone count
+        // should be 1. If a leaked clone keeps it alive we degrade
+        // gracefully — `Arc::try_unwrap` returns the inner Persistence
+        // for the `shutdown` call, otherwise we drop our clone and let
+        // the last holder close it on Drop.
+        if let Some(persist_arc) = self.persistence.take() {
             tracing::info!("closing persistence");
-            persist.shutdown().await?;
+            match Arc::try_unwrap(persist_arc) {
+                Ok(persist) => persist.shutdown().await?,
+                Err(arc) => {
+                    tracing::warn!(
+                        strong_count = Arc::strong_count(&arc),
+                        "persistence still has outstanding references at shutdown; dropping our clone"
+                    );
+                    drop(arc);
+                }
+            }
         }
 
-        // Step 4: pid file. Explicit `drop` so the order is visible in
+        // Step 5: pid file. Explicit `drop` so the order is visible in
         // the source even though the `Drop` impl would handle it.
         if let Some(pf) = self.pid_file.take() {
             drop(pf);
