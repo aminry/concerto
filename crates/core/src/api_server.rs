@@ -28,7 +28,7 @@ use concerto_error::{Error, Result};
 
 use crate::repo_manager::RepoManager;
 use crate::supervisor::{Actor, ActorContext, SupervisorView};
-use crate::workspace_manager::WorkspaceManager;
+use crate::workspace_manager::{WorkareaManager, WorkspaceManager};
 
 /// Configuration for [`ApiServerActor`].
 #[derive(Clone)]
@@ -57,6 +57,9 @@ pub struct ApiServerActor {
     /// Optional Workspace Manager handle. When `Some`, the gRPC
     /// `Workspaces` service is registered. Task 19 wires this up.
     workspace_manager: Option<WorkspaceManager>,
+    /// Optional Workarea Manager handle. When `Some`, the gRPC
+    /// `Workareas` service is registered. Task 20 wires this up.
+    workarea_manager: Option<WorkareaManager>,
 }
 
 impl ApiServerActor {
@@ -68,6 +71,7 @@ impl ApiServerActor {
             supervisor_view,
             repo_manager: None,
             workspace_manager: None,
+            workarea_manager: None,
         }
     }
 
@@ -85,24 +89,29 @@ impl ApiServerActor {
             supervisor_view,
             repo_manager: Some(repo_manager),
             workspace_manager: None,
+            workarea_manager: None,
         }
     }
 
     /// Build a new actor that hosts every optional subsystem service.
     /// `Runtime` is always exposed; `Repositories` is registered when
     /// `repo_manager` is `Some`; `Workspaces` is registered when
-    /// `workspace_manager` is `Some`. Task 19 added the workspace path.
+    /// `workspace_manager` is `Some`; `Workareas` is registered when
+    /// `workarea_manager` is `Some`. Task 19 added the workspace path;
+    /// Task 20 added the workarea path.
     pub fn with_managers(
         started_at: Arc<SystemTime>,
         supervisor_view: SupervisorView,
         repo_manager: Option<RepoManager>,
         workspace_manager: Option<WorkspaceManager>,
+        workarea_manager: Option<WorkareaManager>,
     ) -> Self {
         Self {
             started_at,
             supervisor_view,
             repo_manager,
             workspace_manager,
+            workarea_manager,
         }
     }
 }
@@ -125,6 +134,7 @@ impl Actor for ApiServerActor {
                 self.supervisor_view,
                 self.repo_manager,
                 self.workspace_manager,
+                self.workarea_manager,
                 ctx.shutdown,
             )
             .await
@@ -136,6 +146,7 @@ impl Actor for ApiServerActor {
                 self.supervisor_view,
                 self.repo_manager,
                 self.workspace_manager,
+                self.workarea_manager,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -148,12 +159,14 @@ impl Actor for ApiServerActor {
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 async fn run_uds(
     socket_path: std::path::PathBuf,
     started_at: Arc<SystemTime>,
     supervisor_view: SupervisorView,
     repo_manager: Option<RepoManager>,
     workspace_manager: Option<WorkspaceManager>,
+    workarea_manager: Option<WorkareaManager>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -165,9 +178,11 @@ async fn run_uds(
 
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
+    use crate::handlers::workareas::WorkareasHandler;
     use crate::handlers::workspaces::WorkspacesHandler;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
+    use concerto_proto::v1::workareas_server::WorkareasServer;
     use concerto_proto::v1::workspaces_server::WorkspacesServer;
 
     // Ensure the parent directory exists; the locked layout puts the
@@ -229,6 +244,10 @@ async fn run_uds(
     if let Some(workspace_manager) = workspace_manager {
         let workspaces_service = WorkspacesServer::new(WorkspacesHandler::new(workspace_manager));
         builder = builder.add_service(workspaces_service);
+    }
+    if let Some(workarea_manager) = workarea_manager {
+        let workareas_service = WorkareasServer::new(WorkareasHandler::new(workarea_manager));
+        builder = builder.add_service(workareas_service);
     }
 
     let serve_fut =

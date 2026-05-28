@@ -9,8 +9,12 @@
 //! `workspace.v0_single_repo_only`.
 
 pub mod actor;
+pub mod composers;
+pub mod workarea;
 
 pub use actor::{
     WorkspaceEvent, WorkspaceManager, WorkspaceManagerActor, WorkspaceManagerConfig,
     SINGLE_REPO_WIRE_CODE,
 };
+pub use composers::COMPOSERS;
+pub use workarea::{WorkareaEvent, WorkareaManager, WorkareaManagerActor, WorkareaManagerConfig};

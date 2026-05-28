@@ -200,6 +200,51 @@ message Workarea {
 }
 ```
 
+### message `WorkareaId`
+
+```proto
+message WorkareaId {
+  string value = 1;
+}
+```
+
+### message `CreateWorkareaRequest`
+
+```proto
+message CreateWorkareaRequest {
+  string workspace_id = 1;
+  optional PermissionMode permission_mode = 2;
+}
+```
+
+### message `ListWorkareasRequest`
+
+```proto
+message ListWorkareasRequest {
+  string workspace_id = 1;
+  bool include_archived = 2;
+}
+```
+
+### message `ListWorkareasResponse`
+
+```proto
+message ListWorkareasResponse {
+  repeated Workarea workareas = 1;
+}
+```
+
+### service `Workareas`
+
+```proto
+service Workareas {
+  rpc CreateWorkarea(CreateWorkareaRequest) returns (Workarea);
+  rpc GetWorkarea(WorkareaId) returns (Workarea);
+  rpc ListWorkareas(ListWorkareasRequest) returns (ListWorkareasResponse);
+  rpc ArchiveWorkarea(WorkareaId) returns (google.protobuf.Empty);
+}
+```
+
 ## `crates/proto/proto/concerto/v1/workspaces.proto`
 
 - package: `concerto.v1`

@@ -37,7 +37,9 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 
-pub use crate::clients::{ClientError, RepositoriesClient, RuntimeClient, WorkspacesClient};
+pub use crate::clients::{
+    ClientError, RepositoriesClient, RuntimeClient, WorkareasClient, WorkspacesClient,
+};
 pub use crate::process::ProcessError;
 
 /// Errors surfaced by the harness's public API.
@@ -160,6 +162,13 @@ impl CoreUnderTest {
     /// Same connection semantics as [`Self::runtime_client`].
     pub async fn workspaces_client(&self) -> Result<WorkspacesClient> {
         Ok(clients::workspaces_client(self.socket_path.clone()).await?)
+    }
+
+    /// Connect a Tonic [`WorkareasClient`] to the running Core (Task 20).
+    ///
+    /// Same connection semantics as [`Self::runtime_client`].
+    pub async fn workareas_client(&self) -> Result<WorkareasClient> {
+        Ok(clients::workareas_client(self.socket_path.clone()).await?)
     }
 
     /// Open a read-only [`sqlx::SqlitePool`] to the Core's database.
