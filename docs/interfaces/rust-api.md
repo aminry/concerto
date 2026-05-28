@@ -2,6 +2,107 @@
 
 # Public Rust API
 
+## `crates/agent-host/src/api.rs`
+
+### enum `AgentKind`
+
+```rust
+pub enum AgentKind {
+    Claude,
+    Codex,
+    Other(String),
+}
+```
+
+### enum `HostFrame`
+
+```rust
+pub enum HostFrame {
+    /// First frame sent by the Core after the TCP/UDS handshake. Carries
+    /// the cookie the Core read from `agent_sessions.pty_cookie` and the
+    /// Core's build version (used by the host for diagnostics only — there
+    /// is no compatibility check in V0.1).
+    Hello {
+        core_version: String,
+        expected_cookie: [u8; 32],
+        /// Last sequence number the Core successfully consumed before its
+        /// previous disconnect. The host replays buffered output past this
+        /// watermark when reconnecting. Use `0` on first connect.
+        last_seq: u64,
+    },
+    /// Response to a successful `Hello`. Tells the Core the agent metadata
+    /// it learned and the highest `seq` the host has emitted so far.
+    Ready {
+        agent_kind: AgentKind,
+        version: String,
+        external_session_id: Option<String>,
+        last_seq: u64,
+    },
+    /// Bytes from the Core to inject into the PTY child's stdin.
+    StdinBytes { data: Vec<u8> },
+    /// PTY stdout chunk pushed to the connected Core. `seq` is
+    /// monotonically increasing per host process lifetime.
+    StdoutBytes { seq: u64, data: Vec<u8> },
+    /// PTY stderr chunk. Reserved for V1.0; `portable-pty` merges stderr
+    /// into stdout by default and V0.1 never emits this variant, but the
+    /// wire slot is locked here so callers don't add it later.
+    StderrBytes { seq: u64, data: Vec<u8> },
+    /// Resize the underlying PTY (terminal resize relayed from the user's
+    /// xterm.js pane). `rows` and `cols` are character cells.
+    Resize { rows: u16, cols: u16 },
+    /// Heartbeat request. The host responds with [`HostFrame::Pong`].
+    Ping,
+    /// Heartbeat response.
+    Pong,
+    /// Watermark advance from the Core: "I have consumed up to and
+    /// including `seq`". The host can prune its ring buffer past this
+    /// point. Hot-reconnect ack semantics are finalised in Task 36; the
+    /// frame slot is locked here.
+    Ack { seq: u64 },
+    /// Sent by the host after the PTY child exits. Followed by a clean
+    /// socket close. The Core uses this to surface "agent ended" in the
+    /// UI; the same information is also written to `--final-info` so a
+    /// late-arriving Core can read it from disk.
+    AgentExited {
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+    },
+    /// Sent by the host when an incoming `Hello`'s cookie does not match
+    /// the value passed via `--cookie`. The connection is closed
+    /// immediately after this frame is flushed.
+    CookieMismatch,
+    /// Sent by the host when a second `Hello` arrives while another Core
+    /// is already connected (single-connection invariant from
+    /// `design/04 §3.9`). The new connection is closed; the existing one
+    /// is untouched.
+    AlreadyConnected,
+}
+```
+
+### struct `FinalInfo`
+
+```rust
+pub struct FinalInfo {
+    /// Exit status of the agent CLI, if it terminated normally.
+    pub exit_code: Option<i32>,
+    /// Signal number if the agent CLI was killed by a signal (Unix). On
+    /// platforms or paths where the PTY layer doesn't surface a signal,
+    /// this stays `None`.
+    pub signal: Option<i32>,
+    /// Last lines of PTY output the host saw, capped at 100. Used by the
+    /// UI to render the trailing transcript when "agent ended" is shown.
+    pub last_lines: Vec<String>,
+    /// Agent-emitted session identifier (Claude/Codex resume token), if
+    /// the parser found one. None means cold resume will start a fresh
+    /// conversation.
+    pub external_session_id: Option<String>,
+    /// Wall-clock Unix-epoch milliseconds when the host observed the PTY
+    /// child exit. The host reads this from `SystemTime::now()` right
+    /// before writing the file.
+    pub exited_at_unix_ms: i64,
+}
+```
+
 ## `crates/error/src/api.rs`
 
 ### enum `Error`

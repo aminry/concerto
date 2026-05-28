@@ -84,24 +84,28 @@ Implement `crates/agent-host/`:
 7. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Integration test covers spawn → Hello → Ready → output → Exit.
-- [ ] Cookie verification verified (test sends wrong cookie; gets CookieMismatch).
-- [ ] Process survives parent exit (manual or scripted check).
-- [ ] `--final-info` JSON written correctly on exit.
-- [ ] No `TODO` / `FIXME` / `unimplemented!()` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Integration test covers spawn → Hello → Ready → output → Exit.
+- [x] Cookie verification verified (test sends wrong cookie; gets CookieMismatch).
+- [x] Process survives parent exit (manual or scripted check).
+- [x] `--final-info` JSON written correctly on exit.
+- [x] No `TODO` / `FIXME` / `unimplemented!()` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/agent-host/Cargo.toml` (modified — portable-pty, ciborium, nix or libc, clap)
 - `crates/agent-host/src/main.rs` (modified)
+- `crates/agent-host/src/lib.rs` (new — exposes `api`, `bridge`, `ring`, `exit` modules so the integration test can link against them directly; the `[lib]` table was added to `Cargo.toml` for the same reason)
 - `crates/agent-host/src/bridge.rs` (new — CBOR frame protocol)
 - `crates/agent-host/src/ring.rs` (new — 1 MiB ring buffer)
 - `crates/agent-host/src/exit.rs` (new — final-info writer)
-- `crates/agent-host/src/api.rs` (new — public types: HostFrame)
+- `crates/agent-host/src/api.rs` (new — public types: HostFrame, AgentKind, FinalInfo)
 - `crates/agent-host/tests/echo_round_trip.rs` (new)
 - `docs/interfaces/rust-api.md` (regenerated)
+- `.github/workflows/ci.yml` (modified — added `--exclude concerto-agent-host` to the Windows row, matching the existing Tauri / smoke-client / test-harness exclusion pattern; per the task header drift note)
+- `Cargo.lock` (modified — automatic from new direct deps: portable-pty, ciborium, clap, hex, subtle)
+- `tasks/21-agent-host-binary.md` (modified — DoD ticks + Handoff Notes, per the standard task workflow)
 
 ## Commit message
 ```
@@ -116,7 +120,23 @@ Refs: tasks/21-agent-host-binary.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** chosen detachment strategy (Core-side pre_exec vs in-host fork)?
-- **Deliberate debt:** Windows ConPTY support deferred (V1.0 — Windows port).
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Detachment strategy: Core-side `pre_exec` + `setsid()`, NOT in-host fork.** The task's Implementation notes called this out as the recommended choice and the binary is written accordingly: `main.rs` is a normal Tokio binary with no `fork()` of its own. The Core's Agent Supervisor (future Task 22 / Phase 3 §3.7) is responsible for arranging session-leader status via `tokio::process::Command::pre_exec(|| { unsafe { libc::setsid(); } Ok(()) })`. The "process survives parent exit" check was verified manually: `bash -c '<host> &'`; the host's PPID becomes 1 (init/launchd) after the bash subshell exits, satisfying the surviving-host invariant from `design/01 §6.3`.
+  - **Library + binary, not binary-only.** The Cargo manifest declares both `[[bin]]` and `[lib]` so the integration test can `use concerto_agent_host::api::HostFrame`/`bridge::*` directly instead of duplicating the CBOR encoder. The interface generator picks up `crates/agent-host/src/api.rs` per the workspace convention; `rust-api.md` now lists `HostFrame`, `AgentKind`, and `FinalInfo`.
+  - **`HostFrame::StdinBytes` has no `seq` field.** The task notes mention "common variants" including `StdinBytes { data }`; the design doc §3.9 sketch shows `StdinBytes { seq, data }`. I went with the task's variant (no seq) because stdin is Core → host only and the Core doesn't replay stdin on reconnect — the wire savings are marginal but the variant set matches the task prompt verbatim. If the Phase 3 Core integration finds it actually needs the seq, that's a wire-format break needing a follow-on task.
+  - **`AgentExited` field names are `exit_code` + `signal`, not `code` + `signal` as in the design-doc sketch.** The task spec's final-info JSON keys (`exit_code`, `signal`) and the design-doc CBOR variant (`code`, `signal`) disagreed; I went with `exit_code` everywhere for consistency between the wire frame and the on-disk JSON. The design doc's exact names aren't load-bearing — they're a sketch — and a single name across both surfaces is easier for the Core to consume.
+  - **`Ack { seq }` is part of the locked variant set.** Task notes listed common variants without `Ack`; design/04 §3.9 names it explicitly. The host implements it as a ring-buffer prune trigger so Task 36's hot-reconnect work can wire the Core side without a wire-format change.
+  - **Added `AlreadyConnected` frame.** The single-connection invariant needed a distinct frame so the Core can tell "two Cores were spawned" (admin error) apart from "wrong cookie" (impersonation attempt). Task notes called for "send `CookieMismatch`-equivalent error" — `AlreadyConnected` is that equivalent and is documented in `crate::api`.
+  - **Post-exit grace window of 30s with early termination.** The host doesn't tear down the bridge socket the instant the PTY child exits; that would race a Core that connected after the agent finished and force a final-info JSON disk read for what should be an in-process drain. The accept loop honors a 30s grace post-child-exit during which it still accepts new connections. The grace ends early once the connected Core has actually received the `AgentExited` frame (tracked via `delivered_exit` flag + `Notify`). The integration test relies on this grace because `echo hello` finishes ~10 ms after spawn, well before the harness can connect.
+  - **PTY I/O runs on blocking threads with the Tokio handle threaded through.** `portable-pty` returns synchronous `Read`/`Write` handles. A `tokio::task::spawn_blocking` wraps the supervisor; inside that the reader thread is a plain `std::thread::spawn` that needs an explicit `tokio::runtime::Handle::clone()` to call back into async primitives (ring buffer `Mutex`, `Notify`). Capturing `Handle::current()` from inside `spawn_blocking` would panic — the blocking pool isn't a Tokio runtime context — so I capture it at the outer task site and pass it down. Without that the integration test silently saw empty stdout (the reader thread early-returned on `Handle::try_current().is_err()`).
+  - **No stderr frames emitted in V0.1.** `portable-pty` merges stderr into the PTY master (that's how a PTY works), so the host never sees a separate stderr stream. The `HostFrame::StderrBytes` variant is locked in the wire format for V1.0 but never emitted in V0.1. Documented inline on the variant.
+  - **External session ID detection is not implemented.** The `FinalInfo::external_session_id` and `HostFrame::Ready::external_session_id` fields are wired but always `None` in V0.1 — parsing Claude/Codex preamble for the session token is Task 37's job (cold-resume from JSONL). Slot is locked here so Task 37 only adds the parser, not a wire-format change.
+  - **CI Windows-exclude list extended to include `concerto-agent-host`.** The binary uses `#[cfg(unix)]` for the entire implementation and falls through to a "Windows ConPTY support is V1.0" error on Windows. The CI matrix would otherwise fail to compile the lib on Windows; excluding it matches the existing Tauri / smoke-client / test-harness pattern.
+- **Open questions for next task:**
+  - **Chosen detachment strategy: Core-side `pre_exec` + `setsid()`** (explicit answer to the task's stated open question). Task 22 (`spawn agent CLI from agent-host`) will need to add `pre_exec` glue to the Agent Supervisor when it actually spawns the host. The host binary itself is intentionally inert about detachment — that decoupling keeps the host testable from a normal cargo test runner without `setsid` games.
+  - **Single connection is enforced inside `run_connection`** via `state.connection_active`. If two Cores race past `Hello`, only the first claims the slot; the second gets `AlreadyConnected` and disconnects. The check is async-mutex-protected so it's race-free even with concurrent accepts.
+  - **Ring buffer prune semantics for `Ack` are intentionally permissive.** The host prunes through `ack_seq` immediately on receipt; Task 36's hot-reconnect work may want a "keep last N regardless" floor so a fast-acking Core can't accidentally lose the buffer just before a disconnect. The hook is in `RingBuffer::prune_through` and is the right place to add such a policy.
+  - **`portable-pty` keeps the master open through an `Arc<Mutex<_>>` for resize.** The blocking writer/resize threads exit only when their channels close. The current `main` drops the senders after `pty_handle.await` returns, which is correct, but if Task 22's host-spawn loop tries to feed stdin/resize concurrently with a still-running child it must hold the senders until child exit. The integration test does this trivially (echo exits before any stdin arrives).
+  - **Final-info file is best-effort.** A write failure logs a warning but doesn't change the host's exit code. That's intentional: by the time the host writes final-info the agent has already exited, so a propagated I/O error would lose more information than it gains. If a future task needs hard guarantees here (e.g. audit-log Task 44), it can add a non-zero exit on write failure as a follow-on.
+- **Deliberate debt:** Windows ConPTY support deferred to V1.0 (per `design/04 §3.9` phasing). The Windows path is a clean `eprintln + exit(2)`; no `TODO`/`FIXME` markers. External-session-ID parsing is a stub per Task 37; field slot is locked, parser is not.
+- **Smoke-gate state:** unchanged. The smoke gate is still v1 (Core boot + `GetServerCapabilities`); Task 27 promotes it to v2 once the agent-spawn end-to-end path is wired through the Core. `scripts/smoke.sh` still exits 0 and prints "Smoke gate v1: PASSED".
