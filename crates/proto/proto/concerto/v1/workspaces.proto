@@ -1,15 +1,22 @@
-// Workspace entity shape.
+// Workspace entity shape + service surface.
 //
 // Workspaces are logical workstreams owning 1..N workareas (see design/03
-// and design/09 §4.1). Service methods (CreateWorkspace, ListWorkspaces, …)
-// land in Task 19; this task only locks the data shape.
+// and design/09 §4.1). Task 07 locked the `Workspace` message; Task 19
+// adds the `Workspaces` service (Create / Get / List / Archive) plus the
+// `WorkspaceId`, `CreateWorkspaceRequest`, `ListWorkspacesRequest`, and
+// `ListWorkspacesResponse` messages.
 //
-// Field numbers in this file are FROZEN as of Task 07.
+// V0.1 enforces single-repo workspaces in `CreateWorkspaceRequest`
+// (`repository_ids.len() == 1`); the schema permits N repos via the
+// `workspace_repos` junction table.
+//
+// Field numbers in this file are FROZEN as of Task 19.
 
 syntax = "proto3";
 
 package concerto.v1;
 
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "concerto/v1/common.proto";
 
@@ -22,4 +29,44 @@ message Workspace {
   optional PermissionMode permission_mode = 6;
   google.protobuf.Timestamp created_at = 7;
   optional google.protobuf.Timestamp archived_at = 8;
+}
+
+// Identifier-only request payload reused by Get/Archive. Wraps the
+// workspace primary key as a TEXT (UUIDv7).
+message WorkspaceId {
+  string value = 1;
+}
+
+// Inputs for `Workspaces.CreateWorkspace`. The server assigns the id and
+// derives the slug from `name` per the algorithm locked in Task 19:
+// lowercase, whitespace → `-`, strip non `[a-z0-9-]`, max 64 chars, append
+// `-N` on collisions within the project.
+//
+// V0.1 enforces `repository_ids.len() == 1` and returns
+// `INVALID_ARGUMENT` + `ConcertoError{code="workspace.v0_single_repo_only"}`
+// otherwise.
+message CreateWorkspaceRequest {
+  string project_id = 1;
+  string name = 2;
+  repeated string repository_ids = 3;
+  optional PermissionMode permission_mode = 4;
+  optional string description = 5;
+}
+
+// Inputs for `Workspaces.ListWorkspaces`. V0.1 scopes the listing to one
+// project; pagination + archived-filter knobs land at higher field
+// numbers when the UI needs them.
+message ListWorkspacesRequest {
+  string project_id = 1;
+}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+}
+
+service Workspaces {
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
+  rpc GetWorkspace(WorkspaceId) returns (Workspace);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc ArchiveWorkspace(WorkspaceId) returns (google.protobuf.Empty);
 }

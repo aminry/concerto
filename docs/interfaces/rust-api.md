@@ -36,6 +36,21 @@ pub enum Error {
     #[error("git: {0}")]
     Git(String),
 
+    /// Caller-facing input validation failure (e.g. missing required
+    /// field, malformed slug, V0.1 multi-repo workspace request).
+    /// Added in Task 19. Surfaces as `Code::InvalidArgument` over gRPC;
+    /// the message string may carry a specific wire code embedded as
+    /// the prefix (e.g. `workspace.v0_single_repo_only`) for clients
+    /// that switch on it.
+    #[error("validation: {0}")]
+    Validation(String),
+
+    /// Caller-facing "no such entity" failure (e.g. workspace id
+    /// doesn't exist, project id missing). Added in Task 19. Surfaces
+    /// as `Code::NotFound` over gRPC.
+    #[error("not_found: {0}")]
+    NotFound(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -194,6 +209,75 @@ pub struct Repository {
     pub clone_strategy: String,
     pub default_branch: String,
     pub last_fetch_at: Option<i64>,
+}
+```
+
+### struct `ProjectId`
+
+```rust
+pub struct ProjectId(pub String);
+```
+
+### struct `NewProject`
+
+```rust
+pub struct NewProject {
+    pub id: ProjectId,
+    pub name: String,
+    pub icon: Option<String>,
+    /// Unix epoch milliseconds. Supplied by the caller to keep this
+    /// layer pure (no wall-clock reads).
+    pub created_at: i64,
+}
+```
+
+### struct `Project`
+
+```rust
+pub struct Project {
+    pub id: ProjectId,
+    pub name: String,
+    pub icon: Option<String>,
+    pub created_at: i64,
+    pub archived_at: Option<i64>,
+}
+```
+
+### struct `WorkspaceId`
+
+```rust
+pub struct WorkspaceId(pub String);
+```
+
+### struct `NewWorkspace`
+
+```rust
+pub struct NewWorkspace {
+    pub id: WorkspaceId,
+    pub project_id: String,
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub permission_mode: Option<String>,
+    /// Unix epoch milliseconds.
+    pub created_at: i64,
+}
+```
+
+### struct `Workspace`
+
+```rust
+pub struct Workspace {
+    pub id: WorkspaceId,
+    pub project_id: String,
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    /// Lowercase SQL form (`"strict" | "normal" | "auto" | "yolo"`) or
+    /// `None` for "inherit from project".
+    pub permission_mode: Option<String>,
+    pub created_at: i64,
+    pub archived_at: Option<i64>,
 }
 ```
 

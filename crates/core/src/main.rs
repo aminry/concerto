@@ -17,6 +17,7 @@ use concerto_core::api_server::{ApiServerActor, ApiServerConfig};
 use concerto_core::logging;
 use concerto_core::repo_manager::{RepoManagerActor, RepoManagerConfig};
 use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
+use concerto_core::workspace_manager::{WorkspaceManagerActor, WorkspaceManagerConfig};
 use concerto_error::Result;
 
 fn main() -> std::process::ExitCode {
@@ -109,11 +110,28 @@ async fn run() -> Result<()> {
         )
         .await?;
 
+    // Task 19: spawn the Workspace Manager. Same pattern as the repo
+    // manager — the actor's `run` parks on shutdown; the cheap-to-clone
+    // handle is what the gRPC `Workspaces` service holds.
+    let workspace_actor = WorkspaceManagerActor::new(Arc::clone(&persistence));
+    let workspace_handle = workspace_actor.handle();
+    drop(workspace_actor);
+    let workspace_factory_persistence = Arc::clone(&persistence);
+    runtime
+        .supervisor_mut()
+        .expect("supervisor present at boot")
+        .spawn::<WorkspaceManagerActor, _>(
+            move || WorkspaceManagerActor::new(Arc::clone(&workspace_factory_persistence)),
+            WorkspaceManagerConfig,
+        )
+        .await?;
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
-    // (plus a single `RepoManager::clone` for the repositories service),
-    // so a restart constructs a fresh `ApiServerActor` without re-reading
-    // the wall clock or rebuilding the supervisor view.
+    // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`
+    // for the optional services), so a restart constructs a fresh
+    // `ApiServerActor` without re-reading the wall clock or rebuilding
+    // the supervisor view.
     let started_at = runtime.started_at();
     let supervisor_view = runtime
         .supervisor()
@@ -122,15 +140,17 @@ async fn run() -> Result<()> {
     let factory_started_at = Arc::clone(&started_at);
     let factory_view = supervisor_view.clone();
     let factory_repo_handle = repo_handle.clone();
+    let factory_workspace_handle = workspace_handle.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
         .spawn::<ApiServerActor, _>(
             move || {
-                ApiServerActor::with_repo_manager(
+                ApiServerActor::with_managers(
                     Arc::clone(&factory_started_at),
                     factory_view.clone(),
-                    factory_repo_handle.clone(),
+                    Some(factory_repo_handle.clone()),
+                    Some(factory_workspace_handle.clone()),
                 )
             },
             ApiServerConfig { socket_path },

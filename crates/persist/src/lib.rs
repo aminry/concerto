@@ -9,10 +9,17 @@
 //!
 //! Task 18 adds the `repositories` table CRUD under [`repositories`];
 //! the table itself is part of migration 0001.
+//!
+//! Task 19 adds the `projects` and `workspaces`/`workspace_repos`
+//! helpers under [`projects`] and [`workspaces`]; the tables themselves
+//! ship in migration 0001.
 
 pub mod api;
+pub mod projects;
 pub mod repositories;
+pub mod workspaces;
 
 pub use api::{
-    NewRepository, Persistence, PersistenceConfig, Repository, RepositoryId, WriterGuard,
+    NewProject, NewRepository, NewWorkspace, Persistence, PersistenceConfig, Project, ProjectId,
+    Repository, RepositoryId, Workspace, WorkspaceId, WriterGuard,
 };

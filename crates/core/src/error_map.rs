@@ -54,6 +54,12 @@ pub fn error_to_status(err: Error) -> Status {
         // Git shell-out / gix operation failure (Task 18). Surface as
         // `Internal` — clients have no recourse but to log + report.
         "git" => Code::Internal,
+        // Caller-facing input validation failure (Task 19).
+        // `ConcertoError.code` carries the specific subcode in the
+        // message body (e.g. `workspace.v0_single_repo_only`).
+        "validation" => Code::InvalidArgument,
+        // Caller-facing missing-entity failure (Task 19).
+        "not_found" => Code::NotFound,
         // Catch-all for invariants the type system can't capture.
         "internal" => Code::Internal,
         // Future variants get logged so we notice an unmapped code in

@@ -21,6 +21,12 @@ concerto-proto = { path = "../proto" }
 # Task 18: shell-out + gix git operations live under `repo_manager`.
 concerto-gix-wrap = { path = "../gix-wrap" }
 uuid = { workspace = true }
+# Task 19: workspace_manager opens a sqlx transaction on top of the
+# persistence layer's writer connection to scope `workspaces` +
+# `workspace_repos` inserts atomically. Brings in the `Connection`
+# trait for `.begin()` and the typed-error inspection for unique
+# constraint detection.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "net"] }
 tokio-util.workspace = true
 tracing.workspace = true

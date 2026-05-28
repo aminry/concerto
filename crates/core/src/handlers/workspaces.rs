@@ -1,0 +1,173 @@
+//! gRPC `Workspaces` service handler (Task 19).
+//!
+//! Translates `concerto.v1.Workspaces` requests into calls against
+//! [`crate::workspace_manager::WorkspaceManager`]. V0.1 surface:
+//!
+//! - `CreateWorkspace` — enforces single-repo + slug derivation;
+//!   rejects multi-repo with `INVALID_ARGUMENT` +
+//!   `ConcertoError{code="workspace.v0_single_repo_only"}` per spec.
+//! - `GetWorkspace` — returns the persisted row.
+//! - `ListWorkspaces` — scoped by project.
+//! - `ArchiveWorkspace` — idempotent UPDATE.
+
+use async_trait::async_trait;
+use concerto_persist::WorkspaceId as PersistWorkspaceId;
+use concerto_proto::v1::workspaces_server::Workspaces as WorkspacesService;
+use concerto_proto::v1::{
+    CreateWorkspaceRequest, ListWorkspacesRequest, ListWorkspacesResponse, PermissionMode,
+    Workspace as ProtoWorkspace, WorkspaceId as ProtoWorkspaceId,
+};
+use tonic::{Request, Response, Status};
+
+use crate::error_map::error_to_status;
+use crate::workspace_manager::WorkspaceManager;
+
+/// Implements the generated `Workspaces` service trait.
+#[derive(Clone)]
+pub struct WorkspacesHandler {
+    workspace_manager: WorkspaceManager,
+}
+
+impl WorkspacesHandler {
+    pub fn new(workspace_manager: WorkspaceManager) -> Self {
+        Self { workspace_manager }
+    }
+}
+
+#[async_trait]
+impl WorkspacesService for WorkspacesHandler {
+    #[tracing::instrument(skip_all, name = "Workspaces::CreateWorkspace")]
+    async fn create_workspace(
+        &self,
+        request: Request<CreateWorkspaceRequest>,
+    ) -> Result<Response<ProtoWorkspace>, Status> {
+        let req = request.into_inner();
+        let permission_mode = req
+            .permission_mode
+            .map(permission_mode_from_i32)
+            .transpose()?;
+        let row = self
+            .workspace_manager
+            .create_workspace(
+                &req.project_id,
+                &req.name,
+                &req.repository_ids,
+                permission_mode,
+                req.description,
+            )
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(workspace_to_proto(row)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workspaces::GetWorkspace")]
+    async fn get_workspace(
+        &self,
+        request: Request<ProtoWorkspaceId>,
+    ) -> Result<Response<ProtoWorkspace>, Status> {
+        let req = request.into_inner();
+        if req.value.is_empty() {
+            return Err(Status::invalid_argument("workspace id is required"));
+        }
+        let id = PersistWorkspaceId(req.value);
+        match self
+            .workspace_manager
+            .get(&id)
+            .await
+            .map_err(error_to_status)?
+        {
+            Some(ws) => Ok(Response::new(workspace_to_proto(ws))),
+            None => Err(Status::not_found(format!("workspace {id} not found"))),
+        }
+    }
+
+    #[tracing::instrument(skip_all, name = "Workspaces::ListWorkspaces")]
+    async fn list_workspaces(
+        &self,
+        request: Request<ListWorkspacesRequest>,
+    ) -> Result<Response<ListWorkspacesResponse>, Status> {
+        let req = request.into_inner();
+        if req.project_id.is_empty() {
+            return Err(Status::invalid_argument("project_id is required"));
+        }
+        let rows = self
+            .workspace_manager
+            .list_by_project(&req.project_id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ListWorkspacesResponse {
+            workspaces: rows.into_iter().map(workspace_to_proto).collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workspaces::ArchiveWorkspace")]
+    async fn archive_workspace(
+        &self,
+        request: Request<ProtoWorkspaceId>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.value.is_empty() {
+            return Err(Status::invalid_argument("workspace id is required"));
+        }
+        let id = PersistWorkspaceId(req.value);
+        self.workspace_manager
+            .archive(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+}
+
+/// Convert a persisted `Workspace` into the wire shape.
+fn workspace_to_proto(row: concerto_persist::Workspace) -> ProtoWorkspace {
+    ProtoWorkspace {
+        id: row.id.to_string(),
+        project_id: row.project_id,
+        name: row.name,
+        slug: row.slug,
+        description: row.description,
+        permission_mode: row.permission_mode.as_deref().map(permission_mode_to_i32),
+        created_at: Some(epoch_ms_to_ts(row.created_at)),
+        archived_at: row.archived_at.map(epoch_ms_to_ts),
+    }
+}
+
+fn epoch_ms_to_ts(ms: i64) -> prost_types::Timestamp {
+    prost_types::Timestamp {
+        seconds: ms.div_euclid(1000),
+        nanos: (ms.rem_euclid(1000) * 1_000_000) as i32,
+    }
+}
+
+/// Convert the wire `PermissionMode` enum (carried as `i32`) into the
+/// lowercase SQL string the persistence layer expects.
+///
+/// `tonic::Status` is ~176 bytes so the `Result<String, Status>`
+/// trips `clippy::result-large-err`; the function is only called once
+/// per RPC at the request-deserialization step, so the cost is amortised
+/// against the gRPC round-trip and not worth boxing.
+#[allow(clippy::result_large_err)]
+fn permission_mode_from_i32(v: i32) -> Result<String, Status> {
+    let pm = PermissionMode::try_from(v).map_err(|_| {
+        Status::invalid_argument(format!("permission_mode {v} is not a known enum value"))
+    })?;
+    match pm {
+        PermissionMode::Unspecified => Err(Status::invalid_argument(
+            "permission_mode must be one of STRICT|NORMAL|AUTO|YOLO",
+        )),
+        PermissionMode::Strict => Ok("strict".to_string()),
+        PermissionMode::Normal => Ok("normal".to_string()),
+        PermissionMode::Auto => Ok("auto".to_string()),
+        PermissionMode::Yolo => Ok("yolo".to_string()),
+    }
+}
+
+fn permission_mode_to_i32(s: &str) -> i32 {
+    match s {
+        "strict" => PermissionMode::Strict as i32,
+        "normal" => PermissionMode::Normal as i32,
+        "auto" => PermissionMode::Auto as i32,
+        "yolo" => PermissionMode::Yolo as i32,
+        _ => PermissionMode::Unspecified as i32,
+    }
+}

@@ -28,6 +28,7 @@ use concerto_error::{Error, Result};
 
 use crate::repo_manager::RepoManager;
 use crate::supervisor::{Actor, ActorContext, SupervisorView};
+use crate::workspace_manager::WorkspaceManager;
 
 /// Configuration for [`ApiServerActor`].
 #[derive(Clone)]
@@ -53,22 +54,27 @@ pub struct ApiServerActor {
     /// tests' minimal in-process Runtime construction working without
     /// requiring a fully-initialised `RepoManager`.
     repo_manager: Option<RepoManager>,
+    /// Optional Workspace Manager handle. When `Some`, the gRPC
+    /// `Workspaces` service is registered. Task 19 wires this up.
+    workspace_manager: Option<WorkspaceManager>,
 }
 
 impl ApiServerActor {
-    /// Build a new actor without a Repository Manager handle. Only the
+    /// Build a new actor without any subsystem handles. Only the
     /// `Runtime` service is exposed.
     pub fn new(started_at: Arc<SystemTime>, supervisor_view: SupervisorView) -> Self {
         Self {
             started_at,
             supervisor_view,
             repo_manager: None,
+            workspace_manager: None,
         }
     }
 
     /// Build a new actor that also hosts the `Repositories` service.
-    /// Task 18's `main.rs` uses this constructor; tests that only need
-    /// `Runtime` use [`ApiServerActor::new`].
+    /// Kept for back-compat with Task 18 call sites that don't yet wire
+    /// the workspace manager; new call sites should prefer
+    /// [`ApiServerActor::with_managers`].
     pub fn with_repo_manager(
         started_at: Arc<SystemTime>,
         supervisor_view: SupervisorView,
@@ -78,6 +84,25 @@ impl ApiServerActor {
             started_at,
             supervisor_view,
             repo_manager: Some(repo_manager),
+            workspace_manager: None,
+        }
+    }
+
+    /// Build a new actor that hosts every optional subsystem service.
+    /// `Runtime` is always exposed; `Repositories` is registered when
+    /// `repo_manager` is `Some`; `Workspaces` is registered when
+    /// `workspace_manager` is `Some`. Task 19 added the workspace path.
+    pub fn with_managers(
+        started_at: Arc<SystemTime>,
+        supervisor_view: SupervisorView,
+        repo_manager: Option<RepoManager>,
+        workspace_manager: Option<WorkspaceManager>,
+    ) -> Self {
+        Self {
+            started_at,
+            supervisor_view,
+            repo_manager,
+            workspace_manager,
         }
     }
 }
@@ -99,6 +124,7 @@ impl Actor for ApiServerActor {
                 self.started_at,
                 self.supervisor_view,
                 self.repo_manager,
+                self.workspace_manager,
                 ctx.shutdown,
             )
             .await
@@ -109,6 +135,7 @@ impl Actor for ApiServerActor {
                 self.started_at,
                 self.supervisor_view,
                 self.repo_manager,
+                self.workspace_manager,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -126,6 +153,7 @@ async fn run_uds(
     started_at: Arc<SystemTime>,
     supervisor_view: SupervisorView,
     repo_manager: Option<RepoManager>,
+    workspace_manager: Option<WorkspaceManager>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -137,8 +165,10 @@ async fn run_uds(
 
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
+    use crate::handlers::workspaces::WorkspacesHandler;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
+    use concerto_proto::v1::workspaces_server::WorkspacesServer;
 
     // Ensure the parent directory exists; the locked layout puts the
     // socket inside `<config_dir>`, which the runtime creates on boot,
@@ -195,6 +225,10 @@ async fn run_uds(
     if let Some(repo_manager) = repo_manager {
         let repositories_service = RepositoriesServer::new(RepositoriesHandler::new(repo_manager));
         builder = builder.add_service(repositories_service);
+    }
+    if let Some(workspace_manager) = workspace_manager {
+        let workspaces_service = WorkspacesServer::new(WorkspacesHandler::new(workspace_manager));
+        builder = builder.add_service(workspaces_service);
     }
 
     let serve_fut =
