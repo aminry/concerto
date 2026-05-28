@@ -17,6 +17,9 @@ use tonic::transport::{Channel, Endpoint, Uri};
 /// `RuntimeClient` over a UDS-backed Tonic channel.
 pub type RuntimeClient = concerto_proto::v1::runtime_client::RuntimeClient<Channel>;
 
+/// `ProjectsClient` over a UDS-backed Tonic channel (Task 24).
+pub type ProjectsClient = concerto_proto::v1::projects_client::ProjectsClient<Channel>;
+
 /// `RepositoriesClient` over a UDS-backed Tonic channel (Task 18).
 pub type RepositoriesClient = concerto_proto::v1::repositories_client::RepositoriesClient<Channel>;
 
@@ -57,6 +60,12 @@ pub enum ClientError {
 pub async fn runtime_client(socket_path: PathBuf) -> Result<RuntimeClient, ClientError> {
     let channel = uds_channel(socket_path).await?;
     Ok(RuntimeClient::new(channel))
+}
+
+/// Build a Tonic `ProjectsClient` dialed to `socket_path` (Task 24).
+pub async fn projects_client(socket_path: PathBuf) -> Result<ProjectsClient, ClientError> {
+    let channel = uds_channel(socket_path).await?;
+    Ok(ProjectsClient::new(channel))
 }
 
 /// Build a Tonic `RepositoriesClient` dialed to `socket_path` (Task 18).
