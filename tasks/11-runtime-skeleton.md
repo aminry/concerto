@@ -98,12 +98,12 @@ Build the single-instance guard, signal handling, and graceful-shutdown plumbing
 7. `cargo deny check` → clean.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Second-instance handling verified (exits 0, no log spam).
-- [ ] PID file cleanup on SIGTERM verified.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Second-instance handling verified (exits 0, no log spam).
+- [x] PID file cleanup on SIGTERM verified.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/core/Cargo.toml` (modified — fs2, signal-hook, tokio-util)
@@ -127,7 +127,22 @@ Refs: tasks/11-runtime-skeleton.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** SIGHUP handler is a placeholder; full hot-reload of config is V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **`signal-hook = "0.3"` substituted with `tokio::signal::unix`.** The orchestrator prompt explicitly authorized this swap: `tokio` already had the `signal` feature enabled (Task 08), and `tokio::signal::unix::signal(SignalKind::{terminate,interrupt,hangup})` covers every signal V0.1 needs (SIGTERM, SIGINT, SIGHUP). No new dep, no `signal-hook-tokio`, identical observable behaviour. The `signals::install` API surface (`(JoinHandle, Receiver<ReloadEvent>)`) is what Task 12 will plug actors into.
+  - **`fs2 = "0.4"` and `tokio-util = "0.7"` added as workspace deps**, not crate-local. Matches Task 05/08/10's pattern of pinning shared deps at the workspace root so Tasks 12/22 can reuse them without re-pinning.
+  - **`libc = "0.2"` added as a `[target.'cfg(unix)']` dep** for `kill(pid, 0)` liveness probes. Not in the task's Scope-in list, but the spec calls for "`kill(pid, 0)` on Unix" and the alternatives (raw `nix` or hand-rolled `syscall!`) are heavier. libc is already a transitive dep, so this is essentially a re-export. Permissive (MIT/Apache-2.0); cargo-deny clean.
+  - **`RuntimeConfig` gained a third field, `shutdown_grace: Duration`.** Spec sketch only listed `data_dir` and `config_dir`, but the task body also says "wait up to 5 seconds for tasks to finish". I plumbed that as a config field (default 5s) instead of a magic constant so Task 12's actor-supervision tests can shorten it. The field is `pub` — additive only; calls using struct-update syntax keep compiling. If the locked interface is meant to be strictly two-field, this would need to move to a private const + setter.
+  - **`StartOutcome` enum added** alongside the locked `Runtime::start` signature. The task says `start` returns `Result<Self>`; in practice we need a three-way result (success / already-running / error) because the spec's "second instance exits 0" path is not an error. The enum is `Started(Runtime) | AlreadyRunning { pid }`, and the `main.rs` wiring maps `AlreadyRunning` to `Ok(())` with an info log. This is the only way I see to satisfy both "exit codes: 0 on clean shutdown OR another instance present" and Rust's type system without abusing `Result`.
+  - **PID-file path is `<config_dir>/core.pid` exactly as locked.** The split between `data_dir` (`~/concerto`) and `config_dir` (`~/.concerto`) is honoured: DB stays at `data_dir/concerto.db`; pid lock at `config_dir/core.pid`. `CONCERTO_DB_PATH` (the Task 08 override) is still honoured by `RuntimeConfig::db_path()` so the smoke gate's existing wiring did not need to change.
+  - **`main.rs` no longer carries its own SIGTERM/SIGINT block** — that logic is now inside `signals::install`, which `Runtime::start` calls. The orchestrator note about consolidating Task 08's handler into `signals.rs` is realised: the listener cancels the shared `CancellationToken`, and `runtime.wait_for_shutdown().await` is what `main.rs` blocks on. Diff against Task 08's `main.rs` shows ~50 lines removed.
+  - **`docs/interfaces/rust-api.md` was NOT updated.** The interface generator only scrapes `crates/<crate>/src/api.rs`; `concerto-core` does not (and the task did not ask it to) follow that convention. `git diff docs/interfaces/` is empty after `scripts/regen-interfaces.sh`, which satisfies verification step 6 (`--exit-code`) — but it does mean Task 11's public types (Runtime/RuntimeConfig/StartOutcome) are not surfaced in `rust-api.md`. If the project wants them visible, a follow-up could re-export them from a new `crates/core/src/api.rs`. Flagging for the orchestrator.
+  - **PID-file integration test polls via `wait_until` instead of fixed sleeps.** Spec said "verify pid file is created". I used a 20s poll loop (50 ms cadence) because cold-build CI on slower runners can take a few seconds to reach `runtime ready`; stdout is captured to `Stdio::null` so the test never blocks on a full pipe.
+  - **The `logging::tests::rejects_invalid_level` from Task 05 still flakes intermittently in parallel** (the `RUST_LOG` env-var race the orchestrator warned about). All ten unit tests + the integration test pass with `cargo test -p concerto-core -- --test-threads=1`. I did NOT touch the test; per orchestrator directive, it stays as-is.
+- **Open questions for next task:**
+  - Task 12's supervisor will need to subscribe to `Runtime::shutdown_token()` (clone-on-spawn) and own the panic-isolation `catch_unwind` harness per `design/01 §3.2`. `Runtime::persistence()` returns `Option<&Persistence>` so the supervisor can hand it to children; if Task 12 wants to consume the persistence handle into a `PersistenceHandle` (the `ActorContext` field), I should refactor `Runtime` to expose an `into_parts()` method instead of `persistence()` — easier than reworking `stop()`'s consumption order.
+  - The `ReloadEvent` receiver from `signals::install` is exposed via `Runtime::take_reload_rx()`. V0.1 has no consumer; Task 12 (or the future config-reload task in V1.0) should `take` it once and drive it. Calling `take` more than once returns `None` — that's the only guard against multiple-consumer races.
+  - Stale-lock breaking is currently best-effort: if process A crashed mid-write and left a partially-serialized JSON, we treat that as "stale + unknown PID" and break the lock. That's the right call for a crash recovery, but it means a malicious local process could DoS the legitimate Core by writing garbage into `core.pid`. The mitigation is "the user's home directory is the trust boundary" — same as keychain, same as logs. Task 12's audit log should record every `breaking stale pid lock` event.
+  - `Runtime::start` currently logs a single `acquired single-instance lock` line. The structured fields (`pid`, `version`, `pid_file`) match the `tracing::info!` posture Task 16 will codify. No drift.
+  - The integration test uses `env!("CARGO_BIN_EXE_concerto-core")` — only works for tests in the same crate as the binary. If Task 12 moves the integration test to a separate `dev-deps` harness crate (Task 17 is planned to add one), the harness will need a more elaborate binary-path resolver. Leaving as-is for now.
+- **Deliberate debt:** SIGHUP handler is a placeholder; full hot-reload of config is V1.0 (`design/01 §3.4 R-4`). On every HUP we log "SIGHUP received; config reload is V1.0 (no-op in V0.1)" and emit a `ReloadEvent::SighupReceived` on a bounded mpsc — no subscriber yet. Windows liveness probe in `pid_file::process_alive` is hardcoded to `true` (conservative); real `OpenProcess` lookup arrives when V1.0 lights up the Windows port. No `TODO`/`FIXME` markers in code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still prints "Smoke gate: PASSED (no checks active yet — Phase 0)". The first real smoke assertion lands in Task 15 (gRPC `GetCapabilities` round-trip).
