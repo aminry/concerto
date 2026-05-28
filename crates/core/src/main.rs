@@ -17,7 +17,9 @@ use concerto_core::api_server::{ApiServerActor, ApiServerConfig};
 use concerto_core::logging;
 use concerto_core::repo_manager::{RepoManagerActor, RepoManagerConfig};
 use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
-use concerto_core::workspace_manager::{WorkspaceManagerActor, WorkspaceManagerConfig};
+use concerto_core::workspace_manager::{
+    WorkareaManagerActor, WorkareaManagerConfig, WorkspaceManagerActor, WorkspaceManagerConfig,
+};
 use concerto_error::Result;
 
 fn main() -> std::process::ExitCode {
@@ -65,6 +67,7 @@ async fn run() -> Result<()> {
 
     let socket_path = config.config_dir.join("core.sock");
     let repos_root = config.data_dir.join("repos");
+    let data_dir = Arc::new(config.data_dir.clone());
     let mut runtime = match Runtime::start(config).await? {
         StartOutcome::Started(r) => r,
         StartOutcome::AlreadyRunning { pid } => {
@@ -126,6 +129,34 @@ async fn run() -> Result<()> {
         )
         .await?;
 
+    // Task 20: spawn the Workarea Manager. The handle owns workarea
+    // creation (composer-name allocation, worktree setup, `.context/`
+    // skeleton) and emits `workarea.events` on its broadcast channel.
+    let workarea_actor = WorkareaManagerActor::new(
+        Arc::clone(&persistence),
+        repo_handle.clone(),
+        Arc::clone(&data_dir),
+    );
+    let workarea_handle = workarea_actor.handle();
+    drop(workarea_actor);
+    let workarea_factory_persistence = Arc::clone(&persistence);
+    let workarea_factory_repo = repo_handle.clone();
+    let workarea_factory_data_dir = Arc::clone(&data_dir);
+    runtime
+        .supervisor_mut()
+        .expect("supervisor present at boot")
+        .spawn::<WorkareaManagerActor, _>(
+            move || {
+                WorkareaManagerActor::new(
+                    Arc::clone(&workarea_factory_persistence),
+                    workarea_factory_repo.clone(),
+                    Arc::clone(&workarea_factory_data_dir),
+                )
+            },
+            WorkareaManagerConfig,
+        )
+        .await?;
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
     // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`
@@ -141,6 +172,7 @@ async fn run() -> Result<()> {
     let factory_view = supervisor_view.clone();
     let factory_repo_handle = repo_handle.clone();
     let factory_workspace_handle = workspace_handle.clone();
+    let factory_workarea_handle = workarea_handle.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -151,6 +183,7 @@ async fn run() -> Result<()> {
                     factory_view.clone(),
                     Some(factory_repo_handle.clone()),
                     Some(factory_workspace_handle.clone()),
+                    Some(factory_workarea_handle.clone()),
                 )
             },
             ApiServerConfig { socket_path },

@@ -377,6 +377,88 @@ pub struct Workspace {
     pub archived_at: Option<i64>,
 }
 
+// ---------------------------------------------------------------------------
+// Workareas (Task 20).
+//
+// The `Workareas` gRPC service ships in Task 20; the schema is locked by
+// migration 0001 (Task 09). `permission_mode` is nullable for
+// inherit-from-workspace per `design/03 §3.2`. `status` is a lowercase
+// string from the CHECK set
+// (`created|active|running|awaiting|paused|archived|crashed`).
+// ---------------------------------------------------------------------------
+
+/// Newtype around a `workareas.id` (UUIDv7 string per migration 0001).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorkareaId(pub String);
+
+impl WorkareaId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for WorkareaId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Insert-time shape for a `workareas` row.
+///
+/// `composer_name` is allocated by the Workspace Manager (Task 20) from
+/// `crates/core/src/workspace_manager/composers.rs`. `branch_name`
+/// follows the V0.1 convention `concerto/<composer>`; the branch-rename
+/// hook lands in V1.0. `worktree_root` is the absolute path
+/// `<data_dir>/workspaces/<workspace.slug>/<composer>/`.
+#[derive(Debug, Clone)]
+pub struct NewWorkarea {
+    pub id: WorkareaId,
+    pub workspace_id: String,
+    pub composer_name: String,
+    pub branch_name: String,
+    pub worktree_root: String,
+    /// One of `created|active|running|awaiting|paused|archived|crashed`.
+    /// The Workspace Manager inserts with `"created"` and immediately
+    /// transitions to `"active"` inside the same transaction once the
+    /// on-disk worktree + `.context/` skeleton exist.
+    pub status: String,
+    /// Lowercase SQL form (`"strict" | "normal" | "auto" | "yolo"`) or
+    /// `None` for "inherit from workspace".
+    pub permission_mode: Option<String>,
+    /// Unix epoch milliseconds.
+    pub created_at: i64,
+}
+
+/// Insert-time shape for a `workarea_repos` junction row.
+///
+/// `worktree_path` is `<worktree_root>/<repo.name>` — i.e. each repo's
+/// worktree sits one directory below the workarea root, alongside the
+/// `.context/` skeleton.
+#[derive(Debug, Clone)]
+pub struct NewWorkareaRepo {
+    pub workarea_id: WorkareaId,
+    pub repository_id: RepositoryId,
+    pub worktree_path: String,
+    pub branch_override: Option<String>,
+}
+
+/// Row-shaped projection of a `workareas` row. V0.1 omits
+/// `bypass_destructive_guard` — V0.1 callers don't read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workarea {
+    pub id: WorkareaId,
+    pub workspace_id: WorkspaceId,
+    pub composer_name: String,
+    pub branch_name: String,
+    pub worktree_root: String,
+    pub status: String,
+    pub permission_mode: Option<String>,
+    pub created_at: i64,
+    pub archived_at: Option<i64>,
+    pub last_activity_at: Option<i64>,
+}
+
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
 ///
 /// Every pragma the design doc lists as mandatory (`journal_mode = WAL`,

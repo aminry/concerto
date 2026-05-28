@@ -7,4 +7,5 @@
 
 pub mod repositories;
 pub mod runtime;
+pub mod workareas;
 pub mod workspaces;

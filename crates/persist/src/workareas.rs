@@ -1,0 +1,219 @@
+//! `workareas` + `workarea_repos` CRUD (Task 20).
+//!
+//! Schema is locked by migration 0001 (Task 09):
+//!
+//! ```sql
+//! CREATE TABLE workareas (
+//!     id                          TEXT PRIMARY KEY,
+//!     workspace_id                TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+//!     composer_name               TEXT NOT NULL,
+//!     branch_name                 TEXT NOT NULL,
+//!     worktree_root               TEXT NOT NULL,
+//!     status                      TEXT NOT NULL CHECK (status IN (
+//!         'created','active','running','awaiting','paused','archived','crashed'
+//!     )),
+//!     permission_mode             TEXT CHECK (permission_mode IS NULL OR permission_mode IN ('strict','normal','auto','yolo')),
+//!     bypass_destructive_guard    INTEGER CHECK (bypass_destructive_guard IS NULL OR bypass_destructive_guard IN (0,1)),
+//!     created_at                  INTEGER NOT NULL,
+//!     archived_at                 INTEGER,
+//!     last_activity_at            INTEGER,
+//!     UNIQUE(workspace_id, composer_name)
+//! );
+//!
+//! CREATE TABLE workarea_repos (
+//!     workarea_id         TEXT NOT NULL REFERENCES workareas(id) ON DELETE CASCADE,
+//!     repository_id       TEXT NOT NULL REFERENCES repositories(id),
+//!     worktree_path       TEXT NOT NULL,
+//!     branch_override     TEXT,
+//!     sparse_cones_json   TEXT NOT NULL DEFAULT '[]',
+//!     PRIMARY KEY (workarea_id, repository_id)
+//! );
+//! ```
+//!
+//! `status` is a lowercase string matching the CHECK constraint;
+//! `permission_mode` is nullable for "inherit from parent" per
+//! `design/03 §3.2`. The Workspace Manager handles the slug-style retry
+//! on UNIQUE(`workspace_id, composer_name`) collisions via
+//! [`is_unique_violation`].
+
+use std::collections::HashSet;
+
+use concerto_error::{Error, Result};
+use sqlx::{Row, SqliteConnection, SqlitePool};
+
+use crate::api::{NewWorkarea, NewWorkareaRepo, Workarea, WorkareaId, WorkspaceId};
+
+/// SQLite extended result code for UNIQUE constraint violations. The
+/// Workspace Manager retries composer-name allocation on this code.
+pub const SQLITE_CONSTRAINT_UNIQUE: &str = "2067";
+
+/// Insert a new `workareas` row.
+///
+/// Takes `&mut SqliteConnection` so callers can scope the workarea row +
+/// junction rows + status transition in one transaction. Status is set
+/// to whatever the caller passes (the Workspace Manager inserts with
+/// `"created"` and follows up with [`update_status`] for the
+/// `created → active` transition inside the same transaction).
+pub async fn insert(conn: &mut SqliteConnection, wa: NewWorkarea) -> Result<WorkareaId> {
+    let id = wa.id.clone();
+    sqlx::query(
+        "INSERT INTO workareas (
+            id, workspace_id, composer_name, branch_name, worktree_root,
+            status, permission_mode, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id.0)
+    .bind(&wa.workspace_id)
+    .bind(&wa.composer_name)
+    .bind(&wa.branch_name)
+    .bind(&wa.worktree_root)
+    .bind(&wa.status)
+    .bind(&wa.permission_mode)
+    .bind(wa.created_at)
+    .execute(conn)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(id)
+}
+
+/// Insert one `workarea_repos` junction row.
+///
+/// V0.1 ships single-repo workareas so callers invoke this once per
+/// create; V1.0's multi-repo path will loop.
+pub async fn insert_workarea_repo(conn: &mut SqliteConnection, row: NewWorkareaRepo) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO workarea_repos (
+            workarea_id, repository_id, worktree_path, branch_override
+         ) VALUES (?, ?, ?, ?)",
+    )
+    .bind(&row.workarea_id.0)
+    .bind(&row.repository_id.0)
+    .bind(&row.worktree_path)
+    .bind(&row.branch_override)
+    .execute(conn)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+/// Update the `status` column on a `workareas` row.
+///
+/// Used by the Workspace Manager to drive the `created → active`
+/// transition after the on-disk worktree + `.context/` skeleton is in
+/// place. The CHECK constraint enforces the allowed string set.
+pub async fn update_status(
+    conn: &mut SqliteConnection,
+    id: &WorkareaId,
+    status: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE workareas SET status = ? WHERE id = ?")
+        .bind(status)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+/// Fetch one workarea by id (read-only).
+pub async fn get(pool: &SqlitePool, id: &WorkareaId) -> Result<Option<Workarea>> {
+    let row = sqlx::query(
+        "SELECT id, workspace_id, composer_name, branch_name, worktree_root,
+                status, permission_mode, created_at, archived_at, last_activity_at
+         FROM workareas WHERE id = ?",
+    )
+    .bind(&id.0)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(row.map(row_to_workarea))
+}
+
+/// List workareas attached to a workspace (read-only). Sorted by
+/// `composer_name` for deterministic UI output.
+///
+/// When `include_archived` is false, rows whose `archived_at` is set
+/// are filtered out.
+pub async fn list_by_workspace(
+    pool: &SqlitePool,
+    workspace_id: &WorkspaceId,
+    include_archived: bool,
+) -> Result<Vec<Workarea>> {
+    let sql = if include_archived {
+        "SELECT id, workspace_id, composer_name, branch_name, worktree_root,
+                status, permission_mode, created_at, archived_at, last_activity_at
+         FROM workareas WHERE workspace_id = ? ORDER BY composer_name"
+    } else {
+        "SELECT id, workspace_id, composer_name, branch_name, worktree_root,
+                status, permission_mode, created_at, archived_at, last_activity_at
+         FROM workareas WHERE workspace_id = ? AND archived_at IS NULL
+         ORDER BY composer_name"
+    };
+    let rows = sqlx::query(sql)
+        .bind(&workspace_id.0)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows.into_iter().map(row_to_workarea).collect())
+}
+
+/// Mark a workarea archived: sets `archived_at` to `at` (unix epoch ms)
+/// AND sets `status` to `'archived'`. Idempotent.
+pub async fn archive(conn: &mut SqliteConnection, id: &WorkareaId, at: i64) -> Result<()> {
+    sqlx::query("UPDATE workareas SET archived_at = ?, status = 'archived' WHERE id = ?")
+        .bind(at)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+/// Composer names currently in use within a workspace (sourced from the
+/// `workareas` table). Used by the Workspace Manager's allocation loop
+/// to find the lowest-index unused composer.
+///
+/// Archived workareas are still counted as "in use" — keeping the same
+/// composer name available after archive avoids accidental confusion if
+/// the row is ever re-activated, and the namespace is large enough that
+/// this trade-off is invisible to users.
+pub async fn list_composer_names_in_workspace(
+    pool: &SqlitePool,
+    workspace_id: &WorkspaceId,
+) -> Result<HashSet<String>> {
+    let rows = sqlx::query("SELECT composer_name FROM workareas WHERE workspace_id = ?")
+        .bind(&workspace_id.0)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| r.get::<String, _>("composer_name"))
+        .collect())
+}
+
+/// True iff `err` wraps SQLite's `SQLITE_CONSTRAINT_UNIQUE` (extended
+/// code `2067`). The Workspace Manager uses this to detect a composer
+/// name collision in the UNIQUE(`workspace_id, composer_name`) constraint
+/// and retry with an `-N` suffix.
+pub fn is_unique_violation(err: &sqlx::Error) -> bool {
+    match err {
+        sqlx::Error::Database(db) => db.code().as_deref() == Some(SQLITE_CONSTRAINT_UNIQUE),
+        _ => false,
+    }
+}
+
+fn row_to_workarea(row: sqlx::sqlite::SqliteRow) -> Workarea {
+    Workarea {
+        id: WorkareaId(row.get::<String, _>("id")),
+        workspace_id: WorkspaceId(row.get::<String, _>("workspace_id")),
+        composer_name: row.get::<String, _>("composer_name"),
+        branch_name: row.get::<String, _>("branch_name"),
+        worktree_root: row.get::<String, _>("worktree_root"),
+        status: row.get::<String, _>("status"),
+        permission_mode: row.get::<Option<String>, _>("permission_mode"),
+        created_at: row.get::<i64, _>("created_at"),
+        archived_at: row.get::<Option<i64>, _>("archived_at"),
+        last_activity_at: row.get::<Option<i64>, _>("last_activity_at"),
+    }
+}

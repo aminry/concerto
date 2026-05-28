@@ -83,23 +83,29 @@ Implement workarea creation: pick a composer name, allocate a branch name, call 
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] On-disk layout matches spec.
-- [ ] Composer-name allocation behaves correctly on collision.
-- [ ] `.context/` is in every repo's git exclude (verified by `git status` showing no `.context/` files).
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] On-disk layout matches spec.
+- [x] Composer-name allocation behaves correctly on collision.
+- [x] `.context/` is in every repo's git exclude (verified by `git status` showing no `.context/` files).
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
-- `crates/proto/proto/concerto/v1/workareas.proto` (modified)
+- `crates/proto/proto/concerto/v1/workareas.proto` (modified — adds service + request/response messages)
 - `crates/persist/src/workareas.rs` (new)
-- `crates/persist/src/lib.rs` (modified)
+- `crates/persist/src/lib.rs` (modified — module + re-exports)
+- `crates/persist/src/api.rs` (modified — `WorkareaId`, `NewWorkarea`, `NewWorkareaRepo`, `Workarea` exposed for the interface generator)
 - `crates/core/src/workspace_manager/composers.rs` (new)
 - `crates/core/src/workspace_manager/workarea.rs` (new — the create_workarea logic)
+- `crates/core/src/workspace_manager/mod.rs` (modified — re-exports `composers`, `workarea`)
 - `crates/core/src/handlers/workareas.rs` (new)
-- `crates/core/src/main.rs` (modified)
+- `crates/core/src/handlers/mod.rs` (modified — `pub mod workareas`)
+- `crates/core/src/api_server.rs` (modified — `with_managers` extended to take `workarea_manager`)
+- `crates/core/src/main.rs` (modified — spawns `WorkareaManagerActor` + 5-arg `with_managers`)
 - `crates/core/tests/workarea_lifecycle.rs` (new)
+- `crates/test-harness/src/clients.rs` (modified — `workareas_client` accessor + `WorkareasClient` type)
+- `crates/test-harness/src/lib.rs` (modified — re-exports `WorkareasClient`, adds `CoreUnderTest::workareas_client`)
 - `docs/interfaces/proto.md`, `rust-api.md`, `schema.md` (regenerated)
 
 ## Commit message
@@ -115,7 +121,21 @@ Refs: tasks/20-workarea-creation.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** no setup script execution, no files-to-copy, no sparse cones (V1.0).
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Added `WorkareaId`, `NewWorkarea`, `NewWorkareaRepo`, `Workarea` to `crates/persist/src/api.rs`** so the interface generator picks them up. Same pattern Task 19 used for `WorkspaceId`/`Workspace`. Added to Outputs.
+  - **`ApiServerActor::with_managers` signature extended** with a fourth `workarea_manager: Option<WorkareaManager>` arg per the orchestrator brief. `with_repo_manager` (Task 18) and the 4-arg `with_managers` (Task 19) are both kept; the production binary uses the 5-arg `with_managers`.
+  - **`workareas_client()` accessor + `WorkareasClient` re-export** added to `crates/test-harness/src/{clients.rs,lib.rs}` following Task 19's pattern. Added to Outputs.
+  - **Composer pool is a real ~500-name curated list** under `crates/core/src/workspace_manager/composers.rs`, exceeding the 200+ floor. Hand-curated rather than generated; ordering is FROZEN per the locked-interface contract. Two entries originally had diacritics (`esplá`, `bretón`); both stripped to ASCII per the orchestrator brief so they double as filesystem path segments. The list contains a few duplicates across overlapping eras (e.g. `bach`, `norman`, `wolf` appear in more than one section); duplicates are harmless for allocation (lowest unused name is picked once and the later occurrence is skipped) and reordering to deduplicate would change which composer is picked for new workareas, which is the locked contract.
+  - **Composer collision-retry cleanup uses an in-file `git worktree remove --force` shell-out** (`remove_worktree_best_effort` in `workspace_manager/workarea.rs`) rather than adding a `worktree_remove` to `gix-wrap`. Task 18 locked `gix-wrap`'s V0.1 surface; adding to it now would expand a frozen interface. The path runs only on the rare UNIQUE collision, and the disk-side `remove_dir_all` is the real cleanup.
+  - **`workspace_id` validation rejects archived workspaces** with `Error::Validation("workspace.archived: ...")` matching the orchestrator brief's `workspace.archived` wire-code subcode embedded in the message body.
+  - **V0.1 single-repo enforcement** uses the wire-code subcode `workarea.v0_single_repo_only` (mirroring Task 19's `workspace.v0_single_repo_only`). Returned via `Error::Validation` → `INVALID_ARGUMENT` per `error_map`.
+  - **`ListWorkareas` exposes the `include_archived` knob now**, not as a later additive field. Spec ambiguous; we shipped the bool today because the UI will need it from day one and adding it later would have required a new field number on the request message.
+  - **Archived workareas are still counted as "in use" by composer allocation** — `list_composer_names_in_workspace` does not filter by `archived_at`. Rationale: workarea archive is reversible in design, and the composer-name namespace is large enough that the trade-off is invisible.
+  - **`WorkareaManager::create_workarea` drives `RepoManager::clone_repo` lazily** when the repo's `local_path/.git` does not yet exist. Integration tests pre-clone via plain `git clone` to keep the test path deterministic; the production binary relies on the `RepoManager` path.
+- **Open questions for next task:**
+  - **Task 21+ (agent host)** can call `WorkareaManager::get(id)` to resolve `worktree_root` for the PTY's working directory. The `Workarea` row's `worktree_root` is the absolute path locked here (`<data_dir>/workspaces/<workspace.slug>/<composer>/`).
+  - **Task 24 (`Streams`)** consumes from `WorkareaManager::subscribe()`. `WorkareaEvent::{Created, Archived}` is the in-process shape today; wire promotion follows the same recipe as `WorkspaceEvent`.
+  - **Multi-repo workareas (V1.0)** can re-use `workareas::insert_workarea_repo` in a loop. The schema and persistence helpers already support N repos.
+  - **`WorkareasServer` field numbers are FROZEN** at the V0.1 set (Create/Get/List/Archive). Pause/resume/run-script land at higher field numbers, additive only.
+- **Deliberate debt:** no setup script execution, no files-to-copy, no sparse cones, no branch-rename hook, no permission-mode inheritance enforcement, no multi-repo workareas, no PR set, no run scripts (all V1.0). The collision-retry cleanup shell-out duplicates a `gix-wrap` capability; promoting it to `gix-wrap::worktree_remove` is a Phase-3 follow-on once a real caller needs it. No `TODO`/`FIXME`/`todo!()`/`unimplemented!()` markers in new code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` (v1) still boots the Core, calls `Runtime.GetServerCapabilities`, and shuts down cleanly. The Task 20 RPCs (`Workareas.*`) are exercised by `crates/core/tests/workarea_lifecycle.rs` via the Task 17 harness, not by the smoke gate.

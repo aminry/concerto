@@ -281,3 +281,59 @@ pub struct Workspace {
 }
 ```
 
+### struct `WorkareaId`
+
+```rust
+pub struct WorkareaId(pub String);
+```
+
+### struct `NewWorkarea`
+
+```rust
+pub struct NewWorkarea {
+    pub id: WorkareaId,
+    pub workspace_id: String,
+    pub composer_name: String,
+    pub branch_name: String,
+    pub worktree_root: String,
+    /// One of `created|active|running|awaiting|paused|archived|crashed`.
+    /// The Workspace Manager inserts with `"created"` and immediately
+    /// transitions to `"active"` inside the same transaction once the
+    /// on-disk worktree + `.context/` skeleton exist.
+    pub status: String,
+    /// Lowercase SQL form (`"strict" | "normal" | "auto" | "yolo"`) or
+    /// `None` for "inherit from workspace".
+    pub permission_mode: Option<String>,
+    /// Unix epoch milliseconds.
+    pub created_at: i64,
+}
+```
+
+### struct `NewWorkareaRepo`
+
+```rust
+pub struct NewWorkareaRepo {
+    pub workarea_id: WorkareaId,
+    pub repository_id: RepositoryId,
+    pub worktree_path: String,
+    pub branch_override: Option<String>,
+}
+```
+
+### struct `Workarea`
+
+```rust
+pub struct Workarea {
+    pub id: WorkareaId,
+    pub workspace_id: WorkspaceId,
+    pub composer_name: String,
+    pub branch_name: String,
+    pub worktree_root: String,
+    pub status: String,
+    pub permission_mode: Option<String>,
+    pub created_at: i64,
+    pub archived_at: Option<i64>,
+    pub last_activity_at: Option<i64>,
+}
+```
+

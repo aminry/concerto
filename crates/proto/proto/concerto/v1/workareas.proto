@@ -1,19 +1,26 @@
-// Workarea entity shape.
+// Workarea entity shape + service surface.
 //
 // Workareas are on-disk attempts (one workspace → 1..N workareas; see
-// design/03 and design/09 §4.1). Service methods land in Task 20; this task
-// only locks the data shape.
+// design/03 and design/09 §4.1). Task 07 locked the `Workarea` message;
+// Task 20 adds the `Workareas` service (Create / Get / List / Archive)
+// plus the `WorkareaId`, `CreateWorkareaRequest`, `ListWorkareasRequest`,
+// and `ListWorkareasResponse` messages.
+//
+// V0.1 ships single-repo workareas (mirroring single-repo workspaces from
+// Task 19); the schema permits N repos via the `workarea_repos` junction
+// table for V1.0.
 //
 // `status` and `permission_mode` are intentionally string and enum
-// respectively for V0.1; per the task spec, `status` may be promoted to an
-// enum in a later revision.
+// respectively for V0.1; per the task spec, `status` may be promoted to
+// an enum in a later revision.
 //
-// Field numbers in this file are FROZEN as of Task 07.
+// Field numbers in this file are FROZEN as of Task 20.
 
 syntax = "proto3";
 
 package concerto.v1;
 
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "concerto/v1/common.proto";
 
@@ -29,4 +36,42 @@ message Workarea {
   google.protobuf.Timestamp created_at = 8;
   optional google.protobuf.Timestamp last_activity_at = 9;
   optional google.protobuf.Timestamp archived_at = 10;
+}
+
+// Identifier-only request payload reused by Get/Archive. Wraps the
+// workarea primary key as a TEXT (UUIDv7).
+message WorkareaId {
+  string value = 1;
+}
+
+// Inputs for `Workareas.CreateWorkarea`. The server allocates the
+// composer name (lowest-index unused in the workspace's pool), derives
+// the branch name `concerto/<composer>`, runs `git worktree add` for the
+// workspace's repo, and lays down the `.context/` skeleton per
+// `design/03 §4.2`.
+//
+// V0.1 ships single-repo workareas — `workspace_id` must reference a
+// workspace whose `workspace_repos` set has exactly one row.
+message CreateWorkareaRequest {
+  string workspace_id = 1;
+  optional PermissionMode permission_mode = 2;
+}
+
+// Inputs for `Workareas.ListWorkareas`. V0.1 scopes the listing to one
+// workspace and exposes the include-archived knob the UI needs from day
+// one. Pagination lands at higher field numbers when needed.
+message ListWorkareasRequest {
+  string workspace_id = 1;
+  bool include_archived = 2;
+}
+
+message ListWorkareasResponse {
+  repeated Workarea workareas = 1;
+}
+
+service Workareas {
+  rpc CreateWorkarea(CreateWorkareaRequest) returns (Workarea);
+  rpc GetWorkarea(WorkareaId) returns (Workarea);
+  rpc ListWorkareas(ListWorkareasRequest) returns (ListWorkareasResponse);
+  rpc ArchiveWorkarea(WorkareaId) returns (google.protobuf.Empty);
 }
