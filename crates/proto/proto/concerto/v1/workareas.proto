@@ -1,0 +1,32 @@
+// Workarea entity shape.
+//
+// Workareas are on-disk attempts (one workspace → 1..N workareas; see
+// design/03 and design/09 §4.1). Service methods land in Task 20; this task
+// only locks the data shape.
+//
+// `status` and `permission_mode` are intentionally string and enum
+// respectively for V0.1; per the task spec, `status` may be promoted to an
+// enum in a later revision.
+//
+// Field numbers in this file are FROZEN as of Task 07.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/timestamp.proto";
+import "concerto/v1/common.proto";
+
+message Workarea {
+  string id = 1;
+  string workspace_id = 2;
+  string composer_name = 3;
+  string branch_name = 4;
+  string worktree_root = 5;
+  // status ∈ { created | active | running | awaiting | paused | archived | crashed }
+  string status = 6;
+  optional PermissionMode permission_mode = 7;
+  google.protobuf.Timestamp created_at = 8;
+  optional google.protobuf.Timestamp last_activity_at = 9;
+  optional google.protobuf.Timestamp archived_at = 10;
+}

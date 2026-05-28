@@ -1,0 +1,32 @@
+// Session entity shape.
+//
+// A session is a specific agent run on a workarea (see design/03, design/04,
+// and design/09 §4.1). Service methods (StartSession, StreamSessionIO,
+// StopSession) land in Task 23; this task only locks the data shape.
+//
+// `agent_kind` and `status` are strings for V0.1 simplicity; per the task
+// spec, they may be promoted to enums in a later revision task.
+//
+// Field numbers in this file are FROZEN as of Task 07.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/timestamp.proto";
+import "concerto/v1/common.proto";
+
+message Session {
+  string id = 1;
+  string workarea_id = 2;
+  string chat_id = 3;
+  // agent_kind ∈ { claude | codex | gemini }
+  string agent_kind = 4;
+  optional string agent_version = 5;
+  optional string model = 6;
+  // status ∈ { starting | running | awaiting | finished | crashed }
+  string status = 7;
+  PermissionMode permission_mode = 8;
+  google.protobuf.Timestamp started_at = 9;
+  optional google.protobuf.Timestamp ended_at = 10;
+}

@@ -102,7 +102,8 @@ gen_proto() {
     {
         printf '%s\n\n' "$HEADER"
         printf '# Proto\n\n'
-        if [ -d "$ROOT/proto" ] && find "$ROOT/proto" -type f -name '*.proto' -print -quit | grep -q .; then
+        local proto_root="$ROOT/crates/proto/proto"
+        if [ -d "$proto_root" ] && find "$proto_root" -type f -name '*.proto' -print -quit | grep -q .; then
             local f rel pkg
             while IFS= read -r -d '' f; do
                 rel="${f#"$ROOT"/}"
@@ -121,7 +122,7 @@ gen_proto() {
                 fi
                 emit_brace_blocks '^[[:space:]]*(message|service|enum)[[:space:]]+[A-Za-z_]' proto "$f"
                 printf '\n'
-            done < <(find "$ROOT/proto" -type f -name '*.proto' -print0 | sort -z)
+            done < <(find "$proto_root" -type f -name '*.proto' -print0 | sort -z)
         else
             printf '_No `.proto` files yet._\n'
         fi

@@ -1,0 +1,38 @@
+// Common message types shared across services.
+//
+// Field numbers in this file are FROZEN as of Task 07. Adding new fields is
+// fine (higher numbers); renumbering or repurposing existing fields is
+// forbidden.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/struct.proto";
+
+// Structured error envelope returned by gRPC handlers. The `code` string maps
+// to the wire codes defined in `crates/error/src/error.rs` (Task 05); the
+// mapping into `tonic::Status` happens in the gRPC server middleware
+// (Task 13).
+message ConcertoError {
+  string code = 1;
+  string message = 2;
+  google.protobuf.Struct fields = 3;
+  string transaction_id = 4;
+}
+
+// Newtype wrapper for UUIDv7 identifiers. Carried as a string for proto-wire
+// stability; the Rust-side newtype is enforced at the API boundary.
+message Identifier {
+  string value = 1;
+}
+
+// Permission modes — see design/12 §4.2 for the four-level model. Used by
+// Workspace, Workarea, and Session messages as an inherited default.
+enum PermissionMode {
+  PERMISSION_MODE_UNSPECIFIED = 0;
+  PERMISSION_MODE_STRICT = 1;
+  PERMISSION_MODE_NORMAL = 2;
+  PERMISSION_MODE_AUTO = 3;
+  PERMISSION_MODE_YOLO = 4;
+}

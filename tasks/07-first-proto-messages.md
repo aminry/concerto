@@ -179,12 +179,12 @@ message Session {
 8. `cargo deny check` → clean.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] `docs/interfaces/proto.md` regenerated and committed.
-- [ ] No `TODO` / `FIXME` in proto files.
-- [ ] `_placeholder.proto` deleted.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] `docs/interfaces/proto.md` regenerated and committed.
+- [x] No `TODO` / `FIXME` in proto files.
+- [x] `_placeholder.proto` deleted.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/proto/proto/concerto/v1/common.proto` (new)
@@ -194,6 +194,10 @@ message Session {
 - `crates/proto/proto/concerto/v1/sessions.proto` (new)
 - `crates/proto/proto/concerto/v1/_placeholder.proto` (deleted)
 - `crates/proto/src/lib.rs` (modified)
+- `crates/proto/build.rs` (modified — see Handoff Notes / Drift)
+- `crates/proto/Cargo.toml` (modified — see Handoff Notes / Drift)
+- `Cargo.lock` (auto-updated)
+- `scripts/regen-interfaces.sh` (modified — proto-scan path fix, see Handoff Notes / Drift)
 - `docs/interfaces/proto.md` (regenerated)
 
 ## Commit message
@@ -208,7 +212,17 @@ Refs: tasks/07-first-proto-messages.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** —
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **`scripts/regen-interfaces.sh` patched** to scan `crates/proto/proto/` instead of `$ROOT/proto/`. The bug was flagged in Task 06's Handoff Notes; without the fix, Verification step #7 (and the silent-drift backstop for proto in general) would be useless. Single-line change in `gen_proto()`. Added `scripts/regen-interfaces.sh` to Outputs.
+  - **`crates/proto/build.rs` modified** beyond what the task said it would touch:
+    1. Dropped `compile_well_known_types(true)` from the tonic-build config (was set by Task 06). With it on, tonic-build emits references to a sibling `super::super::google::protobuf::*` module that doesn't exist in our setup. With it off (the default), tonic-build auto-maps `.google.protobuf.*` to `::prost_types::*`, which is what we want — downstream crates use `prost_types::Timestamp` etc. directly. This is the cleaner of the two paths and matches design/10's intent.
+    2. Added `field_attribute(...)` calls that inject `#[serde(with = "crate::serde_compat::option_timestamp")]` on every `Option<prost_types::Timestamp>` field, and `#[serde(with = "crate::serde_compat::option_struct")]` on `ConcertoError.fields`. Reason: Task 06's blanket `type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")` doesn't compile once Timestamp / Struct fields exist, because `prost_types::Timestamp` / `prost_types::Struct` themselves don't implement serde and there's no `serde` feature on `prost-types` to enable. The `with` shims do JSON-friendly serialization without a new dependency on `prost-wkt-types`. Added a comment in `build.rs` listing every Timestamp field; future proto tasks must extend that list when they add Timestamp-typed fields.
+  - **`crates/proto/src/lib.rs` adds a `serde_compat` module** with two submodules — `option_timestamp` (encodes `Option<Timestamp>` as `Option<(i64, i32)>` for seconds + nanos) and `option_struct` (recursively converts `Option<Struct>` to/from a `serde_json::Value::Object`). The doc-comment-style usage hints are inline. Only the build.rs-injected `#[serde(with = ...)]` attributes reference these modules; no other crate uses them directly yet.
+  - **`crates/proto/Cargo.toml` adds `serde_json = { workspace = true }`** for the `option_struct` shim. Workspace already had `serde_json = "1"` so no new dep at the workspace level.
+- **Open questions for next task:**
+  - The `optional` proto3 keyword expands the V1.0 wire shape: when an unset `optional PermissionMode` is sent, the receiver sees `None`, distinct from `PERMISSION_MODE_UNSPECIFIED`. Persistence schemas (Task 09) should treat `None` and `STRICT` (the typical implied default) differently — `None` means "inherit from parent" per design/03 §3.2, not "strict".
+  - The proto `Workspace`, `Workarea`, `Session` messages list `string status` rather than enums. Task 09's SQLite migration will need a corresponding text-with-CHECK-constraint, or a separate enum table. Either is fine, but the column type must match the validators the gRPC server middleware (Task 13) will write — the canonical list of allowed values is in the proto comments.
+  - The `agent_kind = "claude"|"codex"|"gemini"` list in `sessions.proto` includes gemini for forward compatibility, but per the V0.1 scope in `tasks/README.md §2` only claude + codex are wired in V0.1. The agent-supervisor work (Tasks 21–22, 33–37) does not need to handle gemini; future polish task will.
+  - If Task 08+ (persist + migration) reads `docs/interfaces/proto.md`, note the file now reflects the real protos. If you see `_No `.proto` files yet._` you're on a stale checkout.
+- **Deliberate debt:** — (no `TODO`/`FIXME` left in any new file)
+- **Smoke-gate state:** unchanged — still v1 (i.e., still "no checks active yet — Phase 0"). The gRPC server skeleton (Task 13) and the Desktop UDS round-trip (Task 14) are what flips smoke to its first real assertion in Task 15.
