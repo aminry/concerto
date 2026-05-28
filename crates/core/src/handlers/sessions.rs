@@ -32,6 +32,7 @@ use concerto_proto::v1::sessions_server::Sessions as SessionsService;
 use concerto_proto::v1::{
     CreateSessionRequest, ListSessionsRequest, ListSessionsResponse, PermissionMode,
     SendMessageRequest, Session as ProtoSession, SessionId as ProtoSessionId, StopSessionRequest,
+    UpdateSessionPermissionModeRequest,
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -165,6 +166,29 @@ impl SessionsService for SessionsHandler {
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "Sessions::UpdateSessionPermissionMode")]
+    async fn update_session_permission_mode(
+        &self,
+        request: Request<UpdateSessionPermissionModeRequest>,
+    ) -> Result<Response<ProtoSession>, Status> {
+        let req = request.into_inner();
+        if req.session_id.is_empty() {
+            return Err(Status::invalid_argument("session_id is required"));
+        }
+        let mode = permission_mode_from_i32(req.permission_mode)?;
+        let id = PersistSessionId(req.session_id);
+        self.supervisor
+            .update_session_permission_mode(&id, &mode, &req.acknowledgement)
+            .await
+            .map_err(error_to_status)?;
+        // Reload the row so the wire shape mirrors persistence.
+        let row = concerto_persist::sessions::get(self.persistence.readers(), &id)
+            .await
+            .map_err(error_to_status)?
+            .ok_or_else(|| Status::not_found(format!("session {id} not found")))?;
+        Ok(Response::new(session_to_proto(row)))
     }
 
     #[tracing::instrument(skip_all, name = "Sessions::StopSession")]

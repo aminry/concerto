@@ -144,6 +144,11 @@ struct SessionEntry {
     /// reconnect work that lands in Task 36.
     #[allow(dead_code)]
     cookie: [u8; 32],
+    /// Effective permission mode at start time (Task 32). Mirrors the
+    /// row column but kept in process so the supervisor doesn't have to
+    /// re-read the DB on every send_input / approval check. Updated by
+    /// [`AgentSupervisorHandle::update_session_permission_mode`].
+    permission_mode: crate::security::PermissionMode,
     /// Per-session UDS path.
     socket_path: PathBuf,
     /// Broadcast sender — subscribers receive [`AgentEvent`].
@@ -180,6 +185,9 @@ pub struct AgentSupervisorHandle {
     /// `<data_dir>` — the per-session socket path is
     /// `<data_dir>/runtime/agents/<sid>.sock` (locked layout).
     data_dir: Arc<PathBuf>,
+    /// `<config_dir>` — used by Task 32's resolver to read
+    /// `managed.json`.
+    config_dir: Arc<PathBuf>,
     /// Resolved path to `concerto-agent-host`. Tests inject a path
     /// resolved by `assert_cmd::cargo::cargo_bin`; production resolves
     /// via `current_exe().parent().join(...)` at start_session time.
@@ -191,10 +199,16 @@ impl AgentSupervisorHandle {
     /// Build a fresh handle. Normally callers go through
     /// [`AgentSupervisorActor::new`]; this is `pub` so tests can
     /// construct one without the supervisor.
-    pub fn new(persistence: Arc<Persistence>, data_dir: Arc<PathBuf>, host_bin: PathBuf) -> Self {
+    pub fn new(
+        persistence: Arc<Persistence>,
+        data_dir: Arc<PathBuf>,
+        config_dir: Arc<PathBuf>,
+        host_bin: PathBuf,
+    ) -> Self {
         Self {
             persistence,
             data_dir,
+            config_dir,
             host_bin: Arc::new(host_bin),
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -341,11 +355,31 @@ impl AgentSupervisorHandle {
         // (`design/09 §6.2` calls out the cyclical chats↔sessions FKs
         // as expected schema behaviour.)
         let now_ms = now_unix_ms();
-        let permission_mode = req
-            .permission_mode
-            .clone()
-            .unwrap_or_else(|| "normal".to_string());
-        validate_permission_mode(&permission_mode)?;
+        // Task 32: if the caller specified a mode, validate + cap it;
+        // otherwise walk the workarea → workspace → project →
+        // managed → default chain and use the resolved value. We
+        // resolve BEFORE inserting the session row so the row carries
+        // the effective mode from row 1; the in-memory cache below
+        // mirrors it.
+        let permission_mode = match req.permission_mode.clone() {
+            Some(s) => {
+                let parsed = crate::security::parse_permission_mode(&s)?;
+                let managed = crate::security::load_managed_policy(&self.config_dir);
+                let _capped = crate::security::permission::enforce_managed_cap(parsed, &managed)?;
+                parsed.as_str().to_string()
+            }
+            None => {
+                // Inherit-from-workarea: walk workarea → workspace →
+                // project → managed → default WITHOUT a session row
+                // (the row doesn't exist yet). Helper mirrors
+                // `resolve_effective_mode` but takes a workarea id.
+                let resolved =
+                    resolve_for_new_session(&self.persistence, &self.config_dir, &req.workarea_id)
+                        .await?;
+                resolved.mode.as_str().to_string()
+            }
+        };
+        let permission_mode_enum = crate::security::parse_permission_mode(&permission_mode)?;
         let chat_id = uuid::Uuid::now_v7().to_string();
         {
             let mut writer = self.persistence.writer().await;
@@ -489,6 +523,7 @@ impl AgentSupervisorHandle {
                 SessionEntry {
                     workarea_id: req.workarea_id.clone(),
                     cookie,
+                    permission_mode: permission_mode_enum,
                     socket_path: socket_path.clone(),
                     events: events.clone(),
                     events_replay: Arc::clone(&events_replay),
@@ -602,6 +637,64 @@ impl AgentSupervisorHandle {
             session = %session_id,
             workarea = %entry.workarea_id,
             "session stopped"
+        );
+        Ok(())
+    }
+
+    /// Task 32: change `sessions.permission_mode` for a live session.
+    ///
+    /// `mode` must be one of `strict|normal|auto|yolo`. The
+    /// acknowledgement string is required for `yolo`; the managed.json
+    /// cap is enforced. Updates the in-memory entry's cached mode (if
+    /// present) so downstream tool-approval checks (Task 33) see the
+    /// new value without a DB round-trip.
+    pub async fn update_session_permission_mode(
+        &self,
+        id: &SessionId,
+        mode: &str,
+        acknowledgement: &str,
+    ) -> Result<()> {
+        let parsed = crate::security::parse_permission_mode(mode)?;
+        if parsed == crate::security::PermissionMode::Yolo
+            && !crate::security::ack_for_yolo(acknowledgement)
+        {
+            return Err(Error::Policy(format!(
+                "policy.acknowledgement_required: setting permission_mode={} requires acknowledgement={:?}",
+                parsed.as_str(),
+                crate::security::ACK_YOLO
+            )));
+        }
+        let managed = crate::security::load_managed_policy(&self.config_dir);
+        let _capped = crate::security::permission::enforce_managed_cap(parsed, &managed)?;
+
+        let existing = concerto_persist::sessions::get(self.persistence.readers(), id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("session {id} not found")))?;
+        let from = existing.permission_mode.clone();
+
+        let mut writer = self.persistence.writer().await;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::sessions::set_permission_mode(&mut tx, id, parsed.as_str()).await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        drop(writer);
+
+        // Best-effort: refresh the in-memory cache so the next
+        // tool-approval check sees the new value.
+        {
+            let mut map = self.sessions.lock().await;
+            if let Some(entry) = map.get_mut(id) {
+                entry.permission_mode = parsed;
+            }
+        }
+
+        tracing::info!(
+            audit.kind = "permission_mode_changed",
+            audit.scope = "session",
+            audit.session_id = %id,
+            audit.from = %from,
+            audit.to = %parsed.as_str(),
+            audit.acknowledgement_provided = !acknowledgement.is_empty(),
+            "session permission_mode changed"
         );
         Ok(())
     }
@@ -794,13 +887,97 @@ fn shell_escape_single_quoted(s: &str) -> String {
     out
 }
 
-fn validate_permission_mode(mode: &str) -> Result<()> {
-    match mode {
-        "strict" | "normal" | "auto" | "yolo" => Ok(()),
-        other => Err(Error::Validation(format!(
-            "permission_mode {other:?} must be one of strict|normal|auto|yolo"
-        ))),
+/// Resolve the effective permission mode for a session about to be
+/// inserted on `workarea_id` (no `sessions` row exists yet). Walks
+/// workarea → workspace → project → managed → default, identical to
+/// [`crate::security::resolve_effective_mode`] but starting one level
+/// up the chain.
+async fn resolve_for_new_session(
+    persistence: &Persistence,
+    config_dir: &std::path::Path,
+    workarea_id: &WorkareaId,
+) -> Result<crate::security::EffectiveMode> {
+    use crate::security::{
+        load_managed_policy, parse_permission_mode, EffectiveMode, ModeSource, PermissionMode,
+    };
+    let pool = persistence.readers();
+    let row = sqlx::query(
+        "SELECT
+            wa.permission_mode         AS workarea_mode,
+            wa.bypass_destructive_guard AS workarea_bypass,
+            ws.permission_mode         AS workspace_mode,
+            ws.bypass_destructive_guard AS workspace_bypass,
+            p.settings_json            AS project_settings_json
+         FROM workareas wa
+         JOIN workspaces ws ON ws.id = wa.workspace_id
+         JOIN projects p    ON p.id  = ws.project_id
+         WHERE wa.id = ?",
+    )
+    .bind(&workarea_id.0)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?
+    .ok_or_else(|| Error::NotFound(format!("workarea {workarea_id} not found")))?;
+
+    use sqlx::Row;
+    let workarea_mode: Option<String> = row.get("workarea_mode");
+    let workspace_mode: Option<String> = row.get("workspace_mode");
+    let project_settings_json: String = row.get("project_settings_json");
+
+    let (mut mode, mut source) = if let Some(m) = workarea_mode.as_deref() {
+        (parse_permission_mode(m)?, ModeSource::Workarea)
+    } else if let Some(m) = workspace_mode.as_deref() {
+        (parse_permission_mode(m)?, ModeSource::Workspace)
+    } else {
+        // Inline of `project_default_from_settings` (private to
+        // security::permission). Forgive malformed JSON by falling
+        // through to default.
+        let project_default: Option<PermissionMode> =
+            match serde_json::from_str::<serde_json::Value>(&project_settings_json) {
+                Ok(v) => v
+                    .as_object()
+                    .and_then(|m| m.get("default_permission_mode"))
+                    .and_then(|x| x.as_str())
+                    .map(parse_permission_mode)
+                    .transpose()?,
+                Err(_) => None,
+            };
+        match project_default {
+            Some(m) => (m, ModeSource::Project),
+            None => (PermissionMode::Normal, ModeSource::Default),
+        }
+    };
+
+    let workarea_bypass: Option<i64> = row.get("workarea_bypass");
+    let workspace_bypass: Option<i64> = row.get("workspace_bypass");
+    let mut bypass = if let Some(b) = workarea_bypass {
+        b != 0
+    } else if let Some(b) = workspace_bypass {
+        b != 0
+    } else {
+        false
+    };
+
+    let managed = load_managed_policy(config_dir);
+    if let Some(cap) = managed.max_permission_mode {
+        if mode.rank() > cap.rank() {
+            mode = cap;
+            source = ModeSource::Managed;
+        }
     }
+    if !managed.allow_yolo && mode == PermissionMode::Yolo {
+        mode = PermissionMode::Auto;
+        source = ModeSource::Managed;
+    }
+    if !managed.allow_bypass_destructive_guard && bypass {
+        bypass = false;
+    }
+
+    Ok(EffectiveMode {
+        mode,
+        bypass_destructive_guard: bypass,
+        source,
+    })
 }
 
 /// Append `ev` to the per-session replay buffer, evicting the oldest
@@ -838,9 +1015,14 @@ pub struct AgentSupervisorActor {
 }
 
 impl AgentSupervisorActor {
-    pub fn new(persistence: Arc<Persistence>, data_dir: Arc<PathBuf>, host_bin: PathBuf) -> Self {
+    pub fn new(
+        persistence: Arc<Persistence>,
+        data_dir: Arc<PathBuf>,
+        config_dir: Arc<PathBuf>,
+        host_bin: PathBuf,
+    ) -> Self {
         Self {
-            handle: AgentSupervisorHandle::new(persistence, data_dir, host_bin),
+            handle: AgentSupervisorHandle::new(persistence, data_dir, config_dir, host_bin),
         }
     }
 

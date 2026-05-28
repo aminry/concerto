@@ -77,10 +77,27 @@ message StopSessionRequest {
   string reason = 2;
 }
 
+// Task 32: inputs for `Sessions.UpdateSessionPermissionMode`.
+// `permission_mode` is REQUIRED and must NOT be
+// `PERMISSION_MODE_UNSPECIFIED` (sessions never carry NULL — the row
+// always has a concrete mode). `acknowledgement` MUST equal the literal
+// `"I understand"` when `permission_mode = PERMISSION_MODE_YOLO`;
+// server rejects with `FAILED_PRECONDITION` on a missing/wrong string
+// and with `PERMISSION_DENIED` (`policy.locked`) when `managed.json`
+// caps the chain below the requested mode.
+message UpdateSessionPermissionModeRequest {
+  string session_id = 1;
+  PermissionMode permission_mode = 2;
+  string acknowledgement = 3;
+}
+
 service Sessions {
   rpc CreateSession(CreateSessionRequest) returns (Session);
   rpc GetSession(SessionId) returns (Session);
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
   rpc StopSession(StopSessionRequest) returns (google.protobuf.Empty);
+  // Task 32: change `sessions.permission_mode` with entry-ceremony +
+  // managed.json cap enforcement. Returns the updated `Session` row.
+  rpc UpdateSessionPermissionMode(UpdateSessionPermissionModeRequest) returns (Session);
 }

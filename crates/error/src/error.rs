@@ -20,6 +20,8 @@ impl Error {
             Error::Git(_) => "git",
             Error::Validation(_) => "validation",
             Error::NotFound(_) => "not_found",
+            Error::Policy(_) => "policy",
+            Error::PolicyLocked(_) => "policy.locked",
             Error::Internal(_) => "internal",
         }
     }

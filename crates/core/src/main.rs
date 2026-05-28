@@ -70,6 +70,7 @@ async fn run() -> Result<()> {
     let socket_path = config.config_dir.join("core.sock");
     let repos_root = config.data_dir.join("repos");
     let data_dir = Arc::new(config.data_dir.clone());
+    let config_dir = Arc::new(config.config_dir.clone());
     let mut runtime = match Runtime::start(config).await? {
         StartOutcome::Started(r) => r,
         StartOutcome::AlreadyRunning { pid } => {
@@ -118,15 +119,22 @@ async fn run() -> Result<()> {
     // Task 19: spawn the Workspace Manager. Same pattern as the repo
     // manager — the actor's `run` parks on shutdown; the cheap-to-clone
     // handle is what the gRPC `Workspaces` service holds.
-    let workspace_actor = WorkspaceManagerActor::new(Arc::clone(&persistence));
+    let workspace_actor =
+        WorkspaceManagerActor::new(Arc::clone(&persistence), Arc::clone(&config_dir));
     let workspace_handle = workspace_actor.handle();
     drop(workspace_actor);
     let workspace_factory_persistence = Arc::clone(&persistence);
+    let workspace_factory_config_dir = Arc::clone(&config_dir);
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
         .spawn::<WorkspaceManagerActor, _>(
-            move || WorkspaceManagerActor::new(Arc::clone(&workspace_factory_persistence)),
+            move || {
+                WorkspaceManagerActor::new(
+                    Arc::clone(&workspace_factory_persistence),
+                    Arc::clone(&workspace_factory_config_dir),
+                )
+            },
             WorkspaceManagerConfig,
         )
         .await?;
@@ -138,12 +146,14 @@ async fn run() -> Result<()> {
         Arc::clone(&persistence),
         repo_handle.clone(),
         Arc::clone(&data_dir),
+        Arc::clone(&config_dir),
     );
     let workarea_handle = workarea_actor.handle();
     drop(workarea_actor);
     let workarea_factory_persistence = Arc::clone(&persistence);
     let workarea_factory_repo = repo_handle.clone();
     let workarea_factory_data_dir = Arc::clone(&data_dir);
+    let workarea_factory_config_dir = Arc::clone(&config_dir);
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -153,6 +163,7 @@ async fn run() -> Result<()> {
                     Arc::clone(&workarea_factory_persistence),
                     workarea_factory_repo.clone(),
                     Arc::clone(&workarea_factory_data_dir),
+                    Arc::clone(&workarea_factory_config_dir),
                 )
             },
             WorkareaManagerConfig,
@@ -168,12 +179,14 @@ async fn run() -> Result<()> {
         let actor = AgentSupervisorActor::new(
             Arc::clone(&persistence),
             Arc::clone(&data_dir),
+            Arc::clone(&config_dir),
             host_bin.clone(),
         );
         let handle = actor.handle();
         drop(actor);
         let factory_persistence = Arc::clone(&persistence);
         let factory_data_dir = Arc::clone(&data_dir);
+        let factory_config_dir = Arc::clone(&config_dir);
         let factory_host_bin = host_bin.clone();
         runtime
             .supervisor_mut()
@@ -183,6 +196,7 @@ async fn run() -> Result<()> {
                     AgentSupervisorActor::new(
                         Arc::clone(&factory_persistence),
                         Arc::clone(&factory_data_dir),
+                        Arc::clone(&factory_config_dir),
                         factory_host_bin.clone(),
                     )
                 },

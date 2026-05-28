@@ -69,13 +69,13 @@ Implement the permission-mode inheritance chain from `design/03 §3.8` and `desi
 7. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Inheritance chain verified at every level (table-driven).
-- [ ] Entry-ceremony strings enforced.
-- [ ] Managed-cap enforced.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Inheritance chain verified at every level (table-driven).
+- [x] Entry-ceremony strings enforced.
+- [x] Managed-cap enforced.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/core/src/security/mod.rs` (new — module declaration)
@@ -101,7 +101,22 @@ Refs: tasks/32-permission-mode-inheritance.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** audit writes use tracing; structured JSONL audit log is Task 44.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **New error variants `Error::Policy` and `Error::PolicyLocked`** added to `crates/error/src/api.rs`. Wire codes are `"policy"` (→ `Code::FailedPrecondition`) and `"policy.locked"` (→ `Code::PermissionDenied`) per `design/12 §3.8`. Mapping wired in `crates/core/src/error_map.rs`. Both variants are additive to the Task 19 surface; existing tests untouched.
+  - **`WorkspaceManager::new` / `WorkareaManager::new` / `AgentSupervisorHandle::new` all gained an `Arc<PathBuf>` `config_dir` parameter** so each handler can call `load_managed_policy(&config_dir)` at RPC time. The actor wrappers gained matching constructor signatures; `main.rs` now plumbs a single `Arc::new(config.config_dir.clone())` through every spawn site. Task 17's integration tests (`agent_spawn.rs`) updated.
+  - **`UpdateWorkareaPermissionModeRequest.permission_mode = PERMISSION_MODE_UNSPECIFIED` clears the override** (inherit-from-workspace). The proto wire is a non-optional enum (vs the optional one on `Workspace.permission_mode`); `UNSPECIFIED` is the agreed "clear" sentinel for the update RPC. `Workspaces.UpdateWorkspaceSettings` uses the `WorkspaceSettings` wrapper message instead (V0.1 fields: `optional PermissionMode permission_mode = 1`), so omitting the field is "no change" and `Some(UNSPECIFIED)` is rejected as `INVALID_ARGUMENT`.
+  - **`SessionEntry` gained a `permission_mode: PermissionMode` field** so the Agent Supervisor caches the effective mode at `start_session` and updates it on `update_session_permission_mode`. Task 33's tool-approval intercept reads this field instead of round-tripping through the DB. The DB row is still the source of truth.
+  - **`AgentSupervisor::start_session` resolves the effective mode in Rust BEFORE inserting the session row.** When `req.permission_mode` is `None`, the supervisor calls a private `resolve_for_new_session` helper that walks workarea → workspace → project → managed → default (no session row exists yet). The session row is then inserted with the resolved mode as the value — so the row always carries the effective mode from row 1, and the inheritance is observable to anyone reading `sessions.permission_mode`.
+  - **`projects::set_settings_json` + `projects::get_settings_json` added** to the persistence surface so future tasks can patch per-project settings without inventing a new helper. Mirrors `workareas::set_settings_json` (Task 30).
+  - **Workareas RPCs frozen at the V0.1 set + the two new Task 32 RPCs** (`UpdateWorkareaPermissionMode`, `SetWorkareaBypassDestructiveGuard`). Adding the workspace-level `UpdateWorkspaceSettings` was done with a wrapper message so V1.0 can grow workspace settings without renaming.
+- **Open questions for next task:**
+  - **Task 33 (tool-approval intercept)** should read the cached `SessionEntry.permission_mode` on each tool call rather than re-resolving — the resolver is correct but the cache eliminates a DB round trip on the hot path. Refresh-on-write semantics live in `update_session_permission_mode` already.
+  - **Task 41/42/43 (filesystem allow/deny + destructive intercept)** should call `crate::security::resolve_effective_mode` with `(&persistence, &config_dir, &session_id)` directly. The resolver is the single canonical place for the chain walk + managed cap; everything else should defer to it.
+  - **Task 44 (audit JSONL writer)** can grep for `audit.kind = "permission_mode_changed"` / `audit.kind = "bypass_destructive_guard_changed"` `tracing::info!` events as the structured event source. The field set today: `audit.kind`, `audit.scope` (workspace|workarea|session), `audit.workspace_id`/`audit.workarea_id`/`audit.session_id`, `audit.from`, `audit.to`, `audit.acknowledgement_provided`. The acknowledgement string itself is NOT logged (per pre-decision 9 — non-sensitive but not file-appender material in V0.1).
+  - **`Sessions.UpdateSessionPermissionMode` does NOT accept UNSPECIFIED.** `sessions.permission_mode` is `NOT NULL` in the schema (the row always has a concrete value); the wire enum rejects `UNSPECIFIED` with `INVALID_ARGUMENT`. The workarea-level RPC accepts `UNSPECIFIED` because workareas inherit.
+- **Deliberate debt:**
+  - **Audit writes use `tracing::info!`** with structured fields; the JSONL audit-log writer lands in Task 44. The redaction filter (Task 16) already strips known-secret field names; the acknowledgement strings are NOT secret but we kept them out of the log payload per pre-decision 9.
+  - **`managed.json` is read synchronously every RPC call.** The file is tiny and the RPC is rare; an in-process cache invalidated on `SIGHUP` is a Phase 3 micro-optimisation if profiling demands it.
+  - **`PermissionMode::Strict` is the lowest rank for the cap walk**, but no caller actually requests `strict` via the public RPCs yet (Phase 3). The ordering is locked here for forward use.
+  - **No `TODO`/`FIXME`/`todo!()`/`unimplemented!()` markers in new code.**
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` (v2) still boots Core → creates project/repo/workspace/workarea → spawns an echo session → asserts output → archives — the Task 32 RPCs are exercised by `crates/core/tests/permission_inheritance.rs` via the Task 17 harness, not by the smoke gate.

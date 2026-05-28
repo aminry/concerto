@@ -120,6 +120,34 @@ message ArchiveWorkareaRequest {
   bool remove_worktree = 2;
 }
 
+// Task 32: inputs for `Workareas.UpdateWorkareaPermissionMode`.
+// `permission_mode` is REQUIRED (omit the message → INVALID_ARGUMENT).
+// `acknowledgement` MUST equal the literal `"I understand"` when
+// `permission_mode = PERMISSION_MODE_YOLO`; the server rejects with
+// `FAILED_PRECONDITION` otherwise. For other modes the field is
+// ignored.
+//
+// Setting `permission_mode = PERMISSION_MODE_UNSPECIFIED` clears the
+// row's override (inherit from workspace). The acknowledgement field is
+// not required to clear.
+message UpdateWorkareaPermissionModeRequest {
+  string workarea_id = 1;
+  PermissionMode permission_mode = 2;
+  string acknowledgement = 3;
+}
+
+// Task 32: inputs for `Workareas.SetWorkareaBypassDestructiveGuard`.
+// `acknowledgement` MUST equal the literal `"I understand the risks"`
+// when `enable = true`; ignored when `enable = false`. Server rejects
+// with `FAILED_PRECONDITION` on a missing/wrong acknowledgement, and
+// with `PERMISSION_DENIED` (`policy.locked`) when `managed.json`
+// disallows the flag.
+message SetWorkareaBypassDestructiveGuardRequest {
+  string workarea_id = 1;
+  bool enable = 2;
+  string acknowledgement = 3;
+}
+
 service Workareas {
   rpc CreateWorkarea(CreateWorkareaRequest) returns (Workarea);
   rpc GetWorkarea(WorkareaId) returns (Workarea);
@@ -135,4 +163,11 @@ service Workareas {
   // (default opts = keep worktree).
   rpc ArchiveWorkareaWithOpts(ArchiveWorkareaRequest) returns (google.protobuf.Empty);
   rpc RestoreWorkarea(WorkareaId) returns (Workarea);
+  // Task 32: change `workareas.permission_mode` with entry-ceremony +
+  // managed.json cap enforcement. Returns the updated `Workarea` row.
+  rpc UpdateWorkareaPermissionMode(UpdateWorkareaPermissionModeRequest) returns (Workarea);
+  // Task 32: toggle `workareas.bypass_destructive_guard` with
+  // entry-ceremony + managed.json policy enforcement. Returns the
+  // updated `Workarea` row.
+  rpc SetWorkareaBypassDestructiveGuard(SetWorkareaBypassDestructiveGuardRequest) returns (Workarea);
 }

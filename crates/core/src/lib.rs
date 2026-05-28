@@ -26,6 +26,7 @@ pub mod logging;
 pub mod pid_file;
 pub mod repo_manager;
 pub mod runtime;
+pub mod security;
 pub mod signals;
 pub mod supervisor;
 pub mod workspace_manager;
