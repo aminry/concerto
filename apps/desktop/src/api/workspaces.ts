@@ -34,3 +34,28 @@ export async function listWorkspaces(
 export async function getWorkspace(id: string): Promise<Workspace> {
   return callRpc<{ id: string }, Workspace>("Workspaces.GetWorkspace", { id });
 }
+
+export async function createWorkspace(input: {
+  projectId: string;
+  name: string;
+  repositoryIds: string[];
+  description?: string;
+  permissionMode?: number;
+}): Promise<Workspace> {
+  return callRpc<
+    {
+      project_id: string;
+      name: string;
+      repository_ids: string[];
+      description?: string;
+      permission_mode?: number;
+    },
+    Workspace
+  >("Workspaces.CreateWorkspace", {
+    project_id: input.projectId,
+    name: input.name,
+    repository_ids: input.repositoryIds,
+    description: input.description,
+    permission_mode: input.permissionMode,
+  });
+}

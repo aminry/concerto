@@ -13,7 +13,10 @@ use async_trait::async_trait;
 use concerto_gix_wrap::CloneProgressEvent;
 use concerto_persist::RepositoryId;
 use concerto_proto::v1::repositories_server::Repositories as RepositoriesService;
-use concerto_proto::v1::{AddRepoRequest, CloneProgress, CloneRequest, Repository};
+use concerto_proto::v1::{
+    AddRepoRequest, CloneProgress, CloneRequest, ListRepositoriesRequest, ListRepositoriesResponse,
+    Repository,
+};
 use futures::Stream;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -118,6 +121,25 @@ impl RepositoriesService for RepositoriesHandler {
 
         let stream: Self::CloneStream = Box::pin(ReceiverStream::new(out_rx));
         Ok(Response::new(stream))
+    }
+
+    #[tracing::instrument(skip_all, name = "Repositories::ListByProject")]
+    async fn list_by_project(
+        &self,
+        request: Request<ListRepositoriesRequest>,
+    ) -> Result<Response<ListRepositoriesResponse>, Status> {
+        let req = request.into_inner();
+        if req.project_id.is_empty() {
+            return Err(Status::invalid_argument("project_id is required"));
+        }
+        let rows = self
+            .repo_manager
+            .list_by_project(&req.project_id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ListRepositoriesResponse {
+            repositories: rows.into_iter().map(repository_to_proto).collect(),
+        }))
     }
 }
 
