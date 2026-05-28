@@ -37,6 +37,14 @@ fn pairing_wire_code_and_display() {
 }
 
 #[test]
+fn git_wire_code_and_display() {
+    let err = Error::Git("clone failed: exit 128".to_string());
+    assert_eq!(err.wire_code(), "git");
+    assert_eq!(err.to_string(), "git: clone failed: exit 128");
+    assert!(format!("{err:?}").contains("Git"));
+}
+
+#[test]
 fn internal_wire_code_and_display() {
     let err = Error::Internal("invariant violated".to_string());
     assert_eq!(err.wire_code(), "internal");

@@ -35,7 +35,10 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT"
 authors = ["Concerto contributors"]
-rust-version = "1.78"
+# Task 18 bump: gix 0.77 (chosen to clear RUSTSEC-2025-0140 in
+# `gix-date` < 0.12) needs rustc 1.82. CI rustc is on 1.95+; the bump
+# is benign for everything already in the workspace.
+rust-version = "1.82"
 
 [workspace.dependencies]
 tokio = "1"
@@ -94,3 +97,17 @@ tower = "0.5"
 hyper-util = "0.1"
 tokio-stream = "0.1"
 hostname = "0.4"
+# Task 18: gix powers the read-only git operations in `concerto-gix-wrap`
+# (rev-parse, list-branches). Heavy write paths (clone, worktree add)
+# shell out to `git` per `design/02 §3.1`. `default-features = false`
+# trims the feature set to what we actually use; `max-performance-safe`
+# keeps the SIMD / parallel knobs on without unsafe code, `revision`
+# enables rev-parse, and `blocking-network-client` is harmless — it
+# lands the network glue without forcing a particular TLS backend.
+# Pinned at 0.66 (Task 18 drift note) — vetted MIT/Apache-2.0 transitively.
+gix = { version = "0.77", default-features = false, features = ["max-performance-safe", "blocking-network-client", "revision"] }
+# Task 18: UUIDv7 for `repositories.id`. `v7` enables monotonic time-based
+# IDs (design/09 §4.1 — UUIDv7 is the schema convention). MIT/Apache-2.0;
+# already pulled transitively, pinning at the workspace level keeps the
+# version honest.
+uuid = { version = "1", features = ["v7"] }

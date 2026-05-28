@@ -17,6 +17,7 @@ impl Error {
             Error::Tonic(_) => "tonic",
             Error::Pairing(_) => "pairing",
             Error::Secrets(_) => "secrets",
+            Error::Git(_) => "git",
             Error::Internal(_) => "internal",
         }
     }

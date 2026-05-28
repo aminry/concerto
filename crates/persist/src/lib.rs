@@ -6,7 +6,13 @@
 //!
 //! The public API lives in [`api`]. Other crates depend on the re-exports
 //! at the crate root.
+//!
+//! Task 18 adds the `repositories` table CRUD under [`repositories`];
+//! the table itself is part of migration 0001.
 
 pub mod api;
+pub mod repositories;
 
-pub use api::{Persistence, PersistenceConfig, WriterGuard};
+pub use api::{
+    NewRepository, Persistence, PersistenceConfig, Repository, RepositoryId, WriterGuard,
+};

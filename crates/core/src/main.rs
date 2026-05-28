@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use concerto_core::api_server::{ApiServerActor, ApiServerConfig};
 use concerto_core::logging;
+use concerto_core::repo_manager::{RepoManagerActor, RepoManagerConfig};
 use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
 use concerto_error::Result;
 
@@ -62,6 +63,7 @@ async fn run() -> Result<()> {
     );
 
     let socket_path = config.config_dir.join("core.sock");
+    let repos_root = config.data_dir.join("repos");
     let mut runtime = match Runtime::start(config).await? {
         StartOutcome::Started(r) => r,
         StartOutcome::AlreadyRunning { pid } => {
@@ -76,10 +78,42 @@ async fn run() -> Result<()> {
         }
     };
 
-    // Task 13: spawn the gRPC server as the first supervised actor.
-    // Handles captured by the factory closure are cheap `Arc::clone`s,
-    // so a restart constructs a fresh `ApiServerActor` without
-    // re-reading the wall clock or rebuilding the supervisor view.
+    // Task 18: spawn the Repository Manager first so its handle can be
+    // captured by the gRPC server's factory closure below. The actor's
+    // `run` loop just idles on shutdown; the handle is the meaningful
+    // surface and lives in `RepoManagerActor::new`.
+    let persistence = runtime
+        .supervisor()
+        .expect("supervisor present at boot")
+        .persistence();
+    let repo_actor = RepoManagerActor::new(Arc::clone(&persistence), repos_root.clone());
+    let repo_handle = repo_actor.handle();
+    // The actor instance built above is consumed by the factory; the
+    // handle clone above is what the gRPC service holds.
+    drop(repo_actor);
+    let repo_factory_persistence = Arc::clone(&persistence);
+    let repo_factory_root = repos_root.clone();
+    runtime
+        .supervisor_mut()
+        .expect("supervisor present at boot")
+        .spawn::<RepoManagerActor, _>(
+            move || {
+                RepoManagerActor::new(
+                    Arc::clone(&repo_factory_persistence),
+                    repo_factory_root.clone(),
+                )
+            },
+            RepoManagerConfig {
+                repos_root: repos_root.clone(),
+            },
+        )
+        .await?;
+
+    // Task 13: spawn the gRPC server as the next supervised actor.
+    // Handles captured by the factory closure are cheap `Arc::clone`s
+    // (plus a single `RepoManager::clone` for the repositories service),
+    // so a restart constructs a fresh `ApiServerActor` without re-reading
+    // the wall clock or rebuilding the supervisor view.
     let started_at = runtime.started_at();
     let supervisor_view = runtime
         .supervisor()
@@ -87,11 +121,18 @@ async fn run() -> Result<()> {
         .view();
     let factory_started_at = Arc::clone(&started_at);
     let factory_view = supervisor_view.clone();
+    let factory_repo_handle = repo_handle.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
         .spawn::<ApiServerActor, _>(
-            move || ApiServerActor::new(Arc::clone(&factory_started_at), factory_view.clone()),
+            move || {
+                ApiServerActor::with_repo_manager(
+                    Arc::clone(&factory_started_at),
+                    factory_view.clone(),
+                    factory_repo_handle.clone(),
+                )
+            },
             ApiServerConfig { socket_path },
         )
         .await?;
