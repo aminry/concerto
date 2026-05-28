@@ -40,8 +40,10 @@
 #![cfg(unix)]
 
 pub mod actor;
+pub mod approval;
 pub mod bridge;
 pub mod events;
+pub mod parsers;
 pub mod spawn;
 
 pub use actor::{
@@ -49,3 +51,4 @@ pub use actor::{
     StartSessionRequest,
 };
 pub use events::{AgentEvent, MessageRole};
+pub use parsers::{MsgRole, ParseEvent, ParserPack};

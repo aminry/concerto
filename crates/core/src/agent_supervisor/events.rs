@@ -55,4 +55,40 @@ pub enum AgentEvent {
         exit_code: Option<i32>,
         signal: Option<i32>,
     },
+    /// Task 33: parser pack detected a tool-approval prompt and the
+    /// [`crate::security::PermissionResolver`] returned `MustAsk`. The
+    /// `approval_id` is the freshly-persisted `tool_approvals` row id;
+    /// clients call `Sessions.ResolveApproval` to send the decision.
+    AwaitingApproval {
+        session_id: SessionId,
+        approval_id: String,
+        tool: String,
+        summary: String,
+        payload_json: String,
+    },
+    /// Task 33: an approval was resolved (auto or manual). `decision`
+    /// is the `tool_approvals.decision` string (one of
+    /// `approve|approve_once|deny|auto_*`).
+    ApprovalResolved {
+        session_id: SessionId,
+        approval_id: String,
+        tool: String,
+        decision: String,
+    },
+    /// Task 33: a parsed tool call. V0.1 emits this as a sibling event
+    /// to `AwaitingApproval` when the parser pack surfaces a structured
+    /// call; the terminal-mode pack only emits it when the underlying
+    /// `ParseEvent::ToolCall` variant fires (V1.0 work).
+    ToolCall {
+        session_id: SessionId,
+        call_id: String,
+        name: String,
+        args_json: String,
+    },
+    /// Task 33: agent finished a turn. V0.1's terminal-mode parsers
+    /// don't currently detect this boundary; V1.0 structured parsers
+    /// are authoritative. The variant is wired here so the supervisor
+    /// and streams handler can forward it once the parser packs
+    /// surface it.
+    TurnComplete { session_id: SessionId },
 }

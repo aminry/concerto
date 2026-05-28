@@ -23,5 +23,6 @@ pub mod permission;
 pub use managed::{load_managed_policy, ManagedPolicy};
 pub use permission::{
     ack_for_bypass_destructive_guard, ack_for_yolo, parse_permission_mode, resolve_effective_mode,
-    EffectiveMode, ModeSource, PermissionMode, ACK_BYPASS_DESTRUCTIVE_GUARD, ACK_YOLO,
+    Decision, EffectiveMode, ModeSource, PermissionMode, PermissionResolver, ToolClass,
+    ACK_BYPASS_DESTRUCTIVE_GUARD, ACK_YOLO,
 };

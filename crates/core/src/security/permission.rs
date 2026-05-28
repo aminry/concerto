@@ -293,6 +293,155 @@ pub fn enforce_managed_bypass(enable: bool, managed: &ManagedPolicy) -> Result<(
     Ok(())
 }
 
+/// Classification of a tool name into a safety bucket. V0.1 uses an
+/// inline table per `design/04 §3.10`; the per-tool TOML file
+/// (`tool-classifications.toml`) is V1.0 deferred.
+///
+/// - [`ToolClass::Safe`]   — read-only / cheap operations (`ls`, `cat`,
+///   `grep`, …). Normal/auto/yolo all auto-approve.
+/// - [`ToolClass::Restricted`] — file mutations (`edit`, `write`,
+///   `apply_patch`). Normal asks; auto auto-approves.
+/// - [`ToolClass::Dangerous`] — destructive or out-of-band side effects
+///   (`delete`, `rm`, `drop`). Asks in normal AND auto; yolo auto-approves
+///   only when `bypass_destructive_guard = true`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ToolClass {
+    Safe,
+    Restricted,
+    Dangerous,
+}
+
+/// One of the four resolver verdicts. Mirrors the wire enum in
+/// `tool_approvals.decision` (the row-level `auto_*` strings are emitted
+/// by [`PermissionResolver::record_string_for`] when the resolver
+/// auto-decides).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Approve immediately; persist `auto_<mode>` and inject the
+    /// approve bytes.
+    AutoApprove,
+    /// Approve THIS call only (the "approve_once" wire variant). V0.1
+    /// only emits this on explicit user choice; the auto-paths emit
+    /// `AutoApprove` for simplicity.
+    AutoApproveOnce,
+    /// Raise an `AwaitingApproval` event and block on the user's
+    /// response.
+    MustAsk,
+    /// Auto-deny: persist `deny` (V0.1 reuses the same wire variant for
+    /// the auto-deny path) and inject the deny bytes.
+    AutoDeny,
+}
+
+/// Per-session resolver that consults the cached
+/// [`EffectiveMode`] (Task 32) and the inline classification table to
+/// decide each tool call.
+///
+/// The resolver is cheap to construct and cheap to clone; the supervisor
+/// builds one at `start_session` time, stashes it on the
+/// `SessionEntry`, and refreshes the inner mode whenever
+/// `update_session_permission_mode` lands.
+#[derive(Debug, Clone)]
+pub struct PermissionResolver {
+    mode: PermissionMode,
+    bypass_destructive_guard: bool,
+}
+
+impl PermissionResolver {
+    /// Build a resolver from an already-resolved effective mode. The
+    /// supervisor calls this with the [`EffectiveMode`] computed by
+    /// [`resolve_effective_mode`] (or, at `start_session` time, by the
+    /// `resolve_for_new_session` helper inside the supervisor's actor
+    /// module).
+    pub fn new(mode: PermissionMode, bypass_destructive_guard: bool) -> Self {
+        Self {
+            mode,
+            bypass_destructive_guard,
+        }
+    }
+
+    /// Current cached effective mode.
+    pub fn mode(&self) -> PermissionMode {
+        self.mode
+    }
+
+    /// Refresh the cached mode (called by the supervisor when
+    /// `update_session_permission_mode` succeeds).
+    pub fn set_mode(&mut self, mode: PermissionMode) {
+        self.mode = mode;
+    }
+
+    /// Whether the session has `bypass_destructive_guard = true` on its
+    /// effective row.
+    pub fn bypass_destructive_guard(&self) -> bool {
+        self.bypass_destructive_guard
+    }
+
+    /// Classify a tool name. V0.1's inline table per `design/04 §3.10`:
+    ///
+    /// - `edit`, `write`, `apply_patch` → [`ToolClass::Restricted`].
+    /// - `delete`, `rm`, `drop` → [`ToolClass::Dangerous`].
+    /// - everything else → [`ToolClass::Safe`].
+    ///
+    /// The match is case-sensitive and exact — parser packs are
+    /// responsible for normalising tool names before the resolver sees
+    /// them (V1.0's TOML keys are also lowercase).
+    pub fn classify(&self, tool: &str) -> ToolClass {
+        match tool {
+            "edit" | "write" | "apply_patch" => ToolClass::Restricted,
+            "delete" | "rm" | "drop" => ToolClass::Dangerous,
+            _ => ToolClass::Safe,
+        }
+    }
+
+    /// Decision matrix per `design/04 §3.10`:
+    ///
+    /// - `strict` + any → `MustAsk`.
+    /// - `normal` + Safe → `AutoApprove`; +Restricted/Dangerous → `MustAsk`.
+    /// - `auto`   + Safe/Restricted → `AutoApprove`; +Dangerous → `MustAsk`.
+    /// - `yolo`   + Safe/Restricted → `AutoApprove`; +Dangerous → `AutoApprove`
+    ///   when `bypass_destructive_guard = true`, else `MustAsk`.
+    ///
+    /// V0.1 never emits `AutoDeny` from the matrix — `managed.json`
+    /// blocks elevated modes BEFORE the resolver sees them
+    /// ([`enforce_managed_cap`] runs at RPC time, Task 32). `AutoDeny`
+    /// is reserved for V1.0's per-tool deny list.
+    pub fn decide(&self, tool: &str) -> Decision {
+        let class = self.classify(tool);
+        match (self.mode, class) {
+            (PermissionMode::Strict, _) => Decision::MustAsk,
+            (PermissionMode::Normal, ToolClass::Safe) => Decision::AutoApprove,
+            (PermissionMode::Normal, _) => Decision::MustAsk,
+            (PermissionMode::Auto, ToolClass::Safe | ToolClass::Restricted) => {
+                Decision::AutoApprove
+            }
+            (PermissionMode::Auto, ToolClass::Dangerous) => Decision::MustAsk,
+            (PermissionMode::Yolo, ToolClass::Safe | ToolClass::Restricted) => {
+                Decision::AutoApprove
+            }
+            (PermissionMode::Yolo, ToolClass::Dangerous) => {
+                if self.bypass_destructive_guard {
+                    Decision::AutoApprove
+                } else {
+                    Decision::MustAsk
+                }
+            }
+        }
+    }
+
+    /// Compute the `tool_approvals.decision` string written when the
+    /// resolver auto-decides (`auto_<mode>`). The user-decision strings
+    /// (`approve | approve_once | deny`) are handled directly by the
+    /// `Sessions.ResolveApproval` handler.
+    pub fn auto_decision_string(&self) -> &'static str {
+        match self.mode {
+            PermissionMode::Strict => "auto_strict",
+            PermissionMode::Normal => "auto_normal",
+            PermissionMode::Auto => "auto_auto",
+            PermissionMode::Yolo => "auto_yolo",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +501,62 @@ mod tests {
         };
         assert!(enforce_managed_cap(PermissionMode::Yolo, &mp).is_err());
         assert!(enforce_managed_cap(PermissionMode::Auto, &mp).is_ok());
+    }
+
+    #[test]
+    fn classify_inline_table() {
+        let r = PermissionResolver::new(PermissionMode::Normal, false);
+        assert_eq!(r.classify("ls"), ToolClass::Safe);
+        assert_eq!(r.classify("edit"), ToolClass::Restricted);
+        assert_eq!(r.classify("write"), ToolClass::Restricted);
+        assert_eq!(r.classify("apply_patch"), ToolClass::Restricted);
+        assert_eq!(r.classify("delete"), ToolClass::Dangerous);
+        assert_eq!(r.classify("rm"), ToolClass::Dangerous);
+        assert_eq!(r.classify("drop"), ToolClass::Dangerous);
+    }
+
+    #[test]
+    fn decide_matrix_strict() {
+        let r = PermissionResolver::new(PermissionMode::Strict, false);
+        assert_eq!(r.decide("ls"), Decision::MustAsk);
+        assert_eq!(r.decide("edit"), Decision::MustAsk);
+        assert_eq!(r.decide("rm"), Decision::MustAsk);
+    }
+
+    #[test]
+    fn decide_matrix_normal() {
+        let r = PermissionResolver::new(PermissionMode::Normal, false);
+        assert_eq!(r.decide("ls"), Decision::AutoApprove);
+        assert_eq!(r.decide("edit"), Decision::MustAsk);
+        assert_eq!(r.decide("rm"), Decision::MustAsk);
+    }
+
+    #[test]
+    fn decide_matrix_auto() {
+        let r = PermissionResolver::new(PermissionMode::Auto, false);
+        assert_eq!(r.decide("ls"), Decision::AutoApprove);
+        assert_eq!(r.decide("edit"), Decision::AutoApprove);
+        assert_eq!(r.decide("rm"), Decision::MustAsk);
+    }
+
+    #[test]
+    fn decide_matrix_yolo() {
+        let r = PermissionResolver::new(PermissionMode::Yolo, false);
+        assert_eq!(r.decide("ls"), Decision::AutoApprove);
+        assert_eq!(r.decide("edit"), Decision::AutoApprove);
+        // Dangerous + bypass=false → still MustAsk.
+        assert_eq!(r.decide("rm"), Decision::MustAsk);
+        // Dangerous + bypass=true → AutoApprove.
+        let r2 = PermissionResolver::new(PermissionMode::Yolo, true);
+        assert_eq!(r2.decide("rm"), Decision::AutoApprove);
+    }
+
+    #[test]
+    fn auto_decision_string_mirrors_mode() {
+        let r = PermissionResolver::new(PermissionMode::Auto, false);
+        assert_eq!(r.auto_decision_string(), "auto_auto");
+        let r = PermissionResolver::new(PermissionMode::Yolo, true);
+        assert_eq!(r.auto_decision_string(), "auto_yolo");
     }
 
     #[test]

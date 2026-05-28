@@ -56,8 +56,11 @@ use concerto_persist::SessionId as PersistSessionId;
 use concerto_proto::v1::streams_server::Streams as StreamsService;
 use concerto_proto::v1::{
     event::Body as EventBody, session_event::Kind as SessionEventKind, AgentExited, AgentMessage,
-    AgentStarted, Event, SessionEvent as ProtoSessionEvent, SessionIoChunk as ProtoSessionIoChunk,
-    SubscribeRequest, WorkareaEvent as ProtoWorkareaEvent, WorkspaceEvent as ProtoWorkspaceEvent,
+    AgentStarted, ApprovalResolved as ProtoApprovalResolved,
+    AwaitingApproval as ProtoAwaitingApproval, Event, SessionEvent as ProtoSessionEvent,
+    SessionIoChunk as ProtoSessionIoChunk, SubscribeRequest, ToolCall as ProtoToolCall,
+    TurnComplete as ProtoTurnComplete, WorkareaEvent as ProtoWorkareaEvent,
+    WorkspaceEvent as ProtoWorkspaceEvent,
 };
 use futures::Stream;
 use tokio::sync::Mutex;
@@ -267,6 +270,51 @@ fn map_agent_event(ev: AgentEvent, offset: u64) -> Event {
         } => (
             session_id,
             SessionEventKind::Exited(AgentExited { exit_code }),
+        ),
+        AgentEvent::AwaitingApproval {
+            session_id,
+            approval_id,
+            tool,
+            summary,
+            payload_json,
+        } => (
+            session_id,
+            SessionEventKind::AwaitingApproval(ProtoAwaitingApproval {
+                approval_id,
+                tool,
+                summary,
+                payload_json,
+            }),
+        ),
+        AgentEvent::ApprovalResolved {
+            session_id,
+            approval_id,
+            tool,
+            decision,
+        } => (
+            session_id,
+            SessionEventKind::ApprovalResolved(ProtoApprovalResolved {
+                approval_id,
+                tool,
+                decision,
+            }),
+        ),
+        AgentEvent::ToolCall {
+            session_id,
+            call_id,
+            name,
+            args_json,
+        } => (
+            session_id,
+            SessionEventKind::ToolCall(ProtoToolCall {
+                call_id,
+                name,
+                args_json,
+            }),
+        ),
+        AgentEvent::TurnComplete { session_id } => (
+            session_id,
+            SessionEventKind::TurnComplete(ProtoTurnComplete {}),
         ),
     };
     Event {

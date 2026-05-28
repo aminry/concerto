@@ -136,3 +136,9 @@ ignore = "0.4"
 # workarea symlink should point at, which keeps workareas movable.
 # MIT/Apache-2.0; tiny crate (one function).
 pathdiff = "0.2"
+# Task 33: the Agent Supervisor's terminal-mode parser packs match
+# tool-approval prompts in the agent's rendered stdout via the
+# `regex` crate. `regex` is already pulled in transitively by `ignore`
+# (Task 30) and by tracing-subscriber's env-filter; promoting it to a
+# workspace dep keeps the version literal honest. MIT/Apache-2.0.
+regex = "1"

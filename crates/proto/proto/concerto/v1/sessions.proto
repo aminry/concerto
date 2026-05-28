@@ -77,6 +77,33 @@ message StopSessionRequest {
   string reason = 2;
 }
 
+// Task 33: client's decision on a pending tool-approval gate.
+//
+// Mirrors the four legal values for a *user-initiated* resolution. The
+// `auto_*` row values in `tool_approvals.decision` are written by the
+// resolver itself when `PermissionResolver` returns `AutoApprove` /
+// `AutoApproveOnce` / `AutoDeny`; clients never send those.
+enum ApprovalDecision {
+  APPROVAL_DECISION_UNSPECIFIED = 0;
+  APPROVAL_DECISION_APPROVE = 1;
+  APPROVAL_DECISION_APPROVE_ONCE = 2;
+  APPROVAL_DECISION_DENY = 3;
+}
+
+// Task 33: inputs for `Sessions.ResolveApproval`.
+//
+// Sent by a client (desktop / mobile) in response to an
+// `AwaitingApproval` event on `session.events.<sid>`. The server
+// validates that the approval is still pending (first-write-wins),
+// persists the decision on the `tool_approvals` row, and injects the
+// matching accept/deny bytes into the agent's stdin via the parser
+// pack's `inject_approval`.
+message ResolveApprovalRequest {
+  string session_id = 1;
+  string approval_id = 2;
+  ApprovalDecision decision = 3;
+}
+
 // Task 32: inputs for `Sessions.UpdateSessionPermissionMode`.
 // `permission_mode` is REQUIRED and must NOT be
 // `PERMISSION_MODE_UNSPECIFIED` (sessions never carry NULL — the row
@@ -100,4 +127,8 @@ service Sessions {
   // Task 32: change `sessions.permission_mode` with entry-ceremony +
   // managed.json cap enforcement. Returns the updated `Session` row.
   rpc UpdateSessionPermissionMode(UpdateSessionPermissionModeRequest) returns (Session);
+  // Task 33: resolve a pending tool-approval gate raised by the
+  // parser pack. First-write-wins — a second call on the same
+  // `approval_id` returns `FAILED_PRECONDITION`.
+  rpc ResolveApproval(ResolveApprovalRequest) returns (google.protobuf.Empty);
 }
