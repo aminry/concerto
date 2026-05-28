@@ -1,7 +1,21 @@
 //! Concerto Core daemon library.
 //!
 //! Hosts the long-lived runtime. Subsystems hang off of it as separate
-//! modules. The runtime itself is filled in by Task 11; this crate
-//! currently only carries the logging setup.
+//! modules.
+//!
+//! As of Task 11 the runtime skeleton owns:
+//!
+//! - [`runtime::Runtime`] — the boot/shutdown orchestrator and
+//!   single-instance guard.
+//! - [`pid_file::PidFile`] — the RAII handle for the advisory lock at
+//!   `<config_dir>/core.pid`.
+//! - [`signals`] — SIGTERM/SIGINT/SIGHUP plumbing (Unix);
+//!   `tokio::signal::ctrl_c` on Windows.
+//!
+//! Actor supervision (the typed tokio-task hierarchy from `design/01
+//! §3.2`) arrives in Task 12.
 
 pub mod logging;
+pub mod pid_file;
+pub mod runtime;
+pub mod signals;

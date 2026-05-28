@@ -53,3 +53,9 @@ zeroize = "1"
 # over `dirs` because `dirs` pulls in `option-ext` (MPL-2.0) — disallowed
 # by design/00 §6.11's permissive-only license posture.
 home = "0.5"
+# Single-instance guard uses fs2's cross-platform advisory file locks
+# (flock on Unix, LockFileEx on Windows). Task 11 pin. MIT/Apache-2.0.
+fs2 = "0.4"
+# tokio-util gives us CancellationToken (broadcast shutdown primitive).
+# Task 11 pin. MIT-licensed.
+tokio-util = "0.7"

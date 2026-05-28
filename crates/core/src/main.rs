@@ -1,17 +1,19 @@
 //! `concerto-core` binary entry point.
 //!
-//! Real runtime supervision is filled in by Task 11. Today this binary:
-//!   1. Initializes logging (Task 04).
-//!   2. Opens the SQLite persistence layer (Task 08), creating the file +
-//!      WAL/foreign-keys pragmas + running embedded migrations.
-//!   3. Logs that it reached steady state.
-//!   4. Waits for SIGTERM / Ctrl-C and shuts down cleanly.
-
-use std::path::PathBuf;
+//! As of Task 11 this binary:
+//!   1. Initializes logging (Task 05).
+//!   2. Resolves a [`RuntimeConfig`] (data_dir + config_dir, env-overridable).
+//!   3. Calls [`Runtime::start`], which acquires the single-instance lock,
+//!      opens persistence (Task 08), and installs signal handlers.
+//!   4. If another instance was already running, logs and exits 0.
+//!   5. Otherwise blocks on [`Runtime::wait_for_shutdown`] until a signal
+//!      fires (SIGTERM/SIGINT on Unix; Ctrl-C on Windows).
+//!   6. Calls [`Runtime::stop`], which shuts down persistence and releases
+//!      the lock.
 
 use concerto_core::logging;
-use concerto_error::{Error, Result};
-use concerto_persist::{Persistence, PersistenceConfig};
+use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
+use concerto_error::Result;
 
 fn main() -> std::process::ExitCode {
     // Logging is sync; install it before we hand control to tokio so the
@@ -49,62 +51,33 @@ fn main() -> std::process::ExitCode {
 async fn run() -> Result<()> {
     tracing::info!("concerto-core starting");
 
-    let config = persistence_config()?;
+    let config = RuntimeConfig::default_for_user()?;
     tracing::info!(
-        db_path = %config.db_path.display(),
-        max_readers = config.max_readers,
-        "opening persistence"
+        data_dir = %config.data_dir.display(),
+        config_dir = %config.config_dir.display(),
+        "resolved runtime config"
     );
 
-    let persist = Persistence::open(config).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to open persistence");
-        e
-    })?;
-    tracing::info!("persistence ready");
+    let runtime = match Runtime::start(config).await? {
+        StartOutcome::Started(r) => r,
+        StartOutcome::AlreadyRunning { pid } => {
+            // Per design/01 §3.3: exit 0 so launchd doesn't restart us.
+            // The "another instance running" log line is already emitted
+            // by Runtime::start; the higher level just acknowledges.
+            tracing::info!(
+                other_pid = pid,
+                "exiting cleanly — another instance is live"
+            );
+            return Ok(());
+        }
+    };
 
-    wait_for_shutdown_signal().await?;
-    tracing::info!("shutdown signal received; closing persistence");
+    tracing::info!("concerto-core ready");
 
-    persist.shutdown().await?;
+    runtime.wait_for_shutdown().await?;
+    tracing::info!("shutdown signal observed");
+
+    runtime.stop().await?;
     tracing::info!("concerto-core stopped");
     Ok(())
-}
-
-/// Resolve the [`PersistenceConfig`] from environment + defaults.
-///
-/// `CONCERTO_DB_PATH`, if set and non-empty, overrides `db_path`. This is
-/// the seam tests and smoke gate use to avoid touching `$HOME/concerto/`.
-fn persistence_config() -> Result<PersistenceConfig> {
-    let mut config = PersistenceConfig::default_for_user()?;
-    if let Ok(p) = std::env::var("CONCERTO_DB_PATH") {
-        if !p.is_empty() {
-            config.db_path = PathBuf::from(p);
-        }
-    }
-    Ok(config)
-}
-
-/// Wait for SIGTERM (Unix) or Ctrl-C, whichever arrives first.
-///
-/// Returns `Ok(())` when a signal arrives, or an error if the signal
-/// installer itself fails.
-async fn wait_for_shutdown_signal() -> Result<()> {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate())
-            .map_err(|e| Error::Internal(format!("install SIGTERM handler: {e}")))?;
-        let mut sigint = signal(SignalKind::interrupt())
-            .map_err(|e| Error::Internal(format!("install SIGINT handler: {e}")))?;
-        tokio::select! {
-            _ = sigterm.recv() => Ok(()),
-            _ = sigint.recv() => Ok(()),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(|e| Error::Internal(format!("ctrl_c handler: {e}")))
-    }
 }
