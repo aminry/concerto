@@ -5,12 +5,15 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Tiny gRPC client used by scripts/smoke.sh to verify the Core's UDS spine."
+description = "Tiny gRPC client used by scripts/smoke.sh to verify Core's UDS spine + Phase 2 RPCs."
 
 # Task 15: this is the canonical smoke-test client. The smoke gate runs
-# it as `smoke-client --socket <path>`; the binary connects to the UDS,
-# calls `Runtime.GetServerCapabilities`, and prints a small JSON object
-# to stdout. Future tasks extend it with more RPC checks.
+# it as `smoke-client <subcommand>`; each subcommand prints the
+# resource id (or stream payload) to stdout. Task 27 promotes it from
+# the single-flag `--socket` form to a clap-derived subcommand
+# dispatcher covering the Phase 2 happy path (caps / add-project /
+# add-repo / clone / new-workspace / new-workarea / start-session /
+# stream-session-io / stop-session).
 [[bin]]
 name = "smoke-client"
 path = "src/main.rs"
@@ -23,5 +26,25 @@ concerto-proto = { path = "../../crates/proto" }
 tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
 tower = { workspace = true }
 hyper-util = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util", "io-std", "sync"] }
+tokio-stream = { workspace = true }
 serde_json = { workspace = true }
+# Task 27: clap subcommands for the Phase 2 smoke surface. Workspace
+# dep (also used by `concerto-agent-host`).
+clap = { workspace = true }
+# Task 27: `add-project` writes a row directly into the SQLite database
+# because no `Projects.CreateProject` RPC exists in V0.1 (see Task 24
+# Handoff Notes — `Projects.ListProjects` is the only RPC). The smoke
+# client opens the DB via the same path resolution as Core
+# (`$CONCERTO_DB_PATH`, else `$CONCERTO_DATA_DIR/concerto.db`, else
+# `~/concerto/concerto.db`) and inserts a single row. `sqlx` is the
+# workspace-pinned driver; `runtime-tokio` + `sqlite` are the same
+# feature pair Core uses.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+# Task 27: UUIDv7 for the project id we hand back to the shell.
+uuid = { workspace = true }
+# Task 27: `~` expansion in the fallback DB path.
+home = { workspace = true }
+# Task 27: futures::StreamExt for draining the Clone progress stream
+# and racing the session.io / session.events subscriptions.
+futures = { workspace = true }

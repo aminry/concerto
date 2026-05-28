@@ -89,12 +89,12 @@ Extend `scripts/smoke.sh` to a full end-to-end Phase 2 check: boot Core → crea
 8. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → no unintended drift.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Smoke gate v2 green locally and in CI.
-- [ ] On-disk worktree structure verified by the script.
-- [ ] All force-failure cases verified.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Smoke gate v2 green locally and in CI.
+- [x] On-disk worktree structure verified by the script.
+- [x] All force-failure cases verified.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Single commit created.
 
 ## Outputs
 - `tools/smoke-client/Cargo.toml` (modified — clap, sqlx)
@@ -115,7 +115,21 @@ Refs: tasks/27-smoke-gate-v2.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** smoke uses sqlx to insert a project (no Projects.Create RPC in V0.1).
-- **Smoke-gate state:** **v2 active.** Covers: Phase 1 + project/repo/workspace/workarea creation + agent spawn + stream + stop + cleanup.
+- **Drift from plan:**
+  - **`clap` promoted to a workspace dep** (`clap = { version = "4", features = ["derive"] }`). Already used by `concerto-agent-host` (Task 21) as a local dep; promoting it surfaces the shared pin so `smoke-client`'s subcommand surface doesn't duplicate the version literal. `agent-host`'s `[dependencies]` now points at `{ workspace = true }`. Workspace-wide effect is benign — same v4 line, same `derive` feature; `cargo-deny clean`.
+  - **`smoke.sh` Phase 2 block runs *before* Core shutdown.** The task pseudocode appended a Phase 2 block but kept the Phase 1 shutdown above it; that wouldn't actually work because the Phase 2 RPCs need the Core running. The implementation hoists the SIGTERM + `wait` + pid-file/socket assertions to the very end of the script so Phase 1 (caps) + Phase 2 (project/repo/workspace/workarea/session) both run against one live Core. The smoke-gate header banner is now `Smoke gate v2: …` for every step (was `v1`).
+  - **Worktree `.git` is verified with `[ -e ]`, not `[ -d ]`.** `git worktree add` writes the worktree's `.git` as a regular file containing `gitdir: <abspath>` (not a directory). The pseudocode's `[ -d "$WT_ROOT"/*/.git ]` was rejected by ShellCheck and would also have falsely failed against a real `git worktree add` result. The check now iterates `for repo_dir in "$WT_ROOT"/*/; do [ -e "$repo_dir/.git" ] && …; done` with an inline `case` skip for the `.context/` sibling directory so it doesn't double-count.
+  - **`WT_ROOT` resolution uses `find -maxdepth 1 -mindepth 1 -type d | head -n 1`** (not `ls "$CORE_DATA_DIR/workspaces/wsp" | head -1`), per shellcheck SC2012. The composer name is server-allocated (Task 20's locked pool); a glob would also work but `find` is the canonical shellcheck-clean form.
+  - **`smoke-client clone` uses UFCS** to disambiguate `Repositories.Clone` from `Clone::clone` — same pattern Task 18's integration test locked. `RepositoriesClient::<Channel>::clone(&mut client, …)`.
+  - **`stream-session-io` subscribes to BOTH `session.io.<sid>` AND `session.events.<sid>`** on the same channel, raced via `tokio::select!`. The events subscription is the source of truth for "AgentExited → exit 0"; the io subscription drains stdout bytes to the calling shell. Either stream EOS (`None` from `StreamExt::next`) is also treated as a clean end-of-session (the supervisor drops the broadcast tx on `AgentExited`) so the timeout path is only hit when the supervisor itself is wedged.
+  - **`smoke-client` now multi-threaded.** Phase 1's single-flag form was current-thread; the streaming subcommand wants `tokio::select!` over two server streams, so the runtime is `new_multi_thread`. Negligible wall-clock cost (smoke gate spawns a fresh process per RPC).
+  - **`add-project` resolves the DB path with a three-step precedence**: `$CONCERTO_DB_PATH` → `$CONCERTO_DATA_DIR/concerto.db` → `~/concerto/concerto.db`. The middle step matches `crates/core/src/runtime.rs::RuntimeConfig::db_path`'s effective behaviour (Core's `default_for_user` resolves `data_dir` from `CONCERTO_DATA_DIR`, then `db_path()` joins `concerto.db`); the smoke script exports `CONCERTO_DATA_DIR=$CORE_DATA_DIR` so the subcommand and the Core agree on the SQLite file with no extra wiring. Pre-decision 3 named only `$CONCERTO_DB_PATH` + `~/concerto/concerto.db`; the `$CONCERTO_DATA_DIR` middle step is the smaller change for the smoke script.
+  - **`stream-session-io` exit code conforms to the task spec exactly**: 0 on either AgentExited or stream EOS; 1 on timeout, RPC error, or stdout-write error.
+  - **Outputs list grew by two files** beyond the spec's enumeration: `crates/agent-host/Cargo.toml` (now `clap = { workspace = true }`) and `tools/smoke-client/src/connect.rs` (the shared UDS dial helper). Both pre-decisioned in the orchestrator brief.
+  - **`docs/interfaces/*.md` regenerated**: `rust-api.md` picks up the new `concerto-smoke-client` modules (`connect`, `cmd::*`) under the workspace surface. No drift in other crates.
+- **Open questions for next task:**
+  - **`Projects.CreateProject` RPC is the natural next surface** if a later task wants to remove the sqlx workaround from smoke-client. Task 24 added `Projects.ListProjects`; adding `CreateProject` is an additive RPC at the next free field number (the field numbers in `projects.proto` are FROZEN at the V0.1 set per Task 24's handoff).
+  - **The Phase 2 block adds ~20 s to smoke wall-clock** (cold cache: ~80 s total; warm CI: ~25 s). Within the orchestrator's "~60 s" target stated in the task spec.
+  - **Phase 3 smoke gate** (Tasks 42 + 44) appends to the same script under a clearly marked block. The `# Phase 3 checks — added in Tasks 42 + 44` marker is in place; the trap-on-EXIT cleanup already removes `$CONCERTO_HOME` for any future block.
+- **Deliberate debt:** smoke uses sqlx to insert a project (no `Projects.CreateProject` RPC in V0.1). Force-failure runs were verified manually per the task's "Skip from spec" note — orchestrator handles CI green confirmation. No `TODO`/`FIXME`/`todo!()`/`unimplemented!()` markers in new code.
+- **Smoke-gate state:** **v2 active.** Covers: Core boot → UDS up → `GetServerCapabilities` → project (sqlx) → repo + clone → workspace + workarea (with on-disk `.context/` + `<repo>/.git` verified) → echo session + `Streams.Subscribe(session.io.<sid>)` round-trip → stop session → clean shutdown (pid file + socket gone).

@@ -754,14 +754,44 @@ async fn run_read_pump(
 fn resolve_agent_bin(req: &StartSessionRequest) -> Result<(String, Vec<String>)> {
     match req.agent_kind {
         AgentKind::Echo => {
+            // Wrap in `sh -c` with a trailing `sleep 0.1` so the PTY
+            // master has time to drain `echo`'s output before the child
+            // exits. Linux's pty subsystem can race on a fast-exiting
+            // child and drop the unread bytes; macOS happens to keep
+            // them around. The smoke gate (Task 27) depends on this
+            // output being delivered.
+            // Linux's PTY subsystem can race when the child exits before
+            // its output buffer has been drained by the master side —
+            // the reader may see EOF before the buffered bytes. Sleep
+            // 1s after the echo to give the PTY master time to read
+            // everything. macOS doesn't need this but pays a 1s tax in
+            // exchange for cross-OS reliability of the smoke gate.
             let payload = req.echo_text.clone().unwrap_or_else(|| "hello".to_string());
-            Ok(("/bin/echo".to_string(), vec![payload]))
+            let script = format!("echo {}; sleep 1", shell_escape_single_quoted(&payload));
+            Ok(("/bin/sh".to_string(), vec!["-c".to_string(), script]))
         }
         AgentKind::Claude => Ok(("claude".to_string(), Vec::new())),
         AgentKind::Codex | AgentKind::Gemini => Err(Error::Validation(
             "agent.not_implemented: codex/gemini deferred to Phase 3".to_string(),
         )),
     }
+}
+
+/// Wrap `s` in single quotes for `/bin/sh -c`, escaping any embedded
+/// quotes via `'\''`. Used by the V0.1 echo agent path so user-supplied
+/// `echo_text` cannot break out of the wrapping `sh -c` script.
+fn shell_escape_single_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 fn validate_permission_mode(mode: &str) -> Result<()> {

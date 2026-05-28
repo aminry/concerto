@@ -763,12 +763,18 @@ version = "0.0.1"
 name = "concerto-smoke-client"
 version = "0.0.1"
 dependencies = [
+ "clap",
  "concerto-proto",
+ "futures",
+ "home",
  "hyper-util",
  "serde_json",
+ "sqlx",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tower 0.5.3",
+ "uuid",
 ]
 
 [[package]]

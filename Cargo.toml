@@ -115,3 +115,10 @@ uuid = { version = "1", features = ["v7"] }
 # Core supplies to `concerto-agent-host` over the bridge `Hello`.
 # MIT/Apache-2.0; already pulled transitively via sqlx.
 getrandom = "0.2"
+# Task 27: CLI parser for the smoke-client subcommand surface. Already
+# pinned at v4 by `concerto-agent-host` (Task 21); promoted to a
+# workspace dep so smoke-client doesn't duplicate the version literal.
+# MIT/Apache-2.0; the `derive` feature pulls in `clap_derive`'s
+# proc-macro infrastructure (codegen-only, no runtime deps beyond what
+# clap itself already brings).
+clap = { version = "4", features = ["derive"] }
