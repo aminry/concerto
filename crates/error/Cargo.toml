@@ -9,3 +9,12 @@ rust-version.workspace = true
 [lib]
 name = "concerto_error"
 path = "src/lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+# sqlx and tonic appear here so the boundary Error enum can carry boxed
+# variants for their error types per design/00 §7.3. Workspace-level deps
+# already have `default-features = false`; we only need the Error / Status
+# types, not runtimes or transports.
+sqlx.workspace = true
+tonic.workspace = true

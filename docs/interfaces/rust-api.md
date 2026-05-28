@@ -2,4 +2,31 @@
 
 # Public Rust API
 
-_No `crates/*/src/api.rs` files yet._
+## `crates/error/src/api.rs`
+
+### enum `Error`
+
+```rust
+pub enum Error {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Boxed because `sqlx::Error` is large (~176 bytes); leaving it
+    /// unboxed bloats every `Result<_, Error>` past `clippy::result_large_err`.
+    /// The `From<sqlx::Error>` impl handles the `Box::new` automatically so
+    /// callers can still `err?`.
+    #[error("sqlx: {0}")]
+    Sqlx(Box<sqlx::Error>),
+
+    /// Boxed for the same reason as `Sqlx`.
+    #[error("tonic: {0}")]
+    Tonic(Box<tonic::Status>),
+
+    #[error("pairing: {0}")]
+    Pairing(String),
+
+    #[error("internal: {0}")]
+    Internal(String),
+}
+```
+
