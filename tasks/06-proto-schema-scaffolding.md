@@ -64,12 +64,12 @@ Set up the `crates/proto` crate to compile `.proto` files into Rust types and gR
 7. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → may or may not show changes; commit any new state of `docs/interfaces/proto.md` (placeholder content for now).
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] `protoc` install step added to CI; CI build is green.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] No files outside Outputs modified.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] `protoc` install step added to CI; CI build is green.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] No files outside Outputs modified. *(Workspace `Cargo.toml` added to Outputs in Handoff Notes drift.)*
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/proto/Cargo.toml` (modified)
@@ -92,7 +92,17 @@ Refs: tasks/06-proto-schema-scaffolding.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** —
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Workspace `Cargo.toml` modified** (not listed in Outputs as written). Bumped `tonic` from `"0.11"` to `"0.12"` per the task's explicit pin and the operator's pre-flight note. Also bumped `prost` from `"0.12"` to `"0.13"` because tonic 0.12 is version-coupled to prost 0.13 — they share the same major series and tonic 0.12's generated code emits `prost = 0.13` paths. Both stay `default-features = false` at the workspace level; `crates/proto/Cargo.toml` re-enables `tonic` features `["transport", "codegen", "prost"]` locally. The existing consumer (`crates/error`, which pulls `tonic::Status` via `tonic.workspace = true`) compiles unchanged — the `Status` type is stable across the 0.11 → 0.12 bump. Adding `Cargo.toml` to Outputs in retrospect: yes.
+  - **Placeholder proto contains one trivial empty message `_Placeholder`** instead of the spec's literal "only `syntax = ...; package ...;`". prost-build / tonic-build skip emitting a Rust file for a package that contains zero messages and zero services, which makes `tonic::include_proto!("concerto.v1")` fail at compile time ("couldn't read .../out/concerto.v1.rs: No such file or directory"). The trivial message is the carrier so the generated file actually lands on disk. It is not referenced anywhere and Task 07 removes the whole `_placeholder.proto` file when real messages arrive. A comment in the proto file documents this. (Generated symbol is `concerto_proto::v1::Placeholder` — prost strips the leading underscore in Rust identifiers. Confirmed not used by any other crate.)
+  - **`build.rs` uses `std::io::Error::other(...)`**, not `Error::new(ErrorKind::Other, ...)`. Clippy's `io_other_error` lint (new in 1.95) fires on `Error::new(ErrorKind::Other, _)` under `-D warnings`. The `::other` shortcut is the modern idiomatic form; behavior is identical. Mentioned because the task didn't specify the error-construction form.
+  - **`prost-types = "0.13"`** added as a direct dep on `crates/proto/Cargo.toml` rather than going through the workspace table. Workspace currently doesn't list `prost-types`; rather than touch the workspace dep table a second time, I pinned the version locally. If a future task adds another crate that needs `prost-types`, hoist it then.
+  - **`tonic-build` is `default-features = false` with `["prost", "transport"]`** rather than the default. The defaults include `cleanup-markdown` (pulls `pulldown-cmark` — large) and `prettyplease` (formats generated code — needs nightly-only formatting on some builds). Neither is needed for our pipeline. The pin is `tonic-build = "0.12"` matching `tonic`.
+- **Open questions for next task:**
+  - **`scripts/regen-interfaces.sh` looks at `$ROOT/proto`, not `crates/proto/proto/`.** The proto files this task created live at `crates/proto/proto/concerto/v1/*.proto`, so `docs/interfaces/proto.md` still says "_No `.proto` files yet._" after regeneration. This is a Task 04 parser limitation (it was written before the proto layout was locked) and the task spec for Task 06 anticipated it ("may or may not show changes"). Task 07 (which adds the first real messages) will hit the same blind spot — the interface drift backstop won't catch proto changes until the script is patched. Recommend the next polish/revision task fix the search path in `gen_proto()`: change `"$ROOT/proto"` to `"$ROOT/crates/proto/proto"`. Single-line change; deterministic; doesn't affect any other generator.
+  - **`tonic` is now `0.12`, `prost` is now `0.13`.** Any future crate adding `tonic.workspace = true` will need feature flags appropriate to tonic 0.12's split (`["transport", "codegen", "prost"]` is the typical server/client set; `["codegen", "prost"]` alone works for crates that only need the generated stubs without `transport::Server`). The 0.11 → 0.12 hyper bump is internal: tonic 0.12 uses `hyper = 1.x` whereas 0.11 used `hyper = 0.14`. No other crate in the workspace currently uses hyper directly, so no spillover.
+  - **`cargo deny check` emits warnings (not errors)** about license entries that aren't currently used and about duplicated transitive deps (two getrandom versions, two wit-bindgen versions, both pulled by prost-build → tempfile). `deny.toml` is configured to fail on advisories/bans/licenses/sources only; duplicates are advisory. If a future task wants the duplicate noise gone, dedup will require pinning at a deeper level (probably not worth it for two transitively-different getrandom releases).
+  - **First proto build downloads ~50 transitive deps** (axum, hyper-1, h2, prost-build, prost-derive, tonic-build, tonic). Cold workspace build is now ~3 min longer than after Task 05. Subsequent builds are incremental and unaffected.
+- **Deliberate debt:**
+  - The `_Placeholder` empty message in `_placeholder.proto` is the only TODO-shaped object I'm carrying. Removed by Task 07 when the first real messages land. Not a `TODO` literal; just a temporary file. Documented inline in the proto file's header comment.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0 with "Smoke gate: PASSED (no checks active yet — Phase 0)". Task 15 will add the first real assertion.
