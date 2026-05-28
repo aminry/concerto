@@ -14,6 +14,11 @@ export type UiStore = {
   selectedWorkspaceId: string | null;
   selectedWorkareaId: string | null;
   selectedProjectId: string | null;
+  /// Active session tab inside the currently selected workarea. Task 26
+  /// adds this; Task 26 caps V0.1 at one session per workarea, but the
+  /// terminal panel still uses a tab strip so V1.0's multi-session story
+  /// drops into the same surface without a rewrite.
+  activeSessionId: string | null;
   sidebarCollapsed: boolean;
   /// Per-workspace expansion state for the sidebar tree. Tracked here
   /// (not in component-local state) so the choice survives a sidebar
@@ -24,28 +29,42 @@ export type UiStore = {
   newWorkspaceModalOpen: boolean;
   /// True when Settings (currently just Add Repository) is on screen.
   settingsOpen: boolean;
+  /// True when the "+ Start Session" picker dialog is open. Owned by
+  /// the workarea-detail panel; lifted into the store so the picker
+  /// component can sit at the App root and overlay everything.
+  startSessionPickerOpen: boolean;
   setSelectedWorkspace: (id: string | null) => void;
   setSelectedWorkarea: (id: string | null) => void;
   setSelectedProject: (id: string | null) => void;
+  setActiveSession: (id: string | null) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleWorkspaceExpanded: (workspaceId: string) => void;
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void;
   setNewWorkspaceModalOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
+  setStartSessionPickerOpen: (open: boolean) => void;
 };
 
 export const useUiStore = create<UiStore>((set) => ({
   selectedWorkspaceId: null,
   selectedWorkareaId: null,
   selectedProjectId: null,
+  activeSessionId: null,
   sidebarCollapsed: false,
   expandedWorkspaces: new Set<string>(),
   newWorkspaceModalOpen: false,
   settingsOpen: false,
+  startSessionPickerOpen: false,
   setSelectedWorkspace: (id) =>
-    set({ selectedWorkspaceId: id, selectedWorkareaId: null }),
-  setSelectedWorkarea: (id) => set({ selectedWorkareaId: id }),
+    set({
+      selectedWorkspaceId: id,
+      selectedWorkareaId: null,
+      activeSessionId: null,
+    }),
+  setSelectedWorkarea: (id) =>
+    set({ selectedWorkareaId: id, activeSessionId: null }),
   setSelectedProject: (id) => set({ selectedProjectId: id }),
+  setActiveSession: (id) => set({ activeSessionId: id }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleWorkspaceExpanded: (workspaceId) =>
     set((state) => {
@@ -69,4 +88,5 @@ export const useUiStore = create<UiStore>((set) => ({
     }),
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setStartSessionPickerOpen: (open) => set({ startSessionPickerOpen: open }),
 }));

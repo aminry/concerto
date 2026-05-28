@@ -20,7 +20,11 @@ export type RpcMethod =
   | "Workareas.CreateWorkarea"
   | "Repositories.AddRepository"
   | "Repositories.ListByProject"
-  | "Sessions.ListSessions";
+  | "Sessions.ListSessions"
+  | "Sessions.GetSession"
+  | "Sessions.CreateSession"
+  | "Sessions.SendMessage"
+  | "Sessions.StopSession";
 
 export async function callRpc<TRequest, TResponse>(
   method: RpcMethod,

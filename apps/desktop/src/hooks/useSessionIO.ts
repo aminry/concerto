@@ -1,0 +1,59 @@
+// Subscribe to `session.io.<sid>` and feed every `SessionIoChunk`'s
+// raw bytes to the supplied sink.
+//
+// The Rust forwarder lives until `concerto_unsubscribe` is called;
+// this hook owns the lifecycle. The callback ref pattern keeps the
+// stream alive even when the parent component re-renders.
+
+import { useEffect, useRef } from "react";
+
+import {
+  onConcertoEvent,
+  subscribe,
+  unsubscribe,
+} from "../api/client";
+import { chunkToBytes, type StreamEvent } from "../api/sessions";
+
+export function useSessionIO(
+  sessionId: string | null | undefined,
+  onChunk: (bytes: Uint8Array, stream: string) => void,
+): void {
+  const callbackRef = useRef(onChunk);
+  callbackRef.current = onChunk;
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const subject = `session.io.${sessionId}`;
+    let subscriptionId: string | null = null;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        unlisten = await onConcertoEvent<StreamEvent>(subject, (event) => {
+          const body = event.body;
+          if (!body || !("session_io" in body)) return;
+          const chunk = body.session_io;
+          callbackRef.current(chunkToBytes(chunk.data), chunk.stream);
+        });
+        const id = await subscribe(subject);
+        if (cancelled) {
+          await unsubscribe(id);
+          return;
+        }
+        subscriptionId = id;
+      } catch (e) {
+        console.error("useSessionIO failed", subject, e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+      if (subscriptionId) {
+        void unsubscribe(subscriptionId);
+      }
+    };
+  }, [sessionId]);
+}
