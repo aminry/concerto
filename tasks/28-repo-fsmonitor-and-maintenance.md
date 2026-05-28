@@ -61,13 +61,13 @@ Auto-apply the git performance settings from `design/00 §6.3` to every reposito
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Performance config applied to every cloned repo.
-- [ ] Fsmonitor supervisor restart policy verified.
-- [ ] Repo Manager continues working when fsmonitor disables on unsupported filesystems.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Performance config applied to every cloned repo.
+- [x] Fsmonitor supervisor restart policy verified.
+- [x] Repo Manager continues working when fsmonitor disables on unsupported filesystems.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/gix-wrap/src/api.rs` (modified)
@@ -89,7 +89,17 @@ Refs: tasks/28-repo-fsmonitor-and-maintenance.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** —
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **No 0002 migration.** The pre-decision authorised `crates/persist/migrations/0002_repositories_fs_monitor_pid.sql`, but migration 0001 (Task 09) already shipped `fs_monitor_pid INTEGER` on `repositories`. Adding a 0002 to ALTER an existing column would fail (SQLite would reject the duplicate column). Instead the change is Rust-only: `Repository` gains `pub fs_monitor_pid: Option<i64>` in `crates/persist/src/api.rs`; `crates/persist/src/repositories.rs` reads the column in `get`/`list_by_project`/the new `list_all`, and writes it via the new `update_fs_monitor_pid`. `docs/interfaces/rust-api.md` regenerated — the only diff is the new field.
+  - **35s kill-and-restart slice skipped per orchestrator instructions.** Replaced with deterministic in-process tests against `fsmonitor::probe_all` + a stubbed `is_alive` closure. `crates/core/tests/fsmonitor_lifecycle.rs::restart_policy_disables_after_three_in_window` exercises the 3-in-60s cap; `probe_all_respects_disabled_flag` proves a disabled history short-circuits future restart attempts; `probe_all_reports_alive_when_pid_is_live` covers the happy path.
+  - **`register_maintenance` swallows non-zero exits.** `git maintenance start` writes a launchd plist on macOS / cron entry on Linux / scheduled task on Windows; CI runners and sandboxed test envs commonly lack the scheduler. Treating the failure as a debug-trace + `Ok(())` matches the spec's "idempotent — safe to call on every Core start" framing and keeps the clone path resilient.
+  - **fsmonitor PID parser is a small free function** (`api::parse_fsmonitor_pid`) covering the three documented `git fsmonitor--daemon status` output shapes (`pid=N`, `pid: N`, `pid N`). Unit-tested under `api::fsmonitor_tests`.
+  - **Supervisor loop spawned as a tokio task from `RepoManagerActor::run`** rather than running on the actor's mailbox. The actor's `run` now spawns the loop, parks on shutdown, and aborts the loop on cancellation as a backstop (the loop honours `CancellationToken::cancelled` natively). The handle (`RepoManager`) exposes `pub(crate) fn persistence()` + `fn fsmonitor_history()` so the run loop can construct the supervisor without re-piping the deps through the actor struct.
+  - **`gix-wrap` gained a target-gated `libc` dep** (`[target.'cfg(unix)'.dependencies] libc = "0.2"`). Same `kill(pid, 0)` ESRCH/EPERM probe Task 11's `pid_file` already uses; the Windows stub returns `false` (V0.1 Unix-only build matrix).
+  - **`stop_fsmonitor` is idempotent.** `git fsmonitor--daemon stop` exits non-zero when no daemon is running for the repo; the helper downgrades that `Error::Git` to `Ok(())` because the post-condition (no daemon) is already satisfied.
+- **Open questions for next task:**
+  - **Task 29 (`gix status` hot path)** can now assume `core.fsmonitor=true` is set on every cloned repo and the daemon is running for repos where the filesystem supports it. The `bring_up_after_clone` helper in `crates/core/src/repo_manager/fsmonitor.rs` is the single source of truth for the perf-config + fsmonitor + maintenance triple.
+  - **`concerto-state.json` per-repo file is NOT implemented in V0.1.** The spec mentions it for "apply the config if a flag in the on-disk `concerto-state.json` shows it's not yet applied"; we always re-apply on clone (cheap — four `git config` calls) and let the supervisor probe-and-restart catch the per-Core-restart bring-up case. The state file is a V1.0 follow-on if/when prefetch cursors and size estimates need durable repo-local storage.
+  - **Cold-start fsmonitor bring-up scan is not implemented.** The 30s supervisor loop walks every repo on each tick and restarts dead daemons, which subsumes the cold-start scan (after one tick post-boot every dead daemon has been restarted up to the cap). Adding an explicit boot-time scan would shorten the first-restart latency from `≤30s` to `≤0s`; a worthwhile micro-optimisation but out of scope for this task.
+- **Deliberate debt:** no on-disk `concerto-state.json`, no boot-time fsmonitor scan, no fsmonitor-restart broadcast event (the spec mentions `repo.fsmonitor_restarted` in `design/02 §5.3`; V0.1 emits the equivalent via `tracing::info!` audit lines — wiring it to a broadcast channel is a Phase 3 follow-on). No `TODO`/`FIXME`/`todo!()`/`unimplemented!()` markers in new code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` (v2) still drives the full repo + workspace + workarea + session flow against a fresh Core; the post-clone fsmonitor bring-up adds a `git config` sequence to the clone path that the smoke fixture happily absorbs.

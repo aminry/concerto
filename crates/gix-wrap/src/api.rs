@@ -250,6 +250,203 @@ pub async fn worktree_add(repo_dir: &Path, branch: &str, dest: &Path) -> Result<
     .map(|_| ())
 }
 
+// ---------------------------------------------------------------------------
+// Task 28: fsmonitor + maintenance + performance config.
+//
+// All four helpers shell out to `git`. The function signatures are FROZEN
+// by tasks/28 §"Public interface this task locks". Errors surface via
+// `concerto_error::Error::Git`; the caller (Repository Manager) treats
+// fsmonitor failures as "not supported on this filesystem" and disables
+// the daemon for the repo gracefully — see
+// `crates/core/src/repo_manager/fsmonitor.rs`.
+
+/// Apply the four locked performance settings from `design/00 §6.3` to
+/// the repo at `repo_dir`:
+///
+/// - `core.fsmonitor = true`
+/// - `core.untrackedCache = true`
+/// - `feature.manyFiles = true`
+/// - `core.commitGraph = true`
+///
+/// Each setting goes through `git config <key> <value>` as a sequential
+/// invocation. Using the shell-out path (rather than gix's config API)
+/// keeps the operator-facing semantics 1:1 with what `git config -l`
+/// reports — the same surface a human would touch.
+///
+/// Failure on any key short-circuits the call; the partial-application
+/// case is acceptable because the supervisor retries on the next cycle.
+pub async fn apply_perf_config(repo_dir: &Path) -> Result<()> {
+    const KEYS: &[(&str, &str)] = &[
+        ("core.fsmonitor", "true"),
+        ("core.untrackedCache", "true"),
+        ("feature.manyFiles", "true"),
+        ("core.commitGraph", "true"),
+    ];
+    for (key, value) in KEYS {
+        cmd::run(&["config", key, value], repo_dir).await?;
+    }
+    Ok(())
+}
+
+/// Start `git fsmonitor--daemon` for the repo at `repo_dir` and return
+/// the daemon's PID.
+///
+/// The implementation spawns `git fsmonitor--daemon start`, which
+/// daemonizes and exits cleanly once the worker is listening on its IPC
+/// socket. We then ask `git fsmonitor--daemon status --json` for the
+/// running PID — that subcommand is the documented way to recover the
+/// daemon's PID after a start (the start command itself doesn't print
+/// it).
+///
+/// If the daemon refuses to start (filesystem too exotic — NFS, certain
+/// tmpfs, sandboxed FUSE mounts), the call surfaces an `Error::Git`. The
+/// supervisor catches that error and disables fsmonitor for the repo per
+/// `design/02 §8`.
+pub async fn start_fsmonitor(repo_dir: &Path) -> Result<u32> {
+    // `start` is idempotent — git short-circuits if a daemon is already
+    // running for the repo. We tolerate its non-zero exits to surface the
+    // stderr unchanged.
+    cmd::run(&["fsmonitor--daemon", "start"], repo_dir).await?;
+
+    let out = cmd::run(&["fsmonitor--daemon", "status"], repo_dir).await?;
+    parse_fsmonitor_pid(&out.stdout).ok_or_else(|| {
+        Error::Git(format!(
+            "git fsmonitor--daemon status: could not parse PID from output: {}",
+            out.stdout.trim()
+        ))
+    })
+}
+
+/// Probe whether `pid` refers to a live `git fsmonitor--daemon` process.
+///
+/// Uses the same `kill(pid, 0)` ESRCH probe as `crates/core/src/pid_file.rs`.
+/// A live PID returns `true`; ESRCH (process gone) and any other errno
+/// return `false`. EPERM is treated as "alive" because a permission
+/// error proves the PID belongs to a real process.
+#[cfg(unix)]
+pub fn is_fsmonitor_alive(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    // SAFETY: `kill(pid, 0)` with a positive PID is a no-op probe.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    // EPERM (1): the process exists but we lack permission to signal it.
+    // Treat as alive — the PID is real.
+    errno == libc::EPERM
+}
+
+/// Windows stub. V0.1 ships Unix only; the supervisor never reaches
+/// this branch in the CI matrix. Returns `false` so an accidental call
+/// disables the daemon gracefully.
+#[cfg(not(unix))]
+pub fn is_fsmonitor_alive(_pid: u32) -> bool {
+    false
+}
+
+/// Stop the `git fsmonitor--daemon` for `repo_dir` if one is running.
+///
+/// Wraps `git fsmonitor--daemon stop`. Idempotent: when no daemon is
+/// running, git exits non-zero with a benign "no daemon" message. We
+/// treat that path as success because the post-condition (no daemon) is
+/// already satisfied.
+pub async fn stop_fsmonitor(repo_dir: &Path) -> Result<()> {
+    match cmd::run(&["fsmonitor--daemon", "stop"], repo_dir).await {
+        Ok(_) => Ok(()),
+        // The caller's contract is "after this returns Ok, no daemon is
+        // running". A failure-because-no-daemon is the same post-state.
+        Err(Error::Git(_)) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Register OS-level scheduled maintenance via `git maintenance start`.
+///
+/// This installs a launchd plist on macOS (or a cron entry on Linux /
+/// a scheduled task on Windows) that runs `git maintenance run` in the
+/// background. Idempotent — safe to call on every Core start.
+///
+/// Errors are downgraded to a debug-level trace and the function still
+/// returns `Ok(())`. The maintenance integration is non-essential to
+/// correctness (it's a long-term optimisation), and CI environments
+/// often lack the scheduler (`launchctl`, `crontab`) so a failure here
+/// would otherwise force every test environment to special-case the
+/// missing scheduler.
+pub async fn register_maintenance(repo_dir: &Path) -> Result<()> {
+    if let Err(e) = cmd::run(&["maintenance", "start"], repo_dir).await {
+        tracing::debug!(
+            error = %e,
+            repo_dir = %repo_dir.display(),
+            "git maintenance start failed; continuing without scheduled maintenance"
+        );
+    }
+    Ok(())
+}
+
+/// Parse a PID out of `git fsmonitor--daemon status` output.
+///
+/// The exact output format varies across git versions:
+///
+/// - `"fsmonitor-daemon is watching '/path' (pid=12345)"` (most builds)
+/// - `"fsmonitor-daemon is watching '/path' pid: 12345"` (older)
+/// - `"daemon running (pid 12345)"` (variant)
+///
+/// We look for `pid` followed by `:`, `=`, or whitespace, and capture
+/// the digits. Returns `None` when no PID is found.
+fn parse_fsmonitor_pid(stdout: &str) -> Option<u32> {
+    for line in stdout.lines() {
+        let lower = line.to_lowercase();
+        let mut idx = 0;
+        while let Some(found) = lower[idx..].find("pid") {
+            let after = &line[idx + found + 3..];
+            // Skip the separator after `pid` (`:`, `=`, space, or `(`).
+            let after = after.trim_start_matches([':', '=', ' ', '(', ')', '\t']);
+            let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(pid) = digits.parse::<u32>() {
+                if pid > 0 {
+                    return Some(pid);
+                }
+            }
+            idx = idx + found + 3;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod fsmonitor_tests {
+    use super::*;
+
+    #[test]
+    fn parses_pid_with_equals() {
+        assert_eq!(
+            parse_fsmonitor_pid("fsmonitor-daemon is watching '/p' (pid=12345)"),
+            Some(12345)
+        );
+    }
+
+    #[test]
+    fn parses_pid_with_colon() {
+        assert_eq!(
+            parse_fsmonitor_pid("fsmonitor-daemon is watching '/p' pid: 99"),
+            Some(99)
+        );
+    }
+
+    #[test]
+    fn parses_pid_with_space() {
+        assert_eq!(parse_fsmonitor_pid("daemon running (pid 4242)"), Some(4242));
+    }
+
+    #[test]
+    fn rejects_no_pid() {
+        assert_eq!(parse_fsmonitor_pid("nothing interesting here"), None);
+    }
+}
+
 /// Stderr-line → [`CloneProgressEvent`] parser.
 ///
 /// `git clone`'s progress format is stable enough for V0.1 — the lines

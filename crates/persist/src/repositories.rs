@@ -63,7 +63,7 @@ pub async fn insert(conn: &mut SqliteConnection, repo: NewRepository) -> Result<
 pub async fn get(pool: &SqlitePool, id: &RepositoryId) -> Result<Option<Repository>> {
     let row = sqlx::query(
         "SELECT id, project_id, name, url, local_path,
-                clone_strategy, default_branch, last_fetch_at
+                clone_strategy, default_branch, last_fetch_at, fs_monitor_pid
          FROM repositories WHERE id = ?",
     )
     .bind(&id.0)
@@ -78,10 +78,25 @@ pub async fn get(pool: &SqlitePool, id: &RepositoryId) -> Result<Option<Reposito
 pub async fn list_by_project(pool: &SqlitePool, project_id: &str) -> Result<Vec<Repository>> {
     let rows = sqlx::query(
         "SELECT id, project_id, name, url, local_path,
-                clone_strategy, default_branch, last_fetch_at
+                clone_strategy, default_branch, last_fetch_at, fs_monitor_pid
          FROM repositories WHERE project_id = ? ORDER BY name",
     )
     .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows.into_iter().map(row_to_repository).collect())
+}
+
+/// List every repository in the database (read-only). The Task 28
+/// fsmonitor supervisor walks this list every 30s to probe each
+/// recorded daemon PID.
+pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Repository>> {
+    let rows = sqlx::query(
+        "SELECT id, project_id, name, url, local_path,
+                clone_strategy, default_branch, last_fetch_at, fs_monitor_pid
+         FROM repositories ORDER BY id",
+    )
     .fetch_all(pool)
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
@@ -103,6 +118,24 @@ pub async fn update_last_fetch(
     Ok(())
 }
 
+/// Record (or clear) the `git fsmonitor--daemon` PID for `id`. Pass
+/// `None` to clear the column when the supervisor has disabled the
+/// daemon for the repo (3-in-60s restart-cap breach, or the underlying
+/// filesystem refused the daemon outright).
+pub async fn update_fs_monitor_pid(
+    conn: &mut SqliteConnection,
+    id: &RepositoryId,
+    pid: Option<i64>,
+) -> Result<()> {
+    sqlx::query("UPDATE repositories SET fs_monitor_pid = ? WHERE id = ?")
+        .bind(pid)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 fn row_to_repository(row: sqlx::sqlite::SqliteRow) -> Repository {
     Repository {
         id: RepositoryId(row.get::<String, _>("id")),
@@ -113,5 +146,6 @@ fn row_to_repository(row: sqlx::sqlite::SqliteRow) -> Repository {
         clone_strategy: row.get::<String, _>("clone_strategy"),
         default_branch: row.get::<String, _>("default_branch"),
         last_fetch_at: row.get::<Option<i64>, _>("last_fetch_at"),
+        fs_monitor_pid: row.get::<Option<i64>, _>("fs_monitor_pid"),
     }
 }

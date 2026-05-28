@@ -260,8 +260,9 @@ pub struct NewRepository {
 }
 
 /// Row-shaped projection of a `repositories` row. V0.1 omits
-/// `cone_defaults_json` and `fs_monitor_pid` — they're written by V1.0
-/// tasks (28, sparse + cones).
+/// `cone_defaults_json` — it's written by a V1.0 sparse + cones task.
+/// `fs_monitor_pid` is populated by Task 28 (fsmonitor supervisor); a
+/// `None` (or `Some(0)`) value means no daemon is recorded for the repo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
     pub id: RepositoryId,
@@ -272,6 +273,10 @@ pub struct Repository {
     pub clone_strategy: String,
     pub default_branch: String,
     pub last_fetch_at: Option<i64>,
+    /// PID of the `git fsmonitor--daemon` process supervising this repo,
+    /// or `None` when no daemon is recorded. Task 28 writes this via
+    /// [`crate::repositories::update_fs_monitor_pid`].
+    pub fs_monitor_pid: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------

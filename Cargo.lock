@@ -710,6 +710,7 @@ version = "0.0.1"
 dependencies = [
  "concerto-error",
  "gix",
+ "libc",
  "tempfile",
  "tokio",
  "tracing",

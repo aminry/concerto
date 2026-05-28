@@ -20,6 +20,12 @@ tokio = { workspace = true, features = ["process", "io-util", "fs", "macros", "r
 tracing.workspace = true
 gix = { workspace = true }
 
+# Task 28: `is_fsmonitor_alive` probes a recorded `git fsmonitor--daemon`
+# PID via `kill(pid, 0)` — same ESRCH/EPERM pattern as Task 11's
+# pid_file. Unix-only; the V0.1 build matrix doesn't ship Windows.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "fs", "time", "sync"] }
 tempfile = "3"
