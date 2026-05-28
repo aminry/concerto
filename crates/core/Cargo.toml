@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 concerto-error = { path = "../error" }
+concerto-persist = { path = "../persist" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true

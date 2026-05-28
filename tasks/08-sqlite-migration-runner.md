@@ -77,11 +77,11 @@ Stand up the SQLite migration runner inside `crates/persist`. After this task, c
 8. `cargo deny check` → clean.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] `docs/interfaces/rust-api.md` reflects the new `Persistence` API.
-- [ ] No `TODO` / `FIXME` / `todo!()` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] `docs/interfaces/rust-api.md` reflects the new `Persistence` API.
+- [x] No `TODO` / `FIXME` / `todo!()` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/persist/Cargo.toml` (modified — sqlx, tokio)
@@ -105,7 +105,19 @@ Refs: tasks/08-sqlite-migration-runner.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** writer is a `Mutex<SqliteConnection>` for now; will need a real writer queue per design/09 §6.1 when concurrent writes appear (target task: ~20).
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **`dirs::data_dir()` → `home::home_dir()` + `concerto/concerto.db`.** The task's Implementation notes said to use `dirs::data_dir()`, but `dirs` is not in the workspace — Task 05 removed it because it transitively brings MPL-2.0 `option-ext`, which `deny.toml` (per design/00 §6.11) refuses. Substituted `home::home_dir()` and the literal `~/concerto/concerto.db` path, matching the pattern already used in `crates/core/src/logging.rs` for `~/concerto/logs/`. Exposed via `PersistenceConfig::default_for_user()`.
+  - **`impl AsyncDeref<SqliteConnection>` → concrete `WriterGuard<'a>`.** The task's API sketch returned `impl AsyncDeref<SqliteConnection>`, but `AsyncDeref` is not a stable trait in Rust. Substituted a concrete newtype `WriterGuard<'a>` that wraps `tokio::sync::MutexGuard<'_, SqliteConnection>` and implements `Deref` / `DerefMut`. Call-site syntax stays `let mut w = persist.writer().await; sqlx::query(...).execute(&mut *w).await?;`. When Task ~20 introduces the dedicated writer task + mpsc queue per design/09 §6.1, `WriterGuard` becomes the receipt the caller awaits on; the public contract that callers get exclusive write access through `Persistence::writer()` is preserved.
+  - **`signal` Tokio feature added** to `crates/core` so the binary can wait on SIGTERM/SIGINT for a graceful shutdown. The task said "SIGTERM cleanly closes" in Verification step #4 but didn't list the wire-up; this is the minimum to satisfy it. The runtime supervisor task (Task 11) will take this signal handler over.
+  - **`crates/core/src/main.rs` switched from `fn main() -> Result<()>` to a tokio-runtime-driven `fn main() -> ExitCode`.** Required because `Persistence::open` is async. Errors bubble out of `run()` and the binary returns `ExitCode::from(1)` rather than panicking — explicit per Implementation note #4.
+- **Open questions for next task:**
+  - **Migration directory has a `.gitkeep` placeholder.** `sqlx::migrate!("./migrations")` succeeds against an empty directory (it just records zero migrations). Task 09 should drop its first migration `0001_initial_schema.sql` into `crates/persist/migrations/` and run; no plumbing changes needed.
+  - **Forwarded from Task 07:** `optional PermissionMode` semantically means "inherit from parent" per design/03 §3.2, distinct from `PERMISSION_MODE_UNSPECIFIED` and from `PERMISSION_MODE_STRICT`. Task 09's schema should encode this — likely with a nullable `permission_mode` TEXT column, where NULL means "inherit". The proto's `optional` field maps naturally to NULL.
+  - **Forwarded from Task 07:** proto `status` fields on `Workspace` / `Workarea` / `Session` are typed `string` with allowed-value lists in proto comments. Task 09 likely wants `TEXT NOT NULL` with a `CHECK` constraint enumerating the values, matching what the proto comments declare (`workareas.status ∈ { created | active | running | awaiting | paused | archived | crashed }` etc.). The validator in the gRPC server middleware (Task 13) reads the same list.
+  - **Forwarded from Task 07:** `sessions.agent_kind` accepts `gemini` for forward compatibility, but V0.1 wires only claude + codex per `tasks/README.md §2`. Task 09's CHECK constraint should include `gemini` even though no agent-supervisor code emits it yet, so the schema doesn't need a migration when gemini lands post-V0.1.
+  - **`PRAGMA foreign_keys` is per-connection.** Running `sqlite3 ~/concerto/concerto.db 'PRAGMA foreign_keys;'` from the sqlite3 CLI returns `0` because each new connection starts with FK off; our connections turn it on via `SqliteConnectOptions::foreign_keys(true)`. Task 09 + downstream tests should obtain connections via the `Persistence` handle, never by opening the DB file directly. The unit test `pragmas_match_design_doc` asserts the in-process value is correct.
+  - **`Persistence` is not `Clone`** by design — only one runtime actor owns persistence; sub-systems borrow `&Persistence`. If Task 11 / Task 19 want to hand a clonable handle around, wrap in `Arc<Persistence>` at the call site rather than deriving `Clone` here.
+- **Deliberate debt:**
+  - Writer is a `tokio::sync::Mutex<SqliteConnection>` rather than the dedicated single-writer task + mpsc queue described in design/09 §6.1. The `WriterGuard` newtype is the seam where that migration happens. Target task: **~20** (the first task that creates a real concurrent-writer scenario by introducing the workspace-creation RPC). No `TODO` comment is left in code — the deferred design is documented in the `WriterGuard` doc-comment plus this note.
+  - `Persistence::shutdown` asserts that no `WriterGuard` is alive at shutdown time by `Arc::try_unwrap`. The error message is descriptive but the failure path is untested; integration tests for shutdown contention land alongside the dedicated writer task in ~20.
+- **Smoke-gate state:** unchanged — Task 15 is the first that flips the smoke gate to v1. This task added no new smoke-gate assertions; `scripts/smoke.sh` still emits "PASSED (no checks active yet — Phase 0)".

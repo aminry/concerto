@@ -9,3 +9,22 @@ rust-version.workspace = true
 [lib]
 name = "concerto_persist"
 path = "src/lib.rs"
+
+[dependencies]
+concerto-error = { path = "../error" }
+# sqlx feature picks per Task 08:
+#   - runtime-tokio: async runtime adapter; matches the Core's tokio runtime.
+#   - sqlite: bundled SQLite driver.
+#   - macros: enables `sqlx::migrate!` (build-time embed of migrations).
+#   - migrate: brings the runtime migration machinery the macro expands into.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+tokio = { workspace = true, features = ["sync", "fs", "rt", "macros"] }
+tracing.workspace = true
+# `home` for `home::home_dir()`; matches `crates/core/src/logging.rs`'s pattern.
+# The task originally said `dirs::data_dir()`, but `dirs` pulls in MPL-2.0
+# `option-ext` (banned by design/00 §6.11). See Task 05 / Task 08 Handoff.
+home.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "fs", "sync"] }
+tempfile = "3"

@@ -30,3 +30,31 @@ pub enum Error {
 }
 ```
 
+## `crates/persist/src/api.rs`
+
+### struct `PersistenceConfig`
+
+```rust
+pub struct PersistenceConfig {
+    pub db_path: PathBuf,
+    pub max_readers: u32,
+}
+```
+
+### struct `Persistence`
+
+```rust
+pub struct Persistence {
+    writer: Arc<Mutex<SqliteConnection>>,
+    readers: SqlitePool,
+}
+```
+
+### struct `WriterGuard`
+
+```rust
+pub struct WriterGuard<'a> {
+    inner: MutexGuard<'a, SqliteConnection>,
+}
+```
+
