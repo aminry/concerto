@@ -15,6 +15,9 @@
 //! Actor supervision (the typed tokio-task hierarchy from `design/01
 //! §3.2`) arrives in Task 12.
 
+pub mod api_server;
+pub mod error_map;
+pub mod handlers;
 pub mod logging;
 pub mod pid_file;
 pub mod runtime;
