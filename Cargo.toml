@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/relay",
+    "crates/cli",
+    "crates/proto",
+    "crates/transport",
+    "crates/gix-wrap",
+    "crates/keychain",
+    "crates/pty-sup",
+    "crates/desktop-shell",
+    "crates/persist",
+    "crates/agent-host",
+    "crates/error",
+]
+default-members = ["crates/core", "crates/cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+authors = ["Concerto contributors"]
+rust-version = "1.78"
+
+[workspace.dependencies]
+tokio = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "1"
+serde = "1"
+serde_json = "1"
+sqlx = "0.7"
+tonic = "0.11"
+prost = "0.12"
+keyring = "2"
