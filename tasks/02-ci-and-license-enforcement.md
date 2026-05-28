@@ -88,7 +88,17 @@ Refs: tasks/02-ci-and-license-enforcement.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** —
-- **Smoke-gate state:** —
+- **Drift from plan:**
+  - **`deny.toml` uses cargo-deny v2 schema, not the v1 schema in the task spec.** Installed cargo-deny is 0.19.7; it rejects the v1 fields `unlicensed`, `copyleft`, `vulnerability`, and the v1 enum value `unmaintained = "warn"` (now expects `"all"`/`"workspace"`/`"transitive"`/`"none"`). Intent preserved: the license allow-list and the source registry restrictions are identical to the spec; `version = 2` under `[licenses]` and `[advisories]` denies anything outside the allow-list (replacing `unlicensed`/`copyleft`) and denies vulnerabilities by default (replacing `vulnerability = "deny"`); `yanked = "deny"` is kept; `unmaintained` is left at its default to avoid pinning to one of the new enum values without need. The local GPL-rejection test (step 5) passed.
+  - **GPL-rejection test used `surrealdb = "1"`, not `readline = "0.4"`** — the latter doesn't exist on crates.io. `surrealdb` itself is BSL but cargo-deny first rejects its transitive `ws_stream_wasm` (license `Unlicense`, not in allow-list); same outcome (`cargo deny check` exits 4), so the gate is proven. Temporary dep was reverted before commit and `Cargo.lock` returned to its pre-test state.
+  - **`rustfmt.toml`'s `imports_granularity = "Crate"` is rustfmt-unstable.** On stable rustfmt it emits `Warning: can't set imports_granularity = Crate, unstable features are only available in nightly channel.` (14 lines, one per source file). `cargo fmt --all -- --check` still exits 0 and there is no formatting diff. Left as the task spec wrote it — when the option stabilizes (or if a future task switches CI to a nightly fmt job) it'll silently take effect.
+  - **`NOTICE` already references Apache-2.0 transitive attribution** (it was written in commit 042cbe5), so it was not modified. The task's Outputs allow this ("Possibly `NOTICE`").
+  - **Verification step 4 (push branch, watch GH Actions workflows turn green) deferred to the operator.** Per the task-execution prompt rules ("Don't push, don't open a PR"), local verification is complete; remote verification needs `git push` from the operator. Once pushed, the four workflows that should run are `ci` (3 OS), `deny`, and `format`.
+- **Open questions for next task:**
+  - Task 03 (smoke-gate scaffolding) will create `scripts/smoke.sh`. Once smoke.sh exists, decide whether `ci.yml` should also call it (matrix-wide vs Linux-only). Today `ci.yml` runs check/clippy/test only.
+  - Toolchain components on this dev machine were installed by hand (rustfmt + clippy were downloaded as tarballs and `install.sh`-ed because the system's primary nameserver — Tailscale MagicDNS at `100.100.100.100` — couldn't resolve `static.rust-lang.org`, though `dig @8.8.8.8` could. `nslookup`, `cargo`, `curl` to other hosts, and the original rustup-init all worked.) If Task 03+ needs more components (e.g., `rust-src`, `rust-docs`), expect the same DNS failure and the same `curl --resolve` workaround. The DNS itself is a host-environment issue, not a Concerto concern.
+  - cargo-deny installation is via `cargo install cargo-deny --locked` (cached at `~/.cargo/bin/cargo-deny v0.19.7`). CI uses `EmbarkStudios/cargo-deny-action@v1` which downloads a fresh copy each run.
+  - If Task 03 or later wants to pin cargo-deny to a specific version in the workflow, do it in `deny.yml` via the action's `command-arguments` or `arguments` input.
+- **Deliberate debt:**
+  - `THIRD_PARTY_LICENSES.md` is a stub. Task 53 (release readiness) wires up `cargo about generate` to keep it current. Not flagged as TODO in the file because the contents are explicit about being a stub.
+- **Smoke-gate state:** still unchanged. The smoke-gate script does not exist yet — Task 03 creates `scripts/smoke.sh`. This task only adds CI infrastructure; CI does not yet call the smoke gate.
