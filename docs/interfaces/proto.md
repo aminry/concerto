@@ -37,6 +37,67 @@ enum PermissionMode {
 }
 ```
 
+## `crates/proto/proto/concerto/v1/repositories.proto`
+
+- package: `concerto.v1`
+
+### message `Repository`
+
+```proto
+message Repository {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string url = 4;
+  string local_path = 5;
+  string clone_strategy = 6;
+  string default_branch = 7;
+  optional google.protobuf.Timestamp last_fetch_at = 8;
+}
+```
+
+### message `AddRepoRequest`
+
+```proto
+message AddRepoRequest {
+  string project_id = 1;
+  string name = 2;
+  string url = 3;
+  // Optional explicit default branch. V0.1 accepts `"main"` as a fallback
+  // when empty; later tasks may probe the remote.
+  string default_branch = 4;
+}
+```
+
+### message `CloneRequest`
+
+```proto
+message CloneRequest {
+  string repository_id = 1;
+}
+```
+
+### message `CloneProgress`
+
+```proto
+message CloneProgress {
+  string phase = 1;
+  uint64 objects_received = 2;
+  uint64 total_objects = 3;
+  uint64 bytes_received = 4;
+  bool done = 5;
+}
+```
+
+### service `Repositories`
+
+```proto
+service Repositories {
+  rpc AddRepository(AddRepoRequest) returns (Repository);
+  rpc Clone(CloneRequest) returns (stream CloneProgress);
+}
+```
+
 ## `crates/proto/proto/concerto/v1/runtime.proto`
 
 - package: `concerto.v1`

@@ -41,6 +41,12 @@ pub enum Error {
     #[error("secrets: {0}")]
     Secrets(#[from] concerto_keychain::SecretsError),
 
+    /// Git operation failure (shell-out or gix). Added in Task 18 so
+    /// `concerto-gix-wrap` can bubble structured failures across the
+    /// crate boundary without leaking `gix`'s deep error tree.
+    #[error("git: {0}")]
+    Git(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }

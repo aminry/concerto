@@ -18,6 +18,9 @@ path = "src/main.rs"
 concerto-error = { path = "../error" }
 concerto-persist = { path = "../persist" }
 concerto-proto = { path = "../proto" }
+# Task 18: shell-out + gix git operations live under `repo_manager`.
+concerto-gix-wrap = { path = "../gix-wrap" }
+uuid = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "net"] }
 tokio-util.workspace = true
 tracing.workspace = true
@@ -51,6 +54,10 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# Task 18: direct DB access in the repository_clone integration test —
+# we seed a `projects` row before exercising `Repositories.AddRepository`
+# because the `Projects` service does not exist until Task 19.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 # Task 12: `start_paused = true` requires tokio's `test-util` feature.
 # Layered as a dev-dep so the prod binary doesn't pull in the testing
 # clock primitives.

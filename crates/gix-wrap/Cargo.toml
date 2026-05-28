@@ -9,3 +9,17 @@ rust-version.workspace = true
 [lib]
 name = "concerto_gix_wrap"
 path = "src/lib.rs"
+
+[dependencies]
+concerto-error = { path = "../error" }
+# Task 18: shell-out + gix hybrid per `design/02 §3.1`.
+#   - `tokio` (`process` + `io-util` + `fs`) drives the `git` subprocess for
+#     clone / worktree add and parses progress from its stderr.
+#   - `gix` handles the read-only fast paths (rev-parse, list branches).
+tokio = { workspace = true, features = ["process", "io-util", "fs", "macros", "rt", "sync"] }
+tracing.workspace = true
+gix = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "fs", "time", "sync"] }
+tempfile = "3"

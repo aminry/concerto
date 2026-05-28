@@ -54,6 +54,8 @@ fn main() -> io::Result<()> {
         "concerto.v1.Workarea.archived_at",
         "concerto.v1.Session.started_at",
         "concerto.v1.Session.ended_at",
+        // Task 18.
+        "concerto.v1.Repository.last_fetch_at",
     ];
 
     let mut builder = tonic_build::configure()

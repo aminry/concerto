@@ -22,6 +22,7 @@ pub mod log_fields;
 pub mod log_filter;
 pub mod logging;
 pub mod pid_file;
+pub mod repo_manager;
 pub mod runtime;
 pub mod signals;
 pub mod supervisor;

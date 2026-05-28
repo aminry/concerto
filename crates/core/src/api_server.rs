@@ -26,6 +26,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
 
+use crate::repo_manager::RepoManager;
 use crate::supervisor::{Actor, ActorContext, SupervisorView};
 
 /// Configuration for [`ApiServerActor`].
@@ -46,24 +47,37 @@ pub struct ApiServerConfig {
 pub struct ApiServerActor {
     started_at: Arc<SystemTime>,
     supervisor_view: SupervisorView,
+    /// Optional Repository Manager handle. When `Some`, the gRPC
+    /// `Repositories` service is registered alongside `Runtime`. Task 18
+    /// wires this up in `main.rs`; the option type keeps the integration
+    /// tests' minimal in-process Runtime construction working without
+    /// requiring a fully-initialised `RepoManager`.
+    repo_manager: Option<RepoManager>,
 }
 
 impl ApiServerActor {
-    /// Build a new actor. The handles are typically obtained from
-    /// [`crate::runtime::Runtime`] just before registration:
-    ///
-    /// ```ignore
-    /// let started_at = runtime.started_at();
-    /// let view = runtime.supervisor_mut().expect("supervisor present").view();
-    /// runtime.supervisor_mut().expect("present").spawn::<ApiServerActor, _>(
-    ///     move || ApiServerActor::new(started_at.clone(), view.clone()),
-    ///     ApiServerConfig { socket_path },
-    /// ).await?;
-    /// ```
+    /// Build a new actor without a Repository Manager handle. Only the
+    /// `Runtime` service is exposed.
     pub fn new(started_at: Arc<SystemTime>, supervisor_view: SupervisorView) -> Self {
         Self {
             started_at,
             supervisor_view,
+            repo_manager: None,
+        }
+    }
+
+    /// Build a new actor that also hosts the `Repositories` service.
+    /// Task 18's `main.rs` uses this constructor; tests that only need
+    /// `Runtime` use [`ApiServerActor::new`].
+    pub fn with_repo_manager(
+        started_at: Arc<SystemTime>,
+        supervisor_view: SupervisorView,
+        repo_manager: RepoManager,
+    ) -> Self {
+        Self {
+            started_at,
+            supervisor_view,
+            repo_manager: Some(repo_manager),
         }
     }
 }
@@ -84,6 +98,7 @@ impl Actor for ApiServerActor {
                 socket_path,
                 self.started_at,
                 self.supervisor_view,
+                self.repo_manager,
                 ctx.shutdown,
             )
             .await
@@ -93,6 +108,7 @@ impl Actor for ApiServerActor {
             let _ = (
                 self.started_at,
                 self.supervisor_view,
+                self.repo_manager,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -109,6 +125,7 @@ async fn run_uds(
     socket_path: std::path::PathBuf,
     started_at: Arc<SystemTime>,
     supervisor_view: SupervisorView,
+    repo_manager: Option<RepoManager>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -118,7 +135,9 @@ async fn run_uds(
     use tokio_stream::wrappers::UnixListenerStream;
     use tonic::transport::Server;
 
+    use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
+    use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
 
     // Ensure the parent directory exists; the locked layout puts the
@@ -170,11 +189,16 @@ async fn run_uds(
     };
 
     let handler = RuntimeHandler::new(started_at, supervisor_view);
-    let service = RuntimeServer::new(handler);
+    let runtime_service = RuntimeServer::new(handler);
 
-    let serve_fut = Server::builder()
-        .add_service(service)
-        .serve_with_incoming_shutdown(UnixListenerStream::new(listener), async move {
+    let mut builder = Server::builder().add_service(runtime_service);
+    if let Some(repo_manager) = repo_manager {
+        let repositories_service = RepositoriesServer::new(RepositoriesHandler::new(repo_manager));
+        builder = builder.add_service(repositories_service);
+    }
+
+    let serve_fut =
+        builder.serve_with_incoming_shutdown(UnixListenerStream::new(listener), async move {
             shutdown.cancelled().await;
             tracing::info!("gRPC server received shutdown signal");
         });

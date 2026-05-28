@@ -30,8 +30,56 @@ pub enum Error {
     #[error("secrets: {0}")]
     Secrets(#[from] concerto_keychain::SecretsError),
 
+    /// Git operation failure (shell-out or gix). Added in Task 18 so
+    /// `concerto-gix-wrap` can bubble structured failures across the
+    /// crate boundary without leaking `gix`'s deep error tree.
+    #[error("git: {0}")]
+    Git(String),
+
     #[error("internal: {0}")]
     Internal(String),
+}
+```
+
+## `crates/gix-wrap/src/api.rs`
+
+### struct `CloneProgressEvent`
+
+```rust
+pub struct CloneProgressEvent {
+    /// Short label parsed from the leading text of the progress line,
+    /// e.g. `"receiving objects"`, `"resolving deltas"`, `"updating files"`.
+    pub phase: String,
+    /// Count of objects so far (parsed from `N/T`). Zero when unparsed.
+    pub objects_received: u64,
+    /// Total objects in the operation (parsed from `N/T`). Zero when unparsed.
+    pub total_objects: u64,
+    /// Best-effort byte count from a `KiB`/`MiB`/`GiB` suffix on the line.
+    /// Zero when not present.
+    pub bytes_received: u64,
+    /// True on the synthetic terminal event emitted after the subprocess
+    /// exits cleanly.
+    pub done: bool,
+}
+```
+
+### struct `BranchRef`
+
+```rust
+pub struct BranchRef {
+    pub name: String,
+    pub commit: String,
+    pub is_remote: bool,
+}
+```
+
+### struct `FetchReport`
+
+```rust
+pub struct FetchReport {
+    /// Whether any refs were updated. False when the local copy was
+    /// already at the remote tip.
+    pub updated: bool,
 }
 ```
 
@@ -111,6 +159,41 @@ pub struct Persistence {
 ```rust
 pub struct WriterGuard<'a> {
     inner: MutexGuard<'a, SqliteConnection>,
+}
+```
+
+### struct `RepositoryId`
+
+```rust
+pub struct RepositoryId(pub String);
+```
+
+### struct `NewRepository`
+
+```rust
+pub struct NewRepository {
+    pub id: RepositoryId,
+    pub project_id: String,
+    pub name: String,
+    pub url: String,
+    pub local_path: String,
+    pub clone_strategy: String,
+    pub default_branch: String,
+}
+```
+
+### struct `Repository`
+
+```rust
+pub struct Repository {
+    pub id: RepositoryId,
+    pub project_id: String,
+    pub name: String,
+    pub url: String,
+    pub local_path: String,
+    pub clone_strategy: String,
+    pub default_branch: String,
+    pub last_fetch_at: Option<i64>,
 }
 ```
 

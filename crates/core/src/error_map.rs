@@ -51,6 +51,9 @@ pub fn error_to_status(err: Error) -> Status {
         "pairing" => Code::Unauthenticated,
         // Keychain / secret-store failure.
         "secrets" => Code::FailedPrecondition,
+        // Git shell-out / gix operation failure (Task 18). Surface as
+        // `Internal` — clients have no recourse but to log + report.
+        "git" => Code::Internal,
         // Catch-all for invariants the type system can't capture.
         "internal" => Code::Internal,
         // Future variants get logged so we notice an unmapped code in

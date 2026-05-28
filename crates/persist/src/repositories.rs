@@ -1,0 +1,117 @@
+//! `repositories` table CRUD (Task 18).
+//!
+//! Owns the persistence-side API for the V0.1 surface of
+//! `crates/gix-wrap`. Schema is locked by migration 0001 (Task 09):
+//!
+//! ```sql
+//! CREATE TABLE repositories (
+//!     id TEXT PRIMARY KEY,
+//!     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+//!     name TEXT NOT NULL,
+//!     url TEXT NOT NULL,
+//!     local_path TEXT NOT NULL,
+//!     clone_strategy TEXT NOT NULL, -- full | blobless | treeless
+//!     default_branch TEXT NOT NULL,
+//!     cone_defaults_json TEXT NOT NULL DEFAULT '[]',
+//!     fs_monitor_pid INTEGER,
+//!     last_fetch_at INTEGER,
+//!     UNIQUE(project_id, url),
+//!     UNIQUE(project_id, name)
+//! );
+//! ```
+//!
+//! The public types and functions are re-exported through
+//! [`crate::api`] so the interface generator surfaces them.
+
+use concerto_error::{Error, Result};
+use sqlx::{Row, SqliteConnection, SqlitePool};
+
+use crate::api::{NewRepository, Repository, RepositoryId};
+
+/// Insert a new `repositories` row.
+///
+/// Takes `&mut SqliteConnection` rather than the workspace's
+/// [`crate::WriterGuard`] so callers can scope a transaction across
+/// multiple inserts. The typical pattern is:
+///
+/// ```ignore
+/// let mut w = persist.writer().await;
+/// let id = repositories::insert(&mut *w, NewRepository { ... }).await?;
+/// ```
+pub async fn insert(conn: &mut SqliteConnection, repo: NewRepository) -> Result<RepositoryId> {
+    let id = repo.id.clone();
+    sqlx::query(
+        "INSERT INTO repositories (
+            id, project_id, name, url, local_path,
+            clone_strategy, default_branch
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id.0)
+    .bind(&repo.project_id)
+    .bind(&repo.name)
+    .bind(&repo.url)
+    .bind(&repo.local_path)
+    .bind(&repo.clone_strategy)
+    .bind(&repo.default_branch)
+    .execute(conn)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(id)
+}
+
+/// Fetch one repository by id (read-only).
+pub async fn get(pool: &SqlitePool, id: &RepositoryId) -> Result<Option<Repository>> {
+    let row = sqlx::query(
+        "SELECT id, project_id, name, url, local_path,
+                clone_strategy, default_branch, last_fetch_at
+         FROM repositories WHERE id = ?",
+    )
+    .bind(&id.0)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(row.map(row_to_repository))
+}
+
+/// List repositories in a project (read-only). Sorted by `name` for
+/// deterministic UI output.
+pub async fn list_by_project(pool: &SqlitePool, project_id: &str) -> Result<Vec<Repository>> {
+    let rows = sqlx::query(
+        "SELECT id, project_id, name, url, local_path,
+                clone_strategy, default_branch, last_fetch_at
+         FROM repositories WHERE project_id = ? ORDER BY name",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows.into_iter().map(row_to_repository).collect())
+}
+
+/// Update `last_fetch_at` to `at` (unix epoch milliseconds).
+pub async fn update_last_fetch(
+    conn: &mut SqliteConnection,
+    id: &RepositoryId,
+    at: i64,
+) -> Result<()> {
+    sqlx::query("UPDATE repositories SET last_fetch_at = ? WHERE id = ?")
+        .bind(at)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+fn row_to_repository(row: sqlx::sqlite::SqliteRow) -> Repository {
+    Repository {
+        id: RepositoryId(row.get::<String, _>("id")),
+        project_id: row.get::<String, _>("project_id"),
+        name: row.get::<String, _>("name"),
+        url: row.get::<String, _>("url"),
+        local_path: row.get::<String, _>("local_path"),
+        clone_strategy: row.get::<String, _>("clone_strategy"),
+        default_branch: row.get::<String, _>("default_branch"),
+        last_fetch_at: row.get::<Option<i64>, _>("last_fetch_at"),
+    }
+}

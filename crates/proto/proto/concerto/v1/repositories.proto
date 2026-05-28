@@ -1,0 +1,72 @@
+// Repositories service — V0.1 surface for adding a repository to a project
+// and cloning it onto disk.
+//
+// Owned in design by `02_Repository_Manager.md`. V0.1 ships full clone only:
+// no sparse, no blobless, no treeless. Future tasks extend with sparse cones
+// (`Repositories.SetCones`), prewarm (`PrewarmBlobs`), fetch (`Fetch`), and
+// estimate (`EstimateConeSize`) — all locked at higher field numbers so they
+// land additively.
+//
+// Field numbers in this file are FROZEN as of Task 18.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Persistent shape of a repository row. Mirrors the V0.1 columns of the
+// `repositories` table (see `crates/persist/migrations/0001_initial_schema.sql`).
+// `clone_strategy` is always `"full"` in V0.1; the column accepts
+// `full | blobless | treeless` in anticipation of V1.0.
+message Repository {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string url = 4;
+  string local_path = 5;
+  string clone_strategy = 6;
+  string default_branch = 7;
+  optional google.protobuf.Timestamp last_fetch_at = 8;
+}
+
+// Inputs for `Repositories.AddRepository`. The Repo Manager picks the
+// `repository_id` (UUIDv7) and the on-disk `local_path`
+// (`<data_dir>/repos/<id>/`). The caller supplies project membership, a
+// short name used in path segments, and the URL.
+message AddRepoRequest {
+  string project_id = 1;
+  string name = 2;
+  string url = 3;
+  // Optional explicit default branch. V0.1 accepts `"main"` as a fallback
+  // when empty; later tasks may probe the remote.
+  string default_branch = 4;
+}
+
+// Inputs for `Repositories.Clone`. The repository must already exist (via
+// `AddRepository`); cloning is a separate step so the UI can show the row
+// before the disk operation completes.
+message CloneRequest {
+  string repository_id = 1;
+}
+
+// Streaming progress message emitted from the clone shell-out's stderr
+// parser. Field semantics match git's own progress text:
+//   - `phase` — short label, e.g. `"receiving objects"`, `"resolving deltas"`.
+//   - `objects_received` / `total_objects` — counts parsed from
+//     `Receiving objects:  N% (R/T)`.
+//   - `bytes_received` — best-effort byte count parsed from the same line
+//     when git emits a KiB/MiB suffix. Zero if unparsed.
+//   - `done` — true on the terminal message after the clone exits cleanly.
+message CloneProgress {
+  string phase = 1;
+  uint64 objects_received = 2;
+  uint64 total_objects = 3;
+  uint64 bytes_received = 4;
+  bool done = 5;
+}
+
+service Repositories {
+  rpc AddRepository(AddRepoRequest) returns (Repository);
+  rpc Clone(CloneRequest) returns (stream CloneProgress);
+}

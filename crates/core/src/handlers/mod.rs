@@ -5,4 +5,5 @@
 //! `tonic::Request` into a call against the runtime's owned state
 //! and translate the result back through [`crate::error_map`].
 
+pub mod repositories;
 pub mod runtime;

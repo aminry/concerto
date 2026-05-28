@@ -217,6 +217,63 @@ impl Persistence {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Repositories (Task 18).
+//
+// Surfaced through `api.rs` so the interface generator picks the types up.
+// The CRUD impls live in `crates/persist/src/repositories.rs`.
+// ---------------------------------------------------------------------------
+
+/// Newtype around a `repositories.id` (UUIDv7 string per migration 0001).
+///
+/// Wraps `String` rather than `uuid::Uuid` to keep the schema's TEXT
+/// primary key honest at the type system level — callers don't need to
+/// parse-and-format on every boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RepositoryId(pub String);
+
+impl RepositoryId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RepositoryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Insert-time shape for a `repositories` row. Task 18 ships only the
+/// V0.1 columns; `clone_strategy` is always `"full"` in V0.1, and
+/// `cone_defaults_json` defaults to `[]` at the SQL layer.
+#[derive(Debug, Clone)]
+pub struct NewRepository {
+    pub id: RepositoryId,
+    pub project_id: String,
+    pub name: String,
+    pub url: String,
+    pub local_path: String,
+    pub clone_strategy: String,
+    pub default_branch: String,
+}
+
+/// Row-shaped projection of a `repositories` row. V0.1 omits
+/// `cone_defaults_json` and `fs_monitor_pid` — they're written by V1.0
+/// tasks (28, sparse + cones).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repository {
+    pub id: RepositoryId,
+    pub project_id: String,
+    pub name: String,
+    pub url: String,
+    pub local_path: String,
+    pub clone_strategy: String,
+    pub default_branch: String,
+    pub last_fetch_at: Option<i64>,
+}
+
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
 ///
 /// Every pragma the design doc lists as mandatory (`journal_mode = WAL`,
