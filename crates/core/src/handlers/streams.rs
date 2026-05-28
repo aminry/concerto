@@ -295,6 +295,7 @@ fn map_workspace_event(ev: WorkspaceEvent, offset: u64) -> Event {
     let (workspace_id, kind) = match ev {
         WorkspaceEvent::Created(ws) => (ws.id.to_string(), "created".to_string()),
         WorkspaceEvent::Archived(id) => (id.to_string(), "archived".to_string()),
+        WorkspaceEvent::Restored(ws) => (ws.id.to_string(), "restored".to_string()),
     };
     Event {
         offset,
@@ -310,6 +311,7 @@ fn map_workarea_event(ev: WorkareaEvent, offset: u64) -> Event {
     let (workarea_id, kind) = match ev {
         WorkareaEvent::Created(wa) => (wa.id.to_string(), "created".to_string()),
         WorkareaEvent::Archived(id) => (id.to_string(), "archived".to_string()),
+        WorkareaEvent::Restored(wa) => (wa.id.to_string(), "restored".to_string()),
     };
     Event {
         offset,

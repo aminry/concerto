@@ -69,4 +69,8 @@ service Workspaces {
   rpc GetWorkspace(WorkspaceId) returns (Workspace);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
   rpc ArchiveWorkspace(WorkspaceId) returns (google.protobuf.Empty);
+  // Task 31: clears `workspaces.archived_at`. Workareas remain
+  // individually archived per `design/03 §3.7`; the user restores each
+  // explicitly.
+  rpc RestoreWorkspace(WorkspaceId) returns (Workspace);
 }

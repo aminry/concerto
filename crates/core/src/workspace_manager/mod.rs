@@ -9,14 +9,18 @@
 //! `workspace.v0_single_repo_only`.
 
 pub mod actor;
+pub mod archive;
 pub mod composers;
 pub mod context_dir;
 pub mod files_to_copy;
+pub mod fsm;
 pub mod workarea;
 
 pub use actor::{
     WorkspaceEvent, WorkspaceManager, WorkspaceManagerActor, WorkspaceManagerConfig,
     SINGLE_REPO_WIRE_CODE,
 };
+pub use archive::ArchiveOpts;
 pub use composers::COMPOSERS;
+pub use fsm::{transition, WorkareaEvent as WorkareaFsmEvent, WorkareaState};
 pub use workarea::{WorkareaEvent, WorkareaManager, WorkareaManagerActor, WorkareaManagerConfig};

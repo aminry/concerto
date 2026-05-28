@@ -66,6 +66,11 @@ pub enum WorkspaceEvent {
     Created(Workspace),
     /// A workspace was archived. Payload is the workspace id.
     Archived(WorkspaceId),
+    /// A workspace was restored from archive (Task 31). Payload is the
+    /// post-restore row. Per `design/03 §3.7`, restoring a workspace
+    /// only clears `workspaces.archived_at`; workareas remain
+    /// individually archived.
+    Restored(Workspace),
 }
 
 /// Cloneable handle to the Workspace Manager's shared state.
@@ -77,6 +82,12 @@ pub enum WorkspaceEvent {
 pub struct WorkspaceManager {
     persistence: Arc<Persistence>,
     events: broadcast::Sender<WorkspaceEvent>,
+    /// Optional Workarea Manager handle (Task 31). When `Some`, the
+    /// cascading [`archive_workspace`] path drives each workarea's FS
+    /// side effects (session stop + worktree teardown) through the
+    /// workarea manager before stamping `workspaces.archived_at`. `None`
+    /// in the in-process unit tests that don't need the cascade.
+    workarea_manager: Option<crate::workspace_manager::WorkareaManager>,
 }
 
 impl WorkspaceManager {
@@ -88,7 +99,18 @@ impl WorkspaceManager {
         Self {
             persistence,
             events,
+            workarea_manager: None,
         }
+    }
+
+    /// Attach a [`crate::workspace_manager::WorkareaManager`] so the
+    /// cascading [`archive_workspace`] path can drive workarea FS side
+    /// effects (session stop + worktree teardown). Production wires
+    /// this in `main.rs`; tests can construct without it when they only
+    /// exercise the workspace-level surface.
+    pub fn with_workarea_manager(mut self, wam: crate::workspace_manager::WorkareaManager) -> Self {
+        self.workarea_manager = Some(wam);
+        self
     }
 
     /// Subscribe to `workspace.events`. The receiver lives in-process
@@ -242,19 +264,102 @@ impl WorkspaceManager {
         concerto_persist::workspaces::list_by_project(self.persistence.readers(), project_id).await
     }
 
-    /// Mark a workspace archived. Idempotent.
+    /// Archive a workspace + cascade to every non-archived workarea
+    /// (Task 31, per `design/03 §3.7`).
+    ///
+    /// Steps:
+    /// 1. List workareas with `archived_at IS NULL AND workspace_id = id`.
+    /// 2. For each: drive the FS side effects (stop live sessions, keep
+    ///    the worktree on disk per R-5).
+    /// 3. In one writer transaction: stamp `archived_at = now` on every
+    ///    listed workarea row AND on the workspace row.
+    /// 4. Emit [`WorkspaceEvent::Archived`].
+    ///
+    /// Idempotent: archiving a workspace with no non-archived workareas
+    /// only stamps the workspace row.
+    ///
+    /// Backwards-compatible: the previous Task 19 signature was
+    /// `archive(id) -> Result<()>` with no cascade; the new behaviour is
+    /// the cascading variant. Tests that wired Task 19 directly continue
+    /// to work because the workspace row UPDATE is still issued.
     pub async fn archive(&self, id: &WorkspaceId) -> Result<()> {
         // Sanity-check existence so we return NotFound instead of a
         // silent UPDATE-zero-rows.
         if self.get(id).await?.is_none() {
             return Err(Error::NotFound(format!("workspace {id} not found")));
         }
+
+        // Enumerate non-archived workareas in this workspace.
+        let workareas =
+            concerto_persist::workareas::list_non_archived_minimal(self.persistence.readers(), id)
+                .await?;
+
+        // Drive FS side effects per workarea (best-effort). The default
+        // ArchiveOpts keep worktrees on disk per design R-5.
+        if let Some(wam) = self.workarea_manager.as_ref() {
+            for (wa_id, worktree_root, _branch) in &workareas {
+                let path = std::path::PathBuf::from(worktree_root);
+                if let Err(e) = wam
+                    .archive_workarea_side_effects(
+                        wa_id,
+                        &path,
+                        crate::workspace_manager::ArchiveOpts::default(),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        workarea = %wa_id,
+                        error = %e,
+                        "archive_workarea_side_effects failed during cascade; continuing"
+                    );
+                }
+            }
+        }
+
+        // One transaction: every workarea row + the workspace row.
+        let wa_ids: Vec<concerto_persist::WorkareaId> =
+            workareas.into_iter().map(|(id, _, _)| id).collect();
         let now_ms = now_unix_ms();
-        let mut writer = self.persistence.writer().await;
-        concerto_persist::workspaces::archive(&mut writer, id, now_ms).await?;
-        drop(writer);
+        crate::workspace_manager::archive::archive_workspace_tx(
+            &self.persistence,
+            id,
+            &wa_ids,
+            now_ms,
+        )
+        .await?;
+
+        // Re-emit per-workarea archived events from the cascade so
+        // streams subscribers see the same shape as a single-archive.
+        if let Some(wam) = self.workarea_manager.as_ref() {
+            for wa_id in &wa_ids {
+                let _ = wam.publish_archived(wa_id.clone());
+            }
+        }
+
         let _ = self.events.send(WorkspaceEvent::Archived(id.clone()));
         Ok(())
+    }
+
+    /// Restore an archived workspace (Task 31).
+    ///
+    /// Clears `workspaces.archived_at` only. Workareas remain
+    /// individually archived per `design/03 §3.7`; the user restores
+    /// each one explicitly.
+    pub async fn restore_workspace(&self, id: &WorkspaceId) -> Result<Workspace> {
+        if self.get(id).await?.is_none() {
+            return Err(Error::NotFound(format!("workspace {id} not found")));
+        }
+        let mut writer = self.persistence.writer().await;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::workspaces::restore(&mut tx, id).await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        drop(writer);
+        let restored = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("workspace {id} vanished mid-restore")))?;
+        let _ = self.events.send(WorkspaceEvent::Restored(restored.clone()));
+        Ok(restored)
     }
 
     /// List repository ids attached to a workspace.

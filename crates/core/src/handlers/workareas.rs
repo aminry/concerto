@@ -17,15 +17,15 @@ use concerto_persist::{
 };
 use concerto_proto::v1::workareas_server::Workareas as WorkareasService;
 use concerto_proto::v1::{
-    CreateWorkareaRequest, DiffHunk as ProtoDiffHunk, DiffKind as ProtoDiffKind,
-    DiffPayload as ProtoDiffPayload, FileDiff as ProtoFileDiff, GetDiffRequest,
-    ListWorkareasRequest, ListWorkareasResponse, PermissionMode, Workarea as ProtoWorkarea,
-    WorkareaId as ProtoWorkareaId,
+    ArchiveWorkareaRequest, CreateWorkareaRequest, DiffHunk as ProtoDiffHunk,
+    DiffKind as ProtoDiffKind, DiffPayload as ProtoDiffPayload, FileDiff as ProtoFileDiff,
+    GetDiffRequest, ListWorkareasRequest, ListWorkareasResponse, PermissionMode,
+    Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
 };
 use tonic::{Request, Response, Status};
 
 use crate::error_map::error_to_status;
-use crate::workspace_manager::WorkareaManager;
+use crate::workspace_manager::{ArchiveOpts, WorkareaManager};
 
 /// Implements the generated `Workareas` service trait.
 #[derive(Clone)]
@@ -137,6 +137,44 @@ impl WorkareasService for WorkareasHandler {
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workareas::ArchiveWorkareaWithOpts")]
+    async fn archive_workarea_with_opts(
+        &self,
+        request: Request<ArchiveWorkareaRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        let id = PersistWorkareaId(req.workarea_id);
+        let opts = ArchiveOpts {
+            remove_worktree: req.remove_worktree,
+        };
+        self.workarea_manager
+            .archive_workarea(&id, opts)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workareas::RestoreWorkarea")]
+    async fn restore_workarea(
+        &self,
+        request: Request<ProtoWorkareaId>,
+    ) -> Result<Response<ProtoWorkarea>, Status> {
+        let req = request.into_inner();
+        if req.value.is_empty() {
+            return Err(Status::invalid_argument("workarea id is required"));
+        }
+        let id = PersistWorkareaId(req.value);
+        let row = self
+            .workarea_manager
+            .restore_workarea(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(workarea_to_proto(row)))
     }
 }
 
