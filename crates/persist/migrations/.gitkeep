@@ -1,0 +1,9 @@
+# Concerto SQLite migrations
+#
+# Forward-only, numerically ordered: 0001_<name>.sql, 0002_<name>.sql, …
+# `sqlx::migrate!("./migrations")` embeds each file into the binary and the
+# migration runner applies any not yet recorded in `_sqlx_migrations`.
+#
+# Task 08 ships the runner with no migrations yet; Task 09 adds the first.
+# This .gitkeep is here so the directory exists at build time (the
+# `sqlx::migrate!` macro panics if the path doesn't resolve to a directory).
