@@ -10,6 +10,8 @@
 
 pub mod actor;
 pub mod composers;
+pub mod context_dir;
+pub mod files_to_copy;
 pub mod workarea;
 
 pub use actor::{

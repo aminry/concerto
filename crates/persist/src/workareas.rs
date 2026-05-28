@@ -119,7 +119,8 @@ pub async fn update_status(
 pub async fn get(pool: &SqlitePool, id: &WorkareaId) -> Result<Option<Workarea>> {
     let row = sqlx::query(
         "SELECT id, workspace_id, composer_name, branch_name, worktree_root,
-                status, permission_mode, created_at, archived_at, last_activity_at
+                status, permission_mode, created_at, archived_at, last_activity_at,
+                settings_json
          FROM workareas WHERE id = ?",
     )
     .bind(&id.0)
@@ -141,11 +142,13 @@ pub async fn list_by_workspace(
 ) -> Result<Vec<Workarea>> {
     let sql = if include_archived {
         "SELECT id, workspace_id, composer_name, branch_name, worktree_root,
-                status, permission_mode, created_at, archived_at, last_activity_at
+                status, permission_mode, created_at, archived_at, last_activity_at,
+                settings_json
          FROM workareas WHERE workspace_id = ? ORDER BY composer_name"
     } else {
         "SELECT id, workspace_id, composer_name, branch_name, worktree_root,
-                status, permission_mode, created_at, archived_at, last_activity_at
+                status, permission_mode, created_at, archived_at, last_activity_at,
+                settings_json
          FROM workareas WHERE workspace_id = ? AND archived_at IS NULL
          ORDER BY composer_name"
     };
@@ -238,5 +241,25 @@ fn row_to_workarea(row: sqlx::sqlite::SqliteRow) -> Workarea {
         created_at: row.get::<i64, _>("created_at"),
         archived_at: row.get::<Option<i64>, _>("archived_at"),
         last_activity_at: row.get::<Option<i64>, _>("last_activity_at"),
+        settings_json: row.get::<String, _>("settings_json"),
     }
+}
+
+/// Overwrite a workarea's `settings_json` column with `payload` (a JSON
+/// string the caller has already serialized). Used by Task 30's
+/// files-to-copy resolver to stamp the idempotency flag after rules are
+/// applied. Idempotent — re-running with the same payload is a no-op
+/// from the row's perspective.
+pub async fn set_settings_json(
+    conn: &mut SqliteConnection,
+    id: &WorkareaId,
+    payload: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE workareas SET settings_json = ? WHERE id = ?")
+        .bind(payload)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
 }

@@ -46,7 +46,7 @@ use tokio::sync::broadcast;
 
 use crate::repo_manager::RepoManager;
 use crate::supervisor::{Actor, ActorContext};
-use crate::workspace_manager::COMPOSERS;
+use crate::workspace_manager::{context_dir, files_to_copy, COMPOSERS};
 
 /// Maximum number of composer-name suffix retries before giving up. 100
 /// keeps runaway loops bounded; the pool is large enough that real
@@ -63,6 +63,15 @@ const BROADCAST_CAPACITY: usize = 256;
 pub struct WorkareaManagerConfig;
 
 /// Events published on workarea-state changes.
+///
+/// The `Created` payload carries the full `Workarea` row (~232 bytes
+/// with `settings_json` added in Task 30); the size delta vs `Archived`
+/// triggers `clippy::large_enum_variant`. Keeping the broadcast payload
+/// unboxed matches `WorkspaceEvent::Created(Workspace)` next door, so
+/// we silence the lint locally rather than box only this variant —
+/// future events (status changes, branch rename) will also carry the
+/// full row by convention.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum WorkareaEvent {
     /// A new workarea was created. Payload is the persisted row (with
@@ -217,11 +226,9 @@ impl WorkareaManager {
             //    expensive step.
             concerto_gix_wrap::worktree_add(&repo_local, &branch, &repo_worktree).await?;
 
-            // 3. Create `.context/` skeleton.
-            let context_dir = worktree_root.join(".context");
-            tokio::fs::create_dir_all(context_dir.join("scratch")).await?;
-            tokio::fs::write(context_dir.join("PROMPT.md"), b"").await?;
-            tokio::fs::write(context_dir.join("todos.md"), b"").await?;
+            // 3. Create `.context/` skeleton (Task 30 expansion: adds
+            //    `checkpoints/` and seeds PROMPT.md / todos.md bodies).
+            context_dir::apply(&worktree_root).await?;
 
             // 4. Append `.context/` to the worktree's
             //    `.git/info/exclude`. Each worktree owns its own
@@ -229,7 +236,24 @@ impl WorkareaManager {
             //    so we resolve the real `info/` via git's own layout.
             append_context_to_git_exclude(&repo_worktree).await?;
 
-            // 5. Persist row + junction + status transition in one tx.
+            // 5. Apply files-to-copy rules from
+            //    `<repo.local_path>/.concerto/.worktreeinclude` into
+            //    this repo's new worktree. Missing rules file → no-op.
+            //    The `ignore` walker is sync; offload to a blocking
+            //    pool so the reactor stays responsive on big trees.
+            //    V0.1 single-repo simplification: the project's
+            //    reference worktree is the workspace's only repo
+            //    (`repo.local_path`).
+            let project_root = repo_local.clone();
+            let dest_root = repo_worktree.clone();
+            let applied_count = tokio::task::spawn_blocking(move || {
+                files_to_copy::apply(&project_root, &dest_root)
+            })
+            .await
+            .map_err(|e| Error::Internal(format!("files_to_copy join: {e}")))??;
+            tracing::debug!(applied = applied_count, "files_to_copy applied");
+
+            // 6. Persist row + junction + status transition in one tx.
             let id = WorkareaId(uuid::Uuid::now_v7().to_string());
             let worktree_root_str = worktree_root.to_string_lossy().into_owned();
             let worktree_path_str = repo_worktree.to_string_lossy().into_owned();
@@ -261,6 +285,16 @@ impl WorkareaManager {
                     )
                     .await?;
                     concerto_persist::workareas::update_status(&mut tx, &id, "active").await?;
+                    // Stamp `files_to_copy_applied: true` onto the
+                    // workarea's `settings_json` so a future re-run of
+                    // the resolver short-circuits idempotently
+                    // (`tasks/30 §Scope — in` last bullet). The full
+                    // settings_json schema is design/03 §3.14; V0.1
+                    // owns only this key. Other tasks (Maestro,
+                    // deliberation defaults) will merge their keys in.
+                    let settings_json = r#"{"files_to_copy_applied":true}"#.to_string();
+                    concerto_persist::workareas::set_settings_json(&mut tx, &id, &settings_json)
+                        .await?;
                     tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
                     drop(writer);
                     break Workarea {
@@ -274,6 +308,7 @@ impl WorkareaManager {
                         created_at: now_ms,
                         archived_at: None,
                         last_activity_at: None,
+                        settings_json,
                     };
                 }
                 Err(Error::Sqlx(boxed))

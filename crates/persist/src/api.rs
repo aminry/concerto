@@ -450,6 +450,12 @@ pub struct NewWorkareaRepo {
 
 /// Row-shaped projection of a `workareas` row. V0.1 omits
 /// `bypass_destructive_guard` — V0.1 callers don't read it.
+///
+/// `settings_json` is the raw JSON string from migration 0002. Task 30
+/// stamps `{"files_to_copy_applied": true}` onto it after the
+/// files-to-copy resolver finishes so reruns are idempotent; design/03
+/// §3.14 / design/04 §3.12 reserve other keys (`exclude_from_maestro`,
+/// `default_deliberation_mode`, …) for later tasks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workarea {
     pub id: WorkareaId,
@@ -462,6 +468,7 @@ pub struct Workarea {
     pub created_at: i64,
     pub archived_at: Option<i64>,
     pub last_activity_at: Option<i64>,
+    pub settings_json: String,
 }
 
 // ---------------------------------------------------------------------------
