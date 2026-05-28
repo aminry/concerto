@@ -50,6 +50,9 @@ tower.workspace = true
 hyper-util.workspace = true
 tokio-stream = { workspace = true, features = ["net", "sync"] }
 hostname.workspace = true
+# Task 30: files-to-copy resolver.
+ignore = { workspace = true }
+pathdiff = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via

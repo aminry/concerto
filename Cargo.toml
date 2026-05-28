@@ -122,3 +122,17 @@ getrandom = "0.2"
 # proc-macro infrastructure (codegen-only, no runtime deps beyond what
 # clap itself already brings).
 clap = { version = "4", features = ["derive"] }
+# Task 30: gitignore-aware walker used by the files-to-copy resolver
+# (`crates/core/src/workspace_manager/files_to_copy.rs`). The `ignore`
+# crate ships the same gitignore matcher BurntSushi/ripgrep uses, which
+# is exactly the syntax `design/03 §3.10` describes for
+# `.worktreeinclude`. The walker is sync; the Workarea Manager wraps
+# calls into it with `tokio::task::spawn_blocking` to keep the runtime
+# unblocked. MIT/Apache-2.0; transitively pulled by gix already so the
+# tree cost is essentially zero.
+ignore = "0.4"
+# Task 30: relative-path arithmetic for the files-to-copy resolver's
+# symlink mode — `pathdiff::diff_paths` computes the relative target a
+# workarea symlink should point at, which keeps workareas movable.
+# MIT/Apache-2.0; tiny crate (one function).
+pathdiff = "0.2"

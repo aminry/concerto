@@ -204,3 +204,6 @@ CREATE TABLE devices (
 CREATE INDEX idx_devices_active ON devices(revoked_at) WHERE revoked_at IS NULL;
 ```
 
+## `crates/persist/migrations/0002_workareas_settings_json.sql`
+
+

@@ -439,6 +439,7 @@ pub struct Workarea {
     pub created_at: i64,
     pub archived_at: Option<i64>,
     pub last_activity_at: Option<i64>,
+    pub settings_json: String,
 }
 ```
 
