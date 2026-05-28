@@ -20,6 +20,9 @@ pub type RuntimeClient = concerto_proto::v1::runtime_client::RuntimeClient<Chann
 /// `RepositoriesClient` over a UDS-backed Tonic channel (Task 18).
 pub type RepositoriesClient = concerto_proto::v1::repositories_client::RepositoriesClient<Channel>;
 
+/// `WorkspacesClient` over a UDS-backed Tonic channel (Task 19).
+pub type WorkspacesClient = concerto_proto::v1::workspaces_client::WorkspacesClient<Channel>;
+
 /// Connect timeout used by every client builder. 5 s matches the smoke
 /// client's budget; integration tests time out their own RPC calls on
 /// top of this.
@@ -51,6 +54,12 @@ pub async fn runtime_client(socket_path: PathBuf) -> Result<RuntimeClient, Clien
 pub async fn repositories_client(socket_path: PathBuf) -> Result<RepositoriesClient, ClientError> {
     let channel = uds_channel(socket_path).await?;
     Ok(RepositoriesClient::new(channel))
+}
+
+/// Build a Tonic `WorkspacesClient` dialed to `socket_path` (Task 19).
+pub async fn workspaces_client(socket_path: PathBuf) -> Result<WorkspacesClient, ClientError> {
+    let channel = uds_channel(socket_path).await?;
+    Ok(WorkspacesClient::new(channel))
 }
 
 async fn uds_channel(socket_path: PathBuf) -> Result<Channel, ClientError> {

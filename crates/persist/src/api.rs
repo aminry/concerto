@@ -274,6 +274,109 @@ pub struct Repository {
     pub last_fetch_at: Option<i64>,
 }
 
+// ---------------------------------------------------------------------------
+// Projects + Workspaces (Task 19).
+//
+// The `Projects` gRPC service does not exist in V0.1; the persistence
+// helpers in `crates/persist/src/projects.rs` are the only surface.
+// `Workspaces` ships its gRPC surface in Task 19; the schema is locked by
+// migration 0001 (Task 09).
+// ---------------------------------------------------------------------------
+
+/// Newtype around a `projects.id` (UUIDv7 string per migration 0001).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProjectId(pub String);
+
+impl ProjectId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ProjectId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Insert-time shape for a `projects` row.
+#[derive(Debug, Clone)]
+pub struct NewProject {
+    pub id: ProjectId,
+    pub name: String,
+    pub icon: Option<String>,
+    /// Unix epoch milliseconds. Supplied by the caller to keep this
+    /// layer pure (no wall-clock reads).
+    pub created_at: i64,
+}
+
+/// Row-shaped projection of a `projects` row. `settings_json` is
+/// intentionally omitted — V0.1 has no callers that consume it; future
+/// tasks (per-project settings) will add it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    pub id: ProjectId,
+    pub name: String,
+    pub icon: Option<String>,
+    pub created_at: i64,
+    pub archived_at: Option<i64>,
+}
+
+/// Newtype around a `workspaces.id` (UUIDv7 string per migration 0001).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorkspaceId(pub String);
+
+impl WorkspaceId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for WorkspaceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Insert-time shape for a `workspaces` row. `slug` is derived by the
+/// workspace manager (Task 19); the persistence layer takes whatever
+/// the caller supplies and lets the UNIQUE(project_id, slug) constraint
+/// surface a collision via `is_unique_violation`.
+///
+/// `permission_mode` is the **lowercase** SQL form (`"strict" |
+/// "normal" | "auto" | "yolo"`) or `None` for "inherit from project"
+/// per `design/03 §3.2`. The CHECK constraint enforces the allowed set.
+#[derive(Debug, Clone)]
+pub struct NewWorkspace {
+    pub id: WorkspaceId,
+    pub project_id: String,
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub permission_mode: Option<String>,
+    /// Unix epoch milliseconds.
+    pub created_at: i64,
+}
+
+/// Row-shaped projection of a `workspaces` row. `bypass_destructive_guard`
+/// and `settings_json` are intentionally omitted in V0.1 — V0.1 callers
+/// don't read them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    pub id: WorkspaceId,
+    pub project_id: String,
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    /// Lowercase SQL form (`"strict" | "normal" | "auto" | "yolo"`) or
+    /// `None` for "inherit from project".
+    pub permission_mode: Option<String>,
+    pub created_at: i64,
+    pub archived_at: Option<i64>,
+}
+
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
 ///
 /// Every pragma the design doc lists as mandatory (`journal_mode = WAL`,

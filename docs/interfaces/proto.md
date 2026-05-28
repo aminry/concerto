@@ -219,3 +219,50 @@ message Workspace {
 }
 ```
 
+### message `WorkspaceId`
+
+```proto
+message WorkspaceId {
+  string value = 1;
+}
+```
+
+### message `CreateWorkspaceRequest`
+
+```proto
+message CreateWorkspaceRequest {
+  string project_id = 1;
+  string name = 2;
+  repeated string repository_ids = 3;
+  optional PermissionMode permission_mode = 4;
+  optional string description = 5;
+}
+```
+
+### message `ListWorkspacesRequest`
+
+```proto
+message ListWorkspacesRequest {
+  string project_id = 1;
+}
+```
+
+### message `ListWorkspacesResponse`
+
+```proto
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+}
+```
+
+### service `Workspaces`
+
+```proto
+service Workspaces {
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
+  rpc GetWorkspace(WorkspaceId) returns (Workspace);
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc ArchiveWorkspace(WorkspaceId) returns (google.protobuf.Empty);
+}
+```
+

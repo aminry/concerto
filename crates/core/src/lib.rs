@@ -26,3 +26,4 @@ pub mod repo_manager;
 pub mod runtime;
 pub mod signals;
 pub mod supervisor;
+pub mod workspace_manager;

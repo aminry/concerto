@@ -45,6 +45,22 @@ fn git_wire_code_and_display() {
 }
 
 #[test]
+fn validation_wire_code_and_display() {
+    let err = Error::Validation("name is required".to_string());
+    assert_eq!(err.wire_code(), "validation");
+    assert_eq!(err.to_string(), "validation: name is required");
+    assert!(format!("{err:?}").contains("Validation"));
+}
+
+#[test]
+fn not_found_wire_code_and_display() {
+    let err = Error::NotFound("workspace abc not found".to_string());
+    assert_eq!(err.wire_code(), "not_found");
+    assert_eq!(err.to_string(), "not_found: workspace abc not found");
+    assert!(format!("{err:?}").contains("NotFound"));
+}
+
+#[test]
 fn internal_wire_code_and_display() {
     let err = Error::Internal("invariant violated".to_string());
     assert_eq!(err.wire_code(), "internal");

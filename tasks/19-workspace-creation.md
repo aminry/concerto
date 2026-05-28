@@ -91,23 +91,34 @@ Implement workspace creation end-to-end: a gRPC client calls `Workspaces.CreateW
 7. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] V0.1 single-repo restriction returns the documented error code for multi-repo requests.
-- [ ] Slug collision auto-suffix verified.
-- [ ] No `TODO` / `FIXME` / `todo!()` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] V0.1 single-repo restriction returns the documented error code for multi-repo requests.
+- [x] Slug collision auto-suffix verified.
+- [x] No `TODO` / `FIXME` / `todo!()` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
-- `crates/proto/proto/concerto/v1/workspaces.proto` (modified — adds service)
+- `crates/proto/proto/concerto/v1/workspaces.proto` (modified — adds service + request/response messages)
 - `crates/persist/src/projects.rs` (new)
 - `crates/persist/src/workspaces.rs` (new)
-- `crates/persist/src/lib.rs` (modified)
+- `crates/persist/src/lib.rs` (modified — module + re-exports)
+- `crates/persist/src/api.rs` (modified — `ProjectId`, `NewProject`, `Project`, `WorkspaceId`, `NewWorkspace`, `Workspace` exposed for the interface generator)
+- `crates/core/Cargo.toml` (modified — `sqlx` promoted from dev-dep to dep for `Connection::begin()`)
+- `crates/core/src/lib.rs` (modified — `pub mod workspace_manager`)
 - `crates/core/src/workspace_manager/mod.rs` (new)
 - `crates/core/src/workspace_manager/actor.rs` (new)
+- `crates/core/src/handlers/mod.rs` (modified — `pub mod workspaces`)
 - `crates/core/src/handlers/workspaces.rs` (new)
-- `crates/core/src/main.rs` (modified)
-- `crates/core/tests/workspace_lifecycle.rs` (new)
+- `crates/core/src/api_server.rs` (modified — `with_managers` constructor + optional `WorkspacesServer` registration)
+- `crates/core/src/error_map.rs` (modified — `validation` → `InvalidArgument`, `not_found` → `NotFound`)
+- `crates/core/src/main.rs` (modified — spawns `WorkspaceManagerActor` + uses `ApiServerActor::with_managers`)
+- `crates/core/tests/workspace_lifecycle.rs` (new — integration tests for the V0.1 Workspaces surface)
+- `crates/error/src/api.rs` (modified — adds `Error::Validation(String)` and `Error::NotFound(String)`)
+- `crates/error/src/error.rs` (modified — `wire_code` returns `"validation"` / `"not_found"`)
+- `crates/error/tests/wire_codes.rs` (modified — adds `validation_wire_code_and_display`, `not_found_wire_code_and_display`)
+- `crates/test-harness/src/clients.rs` (modified — `workspaces_client` accessor + `WorkspacesClient` type)
+- `crates/test-harness/src/lib.rs` (modified — re-exports `WorkspacesClient`, adds `CoreUnderTest::workspaces_client`)
 - `docs/interfaces/proto.md`, `rust-api.md`, `schema.md` (regenerated)
 
 ## Commit message
@@ -123,7 +134,18 @@ Refs: tasks/19-workspace-creation.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** no Projects gRPC service in V0.1 — tests insert directly via persistence. Project management UI comes later. Events go to an in-process broadcast channel until the Streams service exists.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **`Error::Validation(String)` and `Error::NotFound(String)` variants added to `crates/error/src/api.rs`.** Pre-authorised in the orchestrator drift block. `wire_code` returns `"validation"` / `"not_found"`; `error_to_status` maps them to `Code::InvalidArgument` / `Code::NotFound`. Wire-code contract tests added at `crates/error/tests/wire_codes.rs::{validation_wire_code_and_display, not_found_wire_code_and_display}`. The V0.1 multi-repo subcode `workspace.v0_single_repo_only` is embedded in the `Error::Validation` message body (and therefore the `ConcertoError.message` over the wire); `ConcertoError.code` carries the generic `"validation"` per the existing wire-code contract, matching the "simpler" approach the orchestrator's drift block sketched.
+  - **`ApiServerActor::with_managers` constructor added** alongside the existing `new` and `with_repo_manager`. `with_managers(started_at, view, repo_manager: Option<RepoManager>, workspace_manager: Option<WorkspaceManager>)` is the single growing-surface constructor; `with_repo_manager` is kept for back-compat with any in-flight call sites but `main.rs` now uses `with_managers`.
+  - **`workspaces_client()` accessor + `WorkspacesClient` re-export added** to `crates/test-harness/src/{clients.rs,lib.rs}` per the Task 18 handoff brief. Pattern matches `runtime_client()` / `repositories_client()`.
+  - **`crates/core/Cargo.toml` adds `sqlx` as a regular dependency** (already a dev-dep). The workspace manager opens a `sqlx::Connection::begin()` transaction on top of the persistence layer's writer guard so the `workspaces` + `workspace_repos` inserts commit atomically; that pulls in the `Connection` trait + the typed-error path needed for unique-constraint detection.
+  - **Single-tx multi-row write** is implemented as `persistence.writer().await` → `Connection::begin()` → insert workspace → `update_repos` → `commit`. On UNIQUE(`project_id, slug`) violation (SQLite extended code `2067`, detected via `concerto_persist::workspaces::is_unique_violation`) the tx rolls back, the suffix increments, and the loop retries up to 100 times — well clear of any realistic UI rename collision rate.
+  - **`Workspace` row's `permission_mode` is the lowercase SQL form** (`"strict" | "normal" | "auto" | "yolo"`); the handler converts between the proto enum and that string at the wire boundary. `None` means "inherit from project" (`design/03 §3.2`), and the proto `PermissionMode::Unspecified` is rejected as INVALID_ARGUMENT — callers must omit the `optional` field for inheritance, not set it to `UNSPECIFIED`.
+  - **`WorkspaceManagerActor`'s `run` parks on shutdown** following the Task 18 `RepoManagerActor` pattern. The meaningful surface is the `WorkspaceManager` handle (`Arc<Persistence>` + `broadcast::Sender<WorkspaceEvent>(256)`) which the gRPC `WorkspacesHandler` holds directly.
+- **Open questions for next task:**
+  - **Task 20 (`Workareas.CreateWorkarea`)** can reuse: the harness `workspaces_client()` accessor and pattern; the `with_managers` ApiServerActor constructor (extend with `workarea_manager: Option<...>` when it lands); the same persistence-layer `Connection::begin()` writer pattern for multi-table writes (`workareas` + `workarea_repos`); the same broadcast-channel `WorkspaceEvent` pattern can be lifted to `WorkareaEvent`.
+  - **`Streams` service (Task 24)** consumes from `WorkspaceManager::subscribe()`. The `WorkspaceEvent::{Created, Archived}` shape is in-process today; promoting them to wire types adds the proto message + the subscribe-and-forward task. Current capacity 256 is sized for the Task 19 spec — Task 24 may need to revisit under load.
+  - **No `Projects` gRPC service yet.** Task 19's integration tests still seed a `projects` row by going around the API (direct sqlx INSERT, same pattern as Task 18's `repository_clone.rs`). Adding `Projects.Create` is a small Phase 2 follow-on; the persistence helpers (`crates/persist/src/projects.rs::{insert, get, list_all}`) are already on the canonical surface.
+  - **Slug derivation is frozen.** The algorithm in `crates/core/src/workspace_manager/actor.rs::derive_slug` is the locked V0.1 surface — any change is a revision task per `tasks/README.md §8`. Unit tests in the same file pin: basic, punctuation stripping, dash-run collapsing, 64-char truncation, empty-on-punct-only, underscore/slash mapping.
+- **Deliberate debt:** no Projects gRPC service in V0.1 — integration tests insert directly via persistence helpers (`projects::insert`-equivalent direct sqlx). Project management UI comes later. `WorkspaceEvent`s emit into an in-process broadcast channel until the Streams service exists (Task 24). The `PathBuf` import in `workspace_manager/actor.rs` is unused in V0.1 and kept as a forward-looking marker (`_path_marker` helper) since the design notes hint at workarea-root path involvement at later tasks; rustfmt-clean, clippy-clean. No `TODO`/`FIXME`/`todo!()`/`unimplemented!()` markers in new code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` (v1) still boots the Core, calls `Runtime.GetServerCapabilities`, and shuts down cleanly. The Task 19 RPCs (`Workspaces.*`) are exercised by `crates/core/tests/workspace_lifecycle.rs` via the Task 17 harness, not by the smoke gate.

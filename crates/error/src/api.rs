@@ -47,6 +47,21 @@ pub enum Error {
     #[error("git: {0}")]
     Git(String),
 
+    /// Caller-facing input validation failure (e.g. missing required
+    /// field, malformed slug, V0.1 multi-repo workspace request).
+    /// Added in Task 19. Surfaces as `Code::InvalidArgument` over gRPC;
+    /// the message string may carry a specific wire code embedded as
+    /// the prefix (e.g. `workspace.v0_single_repo_only`) for clients
+    /// that switch on it.
+    #[error("validation: {0}")]
+    Validation(String),
+
+    /// Caller-facing "no such entity" failure (e.g. workspace id
+    /// doesn't exist, project id missing). Added in Task 19. Surfaces
+    /// as `Code::NotFound` over gRPC.
+    #[error("not_found: {0}")]
+    NotFound(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
