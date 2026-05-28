@@ -2,4 +2,159 @@
 
 # Proto
 
-_No `.proto` files yet._
+## `crates/proto/proto/concerto/v1/common.proto`
+
+- package: `concerto.v1`
+
+### message `ConcertoError`
+
+```proto
+message ConcertoError {
+  string code = 1;
+  string message = 2;
+  google.protobuf.Struct fields = 3;
+  string transaction_id = 4;
+}
+```
+
+### message `Identifier`
+
+```proto
+message Identifier {
+  string value = 1;
+}
+```
+
+### enum `PermissionMode`
+
+```proto
+enum PermissionMode {
+  PERMISSION_MODE_UNSPECIFIED = 0;
+  PERMISSION_MODE_STRICT = 1;
+  PERMISSION_MODE_NORMAL = 2;
+  PERMISSION_MODE_AUTO = 3;
+  PERMISSION_MODE_YOLO = 4;
+}
+```
+
+## `crates/proto/proto/concerto/v1/runtime.proto`
+
+- package: `concerto.v1`
+
+### enum `TransportKind`
+
+```proto
+enum TransportKind {
+  TRANSPORT_KIND_UNSPECIFIED = 0;
+  TRANSPORT_KIND_UDS = 1;
+  TRANSPORT_KIND_IROH = 2;
+  TRANSPORT_KIND_WSS_BRIDGE = 3;
+}
+```
+
+### message `ResourceLimits`
+
+```proto
+message ResourceLimits {
+  uint32 max_concurrent_streams = 1;
+  uint64 max_payload_bytes = 2;
+}
+```
+
+### message `ServerCapabilities`
+
+```proto
+message ServerCapabilities {
+  string server_version = 1;
+  string schema_version = 2;
+  repeated string optional_services = 3;
+  ResourceLimits limits = 4;
+  TransportKind transport_kind = 5;
+  string core_host_os = 6;
+  string core_hostname = 7;
+}
+```
+
+### message `RuntimeStatus`
+
+```proto
+message RuntimeStatus {
+  string version = 1;
+  google.protobuf.Timestamp started_at = 2;
+  uint64 uptime_seconds = 3;
+}
+```
+
+### service `Runtime`
+
+```proto
+service Runtime {
+  rpc GetServerCapabilities(google.protobuf.Empty) returns (ServerCapabilities);
+  rpc GetStatus(google.protobuf.Empty) returns (RuntimeStatus);
+}
+```
+
+## `crates/proto/proto/concerto/v1/sessions.proto`
+
+- package: `concerto.v1`
+
+### message `Session`
+
+```proto
+message Session {
+  string id = 1;
+  string workarea_id = 2;
+  string chat_id = 3;
+  // agent_kind ∈ { claude | codex | gemini }
+  string agent_kind = 4;
+  optional string agent_version = 5;
+  optional string model = 6;
+  // status ∈ { starting | running | awaiting | finished | crashed }
+  string status = 7;
+  PermissionMode permission_mode = 8;
+  google.protobuf.Timestamp started_at = 9;
+  optional google.protobuf.Timestamp ended_at = 10;
+}
+```
+
+## `crates/proto/proto/concerto/v1/workareas.proto`
+
+- package: `concerto.v1`
+
+### message `Workarea`
+
+```proto
+message Workarea {
+  string id = 1;
+  string workspace_id = 2;
+  string composer_name = 3;
+  string branch_name = 4;
+  string worktree_root = 5;
+  // status ∈ { created | active | running | awaiting | paused | archived | crashed }
+  string status = 6;
+  optional PermissionMode permission_mode = 7;
+  google.protobuf.Timestamp created_at = 8;
+  optional google.protobuf.Timestamp last_activity_at = 9;
+  optional google.protobuf.Timestamp archived_at = 10;
+}
+```
+
+## `crates/proto/proto/concerto/v1/workspaces.proto`
+
+- package: `concerto.v1`
+
+### message `Workspace`
+
+```proto
+message Workspace {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string slug = 4;
+  optional string description = 5;
+  optional PermissionMode permission_mode = 6;
+  google.protobuf.Timestamp created_at = 7;
+  optional google.protobuf.Timestamp archived_at = 8;
+}
+```
+

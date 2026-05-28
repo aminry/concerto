@@ -1,0 +1,47 @@
+// Runtime service — the minimum surface the Desktop client needs on
+// connect. See design/10 §4.2 and §5.1.
+//
+// Field numbers in this file are FROZEN as of Task 07. V0.1 intentionally
+// omits `optional_streams`, `default_stream_buffer`, and `ReloadConfig`
+// (full set in design/10 §4.2 / §5.1); they may be added later at higher
+// field numbers without breaking the wire.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+enum TransportKind {
+  TRANSPORT_KIND_UNSPECIFIED = 0;
+  TRANSPORT_KIND_UDS = 1;
+  TRANSPORT_KIND_IROH = 2;
+  TRANSPORT_KIND_WSS_BRIDGE = 3;
+}
+
+message ResourceLimits {
+  uint32 max_concurrent_streams = 1;
+  uint64 max_payload_bytes = 2;
+}
+
+message ServerCapabilities {
+  string server_version = 1;
+  string schema_version = 2;
+  repeated string optional_services = 3;
+  ResourceLimits limits = 4;
+  TransportKind transport_kind = 5;
+  string core_host_os = 6;
+  string core_hostname = 7;
+}
+
+message RuntimeStatus {
+  string version = 1;
+  google.protobuf.Timestamp started_at = 2;
+  uint64 uptime_seconds = 3;
+}
+
+service Runtime {
+  rpc GetServerCapabilities(google.protobuf.Empty) returns (ServerCapabilities);
+  rpc GetStatus(google.protobuf.Empty) returns (RuntimeStatus);
+}

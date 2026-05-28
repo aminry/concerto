@@ -1,0 +1,25 @@
+// Workspace entity shape.
+//
+// Workspaces are logical workstreams owning 1..N workareas (see design/03
+// and design/09 §4.1). Service methods (CreateWorkspace, ListWorkspaces, …)
+// land in Task 19; this task only locks the data shape.
+//
+// Field numbers in this file are FROZEN as of Task 07.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/timestamp.proto";
+import "concerto/v1/common.proto";
+
+message Workspace {
+  string id = 1;
+  string project_id = 2;
+  string name = 3;
+  string slug = 4;
+  optional string description = 5;
+  optional PermissionMode permission_mode = 6;
+  google.protobuf.Timestamp created_at = 7;
+  optional google.protobuf.Timestamp archived_at = 8;
+}

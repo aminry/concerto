@@ -17,6 +17,9 @@ tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
 prost = { workspace = true }
 prost-types = "0.13"
 serde = { workspace = true, features = ["derive"] }
+# serde_json is only used by the `Option<prost_types::Struct>` serde shim in
+# `serde_compat::option_struct`. Not on the gRPC hot path.
+serde_json = { workspace = true }
 
 [build-dependencies]
 tonic-build = { version = "0.12", default-features = false, features = ["prost", "transport"] }

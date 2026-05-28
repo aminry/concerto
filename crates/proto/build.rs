@@ -36,12 +36,52 @@ fn main() -> io::Result<()> {
 
     let serde_derive = "#[derive(serde::Serialize, serde::Deserialize)]";
 
-    tonic_build::configure()
+    // Every Timestamp field in our protos becomes `Option<prost_types::Timestamp>`
+    // in Rust (proto3 message-typed fields are always optional in the
+    // generated code). `prost_types::Timestamp` does not derive serde, so
+    // the blanket `serde_derive` above won't compile without a `with`
+    // shim. The shim lives in `src/lib.rs::serde_compat::option_timestamp`.
+    //
+    // Listed explicitly per `MessageName.field_name` rather than by glob,
+    // because tonic-build's matcher does not let us key on field *type*.
+    // When a future proto adds a Timestamp field, add a row here.
+    let timestamp_fields = [
+        "concerto.v1.RuntimeStatus.started_at",
+        "concerto.v1.Workspace.created_at",
+        "concerto.v1.Workspace.archived_at",
+        "concerto.v1.Workarea.created_at",
+        "concerto.v1.Workarea.last_activity_at",
+        "concerto.v1.Workarea.archived_at",
+        "concerto.v1.Session.started_at",
+        "concerto.v1.Session.ended_at",
+    ];
+
+    let mut builder = tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_well_known_types(true)
+        // `compile_well_known_types(false)` (the default) makes tonic-build
+        // auto-map `.google.protobuf.*` to `::prost_types::*`, which is what
+        // we want — downstream crates use `prost_types::Timestamp` etc.
+        // directly without re-export gymnastics.
         .type_attribute(".", serde_derive)
-        .out_dir(env::var("OUT_DIR").expect("OUT_DIR"))
+        .out_dir(env::var("OUT_DIR").expect("OUT_DIR"));
+
+    for field in timestamp_fields {
+        builder = builder.field_attribute(
+            field,
+            "#[serde(with = \"crate::serde_compat::option_timestamp\")]",
+        );
+    }
+
+    // `ConcertoError.fields` is `Option<google.protobuf.Struct>` → maps to
+    // `Option<prost_types::Struct>` in Rust. Same serde issue as Timestamp;
+    // shimmed via `serde_compat::option_struct`.
+    builder = builder.field_attribute(
+        "concerto.v1.ConcertoError.fields",
+        "#[serde(with = \"crate::serde_compat::option_struct\")]",
+    );
+
+    builder
         .compile_protos(
             &proto_files.iter().map(|p| p.as_path()).collect::<Vec<_>>(),
             &[proto_root.as_path()],
