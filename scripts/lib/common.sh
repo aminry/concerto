@@ -44,6 +44,28 @@ wait_for_port() {
     return 1
 }
 
+# wait_for_file <path> <timeout-seconds>
+#   Poll until <path> exists (any file type — regular file, socket,
+#   directory, symlink), or return non-zero after <timeout-seconds>.
+#   Used by the Task 15 smoke gate to wait for `<config_dir>/core.sock`
+#   to appear after `concerto-core` boots.
+wait_for_file() {
+    if [ "$#" -lt 2 ]; then
+        fail "wait_for_file: usage: wait_for_file <path> <timeout-seconds>"
+    fi
+    local path=$1
+    local timeout=$2
+    local deadline
+    deadline=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if [ -e "$path" ]; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
 # wait_for_log <file> <regex> <timeout-seconds>
 #   Wait for <regex> to appear (as extended regex via grep -E) in <file>, or
 #   return non-zero after <timeout-seconds>. If <file> doesn't exist yet,

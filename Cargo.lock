@@ -554,6 +554,18 @@ name = "concerto-relay"
 version = "0.0.1"
 
 [[package]]
+name = "concerto-smoke-client"
+version = "0.0.1"
+dependencies = [
+ "concerto-proto",
+ "hyper-util",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tower 0.5.3",
+]
+
+[[package]]
 name = "concerto-transport"
 version = "0.0.1"
 
