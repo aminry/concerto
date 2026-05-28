@@ -80,12 +80,12 @@ Implement `gix`-backed `status` and `diff` operations in `crates/gix-wrap`, expo
 8. `./scripts/regen-interfaces.sh && git diff` → commits regenerated interfaces.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Status correctness verified against `git status` baseline.
-- [ ] Bench gate runs in CI.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Status correctness verified against `git status` baseline.
+- [x] Bench gate runs in CI.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/gix-wrap/Cargo.toml` (modified — gix features, criterion as dev-dep)
@@ -112,7 +112,19 @@ Refs: tasks/29-gix-status-hot-path.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** 10k-file fixture, not 2M; sparse-cone test deferred to V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Shell-out fallback chosen for both `status` and `diff`.** Per pre-decision 1 and 15, `gix::status` (gix 0.77) has an evolving surface that doesn't yet match `git status` 1:1 for every edge case; the `Repository::status(...)` builder API moved across point releases. Instead of fighting it, both `status` and `diff_head` / `diff_to_main` shell out via the existing `crates/gix-wrap/src/cmd.rs` helper. `status` uses `git status --porcelain=v1 -z` (NUL-delimited records, unambiguous parsing); `diff_head` does a two-pass `--name-status -M -z` + per-file `git diff -U3` so rename detection (which lives in `--name-status`) is separate from the unified-diff body callers actually render. Locked Rust signatures (`status`, `diff_head`, `diff_to_main`) and the locked proto field numbers (`DiffPayload`, `FileDiff`, `DiffHunk`, `DiffKind` 0..=4) are preserved; a future task can swap the body for a pure-`gix` backend without touching either surface.
+  - **`StatusReport` / `StatusEntry` / `StatusState` live in `crates/gix-wrap/src/status.rs`; `DiffPayload` / `FileDiff` / `DiffHunk` / `DiffKind` live in `crates/gix-wrap/src/diff.rs`.** `crates/gix-wrap/src/api.rs` re-exports them with `pub use` so `concerto_gix_wrap::{status, diff_head, diff_to_main, StatusReport, DiffPayload, ...}` resolve at the locked path. Matches Task 29 pre-decision 3 + 4.
+  - **`Workareas.GetWorkareaRepoDiff` lives on the existing `Workareas` service** (pre-decision 6), appended at the bottom of `workareas.proto`. New messages `DiffPayload`, `FileDiff`, `DiffHunk`, `GetDiffRequest`, `DiffKind` enum added in the same file. `concerto-proto` regenerates without further build.rs changes — none of the new types carry `google.protobuf.Timestamp` fields. The handler resolves `(workarea_id, repository_id) → worktree_path` via a new `concerto_persist::workareas::get_workarea_repo_worktree_path` reader.
+  - **`crates/persist/src/workareas.rs::get_workarea_repo_worktree_path`** added — single-row read against the `workarea_repos` junction by `(workarea_id, repository_id)`. The Workspace Manager exposes `WorkareaManager::get_repo_diff` that combines the junction lookup + `concerto_gix_wrap::diff_head` so the gRPC handler stays a thin tonic adapter. `WorkareaManager` already held `Arc<Persistence>`, so no new fields were needed.
+  - **Bench harness picks a current-thread tokio runtime + `block_on`** rather than `rt.handle().block_on` because the criterion `bench_function` closure is called from criterion's own thread, not a tokio thread. Sample size cut to 30 (criterion's default is 100) because each iteration shells out to `git status` against 10k files; 30 samples is enough for the locked p50 budget and keeps the bench under ~30 s wall-clock per run on a developer machine.
+  - **`bench.yml` only runs `cargo bench -p concerto-gix-wrap --no-run`** per pre-decision 9 — actual measurements take multiple minutes per fixture and would dominate the CI wall clock. Triggered on `crates/gix-wrap/**` paths only so unrelated PRs don't pay the criterion-compile tax.
+  - **Status parity test focuses on the file set + coarse `StatusState`** (pre-decision 10) — `git status` itself does not perform rename detection by default, so renames are exercised only by the `parse_porcelain_v1` unit test inside `crates/gix-wrap/src/status.rs::tests`. Diff-side rename behaviour is covered by `crates/core/tests/diff_grpc.rs` end-to-end and `crates/gix-wrap/src/diff.rs::tests::parses_rename_record`.
+  - **No `gix` features added to `Cargo.toml`.** Pre-decision 14 anticipated needing `status` / `diff` features; with the shell-out path neither is required, so the workspace `gix` feature set is unchanged (`max-performance-safe`, `blocking-network-client`, `revision`). Keeps the dep tree minimal + the `cargo-deny` budget unchanged.
+- **Open questions for next task:**
+  - **`DiffKind` proto enum field numbers are FROZEN at the V0.1 set** (0=UNSPECIFIED, 1=ADDED, 2=DELETED, 3=MODIFIED, 4=RENAMED). Future kinds (copied, type-changed, untracked-as-diff) land at higher numbers — additive only.
+  - **`gix::status` migration path** is purely internal: callers see `concerto_gix_wrap::status(path) -> Result<StatusReport>` regardless. A V1.0 task that wants the pure-`gix` perf wins can re-implement `crates/gix-wrap/src/status.rs::status` (and the inverse `parse_porcelain_v1` becomes a parser-only utility for the shell-out test path) without touching anything downstream.
+  - **`Workareas.GetWorkareaRepoDiff` is unary, not streaming.** A 10k-file diff fits comfortably in a single tonic response under the locked 16 MiB max payload (`runtime.proto`). If a future task needs per-file streaming (large monorepo diffs), add a separate `StreamWorkareaRepoDiff` RPC at a new field number — keeping the unary form preserves the gRPC v0.1 contract.
+  - **Bench baseline tracking deferred.** Pre-decision 8 dropped the `criterion-compare`-style 20%-regression gate in favour of compile-only validation. A follow-on can add `cargo bench -- --save-baseline ci` + a compare step driven by the `crates/gix-wrap/target/criterion/` JSON once a release-runner pool exists.
+- **Deliberate debt:** 10k-file fixture, not 2M; sparse-cone test deferred to V1.0. Bench gate validates compile only — actual p50 measurement is manual. `gix::status` / `gix::diff::tree::Changes` integration deferred (shell-out is the V0.1 hot path). No `TODO` / `FIXME` / `todo!()` / `unimplemented!()` markers in new code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` (v2) still drives the full project / repo / workspace / workarea / session flow; the Task 29 RPC isn't on the smoke path — it's covered by `crates/core/tests/diff_grpc.rs` via the Task 17 harness.

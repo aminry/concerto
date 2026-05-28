@@ -27,6 +27,11 @@ use tokio::sync::mpsc;
 
 use crate::cmd;
 
+// Re-export the Task 29 status/diff surface so the interface generator
+// picks it up as part of `crates/gix-wrap/src/api.rs`.
+pub use crate::diff::{diff_head, diff_to_main, DiffHunk, DiffKind, DiffPayload, FileDiff};
+pub use crate::status::{status, StatusEntry, StatusReport, StatusState};
+
 /// Channel sender used to surface clone progress upstream.
 ///
 /// Bounded at 32 by callers — under backpressure the clone path drops

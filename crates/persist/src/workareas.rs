@@ -192,6 +192,29 @@ pub async fn list_composer_names_in_workspace(
         .collect())
 }
 
+/// Look up the `worktree_path` column on the `workarea_repos` junction
+/// row for a given (workarea, repository) pair. Used by Task 29's
+/// `Workareas.GetWorkareaRepoDiff` handler to resolve the per-repo
+/// worktree the diff should run against.
+///
+/// Returns `None` when no junction row exists for the pair.
+pub async fn get_workarea_repo_worktree_path(
+    pool: &SqlitePool,
+    workarea_id: &WorkareaId,
+    repository_id: &crate::api::RepositoryId,
+) -> Result<Option<String>> {
+    let row = sqlx::query(
+        "SELECT worktree_path FROM workarea_repos
+         WHERE workarea_id = ? AND repository_id = ?",
+    )
+    .bind(&workarea_id.0)
+    .bind(&repository_id.0)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(row.map(|r| r.get::<String, _>("worktree_path")))
+}
+
 /// True iff `err` wraps SQLite's `SQLITE_CONSTRAINT_UNIQUE` (extended
 /// code `2067`). The Workspace Manager uses this to detect a composer
 /// name collision in the UNIQUE(`workspace_id, composer_name`) constraint

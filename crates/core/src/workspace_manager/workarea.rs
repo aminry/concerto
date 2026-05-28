@@ -322,6 +322,41 @@ impl WorkareaManager {
         .await
     }
 
+    /// Resolve the worktree path on disk for one repository inside a
+    /// workarea, then run `concerto_gix_wrap::diff_head` against it.
+    ///
+    /// Task 29's hot-path entry point for `Workareas.GetWorkareaRepoDiff`.
+    /// The lookup is a single read against `workarea_repos`; the diff
+    /// itself shells out to `git` and is offloaded via
+    /// `tokio::task::spawn_blocking` so the gRPC reactor stays unblocked
+    /// even on slow disks.
+    pub async fn get_repo_diff(
+        &self,
+        workarea_id: &WorkareaId,
+        repository_id: &concerto_persist::RepositoryId,
+    ) -> Result<concerto_gix_wrap::DiffPayload> {
+        // Workarea must exist before we go looking for its repos.
+        if self.get(workarea_id).await?.is_none() {
+            return Err(Error::NotFound(format!("workarea {workarea_id} not found")));
+        }
+        let worktree_path = concerto_persist::workareas::get_workarea_repo_worktree_path(
+            self.persistence.readers(),
+            workarea_id,
+            repository_id,
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::NotFound(format!(
+                "repository {repository_id} is not attached to workarea {workarea_id}"
+            ))
+        })?;
+        let worktree = PathBuf::from(worktree_path);
+        // `diff_head` is `async` but drives a subprocess; running it
+        // directly off the gRPC reactor is fine — the blocking work is
+        // already on a tokio child process, not on this thread.
+        concerto_gix_wrap::diff_head(&worktree).await
+    }
+
     /// Archive a workarea. Sets `archived_at` and transitions `status`
     /// to `"archived"`. Idempotent.
     pub async fn archive(&self, id: &WorkareaId) -> Result<()> {

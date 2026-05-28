@@ -69,9 +69,54 @@ message ListWorkareasResponse {
   repeated Workarea workareas = 1;
 }
 
+// Task 29: structured diff payload for `Workareas.GetWorkareaRepoDiff`.
+// Field numbers FROZEN as of Task 29; mirrors the Rust types in
+// `concerto-gix-wrap` so the handler conversion is mechanical.
+
+message DiffPayload {
+  repeated FileDiff files = 1;
+}
+
+message FileDiff {
+  string path = 1;
+  DiffKind kind = 2;
+  optional string old_path = 3;
+  repeated DiffHunk hunks = 4;
+}
+
+message DiffHunk {
+  int32 old_start = 1;
+  int32 old_lines = 2;
+  int32 new_start = 3;
+  int32 new_lines = 4;
+  // Unified-diff body lines (`+`, `-`, space-prefixed) for this hunk,
+  // joined with `\n`. Hunk header is NOT included — the four range
+  // fields above carry that information.
+  string body = 5;
+}
+
+enum DiffKind {
+  DIFF_KIND_UNSPECIFIED = 0;
+  DIFF_KIND_ADDED = 1;
+  DIFF_KIND_DELETED = 2;
+  DIFF_KIND_MODIFIED = 3;
+  DIFF_KIND_RENAMED = 4;
+}
+
+// Inputs for `Workareas.GetWorkareaRepoDiff`. Identifies a (workarea,
+// repository) pair; the server resolves the repo's worktree under the
+// workarea and diffs the worktree against HEAD.
+message GetDiffRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+}
+
 service Workareas {
   rpc CreateWorkarea(CreateWorkareaRequest) returns (Workarea);
   rpc GetWorkarea(WorkareaId) returns (Workarea);
   rpc ListWorkareas(ListWorkareasRequest) returns (ListWorkareasResponse);
   rpc ArchiveWorkarea(WorkareaId) returns (google.protobuf.Empty);
+  // Task 29: hot-path diff. Returns the structured worktree-vs-HEAD
+  // diff for one repo inside a workarea.
+  rpc GetWorkareaRepoDiff(GetDiffRequest) returns (DiffPayload);
 }

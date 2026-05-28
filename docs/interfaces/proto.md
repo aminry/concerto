@@ -475,6 +475,61 @@ message ListWorkareasResponse {
 }
 ```
 
+### message `DiffPayload`
+
+```proto
+message DiffPayload {
+  repeated FileDiff files = 1;
+}
+```
+
+### message `FileDiff`
+
+```proto
+message FileDiff {
+  string path = 1;
+  DiffKind kind = 2;
+  optional string old_path = 3;
+  repeated DiffHunk hunks = 4;
+}
+```
+
+### message `DiffHunk`
+
+```proto
+message DiffHunk {
+  int32 old_start = 1;
+  int32 old_lines = 2;
+  int32 new_start = 3;
+  int32 new_lines = 4;
+  // Unified-diff body lines (`+`, `-`, space-prefixed) for this hunk,
+  // joined with `\n`. Hunk header is NOT included — the four range
+  // fields above carry that information.
+  string body = 5;
+}
+```
+
+### enum `DiffKind`
+
+```proto
+enum DiffKind {
+  DIFF_KIND_UNSPECIFIED = 0;
+  DIFF_KIND_ADDED = 1;
+  DIFF_KIND_DELETED = 2;
+  DIFF_KIND_MODIFIED = 3;
+  DIFF_KIND_RENAMED = 4;
+}
+```
+
+### message `GetDiffRequest`
+
+```proto
+message GetDiffRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+}
+```
+
 ### service `Workareas`
 
 ```proto
@@ -483,6 +538,9 @@ service Workareas {
   rpc GetWorkarea(WorkareaId) returns (Workarea);
   rpc ListWorkareas(ListWorkareasRequest) returns (ListWorkareasResponse);
   rpc ArchiveWorkarea(WorkareaId) returns (google.protobuf.Empty);
+  // Task 29: hot-path diff. Returns the structured worktree-vs-HEAD
+  // diff for one repo inside a workarea.
+  rpc GetWorkareaRepoDiff(GetDiffRequest) returns (DiffPayload);
 }
 ```
 
