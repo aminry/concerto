@@ -20,6 +20,18 @@ allow = [
     # Task 05 because sqlx 0.8 → hashbrown 0.15 → foldhash is Zlib-licensed.
     # Posture-equivalent to BSD-2-Clause.
     "Zlib",
+    # File-level weak copyleft. Added in Task 14 because Tauri 2's tree pulls
+    # in cssparser / cssparser-macros / selectors / dtoa-short (via tauri-utils
+    # → dom_query) and option-ext (via tauri → dirs → dirs-sys). MPL's
+    # copyleft trigger fires only on modifications to the MPL'd source files
+    # themselves — we consume these crates as unmodified upstream binaries,
+    # so the obligation never attaches. Operator-ratified 2026-05-28.
+    "MPL-2.0",
+    # Apache-2.0 with the LLVM-style "patent grant + linking exception"
+    # rider. OSI/FSF-approved permissive. Added in Task 14 because
+    # `target-lexicon` (a Linux-only `system-deps` build-time dep pulled in
+    # by Tauri's gtk/webkit chain) ships under this combined identifier.
+    "Apache-2.0 WITH LLVM-exception",
 ]
 confidence-threshold = 0.93
 
@@ -28,6 +40,13 @@ confidence-threshold = 0.93
 [advisories]
 version = 2
 yanked = "deny"
+# `unmaintained` advisories on transitive deps are demoted from error to
+# informational. Tauri 2's tree carries several: gtk-rs GTK3 bindings
+# (Linux-only; gtk-rs has moved to GTK4 and V0.1 desktop is macOS only),
+# `proc-macro-error` and the `unic-*` cluster (build-time macros only,
+# no runtime surface). Direct workspace deps still trigger if they go
+# unmaintained — only the transitive surface is muted. Set in Task 14.
+unmaintained = "workspace"
 
 [sources]
 unknown-registry = "deny"

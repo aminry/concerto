@@ -20,13 +20,61 @@ jobs:
         with:
           version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Tauri Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - uses: pnpm/action-setup@v4
+        if: matrix.os != 'windows-latest'
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        if: matrix.os != 'windows-latest'
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: Build desktop frontend (Tauri build.rs requires Vite dist)
+        if: matrix.os != 'windows-latest'
+        working-directory: apps/desktop
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
       - uses: Swatinem/rust-cache@v2
+      # The desktop client is macOS-only in V0.1 per tasks/README.md §2;
+      # Windows + Linux are V1.0. Tauri's build.rs requires icons/icon.ico
+      # on Windows for resource generation, which we don't ship. Exclude
+      # the crate from Windows runs; macOS + Linux build it normally.
       - name: cargo check
-        run: cargo check --workspace --all-targets
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cargo check --workspace --all-targets --exclude concerto-desktop
+          else
+            cargo check --workspace --all-targets
+          fi
+        shell: bash
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cargo clippy --workspace --all-targets --exclude concerto-desktop -- -D warnings
+          else
+            cargo clippy --workspace --all-targets -- -D warnings
+          fi
+        shell: bash
       - name: cargo test
-        run: cargo test --workspace --no-fail-fast
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cargo test --workspace --no-fail-fast --exclude concerto-desktop
+          else
+            cargo test --workspace --no-fail-fast
+          fi
+        shell: bash
       - name: Check interface summaries are up to date
         if: matrix.os == 'ubuntu-latest'
         run: |

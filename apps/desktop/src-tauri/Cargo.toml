@@ -1,0 +1,49 @@
+[package]
+name = "concerto-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Concerto Desktop — Tauri 2 shell (V0.1)"
+
+# Tauri's scaffolding wants the binary co-located in a `src-tauri/`
+# folder. The crate name above is the *workspace* identifier; the
+# bundle product name is set in tauri.conf.json.
+[[bin]]
+name = "concerto-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", default-features = false }
+
+[dependencies]
+# Tauri 2 — minimum feature set that compiles a window-bearing app.
+# `tray-icon` / `updater` / `notification` come online in Phase 4.
+tauri = { version = "2", features = [] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# gRPC client over UDS — reuses the same Tonic + tower + hyper-util
+# pattern locked in tasks/13 (see crates/core/tests/grpc_runtime.rs).
+concerto-proto = { path = "../../../crates/proto" }
+concerto-error = { path = "../../../crates/error" }
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+tower = { workspace = true }
+hyper-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+prost-types = "0.13"
+tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# `home` resolves `$HOME` for the default `~/.concerto/core.sock` path.
+home = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-stream = { workspace = true, features = ["net"] }
+
+# Tauri 2's bundler config lives in tauri.conf.json; the [package.metadata]
+# table below stays empty deliberately so we don't accidentally fork the
+# config surface.
