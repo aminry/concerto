@@ -9,3 +9,31 @@ rust-version.workspace = true
 [lib]
 name = "concerto_keychain"
 path = "src/lib.rs"
+
+[dependencies]
+# OS keychain backend. On macOS we use the native Security framework via
+# `apple-native`; on Linux a future port will need `linux-native` or
+# `sync-secret-service`. V0.1 ships macOS-only per design/00 §6.
+# `apple-native` builds on every platform — the feature only adds the
+# `security-framework` dep (macOS-gated upstream); on Linux/Windows the
+# Entry API falls back to a no-op platform error that our wrapper maps to
+# `SecretsError::PlatformError`. Tests are macOS-gated regardless.
+keyring = { workspace = true, features = ["apple-native"] }
+# In-memory secret hygiene. `secrecy::SecretString` zeroes on drop and
+# refuses to be printed via Debug — the only escape hatch is
+# `ExposeSecret::expose_secret()`, which our `SecretValue::expose()`
+# proxies one (and only one) time so callers must choose to cross the
+# trust boundary.
+secrecy = { workspace = true }
+zeroize = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
+
+[dev-dependencies]
+# Round-trip tests need a tokio runtime to call the async API.
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[[example]]
+name = "secrets_demo"
+path = "examples/secrets_demo.rs"

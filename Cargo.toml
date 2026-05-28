@@ -40,7 +40,15 @@ sqlx = { version = "0.8", default-features = false }
 # level; crates re-enable the feature subsets they actually need.
 tonic = { version = "0.12", default-features = false }
 prost = "0.13"
-keyring = "2"
+# keyring 3 (was 2) — Task 10 pin. v3 is the current published stable
+# (v4 exists but the design doc named v4 before v3 stabilized; sticking to
+# v3 keeps the API surface that Task 10's spec was written against).
+# Default features off; crates that need a backend opt in (e.g.
+# `apple-native` on macOS, `linux-native` on Linux). Workspace-level dep
+# is bare-name + version; per-crate Cargo.toml sets `features = [...]`.
+keyring = { version = "3", default-features = false }
+secrecy = "0.10"
+zeroize = "1"
 # `home` for home_dir(); rust-lang's own crate, MIT/Apache-2.0. Picked
 # over `dirs` because `dirs` pulls in `option-ext` (MPL-2.0) — disallowed
 # by design/00 §6.11's permissive-only license posture.

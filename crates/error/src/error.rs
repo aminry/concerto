@@ -16,6 +16,7 @@ impl Error {
             Error::Sqlx(_) => "sqlx",
             Error::Tonic(_) => "tonic",
             Error::Pairing(_) => "pairing",
+            Error::Secrets(_) => "secrets",
             Error::Internal(_) => "internal",
         }
     }

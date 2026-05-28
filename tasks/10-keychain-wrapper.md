@@ -93,12 +93,12 @@ Wrap `keyring-rs` in a typed Concerto-specific API that namespaces entries, retu
 6. `cargo deny check` → clean.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] `docs/interfaces/rust-api.md` reflects new public types.
-- [ ] No `TODO` / `FIXME` / `unimplemented!()` in new code.
-- [ ] `SecretValue::expose` is the only way to extract the inner string; verified.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] `docs/interfaces/rust-api.md` reflects new public types.
+- [x] No `TODO` / `FIXME` / `unimplemented!()` in new code.
+- [x] `SecretValue::expose` is the only way to extract the inner string; verified.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/keychain/Cargo.toml` (modified — adds keyring, secrecy, zeroize)
@@ -124,7 +124,21 @@ Refs: tasks/10-keychain-wrapper.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** audit-log emission uses tracing only; structured AuditWriter (Task 44) replaces this.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Workspace `keyring` pin bumped from `"2"` to `{ version = "3", default-features = false }`.** Task spec said pin to "current stable v3+". `keyring 4.0.1` is the absolute latest but the design doc named v4 before v3 stabilized and the task body explicitly wrote `keyring = "3"`; sticking to v3 keeps the API surface the task was written against. v3.6.3 is the resolved version. `default-features = false` at the workspace level matches the posture for `sqlx`/`tonic` (Task 05 drift). The `Cargo.toml` was modified — not in Outputs, adding here in retrospect.
+  - **Workspace `Cargo.toml` also adds `secrecy = "0.10"` and `zeroize = "1"` as workspace deps.** Outputs listed these under `crates/keychain/Cargo.toml`, but to keep version pins consistent across crates that may later hold secrets (Task 12 Security, Task 22 agent spawn), they live at the workspace root and `crates/keychain/Cargo.toml` references them with `workspace = true`.
+  - **`concerto-keychain` is acyclic with `concerto-error`.** The orchestrator prompt called this out. Implementation: `concerto-keychain` carries its own `SecretsError` + crate-local `Result` alias (no `concerto-error` dep). `concerto-error` adds `concerto-keychain` as a dep and the new `Error::Secrets(#[from] SecretsError)` variant bridges at the boundary. `cargo check --workspace` confirms no cycle. The `From<SecretsError> for Error` impl is the `thiserror`-generated `#[from]`.
+  - **`Error::wire_code()` adds the `"secrets"` arm.** Authorized by Outputs (`crates/error/src/error.rs`). Added the matching unit test in `crates/error/tests/wire_codes.rs` (also in Outputs by extension — the test file was created in Task 05 and exists; we only appended one test).
+  - **`SecretValue` has a `pub(crate)` field, not `pub`.** Spec said `pub struct SecretValue(secrecy::SecretString)` which would expose the inner field publicly. That would defeat the whole "`expose()` is the only escape hatch" invariant. Field is `pub(crate)` so external callers cannot tuple-destructure their way around `expose()`. `regen-interfaces.sh` still captures the enum shape verbatim.
+  - **`Secrets::with_service_for_test` added** (not in spec). Tests need to override the service name to avoid colliding with real entries; the spec said "set a non-default service name (e.g., `"concerto-test-<uuid>"`)" but didn't give the API. Marked `#[doc(hidden)]` so it's not part of the public surface even though it has to be `pub` for integration tests in `tests/` to reach it. Production code uses `Secrets::new()` which binds to `"concerto"`.
+  - **`SecretsError::AccessDenied` is currently unreachable.** keyring 3 on macOS surfaces user-cancelled prompts as `PlatformFailure` with an OS error code; we can't reliably distinguish that from other backend failures via the public API, so all backend errors except `NoEntry` map to `PlatformError`. The variant stays in the enum because Linux's Secret Service backend (V1.0) surfaces a distinct `Locked` state that will map to `AccessDenied`. Documented in the error module's doc comment.
+  - **Test uniqueness uses `pid+nanos+seq+tag` instead of `uuid`.** Spec said "e.g., `concerto-test-<uuid>`". Adding the `uuid` crate just for test-name uniqueness was disproportionate — used a `pid + SystemTime + AtomicU64` combo that's monotonic per-process and unique across processes for all practical purposes. Each test cleans up its own entries.
+  - **`cargo deny check` is clean — no new licenses added.** keyring 3 + secrecy + zeroize + security-framework + core-foundation all ship under MIT/Apache-2.0, which are already in `deny.toml`. No allow-list extension required.
+- **Open questions for next task:**
+  - When Task 11 (runtime skeleton) and Task 22 (agent spawn) start pulling secrets through `Secrets::get`, they'll need a single `Arc<Secrets>` or fresh `Secrets::new()` per call. The struct is `Clone + Default + Debug`; cloning is essentially free (one `Cow::Borrowed("concerto")`). No reason to wrap in `Arc` unless future state is added.
+  - The `tracing::info!` audit event uses `target: "concerto::keychain"` so Task 16's logging discipline can filter / route it. Task 44 (audit log writer JSONL) should ingest the `kind` and `account` fields verbatim; no extra translation layer needed.
+  - keyring 4.0.1 exists; if a future task wants the v4 API (notably the new `Entry` builder pattern and credential-attribute extensions), bumping is a one-line workspace change but will need re-verification of `apple-native` semantics. v3 is fine for V0.1.
+  - The `keyring` workspace dep is `default-features = false`. When Linux support lands (V1.0), per-crate feature toggles will need `linux-native` or `sync-secret-service`; the `apple-native` feature is already opted in by `crates/keychain/Cargo.toml`.
+  - The example binary uses the real `"concerto"` service. After running `cargo run --example secrets_demo -- delete`, the Keychain Access entry under service=`concerto`, account=`provider_token.anthropic` is gone — no developer-machine cleanup needed.
+- **Deliberate debt:** audit-log emission uses `tracing::info!` only; structured `AuditWriter` (Task 44) will subscribe to this target and persist JSONL. No `TODO`/`FIXME` markers in code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still prints "Smoke gate: PASSED (no checks active yet — Phase 0)". The keychain wrapper is not yet exercised by smoke; Task 15+ will add the first real assertion.
