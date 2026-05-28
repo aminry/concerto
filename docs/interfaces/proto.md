@@ -178,6 +178,192 @@ message Session {
 }
 ```
 
+### message `SessionId`
+
+```proto
+message SessionId {
+  string value = 1;
+}
+```
+
+### message `CreateSessionRequest`
+
+```proto
+message CreateSessionRequest {
+  string workarea_id = 1;
+  // agent_kind ∈ { echo | claude } in V0.1. codex / gemini error with
+  // INVALID_ARGUMENT until the Phase 3 parser packs land.
+  string agent_kind = 2;
+  optional string model = 3;
+  optional PermissionMode permission_mode = 4;
+}
+```
+
+### message `ListSessionsRequest`
+
+```proto
+message ListSessionsRequest {
+  string workarea_id = 1;
+}
+```
+
+### message `ListSessionsResponse`
+
+```proto
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+```
+
+### message `SendMessageRequest`
+
+```proto
+message SendMessageRequest {
+  string session_id = 1;
+  bytes  payload = 2;
+}
+```
+
+### message `StopSessionRequest`
+
+```proto
+message StopSessionRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+```
+
+### service `Sessions`
+
+```proto
+service Sessions {
+  rpc CreateSession(CreateSessionRequest) returns (Session);
+  rpc GetSession(SessionId) returns (Session);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
+  rpc StopSession(StopSessionRequest) returns (google.protobuf.Empty);
+}
+```
+
+## `crates/proto/proto/concerto/v1/streams.proto`
+
+- package: `concerto.v1`
+
+### message `SubscribeRequest`
+
+```proto
+message SubscribeRequest {
+  // Subject string from the locked catalog:
+  //   session.events.<session_id>
+  //   session.io.<session_id>
+  //   workspace.events
+  //   workarea.events
+  string subject = 1;
+  // Optional client-side filter expression. V0.1 ignores; reserved for
+  // future predicate-based subscription.
+  optional string filter = 2;
+  // V0.1 ignores. Ring-buffer + resume semantics arrive in V1.0; the
+  // field is reserved so the wire shape is stable across that change.
+  optional uint64 since_offset = 3;
+}
+```
+
+### message `Event`
+
+```proto
+message Event {
+  // Monotonic per-subject. Assigned at publish time; subscribers MUST
+  // tolerate gaps under V1.0 ring-buffer overflow semantics (V0.1 does
+  // not overflow).
+  uint64 offset = 1;
+  google.protobuf.Timestamp at = 2;
+  oneof body {
+    SessionEvent session = 10;
+    SessionIoChunk session_io = 11;
+    WorkspaceEvent workspace = 12;
+    WorkareaEvent workarea = 13;
+  }
+}
+```
+
+### message `SessionEvent`
+
+```proto
+message SessionEvent {
+  string session_id = 1;
+  oneof kind {
+    AgentStarted started = 10;
+    AgentMessage message = 11;
+    AgentExited exited = 12;
+  }
+}
+```
+
+### message `AgentStarted`
+
+```proto
+message AgentStarted {
+  string model = 1;
+  string mode = 2;
+}
+```
+
+### message `AgentMessage`
+
+```proto
+message AgentMessage {
+  string role = 1;
+  bytes  content = 2;
+}
+```
+
+### message `AgentExited`
+
+```proto
+message AgentExited {
+  optional int32 exit_code = 1;
+}
+```
+
+### message `SessionIoChunk`
+
+```proto
+message SessionIoChunk {
+  string session_id = 1;
+  // "stdout" | "stderr".
+  string stream = 2;
+  bytes  data = 3;
+}
+```
+
+### message `WorkspaceEvent`
+
+```proto
+message WorkspaceEvent {
+  string workspace_id = 1;
+  // "created" | "archived"
+  string kind = 2;
+}
+```
+
+### message `WorkareaEvent`
+
+```proto
+message WorkareaEvent {
+  string workarea_id = 1;
+  // "created" | "archived"
+  string kind = 2;
+}
+```
+
+### service `Streams`
+
+```proto
+service Streams {
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+}
+```
+
 ## `crates/proto/proto/concerto/v1/workareas.proto`
 
 - package: `concerto.v1`

@@ -45,7 +45,7 @@ pub mod events;
 pub mod spawn;
 
 pub use actor::{
-    AgentKind, AgentSupervisorActor, AgentSupervisorConfig, AgentSupervisorHandle,
+    AgentKind, AgentSupervisorActor, AgentSupervisorConfig, AgentSupervisorHandle, SessionIoChunk,
     StartSessionRequest,
 };
 pub use events::{AgentEvent, MessageRole};

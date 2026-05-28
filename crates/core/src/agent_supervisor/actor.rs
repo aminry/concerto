@@ -105,6 +105,36 @@ pub struct StartSessionRequest {
 #[derive(Clone, Debug, Default)]
 pub struct AgentSupervisorConfig;
 
+/// Raw I/O chunk surfaced by [`AgentSupervisorHandle::subscribe_session_io`].
+///
+/// The `events` broadcast carries the parsed `AgentEvent` view of an
+/// agent's output (Task 22). Task 23's `Streams` service additionally
+/// exposes the raw bytes via the `session.io.<sid>` subject; this struct
+/// is the wire shape for that subject. V0.1 only ever publishes
+/// `stream = "stdout"` because `portable-pty` merges the child's stderr
+/// into the master, but the field is here so V1.0 stderr-aware parsers
+/// don't need a wire-format change.
+#[derive(Clone, Debug)]
+pub struct SessionIoChunk {
+    pub session_id: SessionId,
+    /// `"stdout"` or `"stderr"`.
+    pub stream: &'static str,
+    pub data: Vec<u8>,
+}
+
+/// Maximum number of [`AgentEvent`]s the supervisor replays to a new
+/// subscriber that attaches mid-session. V0.1's per-session ring buffer
+/// (`design/10 §3.3`) is V1.0 work; this small replay buffer is the
+/// minimum needed to keep the `Streams.Subscribe(session.events.<sid>)`
+/// surface honest for fast-finishing sessions (echo agent, smoke
+/// gate). The cap is deliberately tight so the buffer's memory cost is
+/// bounded by `MAX_REPLAY_EVENTS × sizeof(AgentEvent)` per session.
+const MAX_REPLAY_EVENTS: usize = 64;
+
+/// Maximum number of [`SessionIoChunk`]s the supervisor replays. Same
+/// rationale as [`MAX_REPLAY_EVENTS`].
+const MAX_REPLAY_IO: usize = 64;
+
 /// Per-session in-process state held by the supervisor.
 struct SessionEntry {
     workarea_id: WorkareaId,
@@ -118,12 +148,25 @@ struct SessionEntry {
     socket_path: PathBuf,
     /// Broadcast sender — subscribers receive [`AgentEvent`].
     events: broadcast::Sender<AgentEvent>,
+    /// Replay buffer for [`AgentEvent`]s. New subscribers receive these
+    /// events before any live broadcast traffic. Bounded to
+    /// [`MAX_REPLAY_EVENTS`] entries (oldest dropped).
+    events_replay: Arc<Mutex<Vec<AgentEvent>>>,
+    /// Broadcast sender for raw I/O chunks. Task 23 surfaces this via
+    /// `Streams.Subscribe(subject="session.io.<sid>")`.
+    io: broadcast::Sender<SessionIoChunk>,
+    /// Replay buffer for [`SessionIoChunk`]s.
+    io_replay: Arc<Mutex<Vec<SessionIoChunk>>>,
     /// Writer half of the bridge connection; held under a mutex so
     /// `send_input` can serialize stdin writes.
     writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
     /// Child handle. Held under a mutex so `stop_session` can `kill`
     /// without racing the read-loop task.
     child: Arc<Mutex<Option<Child>>>,
+    /// Set once the agent has exited or been stopped. Subscribers
+    /// attaching after this stays `true` get the replay buffer but no
+    /// live events.
+    finished: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Cloneable, shareable handle to the Agent Supervisor's state.
@@ -157,14 +200,70 @@ impl AgentSupervisorHandle {
         }
     }
 
+    /// Borrow the shared persistence handle. Used by the gRPC
+    /// `Sessions` handler (Task 23) to read `sessions` rows directly for
+    /// `Get` / `List` without an extra `Arc<Persistence>` plumbed
+    /// through `api_server`.
+    pub fn persistence(&self) -> Arc<Persistence> {
+        Arc::clone(&self.persistence)
+    }
+
     /// Subscribe to the per-session [`AgentEvent`] broadcast. Returns
-    /// `None` if the session is unknown (e.g. already stopped).
+    /// `None` if the session is unknown (e.g. never created — entries
+    /// are kept alive after exit specifically so Task 23's `Streams`
+    /// service can replay recent events).
+    ///
+    /// The returned [`broadcast::Receiver`] only receives events
+    /// produced after the call; for replay coverage of fast-finishing
+    /// sessions, see [`AgentSupervisorHandle::subscribe_events_with_replay`].
     pub async fn subscribe_events(
         &self,
         session_id: &SessionId,
     ) -> Option<broadcast::Receiver<AgentEvent>> {
         let map = self.sessions.lock().await;
         map.get(session_id).map(|e| e.events.subscribe())
+    }
+
+    /// Subscribe to the per-session [`AgentEvent`] broadcast WITH a
+    /// snapshot of recent buffered events (up to [`MAX_REPLAY_EVENTS`]).
+    /// Returns `(replay, receiver)`. Callers (the `Streams` handler in
+    /// Task 23) emit the replay first, then forward live frames from
+    /// the receiver. This is the V0.1 substitute for `since_offset` on
+    /// the `Streams.Subscribe` wire: it lets the gRPC client see the
+    /// first burst of events even when its subscribe races a
+    /// fast-finishing agent (e.g. the echo path).
+    pub async fn subscribe_events_with_replay(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<(Vec<AgentEvent>, broadcast::Receiver<AgentEvent>)> {
+        let map = self.sessions.lock().await;
+        let entry = map.get(session_id)?;
+        let replay = entry.events_replay.lock().await.clone();
+        Some((replay, entry.events.subscribe()))
+    }
+
+    /// Subscribe to the per-session raw I/O broadcast (Task 23). Returns
+    /// `None` if the session is unknown. The `Streams` service uses this
+    /// for the `session.io.<sid>` subject; the `AgentEvent` view (used
+    /// for `session.events.<sid>`) lives on a separate channel.
+    pub async fn subscribe_session_io(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<broadcast::Receiver<SessionIoChunk>> {
+        let map = self.sessions.lock().await;
+        map.get(session_id).map(|e| e.io.subscribe())
+    }
+
+    /// `subscribe_session_io` with replay; see
+    /// [`AgentSupervisorHandle::subscribe_events_with_replay`].
+    pub async fn subscribe_session_io_with_replay(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<(Vec<SessionIoChunk>, broadcast::Receiver<SessionIoChunk>)> {
+        let map = self.sessions.lock().await;
+        let entry = map.get(session_id)?;
+        let replay = entry.io_replay.lock().await.clone();
+        Some((replay, entry.io.subscribe()))
     }
 
     /// Start a new agent session. See module docs for the state machine.
@@ -377,6 +476,10 @@ impl AgentSupervisorHandle {
 
         // 6. Register in-process state + start the read-pump task.
         let (events, _) = broadcast::channel(EVENTS_CAPACITY);
+        let (io, _) = broadcast::channel(EVENTS_CAPACITY);
+        let events_replay = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let io_replay = Arc::new(Mutex::new(Vec::<SessionIoChunk>::new()));
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writer_arc = Arc::new(Mutex::new(write_half));
         let child_arc = Arc::new(Mutex::new(Some(child)));
         {
@@ -388,8 +491,12 @@ impl AgentSupervisorHandle {
                     cookie,
                     socket_path: socket_path.clone(),
                     events: events.clone(),
+                    events_replay: Arc::clone(&events_replay),
+                    io: io.clone(),
+                    io_replay: Arc::clone(&io_replay),
                     writer: writer_arc.clone(),
                     child: child_arc.clone(),
+                    finished: Arc::clone(&finished),
                 },
             );
         }
@@ -397,23 +504,33 @@ impl AgentSupervisorHandle {
         // Started event, before launching the read pump so any
         // subscriber registered after `start_session` returns sees an
         // already-running session.
-        let _ = events.send(AgentEvent::Started {
+        let started = AgentEvent::Started {
             session_id: session_id.clone(),
-        });
+        };
+        push_replay(&events_replay, started.clone()).await;
+        let _ = events.send(started);
 
         let pump_persistence = Arc::clone(&self.persistence);
         let pump_session = session_id.clone();
         let pump_events = events.clone();
+        let pump_events_replay = Arc::clone(&events_replay);
+        let pump_io = io.clone();
+        let pump_io_replay = Arc::clone(&io_replay);
         let pump_sessions = Arc::clone(&self.sessions);
         let pump_log = stdout_log.clone();
+        let pump_finished = Arc::clone(&finished);
         tokio::spawn(async move {
             run_read_pump(
                 read_half,
                 pump_session,
                 pump_events,
+                pump_events_replay,
+                pump_io,
+                pump_io_replay,
                 pump_persistence,
                 pump_sessions,
                 pump_log,
+                pump_finished,
             )
             .await;
         });
@@ -439,6 +556,10 @@ impl AgentSupervisorHandle {
 
     /// Stop a running session. Kills the host process, marks the DB row
     /// `finished`, and removes the in-process state.
+    ///
+    /// Idempotent: stopping a session whose host already exited
+    /// (entry kept around for replay) returns `Ok(())` after evicting
+    /// the entry.
     pub async fn stop_session(
         &self,
         session_id: &SessionId,
@@ -465,11 +586,16 @@ impl AgentSupervisorHandle {
         let now_ms = now_unix_ms();
         let mut writer = self.persistence.writer().await;
         concerto_persist::sessions::mark_ended(&mut writer, session_id, now_ms).await?;
-        let _ = entry.events.send(AgentEvent::Exited {
+        entry
+            .finished
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let exited = AgentEvent::Exited {
             session_id: session_id.clone(),
             exit_code: None,
             signal: None,
-        });
+        };
+        push_replay(&entry.events_replay, exited.clone()).await;
+        let _ = entry.events.send(exited);
         // Reference the workarea_id so the field is observed (helps
         // future audit-log integration locate the workspace).
         tracing::debug!(
@@ -491,13 +617,18 @@ impl AgentSupervisorHandle {
 /// Long-running task that drains the bridge connection's read half and
 /// emits `AgentEvent`s. Returns when the connection closes (`Eof`) or
 /// when the host signals `AgentExited`.
+#[allow(clippy::too_many_arguments)]
 async fn run_read_pump(
     mut read_half: tokio::net::unix::OwnedReadHalf,
     session_id: SessionId,
     events: broadcast::Sender<AgentEvent>,
+    events_replay: Arc<Mutex<Vec<AgentEvent>>>,
+    io: broadcast::Sender<SessionIoChunk>,
+    io_replay: Arc<Mutex<Vec<SessionIoChunk>>>,
     persistence: Arc<Persistence>,
     sessions: Arc<Mutex<HashMap<SessionId, SessionEntry>>>,
     stdout_log: PathBuf,
+    finished: Arc<std::sync::atomic::AtomicBool>,
 ) {
     // Open the per-session stdout log file for append.
     let log_file = tokio::fs::OpenOptions::new()
@@ -528,44 +659,78 @@ async fn run_read_pump(
                     let _ = f.write_all(&data).await;
                     let _ = f.flush().await;
                 }
+                // Raw I/O fan-out for `Streams.Subscribe(session.io.<sid>)`.
+                let chunk = SessionIoChunk {
+                    session_id: session_id.clone(),
+                    stream: "stdout",
+                    data: data.clone(),
+                };
+                push_replay_io(&io_replay, chunk.clone()).await;
+                let _ = io.send(chunk);
                 let content = String::from_utf8_lossy(&data).into_owned();
-                let _ = events.send(AgentEvent::Message {
+                let msg = AgentEvent::Message {
                     session_id: session_id.clone(),
                     role: MessageRole::Assistant,
                     content,
-                });
+                };
+                push_replay(&events_replay, msg.clone()).await;
+                let _ = events.send(msg);
             }
             HostFrame::StderrBytes { data, .. } => {
                 // V0.1 surfaces stderr-as-assistant-message too; the
                 // host never emits this frame in V0.1 (portable-pty
                 // merges stderr into stdout) but the code path is
                 // sound for V1.0.
+                let chunk = SessionIoChunk {
+                    session_id: session_id.clone(),
+                    stream: "stderr",
+                    data: data.clone(),
+                };
+                push_replay_io(&io_replay, chunk.clone()).await;
+                let _ = io.send(chunk);
                 let content = String::from_utf8_lossy(&data).into_owned();
-                let _ = events.send(AgentEvent::Message {
+                let msg = AgentEvent::Message {
                     session_id: session_id.clone(),
                     role: MessageRole::Assistant,
                     content,
-                });
+                };
+                push_replay(&events_replay, msg.clone()).await;
+                let _ = events.send(msg);
             }
             HostFrame::AgentExited { exit_code, signal } => {
-                let _ = events.send(AgentEvent::Exited {
+                let exited = AgentEvent::Exited {
                     session_id: session_id.clone(),
                     exit_code,
                     signal,
-                });
-                // Mark finished in DB + remove from map.
+                };
+                push_replay(&events_replay, exited.clone()).await;
+                let _ = events.send(exited);
+                // Mark finished in DB. Keep the in-memory entry around
+                // so late subscribers can still attach (and read the
+                // replay buffer) — the session is logically over, but
+                // the gRPC `Streams` service may need to see the
+                // recently-emitted events. The entry is dropped when
+                // `stop_session` is called explicitly OR on Core
+                // shutdown.
+                finished.store(true, std::sync::atomic::Ordering::SeqCst);
                 let now_ms = now_unix_ms();
                 let mut writer = persistence.writer().await;
                 let _ =
                     concerto_persist::sessions::mark_ended(&mut writer, &session_id, now_ms).await;
                 drop(writer);
-                let mut map = sessions.lock().await;
-                if let Some(entry) = map.remove(&session_id) {
-                    let _ = tokio::fs::remove_file(&entry.socket_path).await;
+                let map = sessions.lock().await;
+                if let Some(entry) = map.get(&session_id) {
+                    // Best-effort reap the child + remove the socket
+                    // file (the host removes its own socket on exit too,
+                    // but be defensive). The entry stays in the map so
+                    // late `Streams.Subscribe` callers can still drain
+                    // the replay buffer; explicit `stop_session` is the
+                    // hook that finally evicts the entry.
                     let mut child_guard = entry.child.lock().await;
                     if let Some(mut c) = child_guard.take() {
                         let _ = c.wait().await;
                     }
+                    let _ = tokio::fs::remove_file(&entry.socket_path).await;
                 }
                 break;
             }
@@ -606,6 +771,26 @@ fn validate_permission_mode(mode: &str) -> Result<()> {
             "permission_mode {other:?} must be one of strict|normal|auto|yolo"
         ))),
     }
+}
+
+/// Append `ev` to the per-session replay buffer, evicting the oldest
+/// entry when the buffer is at capacity. The buffer is short by design
+/// (see [`MAX_REPLAY_EVENTS`]) — V1.0 grows this into the per-subject
+/// ring buffer + `since_offset` semantics from `design/10 §3.3`.
+async fn push_replay(buf: &Arc<Mutex<Vec<AgentEvent>>>, ev: AgentEvent) {
+    let mut v = buf.lock().await;
+    if v.len() >= MAX_REPLAY_EVENTS {
+        v.remove(0);
+    }
+    v.push(ev);
+}
+
+async fn push_replay_io(buf: &Arc<Mutex<Vec<SessionIoChunk>>>, chunk: SessionIoChunk) {
+    let mut v = buf.lock().await;
+    if v.len() >= MAX_REPLAY_IO {
+        v.remove(0);
+    }
+    v.push(chunk);
 }
 
 fn now_unix_ms() -> i64 {

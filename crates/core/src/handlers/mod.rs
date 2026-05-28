@@ -7,5 +7,9 @@
 
 pub mod repositories;
 pub mod runtime;
+#[cfg(unix)]
+pub mod sessions;
+#[cfg(unix)]
+pub mod streams;
 pub mod workareas;
 pub mod workspaces;

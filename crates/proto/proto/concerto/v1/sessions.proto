@@ -1,18 +1,21 @@
-// Session entity shape.
+// Session entity shape + service surface.
 //
 // A session is a specific agent run on a workarea (see design/03, design/04,
-// and design/09 §4.1). Service methods (StartSession, StreamSessionIO,
-// StopSession) land in Task 23; this task only locks the data shape.
+// and design/09 §4.1). Task 07 locked the `Session` message; Task 23 adds the
+// `Sessions` service (Create / Get / List / SendMessage / Stop) plus the
+// request/response messages.
 //
 // `agent_kind` and `status` are strings for V0.1 simplicity; per the task
 // spec, they may be promoted to enums in a later revision task.
 //
-// Field numbers in this file are FROZEN as of Task 07.
+// Field numbers in this file are FROZEN as of Task 07 (Session message) and
+// Task 23 (Sessions service + request messages).
 
 syntax = "proto3";
 
 package concerto.v1;
 
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "concerto/v1/common.proto";
 
@@ -29,4 +32,55 @@ message Session {
   PermissionMode permission_mode = 8;
   google.protobuf.Timestamp started_at = 9;
   optional google.protobuf.Timestamp ended_at = 10;
+}
+
+// Identifier-only request payload reused by GetSession. Wraps the session
+// primary key as a TEXT (UUIDv7).
+message SessionId {
+  string value = 1;
+}
+
+// Inputs for `Sessions.CreateSession`. The Agent Supervisor allocates the
+// session id (UUIDv7) and the per-session UDS socket path; the caller picks
+// the workarea, the agent CLI (echo | claude in V0.1), and an optional
+// permission-mode override.
+message CreateSessionRequest {
+  string workarea_id = 1;
+  // agent_kind ∈ { echo | claude } in V0.1. codex / gemini error with
+  // INVALID_ARGUMENT until the Phase 3 parser packs land.
+  string agent_kind = 2;
+  optional string model = 3;
+  optional PermissionMode permission_mode = 4;
+}
+
+message ListSessionsRequest {
+  string workarea_id = 1;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+// Inputs for `Sessions.SendMessage`. The payload bytes are forwarded
+// verbatim to the agent's stdin (typically UTF-8 text plus a trailing
+// newline; V0.1 does no parsing).
+message SendMessageRequest {
+  string session_id = 1;
+  bytes  payload = 2;
+}
+
+// Inputs for `Sessions.StopSession`. `reason` is logged and persisted; V0.1
+// does not enforce a fixed vocabulary, but `user_request | error | revert`
+// are the conventional values from `design/04 §6.x`.
+message StopSessionRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+
+service Sessions {
+  rpc CreateSession(CreateSessionRequest) returns (Session);
+  rpc GetSession(SessionId) returns (Session);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
+  rpc StopSession(StopSessionRequest) returns (google.protobuf.Empty);
 }
