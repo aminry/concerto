@@ -5,7 +5,52 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+description = "Per-session helper that owns a PTY for an agent CLI and bridges I/O to the Concerto Core over a UDS."
 
 [[bin]]
 name = "concerto-agent-host"
 path = "src/main.rs"
+
+[lib]
+name = "concerto_agent_host"
+path = "src/lib.rs"
+
+# Task 21: agent-host is Unix-only in V0.1 (Windows ConPTY support deferred
+# to V1.0 per design/04 §3.9). Direct dependency surface is intentionally
+# small: portable-pty for the PTY, ciborium for the CBOR HostFrame wire
+# format, clap for CLI parsing, hex for cookie decoding, subtle for
+# constant-time comparison, libc for `setsid()`, tokio for async I/O, the
+# tracing crates for diagnostics, and the workspace error/serde stack.
+[dependencies]
+concerto-error = { path = "../error" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync", "fs", "signal", "process"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+# `portable-pty = "0.8"` — Wezterm's PTY abstraction. MIT. cargo-deny
+# clean (vetted Task 21).
+portable-pty = "0.8"
+# `ciborium = "0.2"` — maintained CBOR codec (replaces unmaintained
+# serde_cbor). Apache-2.0. cargo-deny clean.
+ciborium = "0.2"
+# `hex = "0.4"` — cookie decoding from CLI arg (`--cookie <hex32>` -> 32 bytes).
+# MIT/Apache-2.0.
+hex = "0.4"
+# `subtle = "2"` — constant-time `[u8]` compare for cookie verification.
+# BSD-3-Clause; allowed by deny.toml.
+subtle = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync", "fs", "process"] }
+assert_cmd = "2"
+tempfile = "3"
+ciborium = "0.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+hex = "0.4"
