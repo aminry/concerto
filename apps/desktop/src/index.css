@@ -1,3 +1,20 @@
+/* xterm.js base styles. Imported globally so every SessionTerminal
+   instance picks them up — `xterm` ships these on its npm package
+   and they own viewport layout, scrollbar shape, and selection
+   colors. The font + theme overrides live in
+   `SessionTerminal.tsx::XTERM_OPTIONS` (see Task 26 §Public
+   interface this task locks). @import MUST precede other rules
+   per CSS spec (Vite warns otherwise). */
+@import "@xterm/xterm/css/xterm.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* The xterm viewport defaults its background to inherit; the panel
+   inside SessionTerminal already sets slate-900 so we just need to
+   keep the cursor visible in our theme. */
+.xterm-viewport {
+  background-color: transparent !important;
+}
+

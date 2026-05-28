@@ -33,10 +33,11 @@ use concerto_proto::v1::streams_client::StreamsClient;
 use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
-    AddRepoRequest, CloneRequest, CreateWorkareaRequest, CreateWorkspaceRequest,
-    ListProjectsRequest, ListRepositoriesRequest, ListWorkareasRequest, ListWorkspacesRequest,
-    PermissionMode, SubscribeRequest, WorkareaId as ProtoWorkareaId,
-    WorkspaceId as ProtoWorkspaceId,
+    AddRepoRequest, CloneRequest, CreateSessionRequest, CreateWorkareaRequest,
+    CreateWorkspaceRequest, ListProjectsRequest, ListRepositoriesRequest, ListSessionsRequest,
+    ListWorkareasRequest, ListWorkspacesRequest, PermissionMode, SendMessageRequest,
+    SessionId as ProtoSessionId, StopSessionRequest, SubscribeRequest,
+    WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -324,8 +325,41 @@ struct IdPayload {
 /// Payload wrapper for `Sessions.ListSessions`.
 #[derive(Debug, Deserialize)]
 struct ListSessionsPayload {
-    #[allow(dead_code)]
     workarea_id: String,
+}
+
+/// Payload wrapper for `Sessions.CreateSession`. Mirrors the proto's
+/// `CreateSessionRequest`; `permission_mode` carries the proto enum
+/// ordinal as an integer.
+#[derive(Debug, Deserialize)]
+struct CreateSessionPayload {
+    workarea_id: String,
+    agent_kind: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    permission_mode: Option<i32>,
+}
+
+/// Payload wrapper for `Sessions.SendMessage`. `payload` is the raw
+/// bytes that get forwarded to the agent's stdin. Renderer-side code
+/// serializes as a JSON array of u8 — serde's default for `Vec<u8>`.
+#[derive(Debug, Deserialize)]
+struct SendMessagePayload {
+    session_id: String,
+    payload: Vec<u8>,
+}
+
+/// Payload wrapper for `Sessions.StopSession`.
+#[derive(Debug, Deserialize)]
+struct StopSessionPayload {
+    session_id: String,
+    #[serde(default = "default_stop_reason")]
+    reason: String,
+}
+
+fn default_stop_reason() -> String {
+    "user_request".to_string()
 }
 
 /// Payload wrapper for `Workspaces.CreateWorkspace`. Mirrors
@@ -531,19 +565,67 @@ pub(crate) async fn dispatch(
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }
         "Sessions.ListSessions" => {
-            // V0.1 stub per the task spec: the sidebar doesn't render
-            // sessions yet (Task 26 wires the terminal). Returning an
-            // empty list keeps the renderer's React Query happy and
-            // the Tauri command surface honest.
-            let _: ListSessionsPayload = serde_json::from_value(payload).map_err(|e| {
+            let req: ListSessionsPayload = serde_json::from_value(payload).map_err(|e| {
                 CoreClientError::Rpc(format!("invalid payload for ListSessions: {e}"))
             })?;
-            // Use a manual Ok branch with the Sessions client unused
-            // — we deliberately do NOT call the Core; the stub is
-            // local-only. The `SessionsClient` import remains to keep
-            // the dispatcher shape uniform for the Task 26 follow-on.
-            let _ = SessionsClient::<tonic::transport::Channel>::new;
-            Ok(json!({ "sessions": [] }))
+            let mut client = SessionsClient::new(channel);
+            client
+                .list_sessions(ListSessionsRequest {
+                    workarea_id: req.workarea_id,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Sessions.CreateSession" => {
+            let req: CreateSessionPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for CreateSession: {e}"))
+            })?;
+            let mut client = SessionsClient::new(channel);
+            client
+                .create_session(CreateSessionRequest {
+                    workarea_id: req.workarea_id,
+                    agent_kind: req.agent_kind,
+                    model: req.model,
+                    permission_mode: req.permission_mode.and_then(normalize_permission_mode),
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Sessions.GetSession" => {
+            let req: IdPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for GetSession: {e}"))
+            })?;
+            let mut client = SessionsClient::new(channel);
+            client
+                .get_session(ProtoSessionId { value: req.id })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Sessions.SendMessage" => {
+            let req: SendMessagePayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for SendMessage: {e}"))
+            })?;
+            let mut client = SessionsClient::new(channel);
+            client
+                .send_message(SendMessageRequest {
+                    session_id: req.session_id,
+                    payload: req.payload,
+                })
+                .await
+                .map(|_| Value::Null)
+        }
+        "Sessions.StopSession" => {
+            let req: StopSessionPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for StopSession: {e}"))
+            })?;
+            let mut client = SessionsClient::new(channel);
+            client
+                .stop_session(StopSessionRequest {
+                    session_id: req.session_id,
+                    reason: req.reason,
+                })
+                .await
+                .map(|_| Value::Null)
         }
         other => return Err(CoreClientError::NotImplemented(other.to_string())),
     };

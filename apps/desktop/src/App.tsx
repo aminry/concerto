@@ -14,6 +14,7 @@ import { WorkspaceDetail } from "./components/WorkspaceDetail";
 import { WorkareaDetail } from "./components/WorkareaDetail";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { StartSessionPicker } from "./components/StartSessionPicker";
 import { FirstRunClaudeToast } from "./components/Toast";
 import { useUiStore } from "./state/useUiStore";
 
@@ -36,6 +37,7 @@ function App(): JSX.Element {
         <DetailRouter />
         <NewWorkspaceModal />
         <SettingsPanel />
+        <StartSessionPicker />
         <FirstRunClaudeToast />
       </div>
     </QueryClientProvider>
