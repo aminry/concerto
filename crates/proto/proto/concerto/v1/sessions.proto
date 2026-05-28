@@ -136,6 +136,54 @@ message UpdateSessionPermissionModeRequest {
   string acknowledgement = 3;
 }
 
+// Task 35: input to `Sessions.ListMcpServers`. `scope` selects a single
+// discovery scope by lowercase string (`personal | project | plugin |
+// enterprise`); when both `scope` and `repository_id` are absent the
+// server walks every reachable scope (effectively "all", which today
+// resolves to personal + the V0.1 plugin/enterprise stubs because
+// project-scope lookups require a specific repository).
+//
+// When `scope = "project"` is set, `repository_id` is REQUIRED — the
+// server reads `<repository.local_path>/.mcp.json`. The server rejects
+// project requests without a `repository_id` with `INVALID_ARGUMENT`.
+message McpScopeRequest {
+  optional string scope = 1;
+  optional string repository_id = 2;
+}
+
+// Task 35: one MCP server entry surfaced to the Desktop. Mirrors the
+// in-process `concerto_core::agent_supervisor::mcp::McpServer` shape;
+// the only translation the handler does is enum-to-string on `scope`.
+message McpServer {
+  string name = 1;
+  // scope ∈ { personal | project | plugin | enterprise }.
+  string scope = 2;
+  string command = 3;
+  repeated string args = 4;
+  map<string, string> env = 5;
+  // Absolute path to the source config file the entry was parsed from.
+  // Useful for the Desktop's "edit this config" affordance.
+  string source_path = 6;
+}
+
+// Task 35: response shape for `Sessions.ListMcpServers`. Empty list is
+// a valid, non-error response — happens for unconfigured scopes and for
+// V0.1's plugin / enterprise stubs.
+message ListMcpResponse {
+  repeated McpServer servers = 1;
+}
+
+// Task 35: V1.0 write path. Declared here so the surface is locked but
+// the V0.1 handler returns `UNIMPLEMENTED`. Field numbers FROZEN.
+message UpsertProjectMcpRequest {
+  // Repository whose `.mcp.json` is being written. The server resolves
+  // `repositories.local_path` and writes the merged config there.
+  string repository_id = 1;
+  // Server entries to upsert. Keyed by `name` server-side; an entry
+  // whose `name` matches an existing entry is overwritten.
+  repeated McpServer servers = 2;
+}
+
 service Sessions {
   rpc CreateSession(CreateSessionRequest) returns (Session);
   rpc GetSession(SessionId) returns (Session);
@@ -154,4 +202,13 @@ service Sessions {
   // repo to the checkpoint ref, and soft-deletes chat messages after
   // the checkpoint. V0.1 does not auto-restart the session.
   rpc RevertToCheckpoint(RevertRequest) returns (google.protobuf.Empty);
+  // Task 35: list MCP servers visible to the requested scope. Pure
+  // read — parses agent-owned config files (`~/.claude/mcp.json`,
+  // `~/.codex/config.toml`, `<repo>/.mcp.json`) and returns the
+  // discovered entries. Malformed files warn + return empty for that
+  // scope; the RPC itself does not fail on per-file parse errors.
+  rpc ListMcpServers(McpScopeRequest) returns (ListMcpResponse);
+  // Task 35: V1.0 write path — currently returns `UNIMPLEMENTED`.
+  // Declared in V0.1 so the wire surface is frozen.
+  rpc UpsertProjectMcp(UpsertProjectMcpRequest) returns (google.protobuf.Empty);
 }

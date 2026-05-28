@@ -142,3 +142,8 @@ pathdiff = "0.2"
 # (Task 30) and by tracing-subscriber's env-filter; promoting it to a
 # workspace dep keeps the version literal honest. MIT/Apache-2.0.
 regex = "1"
+# Task 35: parse Codex's `~/.codex/config.toml` for its MCP server
+# section. `toml` is the canonical Rust TOML parser (used by Cargo
+# itself); MIT/Apache-2.0. Default features include `parse` + `display`
+# which is all we need for the read-only listing surface.
+toml = "0.8"

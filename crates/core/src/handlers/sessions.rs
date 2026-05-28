@@ -25,19 +25,22 @@
 //!   lowercase DB string.
 
 use async_trait::async_trait;
+use concerto_persist::RepositoryId;
 use concerto_persist::{
     Persistence, SessionId as PersistSessionId, WorkareaId as PersistWorkareaId,
 };
 use concerto_proto::v1::sessions_server::Sessions as SessionsService;
 use concerto_proto::v1::{
-    ApprovalDecision, CreateSessionRequest, ListSessionsRequest, ListSessionsResponse,
-    PermissionMode, ResolveApprovalRequest, RevertRequest, SendMessageRequest,
-    Session as ProtoSession, SessionId as ProtoSessionId, StopSessionRequest,
-    UpdateSessionPermissionModeRequest,
+    ApprovalDecision, CreateSessionRequest, ListMcpResponse, ListSessionsRequest,
+    ListSessionsResponse, McpScopeRequest, McpServer as ProtoMcpServer, PermissionMode,
+    ResolveApprovalRequest, RevertRequest, SendMessageRequest, Session as ProtoSession,
+    SessionId as ProtoSessionId, StopSessionRequest, UpdateSessionPermissionModeRequest,
+    UpsertProjectMcpRequest,
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use crate::agent_supervisor::mcp::{self, McpScope, McpScopeFilter, McpServer};
 use crate::agent_supervisor::{AgentKind, AgentSupervisorHandle, StartSessionRequest};
 use crate::error_map::error_to_status;
 use crate::security::Decision;
@@ -254,6 +257,85 @@ impl SessionsService for SessionsHandler {
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "Sessions::ListMcpServers")]
+    async fn list_mcp_servers(
+        &self,
+        request: Request<McpScopeRequest>,
+    ) -> Result<Response<ListMcpResponse>, Status> {
+        let req = request.into_inner();
+        let filter = parse_mcp_filter(req.scope.as_deref(), req.repository_id.as_deref())?;
+        // Production callers read the developer's real home directory;
+        // the test harness uses `mcp::list_mcp_servers` directly with an
+        // explicit override. See `crates/core/tests/mcp_listing.rs`.
+        let servers = mcp::list_mcp_servers(&self.persistence, filter, None)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ListMcpResponse {
+            servers: servers.into_iter().map(mcp_server_to_proto).collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Sessions::UpsertProjectMcp")]
+    async fn upsert_project_mcp(
+        &self,
+        _request: Request<UpsertProjectMcpRequest>,
+    ) -> Result<Response<()>, Status> {
+        // V0.1 is read-only — writing `.mcp.json` is V1.0. The RPC is
+        // declared so the wire surface is locked; the handler responds
+        // with `UNIMPLEMENTED` to give clients a clean failure path
+        // until the writer lands.
+        Err(Status::unimplemented(
+            "mcp.upsert: writing project-level .mcp.json is V1.0",
+        ))
+    }
+}
+
+/// Translate the wire `McpScopeRequest` into the typed filter. Rules:
+///
+/// - Both fields absent → `All`.
+/// - `scope = "personal" | "plugin" | "enterprise"` → matching variant.
+/// - `scope = "project"` → `repository_id` MUST be present;
+///   `INVALID_ARGUMENT` otherwise.
+/// - `repository_id` present without `scope` → treat as `Project(id)`
+///   (the field is only ever meaningful in project context).
+/// - Any other `scope` string → `INVALID_ARGUMENT`.
+#[allow(clippy::result_large_err)]
+fn parse_mcp_filter(scope: Option<&str>, repo_id: Option<&str>) -> Result<McpScopeFilter, Status> {
+    match (scope, repo_id) {
+        (None, None) => Ok(McpScopeFilter::All),
+        (None, Some(id)) => Ok(McpScopeFilter::Project(RepositoryId(id.to_string()))),
+        (Some("personal"), _) => Ok(McpScopeFilter::Personal),
+        (Some("plugin"), _) => Ok(McpScopeFilter::Plugin),
+        (Some("enterprise"), _) => Ok(McpScopeFilter::Enterprise),
+        (Some("project"), Some(id)) if !id.is_empty() => {
+            Ok(McpScopeFilter::Project(RepositoryId(id.to_string())))
+        }
+        (Some("project"), _) => Err(Status::invalid_argument(
+            "mcp.scope: scope=\"project\" requires a non-empty repository_id",
+        )),
+        (Some("all"), _) => Ok(McpScopeFilter::All),
+        (Some(other), _) => Err(Status::invalid_argument(format!(
+            "mcp.scope: unknown scope {other:?}; expected one of personal|project|plugin|enterprise"
+        ))),
+    }
+}
+
+fn mcp_server_to_proto(s: McpServer) -> ProtoMcpServer {
+    let scope = match &s.scope {
+        McpScope::Personal => "personal",
+        McpScope::Project(_) => "project",
+        McpScope::Plugin => "plugin",
+        McpScope::Enterprise => "enterprise",
+    };
+    ProtoMcpServer {
+        name: s.name,
+        scope: scope.to_string(),
+        command: s.command,
+        args: s.args,
+        env: s.env.into_iter().collect(),
+        source_path: s.source_path.to_string_lossy().into_owned(),
     }
 }
 

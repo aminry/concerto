@@ -328,6 +328,52 @@ message UpdateSessionPermissionModeRequest {
 }
 ```
 
+### message `McpScopeRequest`
+
+```proto
+message McpScopeRequest {
+  optional string scope = 1;
+  optional string repository_id = 2;
+}
+```
+
+### message `McpServer`
+
+```proto
+message McpServer {
+  string name = 1;
+  // scope ∈ { personal | project | plugin | enterprise }.
+  string scope = 2;
+  string command = 3;
+  repeated string args = 4;
+  map<string, string> env = 5;
+  // Absolute path to the source config file the entry was parsed from.
+  // Useful for the Desktop's "edit this config" affordance.
+  string source_path = 6;
+}
+```
+
+### message `ListMcpResponse`
+
+```proto
+message ListMcpResponse {
+  repeated McpServer servers = 1;
+}
+```
+
+### message `UpsertProjectMcpRequest`
+
+```proto
+message UpsertProjectMcpRequest {
+  // Repository whose `.mcp.json` is being written. The server resolves
+  // `repositories.local_path` and writes the merged config there.
+  string repository_id = 1;
+  // Server entries to upsert. Keyed by `name` server-side; an entry
+  // whose `name` matches an existing entry is overwritten.
+  repeated McpServer servers = 2;
+}
+```
+
 ### service `Sessions`
 
 ```proto
@@ -349,6 +395,15 @@ service Sessions {
   // repo to the checkpoint ref, and soft-deletes chat messages after
   // the checkpoint. V0.1 does not auto-restart the session.
   rpc RevertToCheckpoint(RevertRequest) returns (google.protobuf.Empty);
+  // Task 35: list MCP servers visible to the requested scope. Pure
+  // read — parses agent-owned config files (`~/.claude/mcp.json`,
+  // `~/.codex/config.toml`, `<repo>/.mcp.json`) and returns the
+  // discovered entries. Malformed files warn + return empty for that
+  // scope; the RPC itself does not fail on per-file parse errors.
+  rpc ListMcpServers(McpScopeRequest) returns (ListMcpResponse);
+  // Task 35: V1.0 write path — currently returns `UNIMPLEMENTED`.
+  // Declared in V0.1 so the wire surface is frozen.
+  rpc UpsertProjectMcp(UpsertProjectMcpRequest) returns (google.protobuf.Empty);
 }
 ```
 

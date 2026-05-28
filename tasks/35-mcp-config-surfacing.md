@@ -67,12 +67,12 @@ Read each agent's existing MCP configs (`~/.claude/mcp.json`, `~/.codex/config.t
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Malformed-file tolerance verified.
-- [ ] Personal + Project scopes return parsed servers.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Malformed-file tolerance verified.
+- [x] Personal + Project scopes return parsed servers.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/core/src/agent_supervisor/mcp.rs` (new)
@@ -93,7 +93,49 @@ Refs: tasks/35-mcp-config-surfacing.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** read-only; UpsertProjectMcp NOT_IMPLEMENTED in V0.1.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **`home::home_dir()` instead of `dirs::home_dir()`.** Task 05 already
+    swapped to the `home` crate workspace-wide to keep the license
+    posture permissive-only (MPL-2.0 `option-ext` is banned). To make
+    the function testable without mocking a global, `list_mcp_servers`
+    takes an explicit `home_dir: Option<&Path>` parameter; production
+    callers (`SessionsHandler::list_mcp_servers`) pass `None` and the
+    impl falls back to `home::home_dir()`. The integration test in
+    `crates/core/tests/mcp_listing.rs` passes `Some(tempdir.path())`
+    so the test never reads the developer's real `~/.claude/`.
+  - **`McpScopeFilter::All` does NOT sweep every repository.** A full
+    sweep would require enumerating `repositories` and reading every
+    `<local_path>/.mcp.json`, which can hit dozens of files on a real
+    workspace. Per the pre-decision, `All` reads only the personal
+    scope (Claude + Codex) plus the V0.1 plugin/enterprise stubs
+    (which return empty). Callers that want per-project results must
+    request `Project(repository_id)` explicitly. Documented inline on
+    `McpScopeFilter::All`.
+  - **Codex TOML canonical key is `[mcp_servers.<name>]`.** Task spec
+    asked us to confirm. Current Codex CLI (`~/.codex/config.toml`)
+    uses the nested-table form. The legacy `[mcp]` table is accepted
+    via `#[serde(alias = "mcp")]` so older installs still surface.
+  - **`mcpServers` is the JSON key, not `mcp_servers`.** Claude's
+    on-disk schema uses camelCase. `ClaudeMcpFile` declares
+    `#[serde(rename = "mcpServers", alias = "mcp_servers")]` to
+    accept both. Test 1 (`personal_scope_parses_claude_and_codex_fixtures`)
+    failed against the original alias-only form and was the trigger
+    for adding the explicit `rename`.
+- **Open questions for next task:**
+  - The Desktop will probably want a "refresh on file change" affordance
+    for the MCP config list. V0.1 is pull-only via gRPC; a file-watcher
+    that emits on `streams.mcp.<scope>` is a clean V1.0 addition.
+  - `UpsertProjectMcp` (V1.0) needs to think about merge semantics
+    when a `.mcp.json` already exists at `<local_path>/.mcp.json`:
+    overwrite vs. merge-by-name vs. fail-on-conflict. Worth a design
+    note before the writer lands.
+  - When `Plugin` / `Enterprise` scopes ship, decide whether they
+    appear under `McpScopeFilter::All` (currently they're stubbed to
+    return empty, so `All` is effectively `Personal`).
+- **Deliberate debt:** read-only; `UpsertProjectMcp` declared in the
+  proto with field numbers locked but the handler returns
+  `UNIMPLEMENTED` ("mcp.upsert: writing project-level .mcp.json is V1.0").
+  Plugin + Enterprise scopes return empty lists with documented file
+  paths waiting in the module doc-comment.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0
+  with "Smoke gate v2: PASSED".

@@ -44,6 +44,7 @@ pub mod approval;
 pub mod bridge;
 pub mod checkpoint;
 pub mod events;
+pub mod mcp;
 pub mod parsers;
 pub mod spawn;
 
@@ -52,4 +53,5 @@ pub use actor::{
     StartSessionRequest,
 };
 pub use events::{AgentEvent, MessageRole};
+pub use mcp::{list_mcp_servers, McpScope, McpScopeFilter, McpServer};
 pub use parsers::{MsgRole, ParseEvent, ParserPack};

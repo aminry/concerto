@@ -57,6 +57,9 @@ pathdiff = { workspace = true }
 # tool-approval boundary detection (terminal mode). See
 # `agent_supervisor/parsers/claude_code.rs`.
 regex = { workspace = true }
+# Task 35: TOML parser for `~/.codex/config.toml`'s `[mcp_servers.*]`
+# table. Promoted to a workspace dep so the version stays consistent.
+toml = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via
