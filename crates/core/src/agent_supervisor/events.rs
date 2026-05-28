@@ -91,4 +91,15 @@ pub enum AgentEvent {
     /// and streams handler can forward it once the parser packs
     /// surface it.
     TurnComplete { session_id: SessionId },
+    /// Task 34: a per-repo checkpoint was created at the end of a turn.
+    /// `git_ref` is the FROZEN
+    /// `refs/concerto/checkpoints/<workarea>/<repository>/<n>` form;
+    /// `checkpoint_id` is the freshly-persisted `checkpoints.id`. A
+    /// multi-repo turn fires one variant per repo all sharing the same
+    /// `chat_message_id` (V1.0).
+    CheckpointCreated {
+        session_id: SessionId,
+        checkpoint_id: String,
+        git_ref: String,
+    },
 }

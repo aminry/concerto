@@ -42,6 +42,7 @@
 pub mod actor;
 pub mod approval;
 pub mod bridge;
+pub mod checkpoint;
 pub mod events;
 pub mod parsers;
 pub mod spawn;

@@ -71,6 +71,52 @@ pub async fn run(args: &[&str], cwd: &Path) -> Result<Output> {
     Ok(Output { stdout, stderr })
 }
 
+/// Run `git <args>` with extra env vars set on the subprocess.
+///
+/// Same shape as [`run`] but the caller supplies a slice of `(key,
+/// value)` pairs that get applied via `Command::env` before the spawn.
+/// Used by the Task 34 checkpoint path to point `git` at a temp index
+/// file (`GIT_INDEX_FILE`) and a deterministic author/committer identity
+/// without polluting the surrounding shell environment.
+pub async fn run_with_env(args: &[&str], cwd: &Path, env_pairs: &[(&str, &str)]) -> Result<Output> {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for (k, v) in env_pairs {
+        cmd.env(k, v);
+    }
+
+    let output = cmd.output().await.map_err(|e| {
+        Error::Git(format!(
+            "git {}: failed to spawn: {e}",
+            args.first().copied().unwrap_or("<empty>")
+        ))
+    })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    if !output.status.success() {
+        return Err(Error::Git(format!(
+            "git {}: exit {}: {}",
+            args.first().copied().unwrap_or("<empty>"),
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<signal>".to_string()),
+            stderr.trim()
+        )));
+    }
+
+    Ok(Output { stdout, stderr })
+}
+
 /// Run `git <args>` with stderr streamed line-by-line to `progress_tx`.
 ///
 /// Returns an [`Output`] whose `stderr` is the concatenation of every

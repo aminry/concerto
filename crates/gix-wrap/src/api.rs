@@ -256,6 +256,178 @@ pub async fn worktree_add(repo_dir: &Path, branch: &str, dest: &Path) -> Result<
 }
 
 // ---------------------------------------------------------------------------
+// Task 34: checkpoint plumbing — commit the worktree to a tree, store it as
+// a commit, point a namespaced ref at it, and (on revert) hard-reset the
+// worktree to a ref. Signatures FROZEN by `tasks/34 §"Public interface".
+//
+// All four helpers shell out to `git`. Going through gix's tree-builder /
+// commit-creation API requires re-implementing the parent / author /
+// committer plumbing that `git commit-tree` already does correctly, and the
+// checkpoint code path is rare enough that the subprocess cost is invisible.
+// The split helpers below mirror the design doc's revert sequence one-for-one:
+//
+//   commit_index → write the worktree as a tree + commit object, return OID
+//   update_ref   → point `refs/concerto/checkpoints/...` at that OID
+//   hard_reset   → reset the branch + worktree to a checkpoint ref
+//   ref_exists   → cheap probe used by tests + the revert path
+// ---------------------------------------------------------------------------
+
+/// Snapshot the worktree at `repo_dir` as a commit and return its OID.
+///
+/// Implementation: `git add -A` (stage every tracked + untracked file)
+/// inside a temporary index file so the visible HEAD-relative index is
+/// untouched, `git write-tree` to materialize the tree, then
+/// `git commit-tree <tree> -p HEAD -m <message>` to wrap it in a commit
+/// object. HEAD is never moved.
+///
+/// The temp-index approach matches `git stash create`'s pattern (`man
+/// git-stash` §"Discussion") — we get a commit-shaped snapshot without
+/// disturbing the index the user (or another process) is editing.
+///
+/// `author` / `committer` are forced to a deterministic identity
+/// (`Concerto <concerto@local>`) so checkpoint commits are
+/// content-addressed (the same worktree state produces the same OID
+/// modulo wall-clock) and stable across machines. The Unix-epoch
+/// `GIT_*_DATE` envs avoid `git`'s local-time default which would make
+/// commit OIDs depend on the user's TZ.
+pub async fn commit_index(repo_dir: &Path, message: &str) -> Result<String> {
+    // Use a per-call tempfile inside the repo's `.git` so it never
+    // collides with the user's index. `git` resolves the path against
+    // the working dir, so an absolute path is safest.
+    let unique = uuid_v7_short();
+    let tmp_index = repo_dir.join(format!(".git/concerto-checkpoint-index-{unique}"));
+    let tmp_index_str = tmp_index.to_string_lossy().into_owned();
+
+    // Read the current HEAD's tree into the temp index so `add -A` only
+    // records changes relative to HEAD. `git read-tree` is the same
+    // mechanism `git stash` uses for its snapshot.
+    let head_oid = match cmd::run_with_env(
+        &["rev-parse", "HEAD"],
+        repo_dir,
+        &[("GIT_INDEX_FILE", tmp_index_str.as_str())],
+    )
+    .await
+    {
+        Ok(out) => Some(out.stdout.trim().to_string()),
+        // No HEAD yet (unborn branch) — fall through to a no-parent
+        // commit. V0.1 workareas always have HEAD, but keep this branch
+        // sound for the test harness's empty-init repos.
+        Err(_) => None,
+    };
+    if let Some(head) = head_oid.as_deref() {
+        cmd::run_with_env(
+            &["read-tree", head],
+            repo_dir,
+            &[("GIT_INDEX_FILE", tmp_index_str.as_str())],
+        )
+        .await
+        .map_err(|e| Error::Git(format!("checkpoint read-tree: {e}")))?;
+    }
+
+    // Stage everything (tracked changes + untracked) into the temp index.
+    cmd::run_with_env(
+        &["add", "-A"],
+        repo_dir,
+        &[("GIT_INDEX_FILE", tmp_index_str.as_str())],
+    )
+    .await
+    .map_err(|e| Error::Git(format!("checkpoint add -A: {e}")))?;
+
+    // Materialize the tree.
+    let tree_out = cmd::run_with_env(
+        &["write-tree"],
+        repo_dir,
+        &[("GIT_INDEX_FILE", tmp_index_str.as_str())],
+    )
+    .await
+    .map_err(|e| Error::Git(format!("checkpoint write-tree: {e}")))?;
+    let tree_oid = tree_out.stdout.trim().to_string();
+
+    // Wrap the tree in a commit with HEAD as parent (when present).
+    let env: &[(&str, &str)] = &[
+        ("GIT_AUTHOR_NAME", "Concerto"),
+        ("GIT_AUTHOR_EMAIL", "concerto@local"),
+        ("GIT_COMMITTER_NAME", "Concerto"),
+        ("GIT_COMMITTER_EMAIL", "concerto@local"),
+    ];
+    let commit_oid = if let Some(head) = head_oid.as_deref() {
+        let out = cmd::run_with_env(
+            &["commit-tree", &tree_oid, "-p", head, "-m", message],
+            repo_dir,
+            env,
+        )
+        .await
+        .map_err(|e| Error::Git(format!("checkpoint commit-tree: {e}")))?;
+        out.stdout.trim().to_string()
+    } else {
+        let out = cmd::run_with_env(&["commit-tree", &tree_oid, "-m", message], repo_dir, env)
+            .await
+            .map_err(|e| Error::Git(format!("checkpoint commit-tree (root): {e}")))?;
+        out.stdout.trim().to_string()
+    };
+
+    // Best-effort: remove the temp index file. `git` doesn't auto-clean
+    // and on Linux the file lives on disk forever otherwise.
+    let _ = tokio::fs::remove_file(&tmp_index).await;
+
+    Ok(commit_oid)
+}
+
+/// Point `ref_name` at `commit_oid` in the repository at `repo_dir`.
+///
+/// Wraps `git update-ref <name> <oid>`. The ref name SHOULD live under
+/// `refs/concerto/...` so it never collides with user-facing porcelain
+/// (`git branch`, `git tag` do not enumerate these by default).
+pub async fn update_ref(repo_dir: &Path, ref_name: &str, commit_oid: &str) -> Result<()> {
+    cmd::run(&["update-ref", ref_name, commit_oid], repo_dir)
+        .await
+        .map(|_| ())
+}
+
+/// `git reset --hard <ref_name>` at `repo_dir`. Resets the branch HEAD
+/// and worktree to the named ref.
+///
+/// Used by the Agent Supervisor's `revert_to_checkpoint` path. The caller
+/// is responsible for stopping any live agent session on the repo first
+/// — a hard reset under a running agent corrupts the agent's expectation
+/// of the worktree state.
+pub async fn hard_reset(repo_dir: &Path, ref_name: &str) -> Result<()> {
+    cmd::run(&["reset", "--hard", ref_name], repo_dir)
+        .await
+        .map(|_| ())
+}
+
+/// True iff `ref_name` resolves at `repo_dir`.
+///
+/// Wraps `git rev-parse --verify --quiet <ref_name>`. The `--quiet` flag
+/// causes `git` to exit non-zero without writing to stderr for a missing
+/// ref; we map that into `Ok(false)`. Any other failure (corrupt repo,
+/// bad path) propagates as `Error::Git`.
+pub async fn ref_exists(repo_dir: &Path, ref_name: &str) -> Result<bool> {
+    match cmd::run(&["rev-parse", "--verify", "--quiet", ref_name], repo_dir).await {
+        Ok(_) => Ok(true),
+        // The shell-out helper folds non-zero exits into `Error::Git`.
+        // A missing ref is the only expected non-zero, so treat the
+        // string match defensively.
+        Err(Error::Git(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Tiny UUIDv7-derived suffix for ephemeral on-disk filenames. Lives
+/// here so we don't have to pull `uuid` into `gix-wrap` for one call
+/// site; the suffix only needs to be probabilistically unique within a
+/// single checkpoint operation.
+fn uuid_v7_short() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos:x}")
+}
+
+// ---------------------------------------------------------------------------
 // Task 28: fsmonitor + maintenance + performance config.
 //
 // All four helpers shell out to `git`. The function signatures are FROZEN

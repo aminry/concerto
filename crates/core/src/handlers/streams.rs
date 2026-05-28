@@ -57,10 +57,10 @@ use concerto_proto::v1::streams_server::Streams as StreamsService;
 use concerto_proto::v1::{
     event::Body as EventBody, session_event::Kind as SessionEventKind, AgentExited, AgentMessage,
     AgentStarted, ApprovalResolved as ProtoApprovalResolved,
-    AwaitingApproval as ProtoAwaitingApproval, Event, SessionEvent as ProtoSessionEvent,
-    SessionIoChunk as ProtoSessionIoChunk, SubscribeRequest, ToolCall as ProtoToolCall,
-    TurnComplete as ProtoTurnComplete, WorkareaEvent as ProtoWorkareaEvent,
-    WorkspaceEvent as ProtoWorkspaceEvent,
+    AwaitingApproval as ProtoAwaitingApproval, CheckpointCreated as ProtoCheckpointCreated, Event,
+    SessionEvent as ProtoSessionEvent, SessionIoChunk as ProtoSessionIoChunk, SubscribeRequest,
+    ToolCall as ProtoToolCall, TurnComplete as ProtoTurnComplete,
+    WorkareaEvent as ProtoWorkareaEvent, WorkspaceEvent as ProtoWorkspaceEvent,
 };
 use futures::Stream;
 use tokio::sync::Mutex;
@@ -315,6 +315,17 @@ fn map_agent_event(ev: AgentEvent, offset: u64) -> Event {
         AgentEvent::TurnComplete { session_id } => (
             session_id,
             SessionEventKind::TurnComplete(ProtoTurnComplete {}),
+        ),
+        AgentEvent::CheckpointCreated {
+            session_id,
+            checkpoint_id,
+            git_ref,
+        } => (
+            session_id,
+            SessionEventKind::CheckpointCreated(ProtoCheckpointCreated {
+                checkpoint_id,
+                git_ref,
+            }),
         ),
     };
     Event {
