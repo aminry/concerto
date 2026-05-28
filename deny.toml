@@ -16,6 +16,10 @@ allow = [
     "MIT-0",
     "Unicode-DFS-2016",
     "Unicode-3.0",
+    # Permissive, OSI/FSF approved, attribution-only (no copyleft). Added in
+    # Task 05 because sqlx 0.8 → hashbrown 0.15 → foldhash is Zlib-licensed.
+    # Posture-equivalent to BSD-2-Clause.
+    "Zlib",
 ]
 confidence-threshold = 0.93
 

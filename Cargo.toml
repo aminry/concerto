@@ -27,10 +27,18 @@ rust-version = "1.78"
 tokio = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+tracing-appender = "0.2"
 thiserror = "1"
 serde = "1"
 serde_json = "1"
-sqlx = "0.7"
-tonic = "0.11"
+# sqlx/tonic ship a lot of default features (runtimes, transports, codegen).
+# Default off here; crates that need them re-enable specific features locally.
+# sqlx pinned to 0.8 — 0.7.x is RUSTSEC-2024-0363 (binary protocol cast bug).
+sqlx = { version = "0.8", default-features = false }
+tonic = { version = "0.11", default-features = false }
 prost = "0.12"
 keyring = "2"
+# `home` for home_dir(); rust-lang's own crate, MIT/Apache-2.0. Picked
+# over `dirs` because `dirs` pulls in `option-ext` (MPL-2.0) — disallowed
+# by design/00 §6.11's permissive-only license posture.
+home = "0.5"
