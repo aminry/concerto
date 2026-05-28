@@ -67,21 +67,21 @@ Refine `crates/core/src/logging.rs`:
 7. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → no unintended drift.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] JSON file output verified.
-- [ ] Redaction verified for at least one secret-named field.
-- [ ] Console output remains human-readable.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] JSON file output verified.
+- [x] Redaction verified for at least one secret-named field.
+- [x] Console output remains human-readable.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
-- `crates/core/Cargo.toml` (modified — tracing-appender features)
 - `crates/core/src/logging.rs` (modified)
 - `crates/core/src/log_fields.rs` (new)
 - `crates/core/src/log_filter.rs` (new)
 - `crates/core/src/lib.rs` (modified — module declarations + macro exports)
 - `crates/core/tests/logging.rs` (new)
+- `tasks/16-logging-discipline.md` (modified — DoD ticks + Handoff Notes)
 
 ## Commit message
 ```
@@ -97,7 +97,17 @@ Refs: tasks/16-logging-discipline.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
+- **Drift from plan:**
+  - **File path schema kept as `core.YYYY-MM-DD.log`** (Task 05's format), not `core.log` + `core.log.YYYY-MM-DD` as the task spec wrote. `tracing-appender::rolling::Builder` always inserts a `.` between `filename_prefix`, the rotated date, and `filename_suffix`; there is no API to produce a stable `core.log` symlink-style filename with rotated `core.log.YYYY-MM-DD` siblings. The locked path is therefore `$CONCERTO_DATA_DIR/logs/core.YYYY-MM-DD.log` with 14-day retention via `.max_log_files(14)`. The pre-task orchestration brief flagged this exact deviation.
+  - **`Cargo.toml` was NOT modified.** The Outputs list said "tracing-appender features" but no features were needed: `max_log_files` is part of `tracing-appender`'s default surface, and `tracing-subscriber`'s default features already cover everything the console layer uses. The JSON file layer is hand-rolled in `log_filter.rs` via `serde_json` rather than `tracing-subscriber`'s `json` feature — see next bullet — so no feature flag had to be added. Updated Outputs to drop the spurious `Cargo.toml` entry.
+  - **JSON formatting is implemented directly in `SecretsFilter`** rather than as a wrapper over `tracing_subscriber::fmt::layer().json()`. Rationale: `tracing-subscriber`'s built-in `JsonFields` visitor goes straight to `serde_json::Serializer` with no public hook to intercept individual field values, so the redaction logic would have to re-implement most of the JSON layer anyway. Keeping both in one type (with two `OutputStyle` variants — `Json` for the file, `CompactHuman` for stderr) means the same redaction code path covers both layers, so the console layer is also scrubbed (`token=<redacted>` on stderr, not just in the file).
+  - **`build_filter()` was refactored to take the env-var value as a parameter** (`fn build_filter(raw: Option<String>) -> Result<Targets>`). Task 05's tests raced on the global `RUST_LOG` env var because each test read it inside the function under test; the new signature accepts the string directly, so unit tests pass concrete inputs and never touch `std::env`. The brief pre-authorized this refactor.
+  - **`init()` returns a new `LogGuard` struct, not a bare `DefaultGuard`.** The `tracing-appender::non_blocking` worker guard MUST be held for the program's lifetime alongside the dispatcher guard. Bundling them as `LogGuard { _default, _worker }` means `main.rs`'s existing `let _log_guard = logging::init()?;` pattern continues to work and callers can't accidentally drop one without the other. This is a breaking API change vs. Task 05's signature; `main.rs` did NOT need to be modified (the binding is type-inferred), and the runtime did NOT need to grow a field. Outputs list does not include `runtime.rs` or `main.rs`.
+  - **No `tracing-appender` rotation test that asserts retention.** The integration test `rotation_file_naming_schema` only checks the filename pattern. There is no clock mock that would let me prove the 14-day deletion path fires without running 14 days of wall-clock; the `.max_log_files(14)` call site is the contract.
+  - **Span-attached field storage is idempotent across multiple `Layer` instances.** Both the file and console `SecretsFilter` instances receive `on_new_span` callbacks for the same span; the first one wins via `ext.get_mut::<RecordedFields>().is_none()` and subsequent layers skip the work. `on_record` de-duplicates by field name. Without this both layers would attempt `Extensions::insert` for the same key and the second call would panic.
+- **Open questions for next task:**
+  - `init_with_log_dir(&Path)` is now the testable seam. Future tasks that want to override the log location for an integration test should call it rather than mucking with `CONCERTO_DATA_DIR` in process state.
+  - The `*_span!` macros expand to `::tracing::info_span!`, so callers must have `tracing` resolvable at the macro use site. Every binary/crate in the workspace already depends on `tracing` transitively via `concerto-core`, so this hasn't bitten anyone yet; if a future crate uses the macros without a `tracing` dep, the compiler error will be clear.
+  - `chrono_like_timestamp()` is hand-rolled to avoid pulling `chrono`. If `chrono` ever lands as a workspace dep (e.g. for human-readable RPC fields), swap the helper out for `chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)` — the format string matches.
 - **Deliberate debt:** redaction is name-based (allow-list); value-based heuristics (e.g., "looks like a JWT") deferred to V1.5.
-- **Smoke-gate state:** unchanged.
+- **Smoke-gate state:** unchanged. v1 still active; smoke gate doesn't read logs, so the filename schema change does not affect it. Re-ran `scripts/smoke.sh` after this task — green.
