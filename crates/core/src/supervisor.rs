@@ -228,6 +228,55 @@ pub struct ActorStatusSummary {
     pub restart_total: u64,
 }
 
+/// Cloneable, read-only view of the supervisor's actor table.
+///
+/// Hands out a snapshot of every actor's current
+/// [`ActorStatusSummary`] without holding a reference to the
+/// supervisor itself — useful for subsystems (e.g. the Task 13
+/// gRPC `RuntimeHandler`) that outlive a single `&RootSupervisor`
+/// borrow.
+///
+/// The shared state is a vector of `(name, state-arc, history-arc)`
+/// triples updated by [`RootSupervisor::spawn`]; the view reads it
+/// under a short `std::sync::RwLock` critical section. Cheap enough
+/// for diagnostic RPC paths.
+#[derive(Clone, Default)]
+pub struct SupervisorView {
+    inner: Arc<StdRwLock<Vec<ActorViewEntry>>>,
+}
+
+struct ActorViewEntry {
+    name: &'static str,
+    state: Arc<StdRwLock<ActorState>>,
+    history: Arc<StdMutex<RestartHistory>>,
+}
+
+impl SupervisorView {
+    /// Snapshot every currently-registered actor. Sorted by name for
+    /// stable output.
+    pub fn list(&self) -> Vec<ActorStatusSummary> {
+        let guard = self.inner.read().expect("supervisor view lock poisoned");
+        let mut out: Vec<ActorStatusSummary> = guard
+            .iter()
+            .map(|e| ActorStatusSummary {
+                name: e.name,
+                state: e
+                    .state
+                    .read()
+                    .expect("supervisor state lock poisoned")
+                    .clone(),
+                restart_total: e
+                    .history
+                    .lock()
+                    .expect("supervisor history lock poisoned")
+                    .total(),
+            })
+            .collect();
+        out.sort_by_key(|s| s.name);
+        out
+    }
+}
+
 /// The root supervisor.
 ///
 /// Owns the handles of every supervised actor, together with the
@@ -238,6 +287,7 @@ pub struct RootSupervisor {
     actors: HashMap<&'static str, ActorHandle>,
     shutdown: CancellationToken,
     persistence: Arc<Persistence>,
+    view: SupervisorView,
 }
 
 impl RootSupervisor {
@@ -253,7 +303,16 @@ impl RootSupervisor {
             actors: HashMap::new(),
             shutdown,
             persistence,
+            view: SupervisorView::default(),
         }
+    }
+
+    /// Cloneable handle that exposes a sorted snapshot of every
+    /// registered actor's status. Used by the Task 13 gRPC
+    /// `RuntimeHandler` so it can outlive a `&RootSupervisor` borrow
+    /// while still observing live state.
+    pub fn view(&self) -> SupervisorView {
+        self.view.clone()
     }
 
     /// Spawn an actor under supervision.
@@ -300,6 +359,22 @@ impl RootSupervisor {
             )
             .await;
         });
+
+        // Register in the shared view BEFORE inserting into our owned
+        // map: the inserts must succeed in lockstep, but the view's
+        // lock is short-lived and uncontended at spawn time.
+        {
+            let mut guard = self
+                .view
+                .inner
+                .write()
+                .expect("supervisor view lock poisoned");
+            guard.push(ActorViewEntry {
+                name: A::NAME,
+                state: Arc::clone(&state),
+                history: Arc::clone(&restart_history),
+            });
+        }
 
         self.actors.insert(
             A::NAME,

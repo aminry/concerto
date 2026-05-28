@@ -11,6 +11,9 @@
 //!   6. Calls [`Runtime::stop`], which shuts down persistence and releases
 //!      the lock.
 
+use std::sync::Arc;
+
+use concerto_core::api_server::{ApiServerActor, ApiServerConfig};
 use concerto_core::logging;
 use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
 use concerto_error::Result;
@@ -58,7 +61,8 @@ async fn run() -> Result<()> {
         "resolved runtime config"
     );
 
-    let runtime = match Runtime::start(config).await? {
+    let socket_path = config.config_dir.join("core.sock");
+    let mut runtime = match Runtime::start(config).await? {
         StartOutcome::Started(r) => r,
         StartOutcome::AlreadyRunning { pid } => {
             // Per design/01 §3.3: exit 0 so launchd doesn't restart us.
@@ -71,6 +75,26 @@ async fn run() -> Result<()> {
             return Ok(());
         }
     };
+
+    // Task 13: spawn the gRPC server as the first supervised actor.
+    // Handles captured by the factory closure are cheap `Arc::clone`s,
+    // so a restart constructs a fresh `ApiServerActor` without
+    // re-reading the wall clock or rebuilding the supervisor view.
+    let started_at = runtime.started_at();
+    let supervisor_view = runtime
+        .supervisor()
+        .expect("supervisor present at boot")
+        .view();
+    let factory_started_at = Arc::clone(&started_at);
+    let factory_view = supervisor_view.clone();
+    runtime
+        .supervisor_mut()
+        .expect("supervisor present at boot")
+        .spawn::<ApiServerActor, _>(
+            move || ApiServerActor::new(Arc::clone(&factory_started_at), factory_view.clone()),
+            ApiServerConfig { socket_path },
+        )
+        .await?;
 
     tracing::info!("concerto-core ready");
 

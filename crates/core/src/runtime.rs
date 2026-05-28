@@ -33,7 +33,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use concerto_error::{Error, Result};
 use concerto_persist::{Persistence, PersistenceConfig};
@@ -120,6 +120,12 @@ impl RuntimeConfig {
 /// `Started` is the happy path. `AlreadyRunning` means another Core
 /// already holds the PID lock — the binary should log and exit 0, NOT
 /// loop or treat this as an error.
+///
+/// `Runtime` is the dominant variant by design; constructed at most
+/// once per process and consumed shortly thereafter. The size disparity
+/// vs `AlreadyRunning { pid }` is intentional — boxing would force
+/// every caller through a redundant pointer dereference.
+#[allow(clippy::large_enum_variant)]
 pub enum StartOutcome {
     Started(Runtime),
     AlreadyRunning { pid: u32 },
@@ -149,6 +155,11 @@ pub struct Runtime {
     /// onward) can register actors via [`Runtime::supervisor_mut`].
     /// `None` after [`Runtime::stop`] has consumed the supervisor.
     supervisor: Option<RootSupervisor>,
+    /// Wall-clock instant at which `Runtime::start` succeeded. Wrapped in
+    /// `Arc` so the gRPC `RuntimeHandler` (Task 13) can clone a snapshot
+    /// once at construction and read it without further synchronization
+    /// on each `GetStatus` call.
+    started_at: Arc<SystemTime>,
 }
 
 impl Runtime {
@@ -219,7 +230,17 @@ impl Runtime {
             reload_rx: Some(reload_rx),
             shutdown_grace: config.shutdown_grace,
             supervisor: Some(supervisor),
+            started_at: Arc::new(SystemTime::now()),
         }))
+    }
+
+    /// Snapshot of the wall-clock instant at which the runtime booted.
+    ///
+    /// `Arc` is the storage so callers can clone cheaply and hand the
+    /// value to subsystems (e.g. the gRPC `RuntimeHandler` from Task 13)
+    /// without re-reading the clock on every RPC.
+    pub fn started_at(&self) -> Arc<SystemTime> {
+        Arc::clone(&self.started_at)
     }
 
     /// Hand out a [`CancellationToken`] subscribers cancel-on. Cheap
