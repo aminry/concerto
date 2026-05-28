@@ -75,12 +75,12 @@ Update `docs/interfaces/schema.md` via `./scripts/regen-interfaces.sh`.
 7. `cargo clippy -p concerto-persist -- -D warnings` → clean.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] `docs/interfaces/schema.md` regenerated.
-- [ ] No `TODO` / `FIXME` in SQL.
-- [ ] Idempotent rerun verified.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] `docs/interfaces/schema.md` regenerated.
+- [x] No `TODO` / `FIXME` in SQL.
+- [x] Idempotent rerun verified.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/persist/migrations/0001_initial_schema.sql` (new)
@@ -100,7 +100,15 @@ Refs: tasks/09-initial-db-schema.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
+- **Drift from plan:**
+  - **No literal `BEGIN; ... COMMIT;` in the .sql file.** The task said the migration should be "wrapped in `BEGIN; ... COMMIT;`". `sqlx::migrate!` already wraps each file in an implicit transaction (matching design/09 §6.2's "single transaction per file" promise); adding an explicit BEGIN inside that wrapper errors with `cannot start a transaction within a transaction`. The file is still atomic; the wrapping is just implicit. A comment near the top of `0001_initial_schema.sql` documents this.
+  - **Extra `CHECK` constraints on enumerated TEXT columns.** Task 08's handoff forwarded a recommendation to encode the proto's commented value lists as SQL CHECK constraints. I followed that for `workareas.status`, `sessions.status`, `sessions.agent_kind` (`claude`/`codex`/`gemini`/`maestro`), `sessions.permission_mode`, `workspaces.permission_mode` (nullable form), `workareas.permission_mode` (nullable form), `chats.kind`, `chat_messages.role`, `devices.push_platform`, `tool_approvals.decision`, and the `*.bypass_destructive_guard` 0/1 flags. Design/09 §4 names the value sets but doesn't show the CHECK SQL; these constraints encode them. No column was renamed.
+  - **`tool_approvals.decision` CHECK values include `auto_strict`, `auto_normal`, `auto_auto`, `auto_yolo`.** The design doc comment lists `auto_<mode>` (one of four permission modes); the CHECK enumerates each. If the auto-decision wire format ever diverges from the four permission modes, this CHECK will need a new migration.
+- **Open questions for next task:**
+  - **`.gitkeep` is still in `crates/persist/migrations/`** from Task 08. It's harmless — sqlx only picks up `*.sql` — and intentionally left in place since it documents the directory's purpose. Future tasks may delete it if it becomes noise.
+  - **Forward reference `chats.session_id → sessions(id)`.** SQLite resolves FKs at execution time, not table-creation time, so the order is fine inside the transactional migration. The implication for callers: when inserting a fresh `chats` + `sessions` pair, insert a `chats` row with `session_id = NULL` (kind='maestro' is the carve-out, OR use a placeholder approach), then the session row, then optionally a real session-kind chat. The integration test `insert_and_read_back_every_table` shows the ordering. Tasks 19/23 should bake this into their write helpers.
+  - **No repository functions yet.** Per Scope — out, Tasks 19, 20, 23 add the typed read/write helpers for the entities they need. The schema is the floor; the repository pattern (design/09 §3.4) builds on top.
+  - **`projects.settings_json` schema is documented but unenforced.** Design/09 §4.1 documents the JSON shape (`default_permission_mode`, `default_bypass_destructive_guard`, etc.). SQLite stores it as opaque TEXT; validation lives in application code that the V0.1 task list hasn't reached yet.
+  - **No `audit_log` / `audit_events` table.** That's intentional (design/09 §3.5 — JSONL on disk). Task 44 wires the audit writer.
 - **Deliberate debt:** —
-- **Smoke-gate state:** unchanged.
+- **Smoke-gate state:** unchanged — still Phase 0 ("PASSED (no checks active yet — Phase 0)"). Task 15 is the first that flips the gate to v1.
