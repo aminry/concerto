@@ -40,11 +40,16 @@ use tokio::net::UnixStream;
 use tokio::process::Child;
 use tokio::sync::{broadcast, Mutex};
 
+use crate::agent_supervisor::approval::{user_decision_string, PendingApprovals};
 use crate::agent_supervisor::bridge::{
     build_hello, read_frame, write_frame, FrameError, HostFrame,
 };
 use crate::agent_supervisor::events::{AgentEvent, MessageRole};
+use crate::agent_supervisor::parsers::{
+    claude_code::ClaudeCodePack, echo::EchoPack, MsgRole, ParseEvent, ParserPack,
+};
 use crate::agent_supervisor::spawn::{spawn_host, wait_for_socket, SOCKET_POLL_BUDGET};
+use crate::security::{Decision, PermissionResolver};
 use crate::supervisor::{Actor, ActorContext};
 
 /// Channel capacity for the in-process per-session broadcast of
@@ -172,6 +177,16 @@ struct SessionEntry {
     /// attaching after this stays `true` get the replay buffer but no
     /// live events.
     finished: Arc<std::sync::atomic::AtomicBool>,
+    /// Task 33: per-CLI parser pack. Constructed at `start_session`
+    /// based on `agent_kind`; the read-pump invokes
+    /// `parse_chunk` on every `StdoutBytes` frame. Held on the entry
+    /// so future tasks (e.g. checkpoint restore) can build a fresh
+    /// pump against the original pack without re-detecting the CLI.
+    #[allow(dead_code)]
+    parser: Arc<dyn ParserPack>,
+    /// Task 33: pending approvals awaiting a `Sessions.ResolveApproval`
+    /// call. Keyed by `tool_approvals.id`.
+    pending_approvals: Arc<Mutex<PendingApprovals>>,
 }
 
 /// Cloneable, shareable handle to the Agent Supervisor's state.
@@ -516,6 +531,17 @@ impl AgentSupervisorHandle {
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writer_arc = Arc::new(Mutex::new(write_half));
         let child_arc = Arc::new(Mutex::new(Some(child)));
+        // Task 33: construct the per-CLI parser pack based on the
+        // requested agent kind. Echo gets the trivial pass-through;
+        // Claude gets the V0.1 regex pack. Codex/Gemini error earlier
+        // in this function, so they never reach this branch.
+        let parser: Arc<dyn ParserPack> = match req.agent_kind {
+            AgentKind::Echo => Arc::new(EchoPack::new()),
+            AgentKind::Claude => Arc::new(ClaudeCodePack::new()),
+            AgentKind::Codex | AgentKind::Gemini => unreachable!("rejected above"),
+        };
+        let pending_approvals: Arc<Mutex<PendingApprovals>> =
+            Arc::new(Mutex::new(PendingApprovals::new()));
         {
             let mut map = self.sessions.lock().await;
             map.insert(
@@ -532,6 +558,8 @@ impl AgentSupervisorHandle {
                     writer: writer_arc.clone(),
                     child: child_arc.clone(),
                     finished: Arc::clone(&finished),
+                    parser: Arc::clone(&parser),
+                    pending_approvals: Arc::clone(&pending_approvals),
                 },
             );
         }
@@ -554,6 +582,14 @@ impl AgentSupervisorHandle {
         let pump_sessions = Arc::clone(&self.sessions);
         let pump_log = stdout_log.clone();
         let pump_finished = Arc::clone(&finished);
+        let pump_parser = Arc::clone(&parser);
+        let pump_pending = Arc::clone(&pending_approvals);
+        let pump_writer = Arc::clone(&writer_arc);
+        // Resolver constructed once per session; its mode field is
+        // refreshed in `update_session_permission_mode`. V0.1 reads the
+        // workarea bypass off the just-resolved row.
+        let bypass = bypass_for_session(&self.persistence, &session_id).await;
+        let pump_resolver = PermissionResolver::new(permission_mode_enum, bypass);
         tokio::spawn(async move {
             run_read_pump(
                 read_half,
@@ -566,11 +602,75 @@ impl AgentSupervisorHandle {
                 pump_sessions,
                 pump_log,
                 pump_finished,
+                pump_parser,
+                pump_pending,
+                pump_writer,
+                pump_resolver,
             )
             .await;
         });
 
         Ok(session_id)
+    }
+
+    /// Task 33: resolve a pending tool-approval gate. Sends the user's
+    /// decision through the matching `oneshot::Sender`, persists the
+    /// row, and lets the waiter task spawned in the read pump inject
+    /// the bytes back into the agent's stdin.
+    ///
+    /// First-write-wins via the `tool_approvals` row's UPDATE guard:
+    /// a second call against an already-decided row returns
+    /// [`Error::Validation`] with the `tool_approval.already_resolved`
+    /// wire code.
+    pub async fn resolve_approval(
+        &self,
+        session_id: &SessionId,
+        approval_id: &str,
+        decision: Decision,
+        decided_by_device_id: Option<&str>,
+    ) -> Result<()> {
+        let sender = {
+            let map = self.sessions.lock().await;
+            let entry = map
+                .get(session_id)
+                .ok_or_else(|| Error::NotFound(format!("session {session_id} not running")))?;
+            let mut pending = entry.pending_approvals.lock().await;
+            pending.remove(approval_id)
+        };
+        let sender = sender.ok_or_else(|| {
+            Error::Validation(format!(
+                "tool_approval.already_resolved: approval {approval_id} not pending"
+            ))
+        })?;
+
+        // Persist the user decision FIRST so a crash between the
+        // oneshot send and the DB write would still leave the row
+        // accurate. The waiter task is responsible only for injection.
+        let row_string = user_decision_string(decision);
+        let now_ms = now_unix_ms();
+        let rows_affected = {
+            let mut writer = self.persistence.writer().await;
+            let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+            let rows = concerto_persist::tool_approvals::update_decision(
+                &mut tx,
+                approval_id,
+                row_string,
+                now_ms,
+                decided_by_device_id,
+            )
+            .await?;
+            tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+            rows
+        };
+        if rows_affected == 0 {
+            return Err(Error::Validation(format!(
+                "tool_approval.already_resolved: row {approval_id} already had a decision"
+            )));
+        }
+        // Wake the waiter; if it has died (session ended), drop is
+        // benign.
+        let _ = sender.send(decision);
+        Ok(())
     }
 
     /// Send a chunk of bytes as the agent's stdin (via the host's
@@ -707,6 +807,52 @@ impl AgentSupervisorHandle {
     }
 }
 
+/// Look up the bypass_destructive_guard flag for the session that was
+/// just inserted. The walk mirrors the inheritance chain but only the
+/// effective value is needed here; a follow-on Task 41/42/43 will
+/// switch to calling [`crate::security::resolve_effective_mode`]
+/// directly. V0.1 reads the workarea + workspace bypass directly so
+/// the resolver matches what's persisted.
+async fn bypass_for_session(persistence: &Persistence, session_id: &SessionId) -> bool {
+    let pool = persistence.readers();
+    let row = sqlx::query(
+        "SELECT
+            s.bypass_destructive_guard  AS s_bypass,
+            wa.bypass_destructive_guard AS wa_bypass,
+            ws.bypass_destructive_guard AS ws_bypass
+         FROM sessions s
+         JOIN workareas wa ON wa.id = s.workarea_id
+         JOIN workspaces ws ON ws.id = wa.workspace_id
+         WHERE s.id = ?",
+    )
+    .bind(&session_id.0)
+    .fetch_optional(pool)
+    .await;
+    use sqlx::Row;
+    match row {
+        Ok(Some(r)) => {
+            let s: i64 = r.get("s_bypass");
+            if s != 0 {
+                return true;
+            }
+            let wa: Option<i64> = r.get("wa_bypass");
+            if let Some(v) = wa {
+                if v != 0 {
+                    return true;
+                }
+            }
+            let ws: Option<i64> = r.get("ws_bypass");
+            if let Some(v) = ws {
+                if v != 0 {
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
 /// Long-running task that drains the bridge connection's read half and
 /// emits `AgentEvent`s. Returns when the connection closes (`Eof`) or
 /// when the host signals `AgentExited`.
@@ -722,6 +868,10 @@ async fn run_read_pump(
     sessions: Arc<Mutex<HashMap<SessionId, SessionEntry>>>,
     stdout_log: PathBuf,
     finished: Arc<std::sync::atomic::AtomicBool>,
+    parser: Arc<dyn ParserPack>,
+    pending_approvals: Arc<Mutex<PendingApprovals>>,
+    writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    resolver: PermissionResolver,
 ) {
     // Open the per-session stdout log file for append.
     let log_file = tokio::fs::OpenOptions::new()
@@ -731,6 +881,11 @@ async fn run_read_pump(
         .await
         .ok();
     let log_file = log_file.map(|f| Arc::new(Mutex::new(f)));
+
+    // Parser's accumulating buffer — V0.1 echoes the chunk back into
+    // the buf and the pack drains it, but the buf is owned by the
+    // pump so V1.0's partial-line accumulating packs work too.
+    let mut parser_buf: Vec<u8> = Vec::new();
 
     loop {
         let frame = match read_frame(&mut read_half).await {
@@ -752,22 +907,27 @@ async fn run_read_pump(
                     let _ = f.write_all(&data).await;
                     let _ = f.flush().await;
                 }
-                // Raw I/O fan-out for `Streams.Subscribe(session.io.<sid>)`.
-                let chunk = SessionIoChunk {
-                    session_id: session_id.clone(),
-                    stream: "stdout",
-                    data: data.clone(),
-                };
-                push_replay_io(&io_replay, chunk.clone()).await;
-                let _ = io.send(chunk);
-                let content = String::from_utf8_lossy(&data).into_owned();
-                let msg = AgentEvent::Message {
-                    session_id: session_id.clone(),
-                    role: MessageRole::Assistant,
-                    content,
-                };
-                push_replay(&events_replay, msg.clone()).await;
-                let _ = events.send(msg);
+                // Feed the parser. Per Task 33, the parser surfaces
+                // `Bytes` (raw passthrough), `Message`, `ToolCall`,
+                // `AwaitingApproval`, and `TurnComplete` events.
+                parser_buf.extend_from_slice(&data);
+                let parse_events = parser.parse_chunk(&mut parser_buf);
+                for ev in parse_events {
+                    dispatch_parse_event(
+                        ev,
+                        &session_id,
+                        &events,
+                        &events_replay,
+                        &io,
+                        &io_replay,
+                        &persistence,
+                        &resolver,
+                        &parser,
+                        &pending_approvals,
+                        &writer,
+                    )
+                    .await;
+                }
             }
             HostFrame::StderrBytes { data, .. } => {
                 // V0.1 surfaces stderr-as-assistant-message too; the
@@ -978,6 +1138,195 @@ async fn resolve_for_new_session(
         bypass_destructive_guard: bypass,
         source,
     })
+}
+
+/// Task 33: route a single [`ParseEvent`] coming off the parser pack to
+/// the right sink (broadcasts, persistence, approval wait-loop).
+///
+/// All arguments are short-lived borrows so the function can be called
+/// from inside `run_read_pump`'s per-frame loop without bumping
+/// reference counts.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_parse_event(
+    ev: ParseEvent,
+    session_id: &SessionId,
+    events: &broadcast::Sender<AgentEvent>,
+    events_replay: &Arc<Mutex<Vec<AgentEvent>>>,
+    io: &broadcast::Sender<SessionIoChunk>,
+    io_replay: &Arc<Mutex<Vec<SessionIoChunk>>>,
+    persistence: &Arc<Persistence>,
+    resolver: &PermissionResolver,
+    parser: &Arc<dyn ParserPack>,
+    pending_approvals: &Arc<Mutex<PendingApprovals>>,
+    writer: &Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+) {
+    match ev {
+        ParseEvent::Bytes(data) => {
+            let chunk = SessionIoChunk {
+                session_id: session_id.clone(),
+                stream: "stdout",
+                data,
+            };
+            push_replay_io(io_replay, chunk.clone()).await;
+            let _ = io.send(chunk);
+        }
+        ParseEvent::Message { role, content } => {
+            let msg = AgentEvent::Message {
+                session_id: session_id.clone(),
+                role: map_msg_role(role),
+                content,
+            };
+            push_replay(events_replay, msg.clone()).await;
+            let _ = events.send(msg);
+        }
+        ParseEvent::ToolCall {
+            name,
+            args,
+            call_id,
+        } => {
+            let ev = AgentEvent::ToolCall {
+                session_id: session_id.clone(),
+                call_id,
+                name,
+                args_json: args.to_string(),
+            };
+            push_replay(events_replay, ev.clone()).await;
+            let _ = events.send(ev);
+        }
+        ParseEvent::TurnComplete => {
+            let ev = AgentEvent::TurnComplete {
+                session_id: session_id.clone(),
+            };
+            push_replay(events_replay, ev.clone()).await;
+            let _ = events.send(ev);
+        }
+        ParseEvent::AwaitingApproval {
+            tool,
+            summary,
+            payload,
+        } => {
+            // Resolve the verdict from the cached permission mode.
+            let decision = resolver.decide(&tool);
+            let approval_id = uuid::Uuid::now_v7().to_string();
+            let now_ms = now_unix_ms();
+            let payload_json = payload.to_string();
+
+            match decision {
+                Decision::AutoApprove | Decision::AutoApproveOnce | Decision::AutoDeny => {
+                    // Persist the auto-row up front + inject the bytes
+                    // right back into the agent's stdin.
+                    let auto_string = resolver.auto_decision_string().to_string();
+                    let row = concerto_persist::tool_approvals::NewToolApproval {
+                        id: approval_id.clone(),
+                        session_id: session_id.clone(),
+                        tool_name: tool.clone(),
+                        payload_json: payload_json.clone(),
+                        requested_at: now_ms,
+                        decision: Some(auto_string.clone()),
+                        decided_at: Some(now_ms),
+                        decided_by_device_id: None,
+                    };
+                    if let Ok(mut w) = persistence.writer().await.begin().await {
+                        let _ = concerto_persist::tool_approvals::insert(&mut w, row).await;
+                        let _ = w.commit().await;
+                    }
+                    let bytes = parser.inject_approval(decision);
+                    if !bytes.is_empty() {
+                        let mut w = writer.lock().await;
+                        let _ = write_frame(&mut *w, &HostFrame::StdinBytes { data: bytes }).await;
+                    }
+                    let resolved = AgentEvent::ApprovalResolved {
+                        session_id: session_id.clone(),
+                        approval_id,
+                        tool,
+                        decision: auto_string,
+                    };
+                    push_replay(events_replay, resolved.clone()).await;
+                    let _ = events.send(resolved);
+                }
+                Decision::MustAsk => {
+                    // Persist the pending row + create the oneshot
+                    // pairing, then emit AwaitingApproval and park a
+                    // waiter task that injects the bytes once the
+                    // user resolves.
+                    let row = concerto_persist::tool_approvals::NewToolApproval {
+                        id: approval_id.clone(),
+                        session_id: session_id.clone(),
+                        tool_name: tool.clone(),
+                        payload_json: payload_json.clone(),
+                        requested_at: now_ms,
+                        decision: None,
+                        decided_at: None,
+                        decided_by_device_id: None,
+                    };
+                    if let Ok(mut w) = persistence.writer().await.begin().await {
+                        let _ = concerto_persist::tool_approvals::insert(&mut w, row).await;
+                        let _ = w.commit().await;
+                    }
+                    let (tx, rx) = tokio::sync::oneshot::channel::<Decision>();
+                    {
+                        let mut pending = pending_approvals.lock().await;
+                        pending.insert(approval_id.clone(), tx);
+                    }
+                    let awaiting = AgentEvent::AwaitingApproval {
+                        session_id: session_id.clone(),
+                        approval_id: approval_id.clone(),
+                        tool: tool.clone(),
+                        summary,
+                        payload_json,
+                    };
+                    push_replay(events_replay, awaiting.clone()).await;
+                    let _ = events.send(awaiting);
+
+                    // Park the waiter on a spawned task — when the
+                    // client resolves, write the matching injection
+                    // bytes and emit ApprovalResolved.
+                    let parser = Arc::clone(parser);
+                    let writer = Arc::clone(writer);
+                    let events_for_waiter = events.clone();
+                    let events_replay_for_waiter = Arc::clone(events_replay);
+                    let session_id_for_waiter = session_id.clone();
+                    let tool_for_waiter = tool;
+                    tokio::spawn(async move {
+                        match rx.await {
+                            Ok(d) => {
+                                let bytes = parser.inject_approval(d);
+                                if !bytes.is_empty() {
+                                    let mut w = writer.lock().await;
+                                    let _ = write_frame(
+                                        &mut *w,
+                                        &HostFrame::StdinBytes { data: bytes },
+                                    )
+                                    .await;
+                                }
+                                let row_str = user_decision_string(d);
+                                let resolved = AgentEvent::ApprovalResolved {
+                                    session_id: session_id_for_waiter,
+                                    approval_id,
+                                    tool: tool_for_waiter,
+                                    decision: row_str.to_string(),
+                                };
+                                push_replay(&events_replay_for_waiter, resolved.clone()).await;
+                                let _ = events_for_waiter.send(resolved);
+                            }
+                            Err(_) => {
+                                // Sender dropped — session ended.
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn map_msg_role(r: MsgRole) -> MessageRole {
+    match r {
+        MsgRole::Assistant => MessageRole::Assistant,
+        MsgRole::User => MessageRole::User,
+        MsgRole::System => MessageRole::System,
+        MsgRole::Tool => MessageRole::Tool,
+    }
 }
 
 /// Append `ev` to the per-session replay buffer, evicting the oldest

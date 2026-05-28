@@ -21,6 +21,7 @@ pub mod api;
 pub mod projects;
 pub mod repositories;
 pub mod sessions;
+pub mod tool_approvals;
 pub mod workareas;
 pub mod workspaces;
 

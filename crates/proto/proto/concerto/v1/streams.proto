@@ -53,6 +53,21 @@ message SessionEvent {
     AgentStarted started = 10;
     AgentMessage message = 11;
     AgentExited exited = 12;
+    // Task 33: tool-approval boundary detection. The parser pack saw the
+    // agent CLI pause for a tool-approval prompt and the
+    // `PermissionResolver` returned `MustAsk` — clients show the prompt
+    // and call `Sessions.ResolveApproval` to send the decision back.
+    AwaitingApproval awaiting_approval = 13;
+    // Task 33: the matching `ResolveApproval` succeeded (auto or manual).
+    ApprovalResolved approval_resolved = 14;
+    // Task 33: parsed tool call — for V0.1 the parser packs emit this as
+    // a sibling of `AwaitingApproval`; V1.0 may differentiate
+    // request/result frames.
+    ToolCall tool_call = 15;
+    // Task 33: the agent finished a turn (per the parser pack's
+    // detection). V0.1 is best-effort: terminal parsers may miss the
+    // boundary; structured parsers (V1.0) are authoritative.
+    TurnComplete turn_complete = 16;
   }
 }
 
@@ -68,6 +83,42 @@ message AgentMessage {
 
 message AgentExited {
   optional int32 exit_code = 1;
+}
+
+// Task 33: an approval gate fired. `approval_id` is the
+// `tool_approvals.id` row freshly persisted; clients call
+// `Sessions.ResolveApproval(approval_id, decision)` to resolve it.
+// `summary` is a short human-readable rendering of the pending tool
+// call ("write to foo.rs"); `payload_json` is the parser-pack-derived
+// structured payload (V0.1: opaque object; V1.0: a per-CLI shape).
+message AwaitingApproval {
+  string approval_id = 1;
+  string tool = 2;
+  string summary = 3;
+  string payload_json = 4;
+}
+
+// Task 33: an approval has been resolved (auto or manual). `decision`
+// mirrors the `tool_approvals.decision` column values.
+message ApprovalResolved {
+  string approval_id = 1;
+  string tool = 2;
+  // `approve | approve_once | deny | auto_strict | auto_normal | auto_auto | auto_yolo`
+  string decision = 3;
+}
+
+// Task 33: a parsed tool call. `call_id` is the parser-pack-assigned
+// correlation token; `args_json` is the raw JSON payload.
+message ToolCall {
+  string call_id = 1;
+  string name = 2;
+  string args_json = 3;
+}
+
+// Task 33: marker that the agent finished a turn (parser-pack
+// detection). Currently carries no payload; V1.0 may add context-usage
+// fields.
+message TurnComplete {
 }
 
 message SessionIoChunk {

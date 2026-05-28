@@ -53,6 +53,10 @@ hostname.workspace = true
 # Task 30: files-to-copy resolver.
 ignore = { workspace = true }
 pathdiff = { workspace = true }
+# Task 33: regex-based parser packs for the Agent Supervisor's
+# tool-approval boundary detection (terminal mode). See
+# `agent_supervisor/parsers/claude_code.rs`.
+regex = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via

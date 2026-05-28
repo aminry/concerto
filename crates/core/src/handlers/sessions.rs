@@ -30,15 +30,16 @@ use concerto_persist::{
 };
 use concerto_proto::v1::sessions_server::Sessions as SessionsService;
 use concerto_proto::v1::{
-    CreateSessionRequest, ListSessionsRequest, ListSessionsResponse, PermissionMode,
-    SendMessageRequest, Session as ProtoSession, SessionId as ProtoSessionId, StopSessionRequest,
-    UpdateSessionPermissionModeRequest,
+    ApprovalDecision, CreateSessionRequest, ListSessionsRequest, ListSessionsResponse,
+    PermissionMode, ResolveApprovalRequest, SendMessageRequest, Session as ProtoSession,
+    SessionId as ProtoSessionId, StopSessionRequest, UpdateSessionPermissionModeRequest,
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::agent_supervisor::{AgentKind, AgentSupervisorHandle, StartSessionRequest};
 use crate::error_map::error_to_status;
+use crate::security::Decision;
 use crate::workspace_manager::WorkareaManager;
 
 /// Implements the generated `Sessions` service trait.
@@ -191,6 +192,27 @@ impl SessionsService for SessionsHandler {
         Ok(Response::new(session_to_proto(row)))
     }
 
+    #[tracing::instrument(skip_all, name = "Sessions::ResolveApproval")]
+    async fn resolve_approval(
+        &self,
+        request: Request<ResolveApprovalRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.session_id.is_empty() {
+            return Err(Status::invalid_argument("session_id is required"));
+        }
+        if req.approval_id.is_empty() {
+            return Err(Status::invalid_argument("approval_id is required"));
+        }
+        let decision = approval_decision_from_i32(req.decision)?;
+        let id = PersistSessionId(req.session_id);
+        self.supervisor
+            .resolve_approval(&id, &req.approval_id, decision, None)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+
     #[tracing::instrument(skip_all, name = "Sessions::StopSession")]
     async fn stop_session(
         &self,
@@ -266,6 +288,23 @@ fn permission_mode_from_i32(v: i32) -> Result<String, Status> {
         PermissionMode::Normal => Ok("normal".to_string()),
         PermissionMode::Auto => Ok("auto".to_string()),
         PermissionMode::Yolo => Ok("yolo".to_string()),
+    }
+}
+
+/// Map the wire `ApprovalDecision` enum onto the in-process
+/// [`Decision`] enum. `UNSPECIFIED` is rejected; users cannot send
+/// `AutoDeny` (auto verdicts are server-side).
+#[allow(clippy::result_large_err)]
+fn approval_decision_from_i32(v: i32) -> Result<Decision, Status> {
+    let ad = ApprovalDecision::try_from(v)
+        .map_err(|_| Status::invalid_argument(format!("decision {v} is not a known enum value")))?;
+    match ad {
+        ApprovalDecision::Unspecified => Err(Status::invalid_argument(
+            "decision must be one of APPROVE|APPROVE_ONCE|DENY",
+        )),
+        ApprovalDecision::Approve => Ok(Decision::AutoApprove),
+        ApprovalDecision::ApproveOnce => Ok(Decision::AutoApproveOnce),
+        ApprovalDecision::Deny => Ok(Decision::AutoDeny),
     }
 }
 

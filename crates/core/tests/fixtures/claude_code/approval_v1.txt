@@ -1,0 +1,11 @@
+I'll edit src/foo.rs to add the function.
+
+╭─ Edit file ─────────────────────────────────╮
+│ tool: edit                                  │
+│ path: src/foo.rs                            │
+│                                             │
+│ + pub fn hello() {                          │
+│ +     println!("hi");                       │
+│ + }                                         │
+╰─────────────────────────────────────────────╯
+Do you want to make this edit? (y/n/a) >

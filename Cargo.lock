@@ -667,6 +667,7 @@ dependencies = [
  "pathdiff",
  "prost",
  "prost-types",
+ "regex",
  "serde",
  "serde_json",
  "sqlx",

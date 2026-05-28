@@ -288,6 +288,27 @@ message StopSessionRequest {
 }
 ```
 
+### enum `ApprovalDecision`
+
+```proto
+enum ApprovalDecision {
+  APPROVAL_DECISION_UNSPECIFIED = 0;
+  APPROVAL_DECISION_APPROVE = 1;
+  APPROVAL_DECISION_APPROVE_ONCE = 2;
+  APPROVAL_DECISION_DENY = 3;
+}
+```
+
+### message `ResolveApprovalRequest`
+
+```proto
+message ResolveApprovalRequest {
+  string session_id = 1;
+  string approval_id = 2;
+  ApprovalDecision decision = 3;
+}
+```
+
 ### message `UpdateSessionPermissionModeRequest`
 
 ```proto
@@ -310,6 +331,10 @@ service Sessions {
   // Task 32: change `sessions.permission_mode` with entry-ceremony +
   // managed.json cap enforcement. Returns the updated `Session` row.
   rpc UpdateSessionPermissionMode(UpdateSessionPermissionModeRequest) returns (Session);
+  // Task 33: resolve a pending tool-approval gate raised by the
+  // parser pack. First-write-wins — a second call on the same
+  // `approval_id` returns `FAILED_PRECONDITION`.
+  rpc ResolveApproval(ResolveApprovalRequest) returns (google.protobuf.Empty);
 }
 ```
 
@@ -363,6 +388,21 @@ message SessionEvent {
     AgentStarted started = 10;
     AgentMessage message = 11;
     AgentExited exited = 12;
+    // Task 33: tool-approval boundary detection. The parser pack saw the
+    // agent CLI pause for a tool-approval prompt and the
+    // `PermissionResolver` returned `MustAsk` — clients show the prompt
+    // and call `Sessions.ResolveApproval` to send the decision back.
+    AwaitingApproval awaiting_approval = 13;
+    // Task 33: the matching `ResolveApproval` succeeded (auto or manual).
+    ApprovalResolved approval_resolved = 14;
+    // Task 33: parsed tool call — for V0.1 the parser packs emit this as
+    // a sibling of `AwaitingApproval`; V1.0 may differentiate
+    // request/result frames.
+    ToolCall tool_call = 15;
+    // Task 33: the agent finished a turn (per the parser pack's
+    // detection). V0.1 is best-effort: terminal parsers may miss the
+    // boundary; structured parsers (V1.0) are authoritative.
+    TurnComplete turn_complete = 16;
   }
 }
 ```
@@ -390,6 +430,45 @@ message AgentMessage {
 ```proto
 message AgentExited {
   optional int32 exit_code = 1;
+}
+```
+
+### message `AwaitingApproval`
+
+```proto
+message AwaitingApproval {
+  string approval_id = 1;
+  string tool = 2;
+  string summary = 3;
+  string payload_json = 4;
+}
+```
+
+### message `ApprovalResolved`
+
+```proto
+message ApprovalResolved {
+  string approval_id = 1;
+  string tool = 2;
+  // `approve | approve_once | deny | auto_strict | auto_normal | auto_auto | auto_yolo`
+  string decision = 3;
+}
+```
+
+### message `ToolCall`
+
+```proto
+message ToolCall {
+  string call_id = 1;
+  string name = 2;
+  string args_json = 3;
+}
+```
+
+### message `TurnComplete`
+
+```proto
+message TurnComplete {
 }
 ```
 
