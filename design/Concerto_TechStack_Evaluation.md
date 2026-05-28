@@ -14,23 +14,18 @@ Each section follows the same shape:
 - **Options.** Each candidate with pros/cons.
 - **Recommendation.** What I'd pick today, and the second-best fallback.
 
-At the end (section 18) there's a one-page **assembled recommended stack** so you can see the whole thing in one view. If you want to skim, start there and dive into the sections that worry you.
-
-I've also dedicated section 17 to **what to steal from competitors** — Conductor, Sculptor, Happy Coder, Vibe Kanban, Tailscale, etc. — because some of the highest-leverage decisions are "do what someone else already proved out."
+At the end (section 17) there's a one-page **assembled recommended stack** so you can see the whole thing in one view. If you want to skim, start there and dive into the sections that worry you.
 
 ---
 
-## 1. Reference projects to study (steal from)
+## 1. Reference projects to study
 
-Before stack picks, the most valuable input is what other people in this space already shipped. Reading their code is faster than reinventing.
+This section catalogs adjacent tools in the agent-orchestration and developer-tooling space — not as competitors, but as engineering reference points for specific design choices.
 
-### 1.1 Conductor (Melty Labs, conductor.build)
-Mac app, parallel Claude Code + Codex agents in git worktrees, native macOS UI. Closed source. The UI is the reference; the workspace model is what we already plan to copy.
+### 1.1 Sculptor (Imbue, github.com/imbue-ai/sculptor)
+Open source desktop app for concerted Claude Code agents in **Docker containers** (not git worktrees). Read it to understand the container-per-agent isolation pattern and the "pairing mode" sync between container and host repo. Imbue's blog post on dev containers + container snapshots is also good reading.
 
-### 1.2 Sculptor (Imbue, github.com/imbue-ai/sculptor)
-Open source desktop app for parallel Claude Code agents in **Docker containers** (not git worktrees). Read it to understand the container-per-agent isolation pattern and the "pairing mode" sync between container and host repo. Imbue's blog post on dev containers + container snapshots is also good reading.
-
-### 1.3 Happy Coder (slopus/happy, happy.engineering)
+### 1.2 Happy Coder (slopus/happy, happy.engineering)
 Open source Claude Code mobile companion. **This is the closest existing thing to what we want to build, just smaller scope.** Read this carefully:
 - Three components: a CLI wrapper, an encrypted relay server, and Expo (React Native) mobile/web app.
 - End-to-end encryption using **TweetNaCl** (X25519 ECDH + AES-256-GCM, ephemeral session keys).
@@ -42,26 +37,26 @@ Open source Claude Code mobile companion. **This is the closest existing thing t
 
 If we don't use any of their code, we should at minimum mirror their crypto and pairing flow exactly. It works, it's been audited by usage, and matching it shortens our security review.
 
-### 1.4 Vibe Kanban (BloopAI/vibe-kanban, sunsetted but open)
-Kanban-board view of parallel agents on git worktrees. Multi-agent (Claude Code, Codex, OpenCode). Apache 2.0, written in TypeScript. Bloop shut down the company in April 2026 but the code is still there. Worth reading for their issue tracker integration and worktree lifecycle.
+### 1.3 Vibe Kanban (BloopAI/vibe-kanban, sunsetted but open)
+Kanban-board view of concerted agents on git worktrees. Multi-agent (Claude Code, Codex, OpenCode). Apache 2.0, written in TypeScript. Bloop shut down the company in April 2026 but the code is still there. Worth reading for their issue tracker integration and worktree lifecycle.
 
-### 1.5 Nimbalyst (formerly Crystal, nimbalyst.com)
+### 1.4 Nimbalyst (formerly Crystal, nimbalyst.com)
 Closed source desktop + iOS companion. Multi-platform from the start. Visual editors (Excalidraw, mockups) embedded in workspaces. Useful as a UX reference, not for code.
 
-### 1.6 Claude Squad
-Terminal-based, uses tmux for the multiplexing. Lighter weight than Conductor. Read for the terminal-only flow and how it shells out to Claude Code.
+### 1.5 Claude Squad
+Terminal-based, uses tmux for the multiplexing. Lighter weight than dashboard-style orchestrators. Read for the terminal-only flow and how it shells out to Claude Code.
 
-### 1.7 Tailscale + tsnet
+### 1.6 Tailscale + tsnet
 Not an AI tool — but the gold-standard reference for "embedded peer-to-peer mesh with NAT traversal and a minimal relay (DERP) that sees only ciphertext." `tsnet` lets you embed a full Tailscale node inside a Go binary, no separate daemon. This is exactly the connectivity layer we want, and Tailscale's DERP relay design is the model for our minimal relay.
 
-### 1.8 Iroh (iroh.computer)
+### 1.7 Iroh (iroh.computer)
 A pure-Rust library for the same idea Tailscale does in Go: direct peer-to-peer QUIC connections, hole-punching, relay fallback, public-key addressing. If we're committed to Rust for the Core, **Iroh is probably the right transport layer** — see section 9 for the deep dive.
 
-### 1.9 Anthropic Claude Agent SDK (anthropic-ai/claude-agent-sdk on npm/PyPI)
+### 1.8 Anthropic Claude Agent SDK (anthropic-ai/claude-agent-sdk on npm/PyPI)
 The same harness that powers Claude Code, exposed as a library. Available in Python and TypeScript. We don't have to spawn the `claude` CLI as a subprocess if we don't want to — we can embed the SDK and get programmatic control over the agent loop, tools, hooks, and sessions. This is a fairly recent addition (renamed from Claude Code SDK in March 2026) and the license is proprietary (not open source), but free for individuals/small teams. Worth using.
 
-### 1.10 Codex (openai-codex npm package + CLI)
-OpenAI's equivalent. Different architecture — they ship a separate desktop "Codex app" — but the CLI is what most users invoke. Treat as a subprocess to spawn, like Conductor does.
+### 1.9 Codex (openai-codex npm package + CLI)
+OpenAI's equivalent. Different architecture — they ship a separate desktop "Codex app" — but the CLI is what most users invoke. Treat as a subprocess to spawn.
 
 ---
 
@@ -148,13 +143,16 @@ Three patterns from the ecosystem that resolve big design questions for us:
 
 **Use this for the transport layer specifically**, on top of the Happy Coder pattern's pairing model. Iroh has effectively packaged this as a Rust library.
 
-### 3.3 The Conductor pattern (for the UX)
+### 3.3 The orchestration-dashboard UX pattern
+A warm off-white aesthetic with a restrained accent color, status communicated by glanceable colored dots, and a three-panel layout:
 - Workspaces in a sidebar with status dots.
+- A chat + terminal column in the middle.
+- A diff + checks column on the right.
 - Diff viewer with inline comments that become composer attachments.
 - Chat + Diff + Checks + Terminal tabs.
 - Plan mode, Fast mode, agent selector.
 
-**Mirror the UX one-for-one** in V0.1, then add Concerto-specific surfaces (multi-repo session, skill explorer, workflow explorer) in V1.0.
+**Adopt this layout** in V0.1, then add Concerto-specific surfaces (multi-repo session, skill explorer, workflow explorer) in V1.0.
 
 ---
 
@@ -460,7 +458,7 @@ Use **React**. The desktop UI is React (inside Tauri's webview). Reuse the compo
 **Zustand or Jotai.** Skip Redux — overkill for client-side state when the server holds canonical state. The clients are largely stateless renderers; useState + Zustand for the few cross-cutting pieces (current workspace, sidebar collapse) is plenty.
 
 ### 7.4 Component library
-**shadcn/ui (Radix-based) + Tailwind.** Owned components (you copy them into your repo), full control over styling, accessible by default. The de-facto choice for "Conductor-aesthetic" apps in 2026.
+**shadcn/ui (Radix-based) + Tailwind.** Owned components (you copy them into your repo), full control over styling, accessible by default. The de-facto choice for modern, calm-aesthetic developer-tool apps in 2026.
 
 Alternative: build from scratch on Radix Primitives + Tailwind. More work but more design control. shadcn is faster to start.
 
@@ -659,12 +657,12 @@ Skip MLS for V1.0 — revisit only if we add group/team features in V2.
 
 Two main models — and we should support both depending on what the user wants.
 
-### 11.1 Spawn the CLI as a subprocess (the Conductor model)
+### 11.1 Spawn the CLI as a subprocess
 
 `claude` and `codex` are CLIs. We spawn them in a PTY (via `portable-pty`), feed them stdin, read stdout/stderr, parse output.
 
 **Pros**
-- Works with whatever authentication the user already has set up (Claude Pro, Max, API key — Conductor's pattern).
+- Works with whatever authentication the user already has set up (Claude Pro, Max, API key).
 - We track the upstream CLI's features automatically.
 - Same binary the user would run by hand — easy to debug.
 
@@ -691,10 +689,10 @@ Two main models — and we should support both depending on what the user wants.
 
 **Support both, with subprocess as the default and SDK as an opt-in advanced mode.**
 
-- V0.1 / V1.0: subprocess the CLI. Mirrors Conductor exactly. Works for Claude Code, Codex, Gemini CLI, and any future CLI. No Anthropic licensing concerns.
+- V0.1 / V1.0: subprocess the CLI. Works for Claude Code, Codex, Gemini CLI, and any future CLI. No Anthropic licensing concerns.
 - V1.5+: add an opt-in "Embedded agent" mode for Claude that uses the Agent SDK. Better UX (cleaner tool approvals, structured streams) but adds a sidecar process.
 
-The subprocess model is also what Conductor, Sculptor, and Happy Coder do, so it's the trodden path.
+The subprocess model is the well-trodden path for CLI-backed agent orchestrators.
 
 ---
 
@@ -814,24 +812,7 @@ Alternative: GitHub Actions with `xcodebuild` and `gradle`. Cheaper at scale, mo
 
 ---
 
-## 17. What to steal from each competitor (concrete list)
-
-This is the consolidated "what should we look at, by source."
-
-| Source | Steal |
-|---|---|
-| Conductor | Workspace + worktree model, diff viewer UX, checkpoints flow, conductor.json format, Cities naming, deep links, the whole sidebar+chat+diff+checks tab layout, keyboard shortcut set |
-| Sculptor | Docker container isolation pattern (offer as opt-in), dev container pre-built images, pairing-mode bidirectional sync |
-| Happy Coder | Three-component architecture (CLI wrapper + relay + mobile), TweetNaCl crypto choices, QR pairing flow, voice-input UX, push-notification-as-wakeup pattern |
-| Vibe Kanban (open) | Multi-agent abstraction, kanban surface alternative, OpenCode/Aider/Cursor agent integration patterns |
-| Tailscale | DERP-style ciphertext-only relay, key-as-identity (no accounts) |
-| Iroh | The entire transport layer if we go Rust |
-| Anthropic Claude Agent SDK | Hook-based tool approval, structured agent output, session model |
-| MCP ecosystem | The plugin marketplace format, the SKILL.md spec, the configuration files |
-
----
-
-## 18. The recommended stack (one page)
+## 17. The recommended stack (one page)
 
 For people who skip to the end.
 
@@ -893,7 +874,7 @@ For people who skip to the end.
 
 ---
 
-## 19. Decisions deferred to a prototype
+## 18. Decisions deferred to a prototype
 
 A handful of choices I'd punt to a 1–2 week prototype rather than decide on a document:
 
@@ -907,7 +888,7 @@ Each of these is a 2–5 day spike. Do them in week 1–2 of V0.1 before committ
 
 ---
 
-## 20. What we're explicitly not building
+## 19. What we're explicitly not building
 
 Some "obvious" things we're not building, with reasons:
 
@@ -925,4 +906,4 @@ Each "no" is a place we save engineering time.
 
 ---
 
-*End of document. The actual stack is the one in section 18 unless a prototype in section 19 surfaces a reason to change it.*
+*End of document. The actual stack is the one in section 17 unless a prototype in section 18 surfaces a reason to change it.*

@@ -1,0 +1,37 @@
+Concerto
+Copyright (c) 2026 Concerto Contributors
+
+This product is licensed under the MIT License. See LICENSE for the full text.
+
+This product includes software developed by third parties, distributed under
+the Apache License 2.0 and other permissive licenses. The full list of
+third-party dependencies, their versions, and their licenses is generated at
+release time and published as THIRD_PARTY_LICENSES.md at the root of this
+repository.
+
+For Apache-2.0-licensed dependencies, this NOTICE file serves as the aggregate
+attribution required by Section 4(d) of the Apache License 2.0. Individual
+NOTICE files from upstream projects, when present, are included verbatim in
+THIRD_PARTY_LICENSES.md.
+
+----
+
+"Concerto" is a registered trademark of Concerto Inc. The MIT License covers
+the source code only; trademark rights are reserved. See TRADEMARKS.md for the
+trademark policy and guidance on permitted nominative use.
+
+----
+
+Operational artifacts NOT covered by this repository's MIT license:
+
+  - The hosted relay service at relay.concerto.app, operated by Concerto Inc
+  - The published iOS and Android applications distributed via the Apple App
+    Store and Google Play Store, operated by Concerto Inc
+  - The update-manifest signing keys, code-signing certificates, and
+    Apple/Google developer account credentials held by Concerto Inc
+  - Future enterprise extension modules distributed separately under BSL or
+    FSL terms (planned for V2.0+; not in this repository)
+
+The MIT source can be built, run, and self-hosted by anyone, including a
+production-equivalent relay binary, without involving Concerto Inc. See
+design/18_Distribution_and_Operations.md for the full scope.

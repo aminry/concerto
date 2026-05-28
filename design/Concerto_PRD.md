@@ -1,6 +1,6 @@
 # Concerto
 
-*A device-agnostic orchestration platform for parallel AI coding agents*
+*A device-agnostic orchestration platform for a concerted ensemble of AI coding agents*
 
 **Product Requirements Document**
 Version 0.1 (Draft)
@@ -10,7 +10,6 @@ Version 0.1 (Draft)
 | Document owner | Amin Roudaki |
 | Working name | Concerto (placeholder — final name TBD) |
 | Category | Developer tools / AI coding orchestration |
-| Reference baseline | Conductor v0.56 (Melty Labs, 2026) |
 | Target platforms | macOS, Windows, Linux, iOS, Android, Web |
 | Status | Draft for internal review |
 
@@ -20,14 +19,14 @@ Version 0.1 (Draft)
 
 Concerto is a cross-device orchestration platform for AI coding agents. It runs Claude Code, Codex, and other agents in isolated workspaces on a developer's machine (or in a self-hosted environment), and exposes the same control surface through a polished native desktop app, a mobile app on iOS and Android, and a web app. The desktop, mobile, and web clients are thin views over a single local server process; the server holds the canonical state and runs the agents.
 
-The product is positioned as a direct successor to Conductor (Melty Labs). Conductor introduced the idea of an "agentic parallel runner" — a Mac-only dashboard that spins up multiple agents in git worktrees and lets the developer review and merge their work in one place. It is excellent for what it is, but it has four gaps that meaningfully constrain how it can be used inside a real engineering organization:
+Concerto is built around two defining characteristics. The first is **"your dev workflow follows you"** — lock-screen approvals from a phone on a train, voice-driven session creation, Apple Watch glances. The work of orchestrating agents is asynchronous by nature; the tool that drives it should not be bound to a desk. The second is **"one Core, every device"** — a split-host model where work persists on a workstation or VM and a laptop, tablet, or phone is just a viewport onto it. Together they describe a product that meets real engineering orgs where they actually are:
 
-- It is macOS-only. A 100-engineer org with mixed laptops cannot standardize on it.
-- It has no mobile or remote control. Agent runs of 5 to 30 minutes are perfect for "kick it off, then go do something else," but only if the developer can check in from anywhere.
-- It assumes full repository clones. On monorepos in the 10–100 GB range, that's a non-starter; cloning takes hours, eats disk, and slows every agent operation.
-- It is single-repo per workspace. Real product changes routinely span 2–5 repositories and need a coordinated set of PRs.
+- Engineers run mixed OSes. A 100-engineer org with macOS, Linux, and Windows laptops needs a single tool that works for all of them.
+- Agent runs of 5 to 30 minutes are perfect for "kick it off, then go do something else" — *only* if the developer can check in from anywhere. Without mobile + remote control, every step away from the desk is a dead zone.
+- Monorepos in the 10–100 GB range are the dominant repo shape past a certain company size. Full clones into every workspace are a non-starter; cloning takes hours, eats disk, and slows every agent operation.
+- Real product changes routinely span 2–5 repositories and need a coordinated set of PRs. Single-repo-per-workspace tools push that coordination onto the developer.
 
-Concerto keeps everything Conductor does well — the workspace model, git worktrees, the diff viewer, checkpoints, the checks tab, slash commands, MCP, agent modes, scripts, deep links — and adds:
+Concerto is built around the workspace primitive — git worktrees, the diff viewer, checkpoints, the checks tab, slash commands, MCP, agent modes, scripts, deep links — and layers on top:
 
 1. A split architecture (server + clients) that runs on macOS, Windows, and Linux.
 2. Native iOS and Android apps plus a web client, all with full remote control.
@@ -36,7 +35,7 @@ Concerto keeps everything Conductor does well — the workspace model, git workt
 5. First-class support for Claude Code's skills, /loop, and scheduled tasks, surfaced through dedicated explorers in the UI.
 6. A security model designed for remote access with no third-party servers in the critical path — direct WebSocket over QUIC/TLS where possible, with a minimal relay used only for NAT traversal and push notifications.
 7. **Smart suggestions and best-practice prompts** — instead of always typing a reply, the user gets one-tap suggestion chips driven by the agent's current state, learned from how the user actually works, and augmented with automatic prompts when a known best practice applies (e.g. "compact the context" when the window crosses 50%).
-8. **Concerto chat — the central coordinator** — an always-on chat at the top of the app where the user talks to Concerto itself rather than to any one workspace. The Concerto chat routes prompts to specific workspaces (`@tokyo run the linter`), surfaces a digest of what every workspace is doing, reminds the user what they were working on when a long session finishes, and proposes next steps. It is the mental-load layer on top of the workspace layer.
+8. **Concerto chat — the central maestro** — an always-on chat at the top of the app where the user talks to Concerto itself rather than to any one workspace. The Concerto chat routes prompts to specific workspaces (`@bach run the linter`), surfaces a digest of what every workspace is doing, reminds the user what they were working on when a long session finishes, and proposes next steps. It is the mental-load layer on top of the workspace layer.
 
 > **North star** — A senior engineer should be able to spin up five agents working on three repos before lunch, walk out for coffee, review their progress on a phone, send corrections from a tablet on the train, and merge from a browser on a borrowed machine — without their laptop ever leaving their desk and without any of that code touching a vendor's servers. **When they sit back down, Concerto tells them what changed while they were away and what to do next.**
 
@@ -48,19 +47,19 @@ Concerto keeps everything Conductor does well — the workspace model, git workt
 
 In 2024 the bottleneck was code generation quality. In 2026 it is orchestration. A senior engineer using Claude Code or Codex well will routinely have 3 to 8 agents in flight at once: one refactoring an API surface, one writing tests for a module they just changed, one investigating a production incident, one drafting a migration plan, one reviewing a junior's PR. The bottleneck is not the model — it is the human's ability to keep track of, steer, and merge that work.
 
-Conductor was the first product to seriously address this. It correctly identified that the unit of work is the workspace, that git worktrees are the right primitive, and that a calm, dashboard-style UI beats a wall of terminals. After ~18 months of real use across many teams, four limitations have become structural:
+The first generation of agent-orchestration tools correctly identified that the unit of work is the workspace, that git worktrees are the right primitive, and that a calm, dashboard-style UI beats a wall of terminals. With ~18 months of real practice across many teams, four limitations of that first generation have become structural:
 
 #### 2.1.1 The desktop-only assumption no longer holds
 
-Agent runs take long enough (5–30 minutes for a non-trivial task) that you naturally want to step away. But you also want to know the moment an agent needs you. Without a mobile companion, every step away becomes a "dead zone" — the agent is either working without supervision or blocked waiting for input you can't give. Anthropic shipped Remote Control in early 2026 and a wave of third-party mobile clients (Omnara, Happy Coder, AgentsRoom, Nimbalyst iOS) have appeared. The category is clearly real. None of them have Conductor's UI polish or its workspace model.
+Agent runs take long enough (5–30 minutes for a non-trivial task) that you naturally want to step away. But you also want to know the moment an agent needs you. Without a mobile companion, every step away becomes a "dead zone" — the agent is either working without supervision or blocked waiting for input you can't give. Anthropic shipped Remote Control in early 2026 and a wave of third-party mobile clients (Omnara, Happy Coder, AgentsRoom, Nimbalyst iOS) have appeared. The category is clearly real. None of them combine a polished workspace UI with a real workspace model.
 
 #### 2.1.2 Monorepos are the dominant repo shape at scale
 
-At Coupang, at Google, at Meta, at most companies past a certain size, the dominant repository shape is a large monorepo. A full clone of such a repo is a multi-hour, tens-of-gigabytes operation. Conductor's "clone the whole thing into a worktree" model multiplies that cost by the number of workspaces. Git has solved this — partial clones (`--filter=blob:none`), sparse checkout (`git sparse-checkout`), sparse index, and the filesystem monitor — but no agent orchestrator surfaces these as first-class settings. They should be.
+At Coupang, at Google, at Meta, at most companies past a certain size, the dominant repository shape is a large monorepo. A full clone of such a repo is a multi-hour, tens-of-gigabytes operation. A naive "clone the whole thing into a worktree" model multiplies that cost by the number of workspaces. Git has solved this — partial clones (`--filter=blob:none`), sparse checkout (`git sparse-checkout`), sparse index, and the filesystem monitor — but no agent orchestrator surfaces these as first-class settings. They should be.
 
 #### 2.1.3 Real changes span multiple repositories
 
-A backend API change ripples to a mobile client repo, a web client repo, and possibly an infra repo. Today you do this by opening four Conductor workspaces, copying context between them, and manually keeping the four PRs in sync. The workspace abstraction is right; it just needs to scale to N repositories.
+A backend API change ripples to a mobile client repo, a web client repo, and possibly an infra repo. Today you do this by opening four separate workspaces in whichever orchestrator you use, copying context between them, and manually keeping the four PRs in sync. The workspace abstraction is right; it just needs to scale to N repositories.
 
 #### 2.1.4 Claude Code has grown its own agentic surface
 
@@ -68,7 +67,7 @@ Skills (a folder-based packaging format), the /loop slash command (recurring tas
 
 #### 2.1.5 Running many agents in parallel is mentally expensive
 
-Conductor solved "I can run many agents." It didn't solve "I can keep my head straight while running many agents." With three to eight workspaces in flight, the developer is the bottleneck in a new way: every context switch back into a workspace costs minutes of "wait, what was this one doing?" Every completed session demands manual review even if the change is trivial. Every "I'm awaiting your input" prompt arrives without the context the developer had at hand when they last touched that workspace.
+Existing tools solved "I can run many agents." They didn't solve "I can keep my head straight while running many agents." With three to eight workspaces in flight, the developer is the bottleneck in a new way: every context switch back into a workspace costs minutes of "wait, what was this one doing?" Every completed session demands manual review even if the change is trivial. Every "I'm awaiting your input" prompt arrives without the context the developer had at hand when they last touched that workspace.
 
 The user's job is partly orchestration — and orchestration is exactly the kind of task an LLM is now good at. Concerto should not just provide a board of workspaces; it should provide an **agent that helps the user drive the board**. That agent should know what each workspace was doing, what changed, what's blocked, what needs review, and how to phrase a one-line prompt that gets the next step done. Equally, the workspace-level agents themselves should not always require the developer to construct the next prompt from scratch — they should propose one or more next steps every time they finish a turn.
 
@@ -82,7 +81,7 @@ These are two sides of the same problem (reducing the developer's cognitive load
 4. Schedule a nightly "/loop" task **that scans for new CVEs in dependencies and opens draft PRs with patches, then approve those PRs from the breakfast table.**
 5. Browse and install skills **the same way you browse VS Code extensions, with per-project skill scoping and a curated, searchable explorer.**
 6. Hand a junior engineer access to a senior's "Concerto server" **over an end-to-end-encrypted tunnel for live pair-programming review.**
-7. Drive five active workspaces from a single chat at the top of the app — **typing "@osaka try the same fix tokyo just landed" and watching Concerto route, prompt, and report back.**
+7. Drive five active workspaces from a single chat at the top of the app — **typing "@mozart try the same fix bach just landed" and watching Concerto route, prompt, and report back.**
 8. Sit back down after a two-hour meeting and have Concerto tell them, in two sentences, **what each of their six workspaces did while they were away, what's blocked, and which one to look at first.**
 9. Accept a one-tap suggestion — "Compact the context" / "Run the failing test" / "Open PR for review" — **without having to type the prompt or remember the slash command.**
 
@@ -90,8 +89,8 @@ These are two sides of the same problem (reducing the developer's cognitive load
 
 - **Models are good enough.** Claude 4.6/4.7 and GPT-5.x make 30-minute autonomous tasks routinely useful.
 - **Agent surface area is stable.** Skills, /loop, and scheduled tasks are not going away. MCP is the consensus interop layer.
-- **Conductor proved the category.** YC backing, $22M Series A, adoption at Linear, Vercel, Notion, Ramp, Life360, Square, Spotify. The market is paying attention.
-- **Mobile/remote is still an unsolved problem.** Of the five mobile-capable contenders surveyed (Omnara, Happy, AgentsRoom, Nimbalyst, Anthropic Remote Control), none combine Conductor-grade UI with real workspace orchestration and a privacy story that holds up in an enterprise.
+- **The orchestration category is established.** Multiple tools have shown developers want a dashboard over their agents. The remaining work is doing it across devices, monorepos, and multi-repo changes — which is where Concerto starts.
+- **Mobile/remote is still an unsolved problem.** Of the five mobile-capable contenders surveyed (Omnara, Happy, AgentsRoom, Nimbalyst, Anthropic Remote Control), none of them combine a polished workspace UI with real workspace orchestration and a privacy story that holds up in an enterprise.
 - **Monorepo support is uniformly bad.** Not a single competing tool surfaces partial clone or sparse checkout. This is a moat against the current incumbents.
 
 ---
@@ -118,7 +117,7 @@ Tech leads need visibility into what their team's agents are doing without micro
 
 ### 3.3 Secondary persona — the founder / solo builder
 
-Solo builders or small-team founders running 3–5 agents in parallel to ship a startup product. They are the spiritual users of Conductor today and need everything Conductor offers plus the mobile dimension.
+Solo builders or small-team founders running 3–5 agents in parallel to ship a startup product. They need everything a desktop orchestrator offers plus the mobile dimension.
 
 ### 3.4 Tertiary persona — the enterprise platform team
 
@@ -126,7 +125,7 @@ Platform teams at large companies (think Coupang Marketplace, Stripe Internal To
 
 ### 3.5 Non-goals
 
-- Non-developers building apps from natural language. That's a different product (Lovable, v0, CodeConductor).
+- Non-developers building apps from natural language. That's a different product (Lovable, v0, Bolt).
 - Replacing IDEs. Concerto does not aim to be your editor. It launches into Cursor, VS Code, Zed, Xcode, JetBrains, Vim — whatever you use.
 - Replacing the agent. Concerto is a thin orchestrator over Claude Code, Codex, and other CLIs. It does not implement its own LLM stack.
 - Hosted cloud agents as the default mode. Concerto's primary execution model is local, on the user's hardware. A hosted "Concerto Cloud" tier is an explicit V2 stretch goal, not the V1 product.
@@ -143,7 +142,7 @@ Your code lives on your machine. The server runs on your machine. The clients co
 
 ### 4.2 Calm UI over busy UI
 
-Conductor's aesthetic is the right one. Whitespace, restrained color, status by glanceable dots rather than badges, no notification spam. Concerto inherits this. New features earn their place on the screen.
+Calm by default. Whitespace, restrained color, status by glanceable dots rather than badges, no notification spam. New features earn their place on the screen.
 
 ### 4.3 Mobile is a first-class peer, not a remote view
 
@@ -151,7 +150,7 @@ The mobile app is not a tiny web page. It is a designed-for-touch surface with i
 
 ### 4.4 Workspace is the unit
 
-Borrowed directly from Conductor: a workspace is one branch, one working tree, one stream of work, one PR. Everything else (multi-repo, scheduled tasks, skills, sessions) is layered on this primitive. We do not invent new abstractions where this one works.
+The workspace is the unit of work. One workspace = one branch = one working tree = one stream of work = one PR. Everything else (multi-repo, scheduled tasks, skills, sessions) is layered on this primitive. We do not invent new abstractions where this one works.
 
 ### 4.5 Privacy of remote connections is non-negotiable
 
@@ -218,7 +217,7 @@ Concerto is a single-product, multi-surface system. Two layers:
 
 1. **A 100-engineer rollout requires Linux and Windows.** Splitting the Core from the UI lets the same Core run on a Linux dev box and a Mac laptop with identical behavior.
 2. **Mobile and web are vastly easier to build right when they don't fight the desktop for ownership of state.** The Core arbitrates conflicts; clients are stateless renderers.
-3. **Self-hosting in V2 is essentially free.** A platform team can run Concerto Core on a beefy Linux box in their VPC and have engineers connect to it from anywhere. Conductor cannot do this today.
+3. **Self-hosting in V2 is essentially free.** A platform team can run Concerto Core on a beefy Linux box in their VPC and have engineers connect to it from anywhere.
 4. **Open-sourcing the Core (eventually) is straightforward.** It is the only place real logic lives. Clients can stay closed source if we want; the Core protocol is documented.
 
 ### 5.3 Local API
@@ -240,27 +239,27 @@ When a client is on the same machine as the Core, it connects directly to the lo
 | Scheduler | /loop registrations, scheduled tasks, cron expressions, jitter, fan-out | Agent execution (delegates to supervisor) |
 | Skills registry | Discovery of project, personal, plugin skills; install/uninstall; visibility overrides | Skill execution (Claude Code handles) |
 | **Suggestion engine** | Loading `suggestions.toml`, running rule triggers on workspace events, ranking chips, recording acceptance | Sending prompts (delegates to agent supervisor) |
-| **Coordinator agent** | The Concerto chat's LLM session, routing tools, digest generation, cross-workspace summaries | Direct code edits, shell access |
+| **Maestro agent** | The Concerto chat's LLM session, routing tools, digest generation, cross-workspace summaries | Direct code edits, shell access |
 | Sync engine | Connecting remote clients, key exchange, push tokens, state diffing for low-bandwidth links | Persistence |
 | Persistence | SQLite for metadata, on-disk worktrees for code, encrypted blobs for secrets, **suggestion learning counters, Concerto chat history** | Anything cross-Core |
 
 ---
 
-## 6. Conductor feature parity (must-have inventory)
+## 6. Core feature set
 
-Concerto must ship at parity with every feature Conductor 0.56 supports. This section is the inventory. New Concerto features build on top of these, not in place of them.
+These are the foundational features Concerto ships. New capabilities (§7 onward) build on top of them, not in place of them.
 
 ### 6.1 Project, repository, workspace model
 
-A Project is the Concerto entry for a codebase. It holds repository settings, scripts, instructions, and the list of workspaces for that codebase. A Workspace is an isolated copy of a project and repository, on its own branch, with its own working tree. One workspace = one branch = one shippable unit of work. This is the Conductor model unchanged.
+A Project is the Concerto entry for a codebase. It holds repository settings, scripts, instructions, and the list of workspaces for that codebase. A Workspace is an isolated copy of a project and repository, on its own branch, with its own working tree. One workspace = one branch = one shippable unit of work.
 
 ### 6.2 Isolated workspaces via git worktrees
 
-Each workspace is backed by a git worktree under the hood. Conductor only copies files git is tracking, which keeps node_modules / .venv / .env from duplicating across worktrees. Concerto inherits this behavior and adds (see section 9) the option to use sparse or blobless worktrees on large monorepos.
+Each workspace is backed by a git worktree. Only files git is tracking are copied, which keeps node_modules / .venv / .env from duplicating across worktrees. On large monorepos, sparse or blobless worktrees are available (see section 9).
 
 ### 6.3 Files to copy
 
-Conductor has a configurable rule for which gitignored files (typically .env files, IDE settings, credentials) are copied into new workspaces. Concerto must support the same rule format and surface it in the repository settings UI.
+Concerto supports a configurable rule for which gitignored files (.env, IDE settings, credentials) are copied into new workspaces. The rule is surfaced in the repository settings UI.
 
 ### 6.4 The diff viewer
 
@@ -275,7 +274,7 @@ A side-by-side or unified diff view of the workspace's changes, with:
 
 ### 6.5 Checkpoints
 
-Automatic snapshots of an agent's changes between turns, stored in a private git ref outside the working branch. The user can hover over a previous message and revert to that turn; this deletes all subsequent messages and reverts code to that point. Concerto must support checkpoints in the same way, with the same warning that reverts are destructive and that running multiple chats in one workspace makes checkpoint semantics murky.
+Automatic snapshots of an agent's changes between turns, stored in a private git ref outside the working branch. The user can hover over a previous message and revert to that turn; this deletes all subsequent messages and reverts code to that point. Concerto surfaces a clear warning that reverts are destructive and that running multiple chats in one workspace makes checkpoint semantics murky.
 
 ### 6.6 The Checks tab
 
@@ -292,25 +291,23 @@ The Checks tab is the last gate before merge. Concerto may discourage merge whil
 
 ### 6.7 Workspace lifecycle (create, work, review, PR, merge, archive)
 
-Conductor's end-to-end workflow:
+End-to-end workflow:
 
 1. Create a workspace from a branch, an existing PR, a GitHub issue, or a Linear issue.
-2. The workspace gets a new branch (Conductor renames it after the first chat to match the work).
+2. The workspace gets a new branch (Concerto renames it after the first chat to match the work).
 3. Setup script runs on workspace creation.
-4. Run script starts the dev server on a workspace-specific port (the `CONDUCTOR_PORT` variable).
+4. Run script starts the dev server on a workspace-specific port (the `CONCERTO_PORT` variable).
 5. Agents work in the workspace.
 6. Diff Viewer is used for review.
 7. Create PR action opens the PR.
-8. Conductor follows GitHub Actions and status checks.
+8. Concerto follows GitHub Actions and status checks.
 9. Merge when green.
 10. Archive runs an archive script (e.g., stop services, clear caches).
 11. Archived workspaces can be restored from a separate page with chat history intact.
 
-Concerto implements the full lifecycle and exposes it identically.
+### 6.8 Repository scripts (`concerto.json`)
 
-### 6.8 Repository scripts (conductor.json equivalent)
-
-A repo-level file (we will keep the name `conductor.json` for migration ease, or use `concerto.json` with a `conductor.json` compatibility shim — TBD) configures:
+A repo-level file `concerto.json` at the project root configures:
 
 - **`scripts.setup`** — runs when a workspace is created. Typical: `npm install`, `bundle install`, `uv sync`.
 - **`scripts.run`** — runs when the user clicks the Run button. Typical: `npm run dev`.
@@ -320,7 +317,7 @@ A repo-level file (we will keep the name `conductor.json` for migration ease, or
 
 ### 6.9 Repository settings on the local machine
 
-Conductor maintains per-machine, per-repo settings that override conductor.json. Concerto keeps the same precedence: local repo settings override the shared file, so a developer can experiment without breaking teammates. The UI surfaces all of these:
+Concerto maintains per-machine, per-repo settings that override `concerto.json`. Precedence: local repo settings override the shared file, so a developer can experiment without breaking teammates. The UI surfaces all of these:
 
 - Workspace path (where on disk the worktrees live).
 - Files to copy patterns.
@@ -336,32 +333,32 @@ Conductor maintains per-machine, per-repo settings that override conductor.json.
 
 ### 6.10 Agent modes — Plan, Fast, reasoning levels, personalities
 
-Conductor exposes:
+Concerto exposes:
 
 - **Plan Mode** — the agent produces a plan before editing files. Supported by both Claude Code and Codex.
 - **Fast Mode** — prioritizes speed; appropriate for narrow edits.
 - **Thinking / reasoning level** — when the model exposes it (Claude's extended thinking, Codex's reasoning effort).
 - **Codex personalities** — session-level personality controls for Codex.
 - **Checkpoints** — see 6.5.
-- **Skills** — both Claude Code and Codex can use skills inside Conductor.
+- **Skills** — both Claude Code and Codex can use skills inside Concerto.
 
-Concerto supports all of these and adds (see section 11) a Skill Explorer UI and a Workflow Explorer for /loop and scheduled tasks.
+Concerto adds (see section 11) a Skill Explorer UI and a Workflow Explorer for /loop and scheduled tasks.
 
 ### 6.11 Multi-agent orchestration (Claude Code + Codex in one workspace)
 
-Conductor supports running Claude Code and Codex side by side in the same workspace as separate tabs, sharing the same branch and files. Concerto keeps this and extends it: any number of agents (Claude Code, Codex, Gemini CLI, custom MCP-backed agents) can run in tabs within a workspace.
+Any number of agents (Claude Code, Codex, Gemini CLI, custom MCP-backed agents) can run in tabs within a workspace, sharing the same branch and files.
 
 ### 6.12 Slash commands
 
-Reusable prompts stored as Markdown files in `.claude/commands/` or `.codex/commands/`, appearing in the chat composer when the user types `/`. Concerto must surface these in the chat composer the same way and also expose them through the Skill Explorer for discoverability (see 11.2).
+Reusable prompts stored as Markdown files in `.claude/commands/` or `.codex/commands/`, appear in the chat composer when the user types `/`. Concerto surfaces these in the chat composer and exposes them through the Skill Explorer for discoverability (see 11.2).
 
 ### 6.13 MCP (Model Context Protocol) support
 
-Conductor inherits MCP servers configured at the user level (`claude mcp add`) and at the project level (`.mcp.json` at repo root). It also supports Codex's `~/.codex/config.toml` and per-project `.codex/config.toml`. Concerto must match all of this and add an MCP Servers panel in Settings showing which servers are active, what tools they expose, and whether they should be allowed in the current session.
+Concerto picks up MCP servers configured at the user level (`claude mcp add`) and at the project level (`.mcp.json` at repo root), and also supports Codex's `~/.codex/config.toml` and per-project `.codex/config.toml`. An MCP Servers panel in Settings shows which servers are active, what tools they expose, and whether they should be allowed in the current session.
 
-### 6.14 Deep links (conductor:// → concerto://)
+### 6.14 Deep links (`concerto://`)
 
-Conductor supports `conductor://` URLs that open the app and trigger actions (open a specific workspace, create a workspace from a Linear issue URL, etc.). Concerto must support `concerto://` deep links covering at least:
+Concerto supports `concerto://` URLs that open the app and trigger actions (open a specific workspace, create a workspace from a Linear issue URL, etc.). Covered actions include at least:
 
 - Open workspace by ID.
 - Create workspace from GitHub issue / Linear issue / branch.
@@ -371,37 +368,37 @@ Conductor supports `conductor://` URLs that open the app and trigger actions (op
 
 ### 6.15 Spotlight testing
 
-A root-based automated test runner that Conductor can invoke against a directory. Used for "verify this branch passes its tests before I look at it." Concerto preserves this and integrates it into the Run flow.
+A root-based automated test runner Concerto can invoke against a directory. Used for "verify this branch passes its tests before I look at it." Integrated into the Run flow.
 
 ### 6.16 Big Terminal Mode
 
-An experimental Conductor mode that gives more screen real estate to the terminal in the workspace view. Concerto keeps this as a layout option, and extends it on mobile by offering a "fullscreen terminal" view that is touch-optimized (large hit targets for common keys, swipe-to-scroll the buffer).
+An experimental layout mode that gives more screen real estate to the terminal in the workspace view. Concerto keeps it as a layout option, and extends it on mobile by offering a "fullscreen terminal" view that is touch-optimized (large hit targets for common keys, swipe-to-scroll the buffer).
 
-### 6.17 Cities (workspace naming)
+### 6.17 Composers (workspace naming)
 
-Conductor names workspace directories after cities (e.g., warsaw, tokyo). It is a small touch that makes long lists of workspaces easier to scan. Concerto keeps it — same scheme, with cities cycling through a curated list — and shows both the city name and the branch in the sidebar.
+Concerto names workspace directories after composers — Bach, Mozart, Chopin, Grieg, Gershwin, Debussy, Brahms, Britten, Ravel, Holst, and so on, cycling through a curated list. It is a small touch that makes long lists of workspaces easier to scan, and a deliberate echo of the product's defining metaphor (a concerto for a soloist and an orchestra of agents). The sidebar shows both the composer name and the branch.
 
 ### 6.18 Keyboard shortcuts
 
-Conductor has a rich keyboard shortcut set (Cmd+Shift+N for new workspace, Cmd+Shift+D for diff viewer, Cmd+Shift+P for create PR, etc.). Concerto must implement the same shortcuts on macOS, with platform-appropriate equivalents on Windows and Linux (Ctrl-based) and a discoverable shortcut palette accessible by `?`.
+Concerto ships with a rich keyboard shortcut set (Cmd+Shift+N for new workspace, Cmd+Shift+D for diff viewer, Cmd+Shift+P for create PR, etc.) on macOS, with platform-appropriate equivalents on Windows and Linux (Ctrl-based) and a discoverable shortcut palette accessible by `?`.
 
 ### 6.19 Privacy and enterprise data privacy
 
-Conductor offers an `enterpriseDataPrivacy` toggle that disables features requiring external AI providers (AI-generated chat titles, custom MCP servers). Concerto preserves this and extends it (see section 16) with more granular controls.
+Concerto offers an `enterpriseDataPrivacy` toggle that disables features requiring external AI providers (AI-generated chat titles, custom MCP servers). Section 16 covers the more granular controls layered on top of it.
 
 ### 6.20 Provider configuration
 
-Conductor configures Claude Code and Codex authentication, supports Anthropic, OpenAI, Bedrock, Vertex, OpenRouter, and Vercel AI Gateway, and passes through environment variables like `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `OPENAI_BASE_URL`. Concerto must match the full surface and add Gemini and Anthropic Claude-on-AWS as first-class entries since they have appeared since Conductor 0.56.
+Concerto supports Anthropic, OpenAI, Bedrock, Vertex, Gemini, OpenRouter, and Vercel AI Gateway, and passes through environment variables like `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `OPENAI_BASE_URL`. Anthropic Claude-on-AWS is supported as a first-class entry.
 
 ### 6.21 IDE integration (Cursor, VS Code, JetBrains, Zed, Xcode)
 
-Conductor opens a workspace in the user's IDE of choice. Concerto inherits this and adds Zed and Xcode as first-class IDE targets, plus a "no IDE, terminal only" mode for cloud-style usage from a phone.
+Concerto opens a workspace in the user's IDE of choice. Supported IDEs include VS Code, Cursor, Zed, Xcode, and JetBrains, plus a "no IDE, terminal only" mode for cloud-style usage from a phone.
 
 ---
 
-## 7. New features at a glance
+## 7. What Concerto adds beyond the foundational layer
 
-A summary table of everything Concerto adds on top of Conductor parity. Each row is expanded in the sections that follow.
+A summary table of everything Concerto layers on top of the core feature set in §6. Each row is expanded in the sections that follow.
 
 | # | Feature | Why it matters | V1 / V2 |
 |---|---|---|---|
@@ -422,11 +419,10 @@ A summary table of everything Concerto adds on top of Conductor parity. Each row
 | 15 | Apple Watch glance | One-line status of all workspaces; tap to act | V2 |
 | 16 | Team-shared sessions (read-only) | A manager can spectate without taking control | V2 |
 | 17 | Self-hosted Concerto Core in private VPC | Enterprise platform-team rollout pattern | V2 |
-| 18 | Conductor migration wizard | One-click import of existing Conductor projects and settings | V1 |
-| 19 | Sparse-checkout learning mode | Auto-detect which paths an agent touches and propose sparse cones | V2 |
-| 20 | Audit log of all agent actions | Compliance / forensics for regulated teams | V2 |
-| 21 | Smart suggestions (per-workspace chips) | One-tap next-step prompts that reduce typing and surface best practices the user might forget | V1 |
-| 22 | Concerto chat (central coordinator) | Drive all workspaces from one chat; get back-from-meeting digests; reduce mental context-switching | V1 |
+| 18 | Sparse-checkout learning mode | Auto-detect which paths an agent touches and propose sparse cones | V2 |
+| 19 | Audit log of all agent actions | Compliance / forensics for regulated teams | V2 |
+| 20 | Smart suggestions (per-workspace chips) | One-tap next-step prompts that reduce typing and surface best practices the user might forget | V1 |
+| 21 | Concerto chat (central maestro) | Drive all workspaces from one chat; get back-from-meeting digests; reduce mental context-switching | V1 |
 
 ---
 
@@ -449,7 +445,7 @@ The server is the only stateful component. Everything else is a renderer.
 - **On-disk worktrees** — at a configurable root path. Default: `~/concerto/workspaces`.
 - **Encrypted secrets store** — uses the OS keychain (Keychain on macOS, Credential Manager on Windows, Secret Service / libsecret on Linux). Stores API tokens, GitHub PATs, push notification credentials, device pairing keys.
 - **Live state** — running agent processes, open WebSocket subscriptions, pending tool approvals.
-- **Static config** — `~/.concerto/config.json` (per-user) and `~/.concerto/managed.json` (org-managed; equivalent to Conductor's managed settings).
+- **Static config** — `~/.concerto/config.json` (per-user) and `~/.concerto/managed.json` (org-managed).
 
 #### 8.1.3 The local API
 
@@ -510,21 +506,21 @@ Decision deferred to the engineering team after a one-week prototype.
 
 #### 8.2.1 Layout
 
-Three-panel layout, identical to Conductor in spirit:
+Three-panel layout:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  ◐ Concerto                                                       ⌘K   ⚙  │
 ├──────────────┬───────────────────────────────────────────────────────────┤
-│  PROJECTS    │   Tokyo  ·  feat/scroll-to-bottom-btn        ▶ Run  ⌘P PR │
+│  PROJECTS    │   Bach  ·  feat/scroll-to-bottom-btn         ▶ Run  ⌘P PR │
 │  ▸ coupang   │  ┌─────────────────────────────────────────────┬────────┐│
 │    monorepo  │  │  Chat / Plan / Diff / Checks / Terminal     │ Sched  ││
 │  ▸ mp-android│  │                                             │ Skills ││
 │  ▸ mp-ios    │  │                                             │ Todos  ││
 │  ▼ side proj │  │                                             │ Files  ││
-│     warsaw   │  │                                             │ MCP    ││
-│     tokyo  ●│  │                                             │        ││
-│     osaka  ◐│  │   [composer]  type a message to the agent…   │        ││
+│     chopin   │  │                                             │ MCP    ││
+│     bach   ●│  │                                             │        ││
+│     mozart ◐│  │   [composer]  type a message to the agent…   │        ││
 │   + new      │  └─────────────────────────────────────────────┴────────┘│
 ├──────────────┴───────────────────────────────────────────────────────────┤
 │  ● coupang-monorepo synced 2m ago   ●●●● 4 agents running   ⊕ Loop·2     │
@@ -541,18 +537,18 @@ Native Swift / SwiftUI. Not a wrapped web app.
 
 ```
 ┌──────────────────────────┐    ┌──────────────────────────┐
-│   Concerto     ⌘  ⚙       │    │  ←  tokyo   ●  ⋮         │
+│   Concerto     ⌘  ⚙       │    │  ←  bach    ●  ⋮         │
 │                          │    │                          │
 │  ●  coupang-monorepo     │    │ Branch  feat/scroll-btn  │
 │     4 workspaces  •      │    │ ──────────────────────── │
 │                          │    │                          │
-│  ▼  warsaw   ●           │    │ Chat   Diff   Checks     │
+│  ▼  chopin   ●           │    │ Chat   Diff   Checks     │
 │     refactor:auth-flow   │    │                          │
-│  ▼  tokyo    ◐ block     │    │ ┌──────────────────────┐ │
+│  ▼  bach     ◐ block     │    │ ┌──────────────────────┐ │
 │     feat:scroll-button   │    │ │ Agent (Claude 4.7)   │ │
-│  ▼  osaka    ◐ awaiting  │    │ │ "I've drafted the    │ │
+│  ▼  mozart   ◐ awaiting  │    │ │ "I've drafted the    │ │
 │     fix:NPE-checkout     │    │ │  changes to handle   │ │
-│  ▼  oslo     ✓ done      │    │ │  the empty case…     │ │
+│  ▼  grieg    ✓ done      │    │ │  the empty case…     │ │
 │     test:flaky-fixes     │    │ │  Should I add the    │ │
 │                          │    │ │  regression test?"   │ │
 │  + new workspace         │    │ └──────────────────────┘ │
@@ -606,7 +602,7 @@ A minimal always-on UI for the desktop:
 
 ## 9. Monorepo support: sparse checkout, blobless clone, sparse index
 
-This is the single largest delta from Conductor. Conductor clones the full repository into each worktree, copying every file Git is tracking. For a 40 GB monorepo with 2M files, that is a non-starter: workspace creation takes 30+ minutes, every git operation is slow, and disk fills fast.
+On large monorepos, a naive "clone the full repository into each worktree" approach is a non-starter: for a 40 GB monorepo with 2M files, workspace creation takes 30+ minutes, every git operation is slow, and disk fills fast. Concerto solves this with sparse + blobless checkout.
 
 Concerto treats large monorepos as a first-class shape. Three Git capabilities are exposed in the project settings:
 
@@ -634,7 +630,7 @@ Project: coupang-monorepo
 
 In Concerto this becomes a per-workspace cone definition. When you create a workspace, you can choose:
 
-- **All files (default for small repos).** Behavior identical to Conductor today.
+- **All files (default for small repos).** Standard full clone.
 - **Sparse cones.** Specify one or more directories (e.g., `services/checkout`, `libs/auth`). Files outside those cones are not materialized on disk. The agent only sees what is in the cones.
 - **Inherit from project.** The project carries a default sparse cone set; new workspaces inherit it.
 
@@ -716,17 +712,7 @@ Worktrees share the parent repository's object database. A blobless clone's obje
 
 > **Adoption guidance** — For repos under ~1 GB, default to full clone. For repos 1–10 GB, default to blobless with full files on disk. For repos over 10 GB, default to blobless + sparse with cones picked per workspace. Concerto warns the user before creating a non-sparse workspace on a >10 GB repo.
 
-### 9.8 Migration from a full-clone Conductor project
-
-When the user imports a Conductor project into Concerto, the migration wizard offers to:
-
-1. Keep the existing full clone (no change).
-2. Convert to a blobless clone in place (in-place repack to drop blob pack files).
-3. Re-clone fresh as blobless + sparse, using current worktrees as a hint for what cones to include.
-
-Option 3 is the recommended path for large repos but is slow (a fresh clone), so users with stable workflows can stay on option 1 indefinitely.
-
-### 9.9 Sparse-checkout learning mode (V2)
+### 9.8 Sparse-checkout learning mode (V2)
 
 A background mode that records which files the agent actually reads and writes over time, then suggests refinements to the sparse cones ("you're touching libs/notifications/ but it's not in your cone — add it?"). This is V2 — V1 ships with manual cone selection plus the plan-mode auto-suggest.
 
@@ -734,16 +720,16 @@ A background mode that records which files the agent actually reads and writes o
 
 ## 10. Multi-repo workspaces and multi-PR sessions
 
-Conductor maps one workspace to one repository. Real product changes routinely span two or more — an API change in a server repo plus a client change in a mobile repo, or a shared-library bump that ripples to five consumers. Today this is handled by manually creating N workspaces and copy-pasting context between them. Concerto raises this to a first-class concept: a session can be scoped to multiple repositories with linked branches and a linked PR set.
+Most workspace orchestrators map one workspace to one repository. Real product changes routinely span two or more — an API change in a server repo plus a client change in a mobile repo, or a shared-library bump that ripples to five consumers. Doing that today means manually creating N workspaces and copy-pasting context between them. Concerto raises it to a first-class concept: a session can be scoped to multiple repositories with linked branches and a linked PR set.
 
 ### 10.1 Model: session as the higher-level container
 
-| Concept | In Conductor | In Concerto |
-|---|---|---|
-| Repository | One per project | Multiple repos can belong to one Concerto Project (a "monorepo group") |
-| Workspace | One repo, one branch, one PR | Unchanged — still the unit of isolation |
-| Session | Implicit (one workspace = one session) | Explicit. A session can hold N linked workspaces across N repos |
-| PR | One per workspace | A session can drive a "PR set" (N PRs that ship together) |
+| Concept | In Concerto |
+|---|---|
+| Repository | Multiple repos can belong to one Concerto Project (a "monorepo group") |
+| Workspace | One repo, one branch, one PR — still the unit of isolation |
+| Session | Explicit. A session can hold N linked workspaces across N repos |
+| PR | A session can drive a "PR set" (N PRs that ship together) |
 
 A Concerto Project may contain one or many Repositories. A Session within that Project may span any subset of those repositories. The Session is the unit of "what work am I doing right now"; the Workspaces under it are the units of "where on disk and on which branch."
 
@@ -857,7 +843,7 @@ Skill Explorer
 │    ▸ alirezarezvani/claude-     329 skills                           │
 │                                                                      │
 │  Selected:  pr-summary                                               │
-│  Used 4 times in this project.  Last used: 2h ago (tokyo)            │
+│  Used 4 times in this project.  Last used: 2h ago (bach)            │
 │  [✓] Auto-invoke when relevant                                       │
 │  [ ] Hide from / menu                                                │
 │  [ Edit SKILL.md ]  [ Test in sandbox ]  [ Uninstall ]               │
@@ -880,7 +866,7 @@ A marketplace is a Git URL that points to a directory containing a `marketplace.
 
 ### 11.5 Enterprise-managed skills
 
-A platform team can pin a curated set of skills via Concerto's managed settings (the equivalent of `~/.conductor/settings.json`). Those skills:
+A platform team can pin a curated set of skills via Concerto's managed settings (`~/.concerto/managed.json`). Those skills:
 
 - Cannot be uninstalled by the user.
 - Always appear in the explorer with an "Org" badge.
@@ -923,8 +909,8 @@ Workflow Explorer
 │                   Summarize commits, open PRs, list tomorrow's work  │
 │                                                                      │
 │  Session-scoped (/loop)                     terminates 2026-05-27    │
-│    /loop 15m  in tokyo  "check subagent task completions"            │
-│    /loop 1h   in osaka  "rerun /code-review and post to chat"        │
+│    /loop 15m  in bach  "check subagent task completions"            │
+│    /loop 1h   in mozart  "rerun /code-review and post to chat"        │
 │                                                                      │
 │  History (last 24h)                                                  │
 │    07:30  Morning briefing       success    3 PRs awaiting · 1 CI red│
@@ -1060,7 +1046,7 @@ A specific class of suggestions deserves its own callout: prompts that fire auto
 | File over 1000 lines is being edited inline (vs. patched) | "This is a large file. Consider asking the agent to extract a helper first." |
 | Agent's last 5 turns all errored on the same command | "Try a different approach? You can paste a `Stop` then a fresh prompt." |
 | Workspace's branch is 50+ commits behind main | "Rebase on main first? Stale branches cause merge conflicts." |
-| Two workspaces are editing the same file on different branches | "Check the diffs — there is overlap with the workspace `tokyo`." |
+| Two workspaces are editing the same file on different branches | "Check the diffs — there is overlap with the workspace `bach`." |
 | Agent suggested running a destructive shell command (`rm -rf`, `DROP TABLE`, `force push`) | "This command is destructive. Review carefully before approving." (this one cannot be auto-accepted; it's an emphasis chip, not a one-tap action) |
 
 These are not unique to Claude or Codex — they are user-side observations about the workspace and conversation. They fire regardless of agent.
@@ -1094,7 +1080,7 @@ When an agent pauses awaiting input and Concerto sends a push notification, the 
 
 ---
 
-## 14. Concerto chat — the central coordinator
+## 14. Concerto chat — the central maestro
 
 > **Problem in one line.** With five or eight workspaces running, the developer's bottleneck shifts from "writing code" to "remembering what's happening in each workspace and deciding which one to attend to next." Concerto should be an agent that helps the developer drive their workspaces — not just a board that lists them.
 
@@ -1112,7 +1098,7 @@ Jobs 3 and 4 are the work. Jobs 1, 2, and 5 are tax. **The Concerto chat is the 
 
 ### 14.2 What it is
 
-A single, persistent chat at the top of the Concerto UI, distinct from any workspace chat. Behind the chat is a Concerto-managed agent (Claude or Codex, user-configurable) running with a limited toolset that lets it inspect workspaces, route prompts, and propose next steps. The user talks to "Concerto" through this chat the same way they talk to the workspace-level agents — natural language, suggestion chips, voice — but the conversation is **about the orchestration layer**, not about any single workspace's code.
+A single, persistent chat at the top of the Concerto UI, distinct from any workspace chat. Behind the chat is the Maestro agent — a Concerto-managed LLM session (Claude or Codex, user-configurable) running with a limited toolset that lets it inspect workspaces, route prompts, and propose next steps. The user talks to "Concerto" through this chat the same way they talk to the workspace-level agents — natural language, suggestion chips, voice — but the conversation is **about the orchestration layer**, not about any single workspace's code.
 
 ### 14.3 Where it lives in the UI
 
@@ -1125,13 +1111,13 @@ On the desktop, the Concerto chat lives as a persistent bar at the top of every 
 │  ●  6 workspaces · 2 awaiting you · 1 ready to merge                │
 │                                                                     │
 │  Welcome back. While you were in your meeting:                      │
-│   • tokyo (feat/scroll-btn) finished. All checks green. Ready PR.   │
-│   • osaka (fix/NPE) is asking which logger pattern you prefer.      │
-│   • warsaw (refactor/auth) hit 2 test failures; agent is fixing.    │
-│   • oslo (test/flaky) merged at 10:42.                              │
+│   • bach (feat/scroll-btn) finished. All checks green. Ready PR.    │
+│   • mozart (fix/NPE) is asking which logger pattern you prefer.     │
+│   • chopin (refactor/auth) hit 2 test failures; agent is fixing.    │
+│   • grieg (test/flaky) merged at 10:42.                             │
 │                                                                     │
 │  Suggested next steps:                                              │
-│   [ Merge tokyo's PR ]  [ Answer osaka's question ]  [ Skip ]       │
+│   [ Merge bach's PR ]   [ Answer mozart's question ]   [ Skip ]     │
 │                                                                     │
 │   you ›                                                             │
 │   ┌───────────────────────────────────────────────────────────────┐ │
@@ -1150,9 +1136,9 @@ The Concerto agent has a defined toolset, mirroring what a competent assistant w
 
 The `@workspace` syntax routes a prompt to a workspace's agent. Examples:
 
-- `@tokyo run the linter` — sends "run the linter" to tokyo's active agent.
-- `@osaka use the ContextualLogger pattern from libs/observability` — answers osaka's pending question.
-- `@warsaw,@oslo start the dev server` — fans out to both.
+- `@bach run the linter` — sends "run the linter" to bach's active agent.
+- `@mozart use the ContextualLogger pattern from libs/observability` — answers mozart's pending question.
+- `@chopin,@grieg start the dev server` — fans out to both.
 - `@all status` — broadcasts a "give me a one-line status" prompt to every active workspace and returns their replies inline.
 
 #### 14.4.2 Cross-workspace queries
@@ -1189,7 +1175,7 @@ This is what makes a 90-minute meeting tolerable for a developer running six age
 When a workspace finishes (whether the user is at the desk or not), Concerto:
 
 1. Sends a notification with one-tap suggestion chips (e.g., "Mark ready for review").
-2. Adds a line to the Concerto chat: "tokyo finished — 14 files, 482 lines added, all checks green."
+2. Adds a line to the Concerto chat: "bach finished — 14 files, 482 lines added, all checks green."
 3. Proposes a next step contextually appropriate for that workspace: "Open the PR for review?" or "Start a follow-up workspace for the integration tests this PR will need?"
 
 ### 14.5 What it deliberately doesn't do
@@ -1202,7 +1188,7 @@ When a workspace finishes (whether the user is at the desk or not), Concerto:
 
 ### 14.6 How it works under the hood
 
-The Concerto chat is implemented as another agent process supervised by the Core, alongside the workspace-level agents. It's just a special workspace with a different toolset and no working directory:
+The Concerto chat is implemented as the Maestro agent — another agent process supervised by the Core, alongside the workspace-level agents. It's just a special workspace with a different toolset and no working directory:
 
 - **Tools available**: `list_workspaces`, `get_workspace_summary`, `route_prompt_to_workspace`, `create_workspace`, `set_workspace_paused`, `read_workspace_checks`, `read_workspace_schedule`, `read_inbox_summary`, `notify_user`. (Roughly fifteen tools total in V1.)
 - **No filesystem access**, no shell, no edit tools.
@@ -1242,7 +1228,7 @@ A small lexicon to make the chat feel native:
 
 On mobile, the Concerto chat is the **default open screen**. The Workspaces board and Inbox become reachable via tabs at the bottom. This is the inversion of the desktop layout (where the workspace list is the primary surface and Concerto chat is a top bar) — and it's intentional, because on a phone, the user almost never wants to scroll through workspaces themselves. They want Concerto to tell them what's up and what to do, with one-tap chips to act.
 
-Voice input is particularly powerful here. Hold the mic, say "what's tokyo doing right now," and Concerto reads back a short digest.
+Voice input is particularly powerful here. Hold the mic, say "what's bach doing right now," and Concerto reads back a short digest.
 
 ### 14.11 Concrete example conversations
 
@@ -1256,34 +1242,34 @@ you ›  what happened while I was away?
 Concerto ›
 You stepped away 78 minutes ago. Here's what changed:
 
-• tokyo (feat/scroll-btn) finished. Diff is +482 / -96 across 14 files.
+• bach (feat/scroll-btn) finished. Diff is +482 / -96 across 14 files.
   All checks green. PR #4821 is in draft.
-• osaka (fix/NPE-checkout) paused 6 minutes ago — it needs you to pick
+• mozart (fix/NPE-checkout) paused 6 minutes ago — it needs you to pick
   between a one-off override and patching the codegen. (Same question
   you got on the phone earlier.)
-• warsaw (refactor/auth) had 2 test failures at 11:14 and fixed them
+• chopin (refactor/auth) had 2 test failures at 11:14 and fixed them
   by 11:21. No further action needed.
-• oslo merged at 10:42 — PR #888.
-• miami (your android workspace) didn't move. Last activity was you
+• grieg merged at 10:42 — PR #888.
+• gershwin (your android workspace) didn't move. Last activity was you
   starting it before the meeting.
 
 Suggested next:
-[ Merge tokyo ]  [ Answer osaka's question ]  [ Restart miami ]  [ Skip ]
+[ Merge bach ]  [ Answer mozart's question ]  [ Restart gershwin ]  [ Skip ]
 ```
 
 #### 14.11.2 Routing a prompt
 
 ```
-you ›  @tokyo run the e2e suite
+you ›  @bach run the e2e suite
 
 Concerto ›
-Routing to tokyo. The agent picked it up.
+Routing to bach. The agent picked it up.
 
-(One line back from tokyo:)
-tokyo: starting e2e suite (npm run test:e2e). I'll report when it
+(One line back from bach:)
+bach: starting e2e suite (npm run test:e2e). I'll report when it
 finishes — expected ~3 minutes.
 
-[ Open tokyo ]  [ Dismiss ]
+[ Open bach ]  [ Dismiss ]
 ```
 
 #### 14.11.3 Spawning a workspace
@@ -1313,12 +1299,12 @@ you ›  did anything touch libs/auth today?
 Concerto ›
 Two workspaces edited libs/auth in the last 24h:
 
-• warsaw — 3 files: TokenStore.ts, OAuthFlow.ts, index.ts (committed 1h ago)
-• osaka — 1 file: TokenStore.ts (uncommitted as of right now)
+• chopin — 3 files: TokenStore.ts, OAuthFlow.ts, index.ts (committed 1h ago)
+• mozart — 1 file: TokenStore.ts (uncommitted as of right now)
 
 There's overlap on TokenStore.ts. Want me to show a comparison?
 
-[ Compare TokenStore.ts ]  [ Open warsaw ]  [ Open osaka ]
+[ Compare TokenStore.ts ]  [ Open chopin ]  [ Open mozart ]
 ```
 
 ### 14.12 Cost model
@@ -1483,7 +1469,7 @@ The audit log is human-readable JSON Lines. It can be exported. For regulated in
 
 ### 16.12 Managed settings (enterprise data privacy)
 
-Inherits Conductor's managed-settings format. A `~/.concerto/managed.json` written by the org overrides local settings and disables UI controls for the managed fields. Supported managed fields include:
+Concerto's managed-settings format is a `~/.concerto/managed.json` file written by the org, which overrides local settings and disables UI controls for the managed fields. Supported managed fields include:
 
 - `enterpriseDataPrivacy` (disables marketplace browsing, AI-generated titles, third-party MCP).
 - `defaultModel`.
@@ -1497,53 +1483,11 @@ Inherits Conductor's managed-settings format. A `~/.concerto/managed.json` writt
 
 ---
 
-## 17. Conductor migration and coexistence
+## 17. UI screen catalog
 
-Concerto's adoption curve depends on making Conductor users feel they are upgrading, not switching. The migration wizard runs on first launch and offers:
+This section catalogs the major screens with wireframe-style sketches. **Visual language.** Warm off-white background, restrained accent color (deep blue), small status dots instead of badges, generous whitespace, monospaced sans-serif type for code, plain humanist sans for chrome.
 
-1. Scan `~/Library/Application Support/Conductor` (and equivalents on Win/Linux when relevant) for existing Conductor projects.
-2. Show a list of detected projects with their workspaces, branches, chat history sizes.
-3. Import everything (default), import selectively (user picks), or skip.
-4. Convert `conductor.json` files to `concerto.json` (and leave `conductor.json` untouched for the user's teammates who haven't migrated yet).
-5. Re-clone large repos as blobless + sparse, with the user's opt-in.
-6. Map Conductor settings to Concerto settings 1:1.
-7. Detect Claude Code, Codex, and Gemini CLI installations and preserve their existing auth.
-
-### 17.1 What carries over
-
-- Projects and repositories.
-- Workspaces (including their branches and chat history).
-- Repository settings (scripts, files-to-copy patterns).
-- Slash commands.
-- MCP server configurations (Claude Code's `claude mcp` and Codex's `~/.codex/config.toml` are re-used directly; no copying or reformatting).
-- Skills (filesystem locations are unchanged).
-
-### 17.2 What is new in Concerto that the user must opt into
-
-- Sparse / blobless clone strategy.
-- Multi-repo session.
-- Remote device pairing.
-- Workflow explorer schedules.
-
-### 17.3 Conductor + Concerto running side by side
-
-Some users (and entire teams) will not migrate immediately. Concerto and Conductor can coexist on the same machine:
-
-- They share the same git installations.
-- They share the same Claude Code / Codex installations and login state.
-- They share the same MCP server configurations.
-- They do not share workspace directories (different default paths: `~/conductor` and `~/concerto`).
-- They handle `conductor://` and `concerto://` deep links separately.
-
-This means a user can experiment with Concerto on one project for a week before committing.
-
----
-
-## 18. UI screen catalog
-
-This section catalogs the major screens with wireframe-style sketches. The visual language is borrowed directly from Conductor: warm off-white background, restrained accent color (deep blue), small status dots instead of badges, generous whitespace, monospaced sans-serif type for code, plain humanist sans for chrome.
-
-### 18.1 Desktop · Home / project list
+### 17.1 Desktop · Home / project list
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -1566,7 +1510,7 @@ This section catalogs the major screens with wireframe-style sketches. The visua
 │  │    Last activity 3 days ago                                        │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │
-│  + New project    Import from Conductor    Add GitHub repo               │
+│  + New project    Add GitHub repo                                        │
 │                                                                          │
 │  Today                                                                   │
 │   ◐  3 PRs awaiting your review across 2 projects                        │
@@ -1575,22 +1519,22 @@ This section catalogs the major screens with wireframe-style sketches. The visua
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 18.2 Desktop · Workspace detail (Chat view)
+### 17.2 Desktop · Workspace detail (Chat view)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  ◐ Concerto    ●  6 workspaces · 2 awaiting you · 1 ready    ▾ ask Concerto│
 ├──────────────────────────────────────────────────────────────────────────┤
-│  ◐ tokyo / feat/scroll-to-bottom-btn                             ⌘K   ⚙  │
+│  ◐ bach / feat/scroll-to-bottom-btn                             ⌘K   ⚙  │
 ├──────────────┬───────────────────────────────────────────────────────────┤
-│ ▾ coupang    │ tokyo  · feat/scroll-to-bottom-btn   ▶ Run  ⌘⇧D Diff  ⌘⇧P│
-│   warsaw  ●  │ Claude 4.7 · plan mode · 3 cones · sparse                 │
-│   tokyo   ◐ │ ──────────────────────────────────────────────────────────│
-│   osaka   ◐  ├──────────────────────────────────────────────────┬────────┤
-│   oslo    ✓  │  User:  add a "scroll to bottom" button to the   │ Schedl │
+│ ▾ coupang    │ bach  · feat/scroll-to-bottom-btn   ▶ Run  ⌘⇧D Diff  ⌘⇧P│
+│   chopin  ●  │ Claude 4.7 · plan mode · 3 cones · sparse                 │
+│   bach   ◐ │ ──────────────────────────────────────────────────────────│
+│   mozart   ◐  ├──────────────────────────────────────────────────┬────────┤
+│   grieg    ✓  │  User:  add a "scroll to bottom" button to the   │ Schedl │
 │              │         chat                                      │ Skills │
 │ ▾ android    │                                                   │ Todos  │
-│   miami      │  Claude (plan): I'll add a button anchored to the │ Files  │
+│   gershwin      │  Claude (plan): I'll add a button anchored to the │ Files  │
 │              │  bottom-right of the chat panel. It appears only │ MCP    │
 │ + new        │  when the user has scrolled away from the bottom │        │
 │              │  by > 200px. Tap to scroll smoothly to the latest│ ─────  │
@@ -1614,11 +1558,11 @@ This section catalogs the major screens with wireframe-style sketches. The visua
 
 The **top bar** is the Concerto chat collapsed — one line showing the global state and a `▾ ask Concerto` affordance to expand the chat panel. Suggestion chips appear above the composer for one-tap actions.
 
-### 18.3 Desktop · Diff viewer
+### 17.3 Desktop · Diff viewer
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  tokyo · diff vs main · 14 files changed · 482 +  · 96 -      ⌘⇧P Create │
+│  bach · diff vs main · 14 files changed · 482 +  · 96 -      ⌘⇧P Create │
 ├─────────────────────────┬────────────────────────────────────────────────┤
 │ Files                   │  apps/checkout-web/components/Chat.tsx         │
 │ ▾ apps/checkout-web/    │                                                │
@@ -1645,11 +1589,11 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 └─────────────────────────┴────────────────────────────────────────────────┘
 ```
 
-### 18.4 Desktop · Checks tab
+### 17.4 Desktop · Checks tab
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  tokyo · Checks                                                          │
+│  bach · Checks                                                          │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  Git status                                                              │
 │  ● Clean. No conflicts with main.                                        │
@@ -1685,7 +1629,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 18.5 Desktop · Multi-repo session
+### 17.5 Desktop · Multi-repo session
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -1723,7 +1667,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 18.6 Mobile · Workspaces list (iOS)
+### 17.6 Mobile · Workspaces list (iOS)
 
 ```
 ╭──────────────────────────╮
@@ -1732,18 +1676,18 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 │  ●  coupang-monorepo     │
 │     4 workspaces  • 1 ▲  │
 │                          │
-│    ●  warsaw             │
+│    ●  chopin             │
 │       refactor:auth-flow │
 │       Claude 4.7 · plan  │
 │                          │
-│    ◐  tokyo    awaiting  │
+│    ◐  bach    awaiting  │
 │       feat:scroll-btn    │
 │       1 question for you │
 │                          │
-│    ●  osaka              │
+│    ●  mozart              │
 │       fix:NPE-checkout   │
 │                          │
-│    ✓  oslo               │
+│    ✓  grieg               │
 │       test:flaky-fixes   │
 │       Ready to merge     │
 │                          │
@@ -1757,11 +1701,11 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 ╰──────────────────────────╯
 ```
 
-### 18.7 Mobile · Workspace detail (Chat) — awaiting input
+### 17.7 Mobile · Workspace detail (Chat) — awaiting input
 
 ```
 ╭──────────────────────────╮
-│  ← tokyo   ●          ⋮  │
+│  ← bach   ●          ⋮  │
 │  feat/scroll-btn         │
 │                          │
 │  Chat  Diff Checks  Term │
@@ -1791,11 +1735,11 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 ╰──────────────────────────╯
 ```
 
-### 18.8 Mobile · Diff (touch-optimized)
+### 17.8 Mobile · Diff (touch-optimized)
 
 ```
 ╭──────────────────────────╮
-│  ← tokyo · diff          │
+│  ← bach · diff          │
 │  14 files · +482 / -96   │
 │                          │
 │  Chat  Diff Checks  Term │
@@ -1826,7 +1770,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 ╰──────────────────────────╯
 ```
 
-### 18.9 Mobile · Inbox
+### 17.9 Mobile · Inbox
 
 ```
 ╭──────────────────────────╮
@@ -1834,7 +1778,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 │                          │
 │  Today                   │
 │                          │
-│  ◐  tokyo · awaiting     │
+│  ◐  bach · awaiting     │
 │     Claude is asking 1   │
 │     question.            │
 │     4m ago               │
@@ -1844,7 +1788,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 │     on idempotency tests │
 │     12m ago              │
 │                          │
-│  ✓  oslo · PR #888 ready │
+│  ✓  grieg · PR #888 ready │
 │     All checks green.    │
 │     Tap to merge.        │
 │     25m ago              │
@@ -1860,7 +1804,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 ╰──────────────────────────╯
 ```
 
-### 18.10 Mobile · Pair a new device
+### 17.10 Mobile · Pair a new device
 
 ```
 ╭──────────────────────────╮
@@ -1894,7 +1838,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 ╰──────────────────────────╯
 ```
 
-### 18.11 Settings · Repository (sparse cones)
+### 17.11 Settings · Repository (sparse cones)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -1933,7 +1877,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 18.12 New workspace dialog
+### 17.12 New workspace dialog
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -1964,7 +1908,7 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 18.13 Tray / menu bar
+### 17.13 Tray / menu bar
 
 ```
 ╭──────────────────────────────╮
@@ -1972,14 +1916,14 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 │  ● Core running              │
 │                              │
 │  Pending approvals       1 ▲ │
-│   ▶ tokyo wants to run a     │
+│   ▶ bach wants to run a     │
 │     shell command            │
 │                              │
 │  Active workspaces       4   │
-│   ● warsaw   refactor:auth   │
-│   ◐ tokyo    feat:scroll-btn │
-│   ● osaka    fix:NPE         │
-│   ✓ oslo     test:flaky      │
+│   ● chopin   refactor:auth   │
+│   ◐ bach    feat:scroll-btn │
+│   ● mozart    fix:NPE         │
+│   ✓ grieg     test:flaky      │
 │                              │
 │  Scheduled                  2│
 │   ●  Morning briefing 08:30  │
@@ -1993,9 +1937,9 @@ The **top bar** is the Concerto chat collapsed — one line showing the global s
 ╰──────────────────────────────╯
 ```
 
-### 18.14 Desktop · Concerto chat (expanded)
+### 17.14 Desktop · Concerto chat (expanded)
 
-The central coordinator chat, expanded over the right two-thirds of the window. Used right after returning to the desk, or whenever the user wants a system-wide view.
+The central maestro chat, expanded over the right two-thirds of the window. Used right after returning to the desk, or whenever the user wants a system-wide view.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -2004,29 +1948,29 @@ The central coordinator chat, expanded over the right two-thirds of the window. 
 │  Workspaces      │   Concerto                                             │
 │                  │  ────────────────────────────────────────────────     │
 │  ● coupang       │   Welcome back. While you were in your 1:1:           │
-│   ● warsaw       │                                                       │
-│   ◐ tokyo        │   • tokyo finished. 14 files, +482 / -96, all checks  │
-│   ◐ osaka        │     green. PR #4821 is in draft.                      │
-│   ✓ oslo         │   • osaka paused 6 min ago — needs you to pick        │
-│   ✓ miami        │     between one-off override and patching codegen.    │
-│                  │   • warsaw had 2 test failures at 11:14 and fixed     │
+│   ● chopin       │                                                       │
+│   ◐ bach        │   • bach finished. 14 files, +482 / -96, all checks  │
+│   ◐ mozart        │     green. PR #4821 is in draft.                      │
+│   ✓ grieg         │   • mozart paused 6 min ago — needs you to pick        │
+│   ✓ gershwin        │     between one-off override and patching codegen.    │
+│                  │   • chopin had 2 test failures at 11:14 and fixed     │
 │                  │     them by 11:21.                                    │
-│  ● mp-android    │   • oslo merged at 10:42 (PR #888).                   │
-│   ● miami        │                                                       │
+│  ● mp-android    │   • grieg merged at 10:42 (PR #888).                   │
+│   ● gershwin        │                                                       │
 │                  │   Suggested next:                                     │
-│                  │   [ Open tokyo's PR ]   [ Answer osaka ]              │
-│                  │   [ Show warsaw diff ]  [ Dismiss ]                   │
+│                  │   [ Open bach's PR ]   [ Answer mozart ]              │
+│                  │   [ Show chopin diff ]  [ Dismiss ]                   │
 │                  │                                                       │
 │                  │   ──                                                  │
 │                  │   you ›   what touched libs/auth today?               │
 │                  │                                                       │
 │                  │   Concerto ›                                           │
 │                  │   Two workspaces edited libs/auth in the last 24h:    │
-│                  │   • warsaw — 3 files (committed 1h ago)               │
-│                  │   • osaka — 1 file (uncommitted)                      │
+│                  │   • chopin — 3 files (committed 1h ago)               │
+│                  │   • mozart — 1 file (uncommitted)                      │
 │                  │   Overlap on TokenStore.ts.                           │
 │                  │                                                       │
-│                  │   [ Compare TokenStore.ts ]  [ Open warsaw ]          │
+│                  │   [ Compare TokenStore.ts ]  [ Open chopin ]          │
 │                  │                                                       │
 │                  │  ───────────────────────────────────────────────────  │
 │                  │   ask Concerto or @workspace to route…    🎙           │
@@ -2036,7 +1980,7 @@ The central coordinator chat, expanded over the right two-thirds of the window. 
 └──────────────────┴───────────────────────────────────────────────────────┘
 ```
 
-### 18.15 Mobile · Concerto chat (default landing)
+### 17.15 Mobile · Concerto chat (default landing)
 
 On mobile, the Concerto chat is the default screen. Workspaces and Inbox are reachable as bottom tabs but the user almost always lands here first.
 
@@ -2051,23 +1995,23 @@ On mobile, the Concerto chat is the default screen. Workspaces and Inbox are rea
 │  Welcome back. While you │
 │  were in your 1:1:       │
 │                          │
-│  • tokyo finished.       │
+│  • bach finished.       │
 │    All checks green.     │
 │    PR #4821 ready.       │
 │                          │
-│  • osaka paused. Needs   │
+│  • mozart paused. Needs   │
 │    you to pick logger    │
 │    pattern.              │
 │                          │
-│  • warsaw fixed 2 test   │
+│  • chopin fixed 2 test   │
 │    failures on its own.  │
 │                          │
 │  Suggested next:         │
 │  ╭──────────────────╮    │
-│  │ Open tokyo PR    │    │
+│  │ Open bach PR    │    │
 │  ╰──────────────────╯    │
 │  ╭──────────────────╮    │
-│  │ Answer osaka     │    │
+│  │ Answer mozart     │    │
 │  ╰──────────────────╯    │
 │                          │
 │ ─────────────────────── │
@@ -2080,7 +2024,7 @@ On mobile, the Concerto chat is the default screen. Workspaces and Inbox are rea
 ╰──────────────────────────╯
 ```
 
-### 18.16 Settings · Suggestions
+### 17.16 Settings · Suggestions
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -2118,7 +2062,7 @@ On mobile, the Concerto chat is the default screen. Workspaces and Inbox are rea
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 18.17 Mobile · Workspace detail with suggestion chips on push
+### 17.17 Mobile · Workspace detail with suggestion chips on push
 
 When an agent pauses on a phone-locked screen, the push notification includes the top suggestion chips as action buttons so the user can resolve without unlocking.
 
@@ -2128,7 +2072,7 @@ When an agent pauses on a phone-locked screen, the push notification includes th
 │                          │
 │  ─────────────────────── │
 │  Concerto                 │
-│  tokyo is asking         │
+│  bach is asking         │
 │                          │
 │  "Should I add a unit    │
 │   test for the threshold │
@@ -2149,41 +2093,41 @@ When an agent pauses on a phone-locked screen, the push notification includes th
 
 ---
 
-## 19. User journeys
+## 18. User journeys
 
 Concrete narratives describing the experience from the user's perspective. These double as acceptance criteria for the design and engineering work.
 
-### 19.1 The morning kickoff
+### 18.1 The morning kickoff
 
-Amin sits down at 8:50 AM. He opens Concerto on his MacBook. The Home view shows him three workspaces are still alive from yesterday (Conductor would have lost them on machine sleep, but Concerto's Core kept them suspended cleanly). One workspace has a PR ready for self-review.
+Amin sits down at 8:50 AM. He opens Concerto on his MacBook. The Home view shows him three workspaces are still alive from yesterday — Concerto's Core kept them suspended cleanly across machine sleep. One workspace has a PR ready for self-review.
 
 He starts two new workspaces. The first is from a Linear issue (one click), and Concerto's plan-mode auto-suggest picks the sparse cones based on the issue text. The second is from a free-text prompt: "patch the SDK upgrade across all three marketplace clients." Concerto recognizes this is multi-repo and offers to create a session spanning marketplace-api, marketplace-android, and marketplace-ios.
 
 Both agents start. Amin opens his terminal in Cursor for his own code review, occasionally glancing at Concerto's status bar to see how the agents are doing.
 
-### 19.2 The coffee shop
+### 18.2 The coffee shop
 
-At 10:30 AM Amin steps out for coffee. His MacBook stays on his desk. The phone shows three green-dot workspaces. Halfway through his coffee, his phone vibrates: tokyo is awaiting input.
+At 10:30 AM Amin steps out for coffee. His MacBook stays on his desk. The phone shows three green-dot workspaces. Halfway through his coffee, his phone vibrates: bach is awaiting input.
 
 He opens the Concerto iOS app. The Inbox shows the question: "I patched the API but the Android client's codegen breaks because the type changed. Should I (a) patch the codegen, (b) update the schema, or (c) skip Android for now?"
 
 He taps "Patch the codegen" and adds a voice note: "use the existing kotlinx-serialization adapter pattern." The agent resumes. Amin returns to his coffee.
 
-### 19.3 The commute home
+### 18.3 The commute home
 
-At 6:00 PM Amin closes his MacBook lid. The Core continues running in the background as a launchd agent. On the train, he opens the iOS app and reviews the diff for warsaw. Two files look fine; the third has a method that calls an old deprecated logger. He taps the line, dictates "switch to the new ContextualLogger pattern from libs/observability." The agent picks up the comment and runs.
+At 6:00 PM Amin closes his MacBook lid. The Core continues running in the background as a launchd agent. On the train, he opens the iOS app and reviews the diff for chopin. Two files look fine; the third has a method that calls an old deprecated logger. He taps the line, dictates "switch to the new ContextualLogger pattern from libs/observability." The agent picks up the comment and runs.
 
 At Bay Ridge, he gets a push: PR ready, all checks green. He approves and merges from his phone, walking from the train to the apartment.
 
-### 19.4 The Linux dev box
+### 18.4 The Linux dev box
 
 Saturday morning, Amin works on his personal Ubuntu desktop. He opens Concerto on Linux. Same UI, same projects. He creates a workspace on his BigBangPrice project, which is a small repo and uses full clone. The agent runs. Everything works identically to macOS.
 
-### 19.5 The borrowed laptop
+### 18.5 The borrowed laptop
 
 Amin is at a customer site and needs to check on a workspace. The customer's loaner laptop has no software installed and isn't a machine he wants to install on. He opens his Core's URL in Chrome, scans the pairing QR on his phone (the phone authorizes the web session because his phone is already paired), and gets the full Concerto UI in the browser. He never paired the laptop itself; the session ends when he closes the tab.
 
-### 19.6 The platform-team rollout
+### 18.6 The platform-team rollout
 
 At Coupang Marketplace, the platform team decides to standardize on Concerto for the 100 engineers on the team. They run Concerto Core on a dedicated Linux box in their VPC. Engineers connect to it from their MacBooks via the desktop app or their phones via mobile. The Core is configured with managed settings that:
 
@@ -2196,17 +2140,17 @@ At Coupang Marketplace, the platform team decides to standardize on Concerto for
 
 Engineers run their agents on the shared Core (compute is cheaper to pool than to give every engineer a fast Mac). Their MacBooks stay light.
 
-### 19.7 The 90-minute meeting
+### 18.7 The 90-minute meeting
 
 Amin starts six workspaces at 10:30 AM and then goes into a customer escalation that lasts 90 minutes. He doesn't touch Concerto the whole time. The Core keeps running. Three workspaces finish, one stalls on a question, two are still working.
 
-At 12:05 PM he opens Concerto on his desk. The Concerto chat at the top is glowing. He clicks it and gets a digest in two sentences: "tokyo and oslo finished and are ready for review; osaka has a pending question about logger choice; warsaw and miami are still working but on track." Below the digest are four suggestion chips: `Open tokyo PR`, `Open oslo PR`, `Answer osaka`, `Skip`.
+At 12:05 PM he opens Concerto on his desk. The Concerto chat at the top is glowing. He clicks it and gets a digest in two sentences: "bach and grieg finished and are ready for review; mozart has a pending question about logger choice; chopin and gershwin are still working but on track." Below the digest are four suggestion chips: `Open bach PR`, `Open grieg PR`, `Answer mozart`, `Skip`.
 
-He taps "Answer osaka", a sub-prompt appears asking which pattern, he picks one, and osaka resumes. Two seconds later he taps "Open tokyo PR" and merges. Total time to re-acquire context: 45 seconds. Before Concerto chat, it would have been a 10-minute click-through-every-workspace exercise to figure out where things stood.
+He taps "Answer mozart", a sub-prompt appears asking which pattern, he picks one, and mozart resumes. Two seconds later he taps "Open bach PR" and merges. Total time to re-acquire context: 45 seconds. Before Concerto chat, it would have been a 10-minute click-through-every-workspace exercise to figure out where things stood.
 
-### 19.8 Suggestion chips during a long session
+### 18.8 Suggestion chips during a long session
 
-Amin spends Tuesday afternoon in osaka — a fast-moving refactor session with Claude. Around 4 PM the chip area beneath the composer changes:
+Amin spends Tuesday afternoon in mozart — a fast-moving refactor session with Claude. Around 4 PM the chip area beneath the composer changes:
 
 ```
 [ ✓ Looks good, continue ]  [ Compact the context first ]  [ Save checkpoint ]
@@ -2214,24 +2158,24 @@ Amin spends Tuesday afternoon in osaka — a fast-moving refactor session with C
 
 He hadn't been thinking about context window usage. Concerto noticed it had crossed 50%. He taps "Save checkpoint" then "Compact the context first" — the agent compacts, the session continues fresh. He'd have forgotten to do this on his own and would have hit a hard cap an hour later.
 
-### 19.9 Routing across workspaces from one chat
+### 18.9 Routing across workspaces from one chat
 
-Amin notices warsaw produced a particularly clean migration pattern for a SQL schema change. He'd like the same pattern applied in osaka and miami. Rather than opening each workspace and copying prompts, he types into the Concerto chat:
+Amin notices chopin produced a particularly clean migration pattern for a SQL schema change. He'd like the same pattern applied in mozart and gershwin. Rather than opening each workspace and copying prompts, he types into the Concerto chat:
 
 ```
-@osaka,@miami apply the same migration pattern warsaw just used
-(see warsaw's last commit on the auth schema)
+@mozart,@gershwin apply the same migration pattern chopin just used
+(see chopin's last commit on the auth schema)
 ```
 
-Concerto reads warsaw's recent commit, generates a per-repo prompt that references the relevant file by path in each target workspace, and routes. Two workspaces start working in parallel without Amin context-switching once.
+Concerto reads chopin's recent commit, generates a per-repo prompt that references the relevant file by path in each target workspace, and routes. Two workspaces start working in parallel without Amin context-switching once.
 
 ---
 
-## 20. Implementation notes and technology choices
+## 19. Implementation notes and technology choices
 
 Recommendations, not mandates. The engineering team has discretion when prototyping reveals better options.
 
-### 20.1 Core daemon
+### 19.1 Core daemon
 
 | Concern | Recommendation | Rationale |
 |---|---|---|
@@ -2244,7 +2188,7 @@ Recommendations, not mandates. The engineering team has discretion when prototyp
 | Process supervision | tokio + custom supervisor | Async-first, robust restart semantics. |
 | Telemetry | tracing + OpenTelemetry; off by default | Honors the local-first principle; opt-in only. |
 
-### 20.2 Desktop client
+### 19.2 Desktop client
 
 | Concern | Recommendation | Notes |
 |---|---|---|
@@ -2254,7 +2198,7 @@ Recommendations, not mandates. The engineering team has discretion when prototyp
 | Diff renderer | monaco-editor (read-only) with custom diff layer | Battle-tested, supports inline comments |
 | Terminal | xterm.js with conpty/pty bridge through Core | Industry standard |
 
-### 20.3 iOS client
+### 19.3 iOS client
 
 | Concern | Recommendation | Notes |
 |---|---|---|
@@ -2265,7 +2209,7 @@ Recommendations, not mandates. The engineering team has discretion when prototyp
 | Speech | Apple Speech Recognition (on-device on iOS 15+) | Voice input works offline |
 | Diff renderer | Custom SwiftUI | monaco is desktop-only; a touch-first diff is a bespoke build |
 
-### 20.4 Android client
+### 19.4 Android client
 
 | Concern | Recommendation | Notes |
 |---|---|---|
@@ -2274,7 +2218,7 @@ Recommendations, not mandates. The engineering team has discretion when prototyp
 | Push | FCM | Wakeup only |
 | Speech | SpeechRecognizer + Whisper.cpp on-device fallback | On-device for privacy; Whisper for languages SpeechRecognizer doesn't cover |
 
-### 20.5 Relay
+### 19.5 Relay
 
 | Concern | Recommendation | Notes |
 |---|---|---|
@@ -2283,7 +2227,7 @@ Recommendations, not mandates. The engineering team has discretion when prototyp
 | Hosting (enterprise) | Single-binary docker image | Platform teams run their own |
 | Data | Stateless except current Core public endpoint per ID | Privacy by minimization |
 
-### 20.6 Build and CI
+### 19.6 Build and CI
 
 - Cargo workspace for Rust components; turbo / nx for the TypeScript packages.
 - GitHub Actions on every PR with platform-matrix builds (macOS, Windows, Linux, iOS, Android).
@@ -2292,11 +2236,11 @@ Recommendations, not mandates. The engineering team has discretion when prototyp
 
 ---
 
-## 21. Phasing and roadmap
+## 20. Phasing and roadmap
 
 Three releases. Each release ships a coherent slice of value, not a feature dump.
 
-### 21.1 V0.1 — Internal alpha (8 weeks)
+### 20.1 V0.1 — Internal alpha (8 weeks)
 
 - Concerto Core on macOS only.
 - Desktop app on macOS.
@@ -2306,9 +2250,9 @@ Three releases. Each release ships a coherent slice of value, not a feature dump
 - No Concerto chat yet — workspace-only.
 - No remote / mobile / web.
 - No sparse / blobless yet.
-- **Goal:** Pass the dogfood test — a senior engineer can use Concerto for a full week's work in place of Conductor, and notices that the suggestion chips already save typing.
+- **Goal:** Pass the dogfood test — a senior engineer can use Concerto for a full week's work, and notices that the suggestion chips already save typing.
 
-### 21.2 V1.0 — Public beta (additional 12 weeks)
+### 20.2 V1.0 — Public beta (additional 12 weeks)
 
 - Core on macOS, Windows, Linux.
 - Desktop on all three platforms.
@@ -2318,13 +2262,12 @@ Three releases. Each release ships a coherent slice of value, not a feature dump
 - Sparse and blobless clone in repository settings.
 - Skill Explorer and Workflow Explorer.
 - Multi-repo sessions and PR sets.
-- **Concerto chat** — central coordinator with routing, digests, suggested next steps, and a defined toolset (§14.6). Default LLM: Claude Sonnet.
+- **Concerto chat** — central maestro with routing, digests, suggested next steps, and a defined toolset (§14.6). Default LLM: Claude Sonnet.
 - **Suggestion learning** — per-user, per-project frequency-and-recency model running locally.
 - **Push notification action buttons** — suggestions surface as actionable items on lock-screen.
-- Conductor migration wizard.
 - **Goal:** A 100-engineer org can adopt Concerto as their primary tool, and engineers report the Concerto chat as the "feature I didn't know I needed until I had it."
 
-### 21.3 V2.0 — Concerto Cloud, enterprise, polish (additional 16 weeks)
+### 20.3 V2.0 — Concerto Cloud, enterprise, polish (additional 16 weeks)
 
 - Self-hosted Core in VPC, accessed remotely by an entire team.
 - Managed Concerto Cloud (opt-in hosted execution; explicit pricing tier).
@@ -2339,34 +2282,34 @@ Three releases. Each release ships a coherent slice of value, not a feature dump
 - **Concerto chat on Apple Watch** — voice-first interaction with one-tap chip actions.
 - SOC 2 Type 2.
 
-### 21.4 Sequencing rationale
+### 20.4 Sequencing rationale
 
-Multi-repo and sparse-checkout are pulled to V1, not V2, because they are the features that justify switching. Without them, Concerto is "Conductor + mobile." With them, it is a meaningfully different product. The mobile, web, and remote work are bundled in V1 because they are the user-visible reason a person would switch; they need to ship together.
+Multi-repo and sparse-checkout are pulled to V1, not V2, because they are the features that justify switching. Without them, Concerto is just another desktop orchestrator. With them, it is a meaningfully different product across devices and repository shapes. The mobile, web, and remote work are bundled in V1 because they are the user-visible reason a person would switch; they need to ship together.
 
 ---
 
-## 22. Success metrics
+## 21. Success metrics
 
 A small set of metrics, ranked by truthfulness. We want to be honest about which of these proxy for product value and which are easy-to-game vanity numbers.
 
-### 22.1 Activation (week 1)
+### 21.1 Activation (week 1)
 
 - % of users who create a workspace within 24 hours of install.
 - % of users who pair a mobile device within 7 days.
 - % of users who create a multi-repo session within 30 days (only at orgs with >1 repo).
 
-### 22.2 Engagement (after activation)
+### 21.2 Engagement (after activation)
 
 - Median number of workspaces active at any point during a working day.
 - Median number of agent runs per user per week.
 - % of agent runs where the user took action from mobile (this is the key proof that the mobile surface is real value, not novelty).
 - % of scheduled tasks that the user keeps active for >30 days (proxy for "this thing is useful, not a toy").
 - **% of prompts sent via a suggestion chip vs. typed** (target: > 30% after 30 days of use — chips are pulling weight).
-- **% of working days where the user opens the Concerto chat at least once** (target: > 70% after activation — proxy for "the coordinator is part of the daily workflow").
+- **% of working days where the user opens the Concerto chat at least once** (target: > 70% after activation — proxy for "the maestro is part of the daily workflow").
 - **Time-to-first-action after returning to the app** following a > 30-minute absence (target: < 60 seconds median, with the Concerto chat digest doing the work).
 - **% of "auto-compact" suggestions accepted** when they fire (target: > 50% — if it's below that, the heuristic is firing too often).
 
-### 22.3 Performance (technical health)
+### 21.3 Performance (technical health)
 
 - p50 workspace creation time on a 40 GB monorepo (target: < 30 seconds with sparse + blobless).
 - p50 round-trip from mobile to Core for a chat message (target: < 250 ms on a healthy LTE connection).
@@ -2374,13 +2317,13 @@ A small set of metrics, ranked by truthfulness. We want to be honest about which
 - Crash-free session % (Core daemon).
 - % of remote connections that go direct (vs. fall back to relay). Target: > 70%.
 
-### 22.4 Trust
+### 21.4 Trust
 
 - Number of unique users who turn on `enterpriseDataPrivacy`.
 - Number of customer-paid security audits passed.
 - Time-to-revoke for a stolen-phone scenario (target: < 60 seconds).
 
-### 22.5 Anti-metrics (things we deliberately do not optimize)
+### 21.5 Anti-metrics (things we deliberately do not optimize)
 
 - Time-in-app. We are explicitly trying to reduce this.
 - Notification volume.
@@ -2388,53 +2331,49 @@ A small set of metrics, ranked by truthfulness. We want to be honest about which
 
 ---
 
-## 23. Open questions and risks
+## 22. Open questions and risks
 
-### 23.1 Naming
+### 22.1 Naming
 
-"Concerto" was chosen as the project name because it captures the product's defining metaphor: a concerto is a piece for a soloist *and* an orchestra — exactly the dynamic between a developer and their fleet of AI agents. The developer is the soloist; the agents are the orchestra; the central coordinator chat conducts. The name complements "Conductor" (Melty Labs) while signaling a distinct product shape. Trademark clearance is still pending — the word appears in several adjacent industries (financial software, hospitality) but no direct collision in developer tooling has surfaced. Final clearance and domain acquisition should happen before public beta.
+"Concerto" was chosen as the project name because it captures the product's defining metaphor: a concerto is a piece for a soloist *and* an orchestra — exactly the dynamic between a developer and their fleet of AI agents. The developer is the soloist; the agents are the orchestra; the central maestro chat conducts. Trademark clearance is still pending — the word appears in several adjacent industries (financial software, hospitality) but no direct collision in developer tooling has surfaced. Final clearance and domain acquisition should happen before public beta.
 
-### 23.2 Are we competing with Conductor or extending it?
+### 22.2 Anthropic's Remote Control
 
-Conductor is YC-backed, well-funded ($22M Series A), and shipping fast. We are not going to out-execute them on basic Mac features. Our advantage is the architectural choices — cross-platform, mobile, monorepo, multi-repo, self-hosted — which require a fundamentally different system design. The risk is that Conductor adds these features faster than we ship a V1. Mitigation: focus relentlessly on the four hard problems (Core/clients split, mobile/E2EE, sparse-checkout, multi-repo) that are large engineering bets, not feature surface.
+Anthropic shipped Remote Control in early 2026 for free with Pro/Max. It is the official, "in the Claude app" path. Our differentiation is that we orchestrate, where Remote Control just mirrors. But the bar is now that we have to be obviously better at orchestration than a generic remote terminal, which is a higher bar than it was a year ago.
 
-### 23.3 Anthropic's Remote Control
-
-Anthropic shipped Remote Control in early 2026 for free with Pro/Max. It is the official, "in the Claude app" path. Our differentiation is that we orchestrate, where Remote Control just mirrors. But the bar is now that we have to be obviously better at orchestration than a generic remote terminal, which is a higher bar than it was when Conductor launched.
-
-### 23.4 Will engineers actually pair a phone to a work laptop?
+### 22.3 Will engineers actually pair a phone to a work laptop?
 
 In enterprise environments, pairing a personal device to a work machine can violate device-management policies. Mitigation: design pairing such that the device certificate can be issued by an org-managed CA, so the org can control which devices can pair without losing the E2EE properties.
 
-### 23.5 Sparse-checkout discoverability
+### 22.4 Sparse-checkout discoverability
 
 Sparse-checkout is a feature most developers do not know exists. Even surfacing it as a setting will leave many users on full clone simply because they don't know to choose otherwise. Mitigation: Concerto detects repo size at clone time and proactively recommends sparse + blobless for repos over 10 GB. The default for new projects on large repos is sparse, not full.
 
-### 23.6 The relay business model
+### 22.5 The relay business model
 
 Running the relay costs money. Possible models: free for personal use up to a small bandwidth cap; paid tier for individuals who go over; flat per-seat fee for organizations who want SLA-backed relay; free for self-hosted relays. Decision deferred to V2.
 
-### 23.7 Open source posture
+### 22.6 Open source posture
 
 Strong reasons to open-source the Core: it builds trust ("we can't exfiltrate your code, we promise — and you can read the code to prove it"); platform teams expect to read and audit anything that runs in their infra. Strong reasons to keep clients closed-source initially: clients are where the polish lives, and polish is a competitive moat. Likely answer: open-source the Core under Apache 2.0 at V1; keep clients dual-licensed under a source-available license that allows non-commercial fork but reserves commercial rights.
 
-### 23.8 Pricing
+### 22.7 Pricing
 
-Conductor is free; users bring their own Claude Code / Codex subscriptions. Concerto should match this — free for individuals using their own model subscriptions — to lower switching cost. Revenue comes from: enterprise self-hosted (per-seat license), Concerto Cloud (managed execution tier), and possibly paid relay for individuals who exceed the free tier. No ads. No data sale.
+Concerto is free for individuals using their own model subscriptions, to lower switching cost. Revenue comes from: enterprise self-hosted (per-seat license), Concerto Cloud (managed execution tier), and possibly paid relay for individuals who exceed the free tier. No ads. No data sale.
 
-### 23.9 Risks we are knowingly accepting
+### 22.8 Risks we are knowingly accepting
 
-- Building three platforms (desktop, mobile, web) plus a server is a lot of surface area for a small team. We accept this is the cost of being meaningfully different from Conductor.
+- Building three platforms (desktop, mobile, web) plus a server is a lot of surface area for a small team. We accept this is the cost of meeting the bar we've set for ourselves.
 - Sparse-checkout has rough edges in some workflows (large vendored binaries, generated files). We accept that V1 will need clear documentation about which patterns work and which need full clone.
 - Mobile UX for code is fundamentally limited. We accept that the phone is not a place to write code, only to steer agents that write code.
 
-### 23.10 What we are not yet sure about
+### 22.9 What we are not yet sure about
 
 - Whether to ship Linux desktop alongside macOS/Windows in V1, or push it to V1.5. Leaning toward shipping all three at V1 because the Core is already cross-platform, so it is mostly a UI port.
 - Whether to invest in Xcode integration ahead of JetBrains. iOS users skew toward Xcode; the rest skew toward JetBrains.
 - Whether the Workflow Explorer should also surface non-AI cron jobs (system cron, GitHub Actions schedules) for a unified scheduling view, or stay AI-only.
 
-### 23.11 Concerto chat token cost and model selection
+### 22.10 Concerto chat token cost and model selection
 
 The Concerto chat runs a long-lived LLM session that consumes tokens even when the user isn't actively asking questions (because it digests workspace state in the background). Open questions:
 
@@ -2444,7 +2383,7 @@ The Concerto chat runs a long-lived LLM session that consumes tokens even when t
 
 Default for V1.0: Sonnet, shared account, configurable model per user. Revisit after 30 days of beta data.
 
-### 23.12 Suggestion-chip false-positive rate
+### 22.11 Suggestion-chip false-positive rate
 
 Auto-firing best-practice prompts is great when they're relevant and terrible when they're spammy. Open questions:
 
@@ -2454,7 +2393,7 @@ Auto-firing best-practice prompts is great when they're relevant and terrible wh
 
 V1 ships with conservative thresholds. We expect to retune based on beta data, possibly to per-user adaptive thresholds.
 
-### 23.13 Privacy of the Concerto chat agent
+### 22.12 Privacy of the Concerto chat agent
 
 The Concerto chat agent reads workspace summaries by default. Some users may consider even the summaries sensitive — for example, if a workspace is doing a security investigation, the summary itself could leak the investigation. Mitigation options:
 
@@ -2465,7 +2404,7 @@ V1.0 includes the per-workspace toggle. V1.5 may add the private-project tier if
 
 ---
 
-## 24. Appendix · Glossary
+## 23. Appendix · Glossary
 
 | Term | Meaning |
 |---|---|
@@ -2488,9 +2427,9 @@ V1.0 includes the per-workspace toggle. V1.5 may add the private-project tier if
 | Concerto Cloud | A future hosted-execution tier where agents run on Concerto-operated infrastructure (V2). |
 | Suggestion chip | A one-tap button beneath a chat composer that sends a pre-composed prompt to the agent. Driven by agent state, learned from user behavior, or contributed by org-shared best practices. |
 | Best-practice prompt | An auto-generated suggestion chip that fires when Concerto detects a known anti-pattern (e.g. context full, branch stale, destructive command). Always one-tap, never auto-executed. |
-| Concerto chat | The central coordinator chat at the top of the app, distinct from any workspace chat. Routes prompts, summarizes state, proposes next steps. Backed by its own LLM session with read-only access to workspace summaries. |
-| Coordinator agent | The LLM session behind the Concerto chat. Has tools for `route_prompt_to_workspace`, `list_workspaces`, `create_workspace`, etc. — but no shell, no file edits, no direct code access. |
-| `@workspace` routing | Syntax in the Concerto chat to address a specific workspace's agent (e.g. `@tokyo run the linter`). Also `@all`, `@idle`, `@blocked`. |
+| Concerto chat | The central maestro chat at the top of the app, distinct from any workspace chat. Routes prompts, summarizes state, proposes next steps. Backed by its own LLM session with read-only access to workspace summaries. |
+| Maestro agent | The LLM session behind the Concerto chat. Has tools for `route_prompt_to_workspace`, `list_workspaces`, `create_workspace`, etc. — but no shell, no file edits, no direct code access. |
+| `@workspace` routing | Syntax in the Concerto chat to address a specific workspace's agent (e.g. `@bach run the linter`). Also `@all`, `@idle`, `@blocked`. |
 | Digest | A short Concerto-generated summary of what every active workspace did in a given time window. Shown when the user returns to the app after being away. |
 
 ---
