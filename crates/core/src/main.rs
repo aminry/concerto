@@ -192,6 +192,24 @@ async fn run() -> Result<()> {
         handle
     };
 
+    // Task 31: wire the Agent Supervisor + Workarea Manager into the
+    // workarea + workspace handles so archive cascades can stop live
+    // sessions and the workspace-level cascade can drive workarea
+    // side effects through the workarea manager.
+    #[cfg(unix)]
+    let workarea_handle = workarea_handle.with_agent_supervisor(agent_supervisor_handle.clone());
+    let workspace_handle = workspace_handle.with_workarea_manager(workarea_handle.clone());
+
+    // Task 31: boot-time crash adoption (`design/03 §6.5`). Scan every
+    // non-archived workarea, probe `worktree_root`, transition rows
+    // whose directory is missing to `'crashed'`. The user — not
+    // Concerto — decides whether to restart or archive a crashed row.
+    match workarea_handle.adopt_crashed_workareas().await {
+        Ok(0) => tracing::debug!("crash-adoption sweep: no workareas to adopt"),
+        Ok(n) => tracing::info!(adopted = n, "crash-adoption sweep complete"),
+        Err(e) => tracing::warn!(error = %e, "crash-adoption sweep failed"),
+    }
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
     // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`

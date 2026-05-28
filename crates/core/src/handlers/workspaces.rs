@@ -116,6 +116,24 @@ impl WorkspacesService for WorkspacesHandler {
             .map_err(error_to_status)?;
         Ok(Response::new(()))
     }
+
+    #[tracing::instrument(skip_all, name = "Workspaces::RestoreWorkspace")]
+    async fn restore_workspace(
+        &self,
+        request: Request<ProtoWorkspaceId>,
+    ) -> Result<Response<ProtoWorkspace>, Status> {
+        let req = request.into_inner();
+        if req.value.is_empty() {
+            return Err(Status::invalid_argument("workspace id is required"));
+        }
+        let id = PersistWorkspaceId(req.value);
+        let row = self
+            .workspace_manager
+            .restore_workspace(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(workspace_to_proto(row)))
+    }
 }
 
 /// Convert a persisted `Workspace` into the wire shape.

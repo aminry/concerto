@@ -44,8 +44,13 @@ use concerto_persist::{
 use sqlx::Connection;
 use tokio::sync::broadcast;
 
+#[cfg(unix)]
+use crate::agent_supervisor::AgentSupervisorHandle;
 use crate::repo_manager::RepoManager;
 use crate::supervisor::{Actor, ActorContext};
+use crate::workspace_manager::archive::{
+    recreate_worktrees, remove_worktrees_and_root, ArchiveOpts,
+};
 use crate::workspace_manager::{context_dir, files_to_copy, COMPOSERS};
 
 /// Maximum number of composer-name suffix retries before giving up. 100
@@ -79,6 +84,10 @@ pub enum WorkareaEvent {
     Created(Workarea),
     /// A workarea was archived. Payload is the workarea id.
     Archived(WorkareaId),
+    /// A workarea was restored from archive (Task 31). Payload is the
+    /// post-restore row (status reset to `"active"`, `permission_mode`
+    /// reset to `NULL` per `design/03 §3.7`).
+    Restored(Workarea),
 }
 
 /// Cloneable handle to the Workarea Manager's shared state.
@@ -90,6 +99,12 @@ pub struct WorkareaManager {
     /// `<data_dir>/workspaces/<workspace.slug>/<composer>/`.
     data_dir: Arc<PathBuf>,
     events: broadcast::Sender<WorkareaEvent>,
+    /// Optional Agent Supervisor handle (Task 31). Held so
+    /// [`archive_workarea`] can drive `stop_session(reason=archive)` on
+    /// every live session before tearing down the worktree. `None` in the
+    /// in-process unit tests that don't spawn agent hosts.
+    #[cfg(unix)]
+    agent_supervisor: Option<AgentSupervisorHandle>,
 }
 
 impl WorkareaManager {
@@ -107,12 +122,34 @@ impl WorkareaManager {
             repo_manager,
             data_dir,
             events,
+            #[cfg(unix)]
+            agent_supervisor: None,
         }
+    }
+
+    /// Attach an [`AgentSupervisorHandle`] so archive cascades can stop
+    /// live sessions. Used by the production binary; integration tests
+    /// can leave the supervisor `None` when they don't need session
+    /// shutdown wired.
+    #[cfg(unix)]
+    pub fn with_agent_supervisor(mut self, supervisor: AgentSupervisorHandle) -> Self {
+        self.agent_supervisor = Some(supervisor);
+        self
     }
 
     /// Subscribe to `workarea.events`.
     pub fn subscribe(&self) -> broadcast::Receiver<WorkareaEvent> {
         self.events.subscribe()
+    }
+
+    /// Probe every non-archived workarea; mark rows whose `worktree_root`
+    /// directory is gone from disk as `'crashed'` (`design/03 §6.5`).
+    ///
+    /// Called once at Core boot from `main.rs` so a Concerto reinstall
+    /// or `data_dir` wipe doesn't leave stale `active` rows pointing at
+    /// non-existent worktrees. Returns the number of rows adopted.
+    pub async fn adopt_crashed_workareas(&self) -> Result<usize> {
+        crate::workspace_manager::archive::adopt_crashed_workareas(&self.persistence).await
     }
 
     /// Create a workarea.
@@ -394,16 +431,176 @@ impl WorkareaManager {
 
     /// Archive a workarea. Sets `archived_at` and transitions `status`
     /// to `"archived"`. Idempotent.
+    ///
+    /// Equivalent to `archive_workarea(id, ArchiveOpts::default())` —
+    /// the worktree is kept on disk per `design/03` R-5 (fast restore).
+    /// Kept as a thin wrapper for Task 20 call sites; new code should
+    /// prefer [`Self::archive_workarea`] which exposes the
+    /// `remove_worktree` knob.
     pub async fn archive(&self, id: &WorkareaId) -> Result<()> {
-        if self.get(id).await?.is_none() {
-            return Err(Error::NotFound(format!("workarea {id} not found")));
+        self.archive_workarea(id, ArchiveOpts::default()).await
+    }
+
+    /// Archive a workarea with [`ArchiveOpts`] (Task 31).
+    ///
+    /// Steps (per `design/03 §3.7`):
+    /// 1. Resolve the workarea row (404 if unknown).
+    /// 2. Ask the Agent Supervisor to `stop_session(sid, "archive")` for
+    ///    every session whose `ended_at IS NULL`. Errors logged
+    ///    best-effort; the workarea archive proceeds either way (the DB
+    ///    archive is the source of truth, the supervisor's in-memory
+    ///    state is a fast-path cache).
+    /// 3. If `opts.remove_worktree`, shell out to
+    ///    `git worktree remove --force` for each repo and remove the
+    ///    workarea root directory.
+    /// 4. In one writer transaction: set `archived_at = now` AND
+    ///    `status = 'archived'`.
+    /// 5. Emit [`WorkareaEvent::Archived`].
+    ///
+    /// Idempotent: archiving an already-archived workarea re-stamps the
+    /// timestamp and re-emits the event.
+    pub async fn archive_workarea(&self, id: &WorkareaId, opts: ArchiveOpts) -> Result<()> {
+        let workarea = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {id} not found")))?;
+
+        // 1. Stop every live session for this workarea. Best-effort —
+        // the supervisor's in-memory state is a fast-path; the DB row's
+        // `ended_at` is what callers should inspect.
+        self.stop_live_sessions(id).await;
+
+        // 2. Optional disk reclaim.
+        if opts.remove_worktree {
+            let worktree_root = PathBuf::from(&workarea.worktree_root);
+            remove_worktrees_and_root(&self.persistence, id, &worktree_root).await?;
         }
+
+        // 3. One-tx archive of the workarea row.
         let now_ms = now_unix_ms();
         let mut writer = self.persistence.writer().await;
-        concerto_persist::workareas::archive(&mut writer, id, now_ms).await?;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::workareas::archive(&mut tx, id, now_ms).await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
         drop(writer);
+
         let _ = self.events.send(WorkareaEvent::Archived(id.clone()));
         Ok(())
+    }
+
+    /// Restore an archived workarea (Task 31).
+    ///
+    /// Steps (per `design/03 §3.7`):
+    /// 1. Resolve the workarea row (404 if unknown).
+    /// 2. If the worktree directory is gone from disk, re-run
+    ///    `git worktree add` using the stored `branch_name`.
+    /// 3. In one writer transaction: clear `archived_at`, reset
+    ///    `permission_mode = NULL` (security stance — restored workareas
+    ///    inherit the workspace default rather than silently resuming
+    ///    elevated modes), set `status = 'active'`.
+    /// 4. Emit [`WorkareaEvent::Restored`].
+    pub async fn restore_workarea(&self, id: &WorkareaId) -> Result<Workarea> {
+        let workarea = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {id} not found")))?;
+
+        // Re-create worktree if missing.
+        let worktree_root = PathBuf::from(&workarea.worktree_root);
+        recreate_worktrees(&self.persistence, id, &worktree_root, &workarea.branch_name).await?;
+
+        // Clear archived_at + reset permission_mode + status='active'.
+        let mut writer = self.persistence.writer().await;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::workareas::restore(&mut tx, id).await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        drop(writer);
+
+        // Re-read so the event payload reflects the post-restore row.
+        let restored = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("workarea {id} vanished mid-restore")))?;
+
+        let _ = self.events.send(WorkareaEvent::Restored(restored.clone()));
+        Ok(restored)
+    }
+
+    /// Best-effort: ask the Agent Supervisor to stop every session whose
+    /// `ended_at IS NULL` for `workarea_id`. Errors are logged and
+    /// swallowed — the archive cascade owns the eventual DB state via
+    /// `archive_workarea`, the supervisor's in-memory map is a fast-path
+    /// cache.
+    async fn stop_live_sessions(&self, workarea_id: &WorkareaId) {
+        #[cfg(unix)]
+        {
+            let Some(sup) = self.agent_supervisor.as_ref() else {
+                return;
+            };
+            let live = match concerto_persist::sessions::list_live_ids_by_workarea(
+                self.persistence.readers(),
+                workarea_id,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        workarea = %workarea_id,
+                        error = %e,
+                        "failed to list live sessions during archive"
+                    );
+                    return;
+                }
+            };
+            for sid in live {
+                if let Err(e) = sup.stop_session(&sid, Some("archive".to_string())).await {
+                    tracing::warn!(
+                        session = %sid,
+                        workarea = %workarea_id,
+                        error = %e,
+                        "stop_session failed during archive; continuing"
+                    );
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = workarea_id;
+        }
+    }
+
+    /// Internal hook used by [`super::WorkspaceManager::archive`]:
+    /// stop the live sessions + (optionally) tear down the worktree for
+    /// one workarea, WITHOUT touching the workarea's DB row. The caller
+    /// stamps `archived_at` for the whole batch in a single transaction.
+    ///
+    /// Skips the DB UPDATE so the cascade stays atomic at the
+    /// workspace-archive level.
+    pub(crate) async fn archive_workarea_side_effects(
+        &self,
+        id: &WorkareaId,
+        worktree_root: &Path,
+        opts: ArchiveOpts,
+    ) -> Result<()> {
+        self.stop_live_sessions(id).await;
+        if opts.remove_worktree {
+            remove_worktrees_and_root(&self.persistence, id, worktree_root).await?;
+        }
+        Ok(())
+    }
+
+    /// Republish a [`WorkareaEvent::Archived`] from the
+    /// `archive_workspace` cascade. The DB UPDATE happens inside the
+    /// workspace-level transaction; this method lets the WorkspaceManager
+    /// fan-out the event after commit so subscribers see the same shape
+    /// as a single-workarea archive.
+    ///
+    /// Returns the number of receivers that observed the event, mirroring
+    /// `broadcast::Sender::send` semantics. Errors are swallowed (a
+    /// closed channel is not a workspace-archive failure).
+    pub(crate) fn publish_archived(&self, id: WorkareaId) -> usize {
+        self.events.send(WorkareaEvent::Archived(id)).unwrap_or(0)
     }
 }
 

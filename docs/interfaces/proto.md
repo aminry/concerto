@@ -530,6 +530,15 @@ message GetDiffRequest {
 }
 ```
 
+### message `ArchiveWorkareaRequest`
+
+```proto
+message ArchiveWorkareaRequest {
+  string workarea_id = 1;
+  bool remove_worktree = 2;
+}
+```
+
 ### service `Workareas`
 
 ```proto
@@ -541,6 +550,13 @@ service Workareas {
   // Task 29: hot-path diff. Returns the structured worktree-vs-HEAD
   // diff for one repo inside a workarea.
   rpc GetWorkareaRepoDiff(GetDiffRequest) returns (DiffPayload);
+  // Task 31: archive + restore lifecycle.
+  //
+  // `ArchiveWorkareaWithOpts` exposes the `remove_worktree` knob; the
+  // legacy `ArchiveWorkarea(WorkareaId)` is kept for back-compat
+  // (default opts = keep worktree).
+  rpc ArchiveWorkareaWithOpts(ArchiveWorkareaRequest) returns (google.protobuf.Empty);
+  rpc RestoreWorkarea(WorkareaId) returns (Workarea);
 }
 ```
 
@@ -607,6 +623,10 @@ service Workspaces {
   rpc GetWorkspace(WorkspaceId) returns (Workspace);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
   rpc ArchiveWorkspace(WorkspaceId) returns (google.protobuf.Empty);
+  // Task 31: clears `workspaces.archived_at`. Workareas remain
+  // individually archived per `design/03 §3.7`; the user restores each
+  // explicitly.
+  rpc RestoreWorkspace(WorkspaceId) returns (Workspace);
 }
 ```
 

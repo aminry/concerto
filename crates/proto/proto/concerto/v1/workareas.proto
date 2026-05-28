@@ -111,6 +111,15 @@ message GetDiffRequest {
   string repository_id = 2;
 }
 
+// Task 31: inputs for `Workareas.ArchiveWorkareaWithOpts`. The boolean
+// `remove_worktree` toggles whether the per-repo `git worktree remove`
+// + workarea-root teardown runs; default `false` keeps the worktree on
+// disk per design/03 R-5 (fast restore).
+message ArchiveWorkareaRequest {
+  string workarea_id = 1;
+  bool remove_worktree = 2;
+}
+
 service Workareas {
   rpc CreateWorkarea(CreateWorkareaRequest) returns (Workarea);
   rpc GetWorkarea(WorkareaId) returns (Workarea);
@@ -119,4 +128,11 @@ service Workareas {
   // Task 29: hot-path diff. Returns the structured worktree-vs-HEAD
   // diff for one repo inside a workarea.
   rpc GetWorkareaRepoDiff(GetDiffRequest) returns (DiffPayload);
+  // Task 31: archive + restore lifecycle.
+  //
+  // `ArchiveWorkareaWithOpts` exposes the `remove_worktree` knob; the
+  // legacy `ArchiveWorkarea(WorkareaId)` is kept for back-compat
+  // (default opts = keep worktree).
+  rpc ArchiveWorkareaWithOpts(ArchiveWorkareaRequest) returns (google.protobuf.Empty);
+  rpc RestoreWorkarea(WorkareaId) returns (Workarea);
 }

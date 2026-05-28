@@ -172,6 +172,85 @@ pub async fn archive(conn: &mut SqliteConnection, id: &WorkareaId, at: i64) -> R
     Ok(())
 }
 
+/// Restore an archived workarea (Task 31).
+///
+/// Clears `archived_at`, sets `status = 'active'`, and resets
+/// `permission_mode` to `NULL` per `design/03 §3.7` (security stance:
+/// restored workareas inherit the workspace's current default rather than
+/// silently resuming any prior elevated mode such as `yolo`).
+///
+/// Idempotent — restoring a non-archived workarea is a no-op at the
+/// transition level (status update is still applied but values are
+/// unchanged).
+pub async fn restore(conn: &mut SqliteConnection, id: &WorkareaId) -> Result<()> {
+    sqlx::query(
+        "UPDATE workareas
+         SET archived_at = NULL, status = 'active', permission_mode = NULL
+         WHERE id = ?",
+    )
+    .bind(&id.0)
+    .execute(conn)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+/// List non-archived workareas in a workspace, returning only the
+/// (id, worktree_root, branch_name) fields the archive cascade needs.
+///
+/// Task 31's `archive_workspace` uses this to enumerate which workareas
+/// must be archived in the same transaction as the workspace itself.
+/// Returning a narrow projection keeps the query cheap when a workspace
+/// has many workareas.
+pub async fn list_non_archived_minimal(
+    pool: &SqlitePool,
+    workspace_id: &WorkspaceId,
+) -> Result<Vec<(WorkareaId, String, String)>> {
+    let rows = sqlx::query(
+        "SELECT id, worktree_root, branch_name
+         FROM workareas
+         WHERE workspace_id = ? AND archived_at IS NULL",
+    )
+    .bind(&workspace_id.0)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                WorkareaId(r.get::<String, _>("id")),
+                r.get::<String, _>("worktree_root"),
+                r.get::<String, _>("branch_name"),
+            )
+        })
+        .collect())
+}
+
+/// List every non-archived workarea (across all workspaces). Used by the
+/// boot-time crash adoption sweep (`design/03 §6.5`) to probe disks and
+/// transition workareas whose worktree has gone missing into the
+/// `crashed` state.
+pub async fn list_all_non_archived(pool: &SqlitePool) -> Result<Vec<(WorkareaId, String)>> {
+    let rows = sqlx::query(
+        "SELECT id, worktree_root
+         FROM workareas
+         WHERE archived_at IS NULL AND status != 'crashed'",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                WorkareaId(r.get::<String, _>("id")),
+                r.get::<String, _>("worktree_root"),
+            )
+        })
+        .collect())
+}
+
 /// Composer names currently in use within a workspace (sourced from the
 /// `workareas` table). Used by the Workspace Manager's allocation loop
 /// to find the lowest-index unused composer.

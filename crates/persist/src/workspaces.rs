@@ -103,6 +103,20 @@ pub async fn archive(conn: &mut SqliteConnection, id: &WorkspaceId, at: i64) -> 
     Ok(())
 }
 
+/// Restore an archived workspace (Task 31).
+///
+/// Clears `archived_at` only. Per `design/03 §3.7`, restoring a workspace
+/// does NOT auto-restore its workareas — those remain individually
+/// archived and the user restores them one at a time. Idempotent.
+pub async fn restore(conn: &mut SqliteConnection, id: &WorkspaceId) -> Result<()> {
+    sqlx::query("UPDATE workspaces SET archived_at = NULL WHERE id = ?")
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 /// Replace the set of `workspace_repos` rows for a workspace.
 ///
 /// V0.1 only ever writes a single repo; the API is plural so V1.0

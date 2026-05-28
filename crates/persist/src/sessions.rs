@@ -167,6 +167,27 @@ pub async fn get(pool: &SqlitePool, id: &SessionId) -> Result<Option<Session>> {
     Ok(row.map(row_to_session))
 }
 
+/// List `sessions.id` values for a workarea whose `ended_at` is NULL
+/// (i.e. potentially live sessions). Task 31's archive cascade uses this
+/// to decide which sessions to ask the Agent Supervisor to stop.
+///
+/// Reads the read-only pool — callers do not need to hold the writer
+/// guard for this lookup.
+pub async fn list_live_ids_by_workarea(
+    pool: &SqlitePool,
+    workarea_id: &WorkareaId,
+) -> Result<Vec<SessionId>> {
+    let rows = sqlx::query("SELECT id FROM sessions WHERE workarea_id = ? AND ended_at IS NULL")
+        .bind(&workarea_id.0)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SessionId(r.get::<String, _>("id")))
+        .collect())
+}
+
 /// List sessions attached to a workarea (read-only), newest first.
 pub async fn list_by_workarea(pool: &SqlitePool, workarea_id: &WorkareaId) -> Result<Vec<Session>> {
     let rows = sqlx::query(
