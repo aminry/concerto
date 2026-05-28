@@ -98,7 +98,13 @@ Refs: tasks/01-cargo-workspace-skeleton.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
+- **Drift from plan:**
+  - Committed the generated `Cargo.lock`. It was not in the `Outputs` list, but the prescribed `.gitignore` does not exclude it and the workspace ships four binaries (`concerto-core`, `concerto-relay`, `concerto`, `concerto-agent-host`), so committing it is the standard Rust convention for reproducible builds. Task 02 should confirm this and add it explicitly to its Outputs if it touches dependency declarations.
+  - Crate package names are namespaced (`concerto-core`, `concerto-relay`, `concerto-cli` named `concerto-cli` with bin `concerto`, etc.) rather than the bare directory names. This avoids name collisions on crates.io and matches the binary names already locked. Crate *directory* names (the path-locked interface in this task) are unchanged: `crates/core`, `crates/relay`, `crates/cli`, ….
+  - `rust-toolchain.toml` pins `channel = "stable"` with `profile = "minimal"`. The task said "pinning stable Rust"; using a channel rather than a specific version (e.g., `1.78.0`) lets CI float forward with the MSRV gate enforced via the workspace's `rust-version = "1.78"`. If Task 02's CI matrix needs a hard pin, swap the channel to a specific version there.
+- **Open questions for next task:**
+  - The design doc §6.1 enumerates 9 crates (no `persist`, `agent-host`, `error`); the task README §4 and this task file extend the list to 12. The longer list is consistent with later tasks (Task 05 fills `error`, Task 08 `persist`, Task 21 `agent-host`), so no action is required — but if Task 02's `cargo deny` config or CI matrix is generated from the design doc, it needs to read the workspace `Cargo.toml` instead.
+  - `relay` and `cli` are present-but-empty in V0.1 and have no V0.1 task that fills them; their `lib.rs` / `main.rs` placeholders point at "V1.0 task". Task 02's CI should still build them (they are workspace members) so this stays green.
+  - Toolchain installed on the dev machine during this task: rustc 1.95.0 / cargo 1.95.0. Anything older than 1.78 will fail the workspace `rust-version` gate.
 - **Deliberate debt:** —
-- **Smoke-gate state:** —
+- **Smoke-gate state:** Not yet established. Task 03 creates `scripts/smoke.sh`.
