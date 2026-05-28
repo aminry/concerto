@@ -210,6 +210,7 @@ async fn run() -> Result<()> {
     let factory_workarea_handle = workarea_handle.clone();
     #[cfg(unix)]
     let factory_agent_handle = agent_supervisor_handle.clone();
+    let factory_persistence = Arc::clone(&persistence);
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -223,6 +224,7 @@ async fn run() -> Result<()> {
                     Some(factory_workarea_handle.clone()),
                     #[cfg(unix)]
                     Some(factory_agent_handle.clone()),
+                    Some(Arc::clone(&factory_persistence)),
                 )
             },
             ApiServerConfig { socket_path },

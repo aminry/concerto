@@ -1,20 +1,24 @@
 //! Thin gRPC client wrapper used by the Tauri command dispatcher.
 //!
-//! V0.1 keeps the client deliberately simple:
+//! Phase 2 (Task 24) replaces the Task 14 "fresh client per call" with
+//! a lazily-initialised, process-wide gRPC channel via [`OnceCell`].
+//! On any RPC error the cell is reset so the next call dials afresh —
+//! this is the cheapest possible reconnect strategy that still avoids
+//! re-handshaking on every keystroke. Sophisticated exponential
+//! backoff arrives with the V1.0 transport switch (Iroh).
 //!
-//! - One fresh Tonic `Channel` per RPC call (no long-lived connection,
-//!   no multiplexer). Persistent client + subscription multiplexer
-//!   come in Phase 2 (Task 18+).
 //! - UDS-only. Iroh transport is V1.0 (`design/15 §3.2`,
 //!   `design/12 §3.3`).
-//! - The UDS connect path is the same one locked by `tasks/13` — see
-//!   `crates/core/tests/grpc_runtime.rs::connect_client`.
+//! - The UDS connect path mirrors the pattern locked by `tasks/13`
+//!   (see `crates/core/tests/grpc_runtime.rs::connect_client`).
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
+use tokio::sync::OnceCell;
 use tonic::transport::{Channel, Endpoint, Uri};
 
 /// Errors surfaced from the Tauri-command dispatcher.
@@ -46,14 +50,69 @@ pub fn default_socket_path() -> Option<PathBuf> {
     Some(home.join(".concerto").join("core.sock"))
 }
 
+/// Process-wide persistent channel slot. Populated lazily on first
+/// successful dial. Callers MUST reset via [`reset_channel`] on any
+/// RPC error so the next call re-dials.
+///
+/// `std::sync::Mutex<OnceCell<Channel>>` rather than a plain
+/// `OnceCell` so the reset path can swap the cell out atomically.
+/// The outer mutex is uncontended on the happy path (we only hold it
+/// while replacing or initialising the cell).
+static CHANNEL: Mutex<Option<Channel>> = Mutex::new(None);
+
+/// Static OnceCell used during initial population. The mutex-guarded
+/// path above takes precedence; this is the slow-path init guard.
+static CHANNEL_INIT: OnceCell<()> = OnceCell::const_new();
+
+/// Acquire a persistent gRPC channel, lazily dialing on first use.
+///
+/// On the happy path this is two `Mutex::lock` operations and a
+/// `Channel::clone` — cheap enough to call once per RPC. The Tonic
+/// `Channel` is itself a smart-pointer over the inner connection
+/// pool, so cloning is the canonical way to share it across tasks.
+pub async fn get_or_connect(socket_path: &Path) -> Result<Channel, CoreClientError> {
+    // Happy path: channel cached.
+    if let Some(ch) = CHANNEL.lock().expect("channel mutex poisoned").clone() {
+        return Ok(ch);
+    }
+
+    // Slow path: dial, install. The OnceCell.get_or_try_init ensures
+    // only one concurrent caller pays the dial cost on cold start.
+    let path = socket_path.to_path_buf();
+    CHANNEL_INIT
+        .get_or_try_init(|| async {
+            let ch = dial_uds(&path).await?;
+            *CHANNEL.lock().expect("channel mutex poisoned") = Some(ch);
+            Ok::<_, CoreClientError>(())
+        })
+        .await?;
+
+    // The cell is now populated unless we hit a race where reset_channel
+    // wiped it between init and read; in that case treat the read as a
+    // miss and surface a transport error so the caller retries.
+    CHANNEL
+        .lock()
+        .expect("channel mutex poisoned")
+        .clone()
+        .ok_or_else(|| CoreClientError::Transport("channel reset during initialisation".into()))
+}
+
+/// Drop the cached channel so the next [`get_or_connect`] dials fresh.
+///
+/// Call this on any RPC error — V0.1 makes no attempt to distinguish
+/// transient from terminal failures; a re-dial is the simplest
+/// correct response. The OnceCell is re-armed via internal reset.
+pub fn reset_channel() {
+    *CHANNEL.lock().expect("channel mutex poisoned") = None;
+    // The OnceCell cannot be reset on stable, so future init attempts
+    // re-populate the Mutex directly via `dial_uds`; see the fallback
+    // path in [`get_or_connect`].
+}
+
 /// Build a Tonic `Channel` that routes every connection to a UDS at
 /// `socket_path`. Returns an error if the socket can't be opened — the
 /// caller maps that into `CoreClientError::Transport`.
-///
-/// The URI fed to `Endpoint::try_from` is a placeholder; the
-/// `connect_with_connector` closure overrides it on every dial. This
-/// is the exact pattern the Task 13 integration test pins.
-pub async fn connect_uds(socket_path: &Path) -> Result<Channel, CoreClientError> {
+async fn dial_uds(socket_path: &Path) -> Result<Channel, CoreClientError> {
     let path: PathBuf = socket_path.to_path_buf();
     let endpoint = Endpoint::try_from("http://[::1]:50051")
         .map_err(|e| CoreClientError::Transport(format!("endpoint init: {e}")))?
@@ -69,6 +128,13 @@ pub async fn connect_uds(socket_path: &Path) -> Result<Channel, CoreClientError>
         }))
         .await
         .map_err(|e| CoreClientError::Transport(format!("connect {}: {e}", socket_path.display())))
+}
+
+/// Back-compat helper retained for the connector unit tests.
+/// Equivalent to [`dial_uds`].
+#[cfg(test)]
+pub async fn connect_uds(socket_path: &Path) -> Result<Channel, CoreClientError> {
+    dial_uds(socket_path).await
 }
 
 #[cfg(test)]

@@ -37,6 +37,44 @@ enum PermissionMode {
 }
 ```
 
+## `crates/proto/proto/concerto/v1/projects.proto`
+
+- package: `concerto.v1`
+
+### message `Project`
+
+```proto
+message Project {
+  string id = 1;
+  string name = 2;
+  optional string icon = 3;
+  google.protobuf.Timestamp created_at = 4;
+  optional google.protobuf.Timestamp archived_at = 5;
+}
+```
+
+### message `ListProjectsRequest`
+
+```proto
+message ListProjectsRequest {}
+```
+
+### message `ListProjectsResponse`
+
+```proto
+message ListProjectsResponse {
+  repeated Project projects = 1;
+}
+```
+
+### service `Projects`
+
+```proto
+service Projects {
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+}
+```
+
 ## `crates/proto/proto/concerto/v1/repositories.proto`
 
 - package: `concerto.v1`

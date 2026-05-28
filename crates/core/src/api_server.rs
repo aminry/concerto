@@ -31,6 +31,7 @@ use crate::agent_supervisor::AgentSupervisorHandle;
 use crate::repo_manager::RepoManager;
 use crate::supervisor::{Actor, ActorContext, SupervisorView};
 use crate::workspace_manager::{WorkareaManager, WorkspaceManager};
+use concerto_persist::Persistence;
 
 /// Configuration for [`ApiServerActor`].
 #[derive(Clone)]
@@ -69,6 +70,11 @@ pub struct ApiServerActor {
     /// `workspace.events` / `workarea.events`.
     #[cfg(unix)]
     agent_supervisor: Option<AgentSupervisorHandle>,
+    /// Optional `Persistence` handle. When `Some`, the gRPC `Projects`
+    /// service is registered (Task 24) so the Desktop sidebar can list
+    /// projects without hardcoding a project id. V0.1 ships read-only;
+    /// creation is still seeded via direct SQL.
+    persistence: Option<Arc<Persistence>>,
 }
 
 impl ApiServerActor {
@@ -83,6 +89,7 @@ impl ApiServerActor {
             workarea_manager: None,
             #[cfg(unix)]
             agent_supervisor: None,
+            persistence: None,
         }
     }
 
@@ -103,6 +110,7 @@ impl ApiServerActor {
             workarea_manager: None,
             #[cfg(unix)]
             agent_supervisor: None,
+            persistence: None,
         }
     }
 
@@ -119,6 +127,7 @@ impl ApiServerActor {
         workspace_manager: Option<WorkspaceManager>,
         workarea_manager: Option<WorkareaManager>,
         #[cfg(unix)] agent_supervisor: Option<AgentSupervisorHandle>,
+        persistence: Option<Arc<Persistence>>,
     ) -> Self {
         Self {
             started_at,
@@ -128,6 +137,7 @@ impl ApiServerActor {
             workarea_manager,
             #[cfg(unix)]
             agent_supervisor,
+            persistence,
         }
     }
 }
@@ -152,6 +162,7 @@ impl Actor for ApiServerActor {
                 self.workspace_manager,
                 self.workarea_manager,
                 self.agent_supervisor,
+                self.persistence,
                 ctx.shutdown,
             )
             .await
@@ -164,6 +175,7 @@ impl Actor for ApiServerActor {
                 self.repo_manager,
                 self.workspace_manager,
                 self.workarea_manager,
+                self.persistence,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -185,6 +197,7 @@ async fn run_uds(
     workspace_manager: Option<WorkspaceManager>,
     workarea_manager: Option<WorkareaManager>,
     agent_supervisor: Option<AgentSupervisorHandle>,
+    persistence: Option<Arc<Persistence>>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -194,12 +207,14 @@ async fn run_uds(
     use tokio_stream::wrappers::UnixListenerStream;
     use tonic::transport::Server;
 
+    use crate::handlers::projects::ProjectsHandler;
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
     use crate::handlers::sessions::SessionsHandler;
     use crate::handlers::streams::StreamsHandler;
     use crate::handlers::workareas::WorkareasHandler;
     use crate::handlers::workspaces::WorkspacesHandler;
+    use concerto_proto::v1::projects_server::ProjectsServer;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
     use concerto_proto::v1::sessions_server::SessionsServer;
@@ -259,6 +274,10 @@ async fn run_uds(
     let runtime_service = RuntimeServer::new(handler);
 
     let mut builder = Server::builder().add_service(runtime_service);
+    if let Some(persistence) = persistence {
+        let projects_service = ProjectsServer::new(ProjectsHandler::new(persistence));
+        builder = builder.add_service(projects_service);
+    }
     if let Some(repo_manager) = repo_manager {
         let repositories_service = RepositoriesServer::new(RepositoriesHandler::new(repo_manager));
         builder = builder.add_service(repositories_service);

@@ -2,18 +2,23 @@
 // V0.1 ships macOS-only so this is forward-compat hygiene only.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! `concerto-desktop` — Tauri 2 shell entry point (Task 14).
+//! `concerto-desktop` — Tauri 2 shell entry point (Task 14, extended
+//! by Task 24).
 //!
-//! Owns the native window, hosts the WebView renderer, and exposes the
-//! `concerto_rpc` / `concerto_ping` Tauri commands. All gRPC plumbing
-//! lives in `core_client.rs`; dispatch lives in `commands.rs`.
+//! Owns the native window, hosts the WebView renderer, and exposes
+//! the renderer-facing Tauri commands (`concerto_rpc`,
+//! `concerto_ping`, `concerto_subscribe`, `concerto_unsubscribe`).
+//! All gRPC plumbing lives in `core_client.rs`; dispatch + the
+//! subscription registry live in `commands.rs`.
 //!
 //! Phase scope:
 //!
-//! - V0.1 (this task): window opens, renderer round-trips
+//! - V0.1 (Task 14): window opens, renderer round-trips
 //!   `Runtime.GetServerCapabilities` over UDS.
-//! - Phase 2 (Task 24+): real workspace UI (shadcn/ui, Zustand,
-//!   React Query, xterm.js).
+//! - Phase 2 (Task 24): persistent gRPC channel, wider dispatcher
+//!   (Projects.ListProjects, Workspaces.{List,Get},
+//!   Workareas.GetWorkarea, Sessions.ListSessions stub), and the
+//!   `concerto_subscribe`/`unsubscribe` bridge over Streams.
 //! - Phase 4 (Task 49+, 53): launchd integration, auto-update, code
 //!   signing.
 
@@ -25,9 +30,15 @@ fn main() {
     // thread; the closure inside `.invoke_handler` is hot path only
     // for IPC, not init.
     tauri::Builder::default()
+        .setup(|app| {
+            commands::manage_subscriptions(app);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::concerto_ping,
             commands::concerto_rpc,
+            commands::concerto_subscribe,
+            commands::concerto_unsubscribe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running concerto-desktop");

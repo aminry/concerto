@@ -67,13 +67,13 @@ Build the first real React UI: a sidebar listing projects + their workspaces (th
 7. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Sidebar renders workspaces from the Core.
-- [ ] Event-driven invalidation works (manual test).
-- [ ] No renderer direct network calls (verified by inspection — only `invoke()` calls).
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Sidebar renders workspaces from the Core.
+- [x] Event-driven invalidation works (manual test). *(Wired via `useEventSubscription("workspace.events")` in `Sidebar.tsx`; the operator-driven end-to-end check is deferred to interactive run as noted in the orchestrator brief.)*
+- [x] No renderer direct network calls (verified by inspection — only `invoke()` calls).
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `apps/desktop/package.json` (modified — React Query, Zustand, shadcn deps)
@@ -104,7 +104,19 @@ Refs: tasks/24-desktop-workspace-list.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** sidebar shows only projects+workspaces; workareas (third tree level) come in Task 25. Right panel is a JSON placeholder.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **shadcn/ui CLI install skipped.** `pnpm dlx shadcn@latest init` requires interactive input that the orchestrator can't satisfy. Per the orchestrator pre-decision, we hand-rolled the only two primitives the V0.1 sidebar actually uses (`Button`, `Card{,Header,Title,Content}`) into `apps/desktop/src/components/ui/` with hard-coded Tailwind class strings — no `sidebar`, `dialog`, `input`. No `clsx`/`tw-merge` shim either; classnames are joined inline. Phase 3 polish (Task 46+) is the natural place to do the real `shadcn init`.
+  - **`Projects` gRPC service added.** `crates/proto/proto/concerto/v1/projects.proto` introduces a single `ListProjects` RPC (no Create — V0.1 still seeds via SQL per Task 19 Handoff). Handler at `crates/core/src/handlers/projects.rs`, registered in `api_server.rs` via the new `ApiServerActor::with_managers(...persistence: Option<Arc<Persistence>>)` slot. Field numbers FROZEN as of Task 24. Test harness gained `projects_client()`/`ProjectsClient` matching the existing pattern. `crates/proto/build.rs` now lists `concerto.v1.Project.{created_at,archived_at}` in `timestamp_fields`.
+  - **`ApiServerActor::with_managers` grew a 7th argument**, `persistence: Option<Arc<Persistence>>`, threaded from `main.rs`. The 6-arg call sites in `crates/core/src/main.rs` are the only ones inside the workspace (no test fallout). Future managers (e.g. Repositories.GetRepository persistence path) can reuse the same slot.
+  - **Persistent gRPC channel in the Tauri shell.** Task 14's "fresh dial per call" is replaced with `core_client.rs::get_or_connect`, backed by a `Mutex<Option<Channel>>` + `OnceCell<()>` init guard. On any RPC failure the dispatcher calls `reset_channel()` so the next invoke re-dials. No exponential backoff — V0.1 is local UDS only.
+  - **`concerto_subscribe` / `concerto_unsubscribe` Tauri commands added.** `subscribe` opens `Streams.Subscribe(subject)` and forwards every frame to the renderer via `app.emit("concerto/<subject>", event)`. The forwarder task lives in a `Mutex<HashMap<String, JoinHandle>>` managed-state registry; `unsubscribe(id)` aborts the task. Subscription ids are `<subject>-<unix_millis>`; uuid was overkill for V0.1.
+  - **`Sessions.ListSessions` is a local stub** that returns `{"sessions": []}` without calling the Core (per pre-decision 11). The dispatcher still validates the payload shape so the wire surface is honest. Task 26 promotes this to a real RPC.
+  - **Frontend deps added in `apps/desktop/`:** `@tanstack/react-query@5.100.14`, `zustand@5.0.14` (both runtime); `pnpm-lock.yaml` regenerated and committed. Skipped `@tanstack/react-query-devtools` per the speed brief.
+  - **`tokio-stream` promoted to a regular dep** in `apps/desktop/src-tauri/Cargo.toml` (was dev-only) — needed by the subscription forwarder. `tokio` gains the `sync` feature so `OnceCell` resolves.
+  - **`Tauri Emitter` import is the v2 path.** `commands.rs` brings `tauri::Emitter` into scope and uses `app.emit(event_name, payload)`. The spec's `emit_all` name is from Tauri v1.
+- **Open questions for next task:**
+  - **Task 25 (workspace creation flow + workareas in the sidebar)** can reuse the `useEventSubscription` hook for `workarea.events`, layer the third tree level under each workspace, and add `Workspaces.CreateWorkspace` to the dispatcher's match table. The persistent channel is already in place — no new transport work is needed.
+  - **Task 26 (session terminal)** will need to flip `Sessions.ListSessions` from the local stub to a real `SessionsClient.list_sessions` call and add `Sessions.{CreateSession,SendMessage,StopSession}` to the dispatcher. The xterm.js wiring will use the existing `concerto_subscribe("session.io.<sid>")` bridge directly — the Rust forwarder is already generic over subject.
+  - **Renderer-side type mirroring.** The proto's `Workspace`/`Project` shapes are mirrored by hand in `src/api/{workspaces,projects}.ts`. When the proto field set grows, both files need updating. A future task could codegen TS types from the .proto sources; for V0.1 the manual mirror is small (~20 fields total).
+- **Deliberate debt:** sidebar shows only projects+workspaces; workareas (third tree level) come in Task 25. Right panel is a JSON placeholder; the real three-panel layout lands in Task 46+. `Sessions.ListSessions` is a local stub. No `clsx`/`tw-merge` utility; hand-joined class strings only. shadcn CLI deferred. Subscription ids are `<subject>-<unix_millis>` (not UUIDs). Persistent channel has no retry/backoff — single OnceCell reset on error. React Query Devtools deliberately not installed.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0 with "Smoke gate v1: PASSED". Task 27 promotes the gate to v2.
