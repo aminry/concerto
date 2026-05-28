@@ -63,3 +63,7 @@ prost-types = "0.13"
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+# Task 17: integration tests for the gRPC server use the shared harness,
+# which pulls in tokio::net::UnixStream. UDS is Unix-only; the V0.1
+# Windows port stops at the build matrix (per tasks/README.md §2).
+concerto-test-harness = { path = "../test-harness" }

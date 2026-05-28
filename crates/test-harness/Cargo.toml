@@ -1,0 +1,52 @@
+[package]
+name = "concerto-test-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Shared integration-test harness for Concerto: spawns a real concerto-core in a tempdir and returns connected gRPC clients."
+publish = false
+
+[lib]
+name = "concerto_test_harness"
+path = "src/lib.rs"
+
+# Task 17: dev-deps-only crate. Callers pin it as
+#   [dev-dependencies]
+#   concerto-test-harness = { path = "../test-harness" }
+# Production crates MUST NOT depend on this crate.
+[dependencies]
+# `concerto-proto` exposes the generated `RuntimeClient` returned by
+# `CoreUnderTest::runtime_client`. Same Tonic + tower + hyper-util pattern
+# the smoke client and Task 13 integration test already use.
+concerto-proto = { path = "../proto" }
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+tower = { workspace = true }
+hyper-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "process", "io-util", "sync"] }
+tracing.workspace = true
+# `assert_cmd` provides `cargo::cargo_bin("concerto-core")`, the canonical way
+# to locate a workspace binary from another crate at test time. MIT/Apache-2.0;
+# cargo-deny clean.
+assert_cmd = "2"
+tempfile = "3"
+# Direct DB read access for assertions opens a second `SqlitePool` to the same
+# DB file. WAL mode (set by Task 08) makes concurrent readers safe while the
+# Core's writer connection is live.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# `libc::kill` powers the SIGTERM path in `CoreUnderTest::shutdown`. Already
+# a workspace dep via Task 11's `crates/core` pin; pulling it in here directly
+# keeps the harness self-contained.
+libc = "0.2"
+
+[dev-dependencies]
+# Self-tests live in `tests/*.rs` and exercise the harness's public surface.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "process", "io-util", "sync"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
