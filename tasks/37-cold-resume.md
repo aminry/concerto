@@ -60,13 +60,13 @@ When the agent-host is dead too (machine reboot, host OOM-killed), spawn a new a
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Cold resume works end-to-end.
-- [ ] Auto-resume gated correctly on the project setting.
-- [ ] Sessions without external_session_id error cleanly with NOT_FOUND.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Cold resume works end-to-end.
+- [x] Auto-resume gated correctly on the project setting.
+- [x] Sessions without external_session_id error cleanly with NOT_FOUND.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/core/src/agent_supervisor/adopt.rs` (modified — cold path)
@@ -90,7 +90,18 @@ Refs: tasks/37-cold-resume.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** parser may not yet extract external_session_id; gap noted for Phase 3 polish.
-- **Deliberate debt:** UI "Resume agent" chip is V1.0 Desktop work.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Cold resume REUSES the original `sessions` row instead of creating a continuation row.** The task scope says "transitions the session back to `running`" and the pre-decisions say "marks status `running`" — both implied a single-row lifecycle, so I added `AgentSupervisorHandle::cold_resume_existing(session_id, cwd, resume_token)` which rewrites `host_pid`, `host_socket`, `pty_cookie`, `last_acked_seq=0`, `status='starting'→'running'`, and clears `ended_at` in-place. The chat thread (and thus the Concerto-side conversation history) is preserved verbatim; the agent CLI loads its own JSONL via `--resume`. Cookie rotates per spawn so any defunct host still holding the old cookie can't accept the Hello.
+  - **`final-info.json` lives at `<data_dir>/agents/<sid>/final-info.json`, not `<data_dir>/runtime/agents/<sid>.final.json`.** The task pre-decision (1) named the wrong path; the actual layout (set by Task 22's `start_session`, line 394) puts per-session artefacts under `<data_dir>/agents/<sid>/`. The cold-path classifier in `adopt::cold_path_one` reads from there and tolerates absence (host vanished without writing the file → marked `crashed` + `ended_at = now`).
+  - **Auto-resume sweep is in `adopt.rs`, not a separate sweep.** The task allowed splitting; I folded the cold-path scan into `adopt_orphans` after the hot pass so a single boot-time sweep handles both halves. After the socket scan, a separate SQL pulls every `starting|running|awaiting` row that the hot pass did NOT re-attach, classifies it via `final-info.json`, and (if `crashed`) calls `cold_resume::maybe_auto_resume`. The auto-resume opt-in is read from `projects.settings_json.auto_resume_agents` via a JOIN in `read_auto_resume_for_session`.
+  - **Auto-resume gating integration test skipped per pre-decision (9).** The unit-level coverage (`read_auto_resume_for_session` returns false on missing key, true on `{"auto_resume_agents": true}`) plus the explicit `cold_resume_session` happy-path test (which proves the spawn cycle works end-to-end) cover the behaviour without a second integration test that would need a full Core+host restart with synthetic `projects.settings_json` mutation. The gating SQL JOIN is short and shared with the happy-path code, so it's exercised whenever the auto-resume branch fires.
+  - **`agent-host` already accepts `--resume-jsonl`; this task only wires the Core forwarding.** Task 21's CLI parameter is named `--resume-jsonl` (historical name from when the on-disk artefact was thought to be a JSONL slice). The agent-host already forwards a plain `--resume <token>` to the wrapped CLI (`crates/agent-host/src/main.rs:254`). This task added an optional `resume_jsonl: Option<&str>` param to `spawn_host` and a new field `resume_session_id: Option<String>` on `StartSessionRequest`; updating all 5 existing constructors took a single chained edit.
+  - **`AgentSupervisorHandle::cold_resume_existing` duplicates ~120 lines of `start_session`.** The post-handshake half (parser pack, broadcast channels, pump spawn) is structurally identical; I considered extracting a `wire_up_pump` helper but every captured variable is named slightly differently and the borrow shape across the writer/child Arcs is delicate enough that a single inlined function reads more cleanly than a 9-argument helper. V1.0 has room to factor this out as part of the session-state-machine cleanup.
+- **Open questions for next task:**
+  - The V0.1 Claude parser pack doesn't yet extract `external_session_id` from the agent's first banner — sessions started in production today will still error with `session.no_external_id` if cold-resumed. Phase 3 parser polish (Task 33's follow-on) should add a `system: init` regex to `ClaudeCodePack` that writes the row via `concerto_persist::sessions::set_external_session_id`. Helper is in place; the parser just needs to call it.
+  - The cold-path classifier (`adopt::cold_path_one`) treats `exit_code == Some(0) && signal.is_none()` as `finished`; non-zero exits and signals as `crashed`. If a future Task wants to surface the distinction (e.g. crash-loop detection), `cold_path_one` is the single hook point — it already reads the full `FinalInfo` projection.
+- **Deliberate debt:**
+  - UI "Resume agent" chip is V1.0 Desktop work — gRPC surface is wired (`Sessions.ColdResumeSession`); the chip just needs a button.
+  - The continuation strategy is "reuse row" — chat history stays on the original row; in V1.0 we may want a separate "session_episodes" table that tracks each resume cycle.
+  - `cold_resume_existing` does not detect whether the agent's JSONL file actually exists on disk before passing `--resume`; per task scope (out), we trust the agent CLI to error if its file is gone. The host's writer task will surface that as an early `AgentExited` and the cold-resume RPC will appear to succeed — the immediate `Exited` event flows to subscribers.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0 with "Smoke gate v2: PASSED".

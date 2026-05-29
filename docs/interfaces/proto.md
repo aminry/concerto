@@ -404,6 +404,22 @@ service Sessions {
   // Task 35: V1.0 write path — currently returns `UNIMPLEMENTED`.
   // Declared in V0.1 so the wire surface is frozen.
   rpc UpsertProjectMcp(UpsertProjectMcpRequest) returns (google.protobuf.Empty);
+  // Task 37: cold resume from the agent CLI's own conversation JSONL.
+  //
+  // Spawns a new `concerto-agent-host` for the session's workarea and
+  // forwards `--resume <external_session_id>` so the wrapped agent CLI
+  // (Claude / Codex) loads its conversation from disk. The session row's
+  // `status` returns to `running` and the supervisor re-attaches the
+  // bridge. Returns the updated `Session` row.
+  //
+  // Sessions whose `external_session_id` is NULL (the parser never
+  // populated one, or the agent never emitted a banner) error with
+  // `NOT_FOUND` and wire code `session.no_external_id` — the caller is
+  // expected to either start a fresh session or wait for the parser to
+  // catch up. Auto-resume on Core boot is gated by the project setting
+  // `auto_resume_agents` (default false); when true, `adopt_orphans`
+  // calls this same code path during the cold sweep.
+  rpc ColdResumeSession(SessionId) returns (Session);
 }
 ```
 

@@ -56,6 +56,7 @@ pub fn spawn_host(
     socket: &Path,
     cookie_hex: &str,
     final_info: &Path,
+    resume_jsonl: Option<&str>,
 ) -> Result<Child> {
     let mut cmd = Command::new(host_bin);
     cmd.arg("--agent-bin").arg(agent_bin);
@@ -69,6 +70,14 @@ pub fn spawn_host(
     cmd.arg("--socket").arg(socket);
     cmd.arg("--cookie").arg(cookie_hex);
     cmd.arg("--final-info").arg(final_info);
+    // Task 37: forward the agent CLI's own resume token so the wrapped
+    // CLI (Claude / Codex) loads its conversation JSONL from disk. The
+    // agent-host CLI parameter is `--resume-jsonl` for historical
+    // reasons (Task 21 named it after the on-disk artefact); the
+    // wrapped agent CLI receives a plain `--resume <token>`.
+    if let Some(token) = resume_jsonl {
+        cmd.arg("--resume-jsonl").arg(token);
+    }
 
     // Detach via setsid so the host outlives the Core. The closure is
     // `unsafe` because it runs in the fragile post-fork/pre-exec window;

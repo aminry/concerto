@@ -152,6 +152,27 @@ pub async fn update_last_acked(
     Ok(())
 }
 
+/// Task 37: persist the agent CLI's own session identifier (Claude /
+/// Codex resume token). The Claude parser pack will extract this from
+/// the agent's first banner once the V0.1 parser surfaces it; for now
+/// the cold-resume RPC reads whatever value the column carries.
+///
+/// Passing `None` clears the column — useful for tests that want to
+/// exercise the `session.no_external_id` error path.
+pub async fn set_external_session_id(
+    conn: &mut SqliteConnection,
+    id: &SessionId,
+    external_session_id: Option<&str>,
+) -> Result<()> {
+    sqlx::query("UPDATE sessions SET external_session_id = ? WHERE id = ?")
+        .bind(external_session_id)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 /// Update only the `status` column on a `sessions` row.
 pub async fn update_status(
     conn: &mut SqliteConnection,

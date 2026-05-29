@@ -103,6 +103,12 @@ pub struct StartSessionRequest {
     /// Initial permission mode persisted on the session row. Defaults
     /// to `"normal"` when `None`.
     pub permission_mode: Option<String>,
+    /// Task 37: cold-resume token. When `Some`, the spawned
+    /// `concerto-agent-host` is invoked with `--resume-jsonl <token>`
+    /// so the wrapped agent CLI loads its conversation JSONL from disk.
+    /// `None` for normal first-spawn — the supervisor never inserts a
+    /// resume token without the caller asking.
+    pub resume_session_id: Option<String>,
 }
 
 /// Config for the actor's `run` loop. V0.1 has no knobs — the actor
@@ -485,6 +491,7 @@ impl AgentSupervisorHandle {
             &socket_path,
             &cookie_hex,
             &final_info,
+            req.resume_session_id.as_deref(),
         )
         .map_err(|e| Error::Internal(format!("spawn agent-host: {e}")))?;
         let host_pid = child.id().map(|p| p as i64).unwrap_or(-1);
@@ -1003,6 +1010,283 @@ impl AgentSupervisorHandle {
     async fn mark_failed(&self, id: &SessionId) {
         let mut writer = self.persistence.writer().await;
         let _ = concerto_persist::sessions::update_status(&mut writer, id, "crashed").await;
+    }
+
+    /// Task 37: cold-resume an existing `sessions` row by spawning a
+    /// fresh `concerto-agent-host` with `--resume-jsonl
+    /// <external_session_id>`. The row's `host_pid`, `host_socket`,
+    /// `pty_cookie`, and `status` columns are rewritten in place; the
+    /// `external_session_id` is preserved so a subsequent cold-resume on
+    /// the same row works without waiting for the parser to re-extract.
+    ///
+    /// `cwd` is resolved by the caller (typically the gRPC handler or
+    /// the cold-resume sweep). The agent CLI receives `--resume <token>`
+    /// via the host's forwarding. Returns the same [`SessionId`] passed
+    /// in.
+    ///
+    /// Mirrors the post-spawn half of `start_session`; the row + chat
+    /// inserts are skipped because the row already exists.
+    pub async fn cold_resume_existing(
+        &self,
+        session_id: &SessionId,
+        cwd: PathBuf,
+        resume_token: &str,
+    ) -> Result<SessionId> {
+        // Look up the row to retrieve agent_kind / workarea_id / chat_id.
+        let row = concerto_persist::sessions::get(self.persistence.readers(), session_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("session {session_id} not found")))?;
+        let workarea_id = row.workarea_id.clone();
+        let chat_id = row.chat_id.clone();
+
+        // Eject any stale in-memory entry from a prior incarnation of
+        // this session (the supervisor map persists the post-exit
+        // replay buffer; cold-resume blows it away and starts fresh).
+        // The DB row already says `crashed`; nothing to drop on disk.
+        {
+            let mut map = self.sessions.lock().await;
+            map.remove(session_id);
+        }
+
+        // Allocate a fresh cookie + socket. Reusing the old cookie
+        // would let a defunct host process accept the Hello if one
+        // were somehow still around; the locked design rotates per
+        // spawn. The locked layout matches `start_session`.
+        let mut cookie = [0u8; 32];
+        getrandom::getrandom(&mut cookie)
+            .map_err(|e| Error::Internal(format!("getrandom: {e}")))?;
+        let runtime_dir = self.data_dir.join("runtime").join("agents");
+        tokio::fs::create_dir_all(&runtime_dir).await?;
+        let canonical_socket = runtime_dir.join(format!("{}.sock", session_id.0));
+        let socket_path = if canonical_socket.to_string_lossy().len() < 100 {
+            canonical_socket
+        } else {
+            let short = &session_id.0[..8.min(session_id.0.len())];
+            std::env::temp_dir().join(format!("ccs-{short}.sock"))
+        };
+        // Best-effort: remove any leftover socket file from the old host.
+        let _ = tokio::fs::remove_file(&socket_path).await;
+        let log_dir = self.data_dir.join("agents").join(&session_id.0);
+        tokio::fs::create_dir_all(&log_dir).await?;
+        let final_info = log_dir.join("final-info.json");
+        // Persist the new cookie + socket. The row's
+        // `last_acked_seq` resets to 0 because the new host has a
+        // brand-new ring buffer; the agent CLI's own JSONL provides
+        // the conversation continuity.
+        {
+            let mut w = self.persistence.writer().await;
+            sqlx::query(
+                "UPDATE sessions
+                 SET host_socket = ?, pty_cookie = ?, status = 'starting',
+                     last_acked_seq = 0, ended_at = NULL
+                 WHERE id = ?",
+            )
+            .bind(socket_path.to_string_lossy().into_owned())
+            .bind(cookie.to_vec())
+            .bind(&session_id.0)
+            .execute(&mut *w)
+            .await
+            .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        }
+
+        // Choose agent binary. The DB stores `claude|codex|gemini|...`;
+        // for cold resume we map back to the in-process kind. V0.1's
+        // echo path is stored as `claude` in the DB, so cold-resuming
+        // an echo test row picks Claude — that's fine because echo's
+        // own start_session error path is the only place codex/gemini
+        // get rejected; here we just spawn a host whose wrapped CLI
+        // will be `claude`. Tests that use Echo explicitly invoke this
+        // path via the supervisor handle and don't go through the DB
+        // round-trip.
+        let agent_kind = match row.agent_kind.as_str() {
+            "claude" => AgentKind::Claude,
+            "codex" => AgentKind::Codex,
+            "gemini" => AgentKind::Gemini,
+            other => {
+                return Err(Error::Validation(format!(
+                    "agent.unsupported: cannot cold-resume agent_kind {other:?}"
+                )))
+            }
+        };
+        let (agent_bin, agent_args) = resolve_agent_bin(&StartSessionRequest {
+            workarea_id: workarea_id.clone(),
+            agent_kind: agent_kind.clone(),
+            echo_text: None,
+            cwd: cwd.clone(),
+            permission_mode: None,
+            resume_session_id: Some(resume_token.to_string()),
+        })?;
+        let cookie_hex = hex::encode(cookie);
+        let mut child = spawn_host(
+            &self.host_bin,
+            &agent_bin,
+            &agent_args,
+            &cwd,
+            &socket_path,
+            &cookie_hex,
+            &final_info,
+            Some(resume_token),
+        )
+        .map_err(|e| Error::Internal(format!("spawn agent-host: {e}")))?;
+        let host_pid = child.id().map(|p| p as i64).unwrap_or(-1);
+
+        // Handshake (mirrors start_session).
+        let socket_ready = wait_for_socket(&socket_path, SOCKET_POLL_BUDGET).await;
+        if let Err(e) = socket_ready {
+            let _ = child.kill().await;
+            self.mark_failed(session_id).await;
+            return Err(e);
+        }
+        let stream = match UnixStream::connect(&socket_path).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = child.kill().await;
+                self.mark_failed(session_id).await;
+                return Err(Error::Io(e));
+            }
+        };
+        let (mut read_half, mut write_half) = stream.into_split();
+        let hello = build_hello(env!("CARGO_PKG_VERSION"), cookie, 0);
+        if let Err(e) = write_frame(&mut write_half, &hello).await {
+            let _ = child.kill().await;
+            self.mark_failed(session_id).await;
+            return Err(Error::Internal(format!("write Hello: {e}")));
+        }
+        let ready = match read_frame(&mut read_half).await {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = child.kill().await;
+                self.mark_failed(session_id).await;
+                return Err(Error::Internal(format!("read Ready: {e}")));
+            }
+        };
+        match ready {
+            HostFrame::Ready { .. } => {}
+            HostFrame::CookieMismatch => {
+                let _ = child.kill().await;
+                self.mark_failed(session_id).await;
+                return Err(Error::Internal(
+                    "agent-host rejected cookie (mismatch)".to_string(),
+                ));
+            }
+            HostFrame::AlreadyConnected => {
+                let _ = child.kill().await;
+                self.mark_failed(session_id).await;
+                return Err(Error::Internal(
+                    "agent-host reports another Core is connected".to_string(),
+                ));
+            }
+            other => {
+                let _ = child.kill().await;
+                self.mark_failed(session_id).await;
+                return Err(Error::Internal(format!(
+                    "unexpected handshake frame {other:?}"
+                )));
+            }
+        }
+
+        // Bump host_pid + status to running.
+        {
+            let mut writer = self.persistence.writer().await;
+            concerto_persist::sessions::update_host(
+                &mut writer,
+                session_id,
+                host_pid,
+                &socket_path.to_string_lossy(),
+                "running",
+            )
+            .await?;
+        }
+
+        // Wire in-memory entry + pump (mirrors start_session step 6).
+        let permission_mode_enum = crate::security::parse_permission_mode(&row.permission_mode)?;
+        let (events, _) = broadcast::channel(EVENTS_CAPACITY);
+        let (io, _) = broadcast::channel(EVENTS_CAPACITY);
+        let events_replay = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let io_replay = Arc::new(Mutex::new(Vec::<SessionIoChunk>::new()));
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer_arc = Arc::new(Mutex::new(write_half));
+        let child_arc = Arc::new(Mutex::new(Some(child)));
+        let parser: Arc<dyn ParserPack> = match agent_kind {
+            AgentKind::Echo => Arc::new(EchoPack::new()),
+            AgentKind::Claude => Arc::new(ClaudeCodePack::new()),
+            AgentKind::Codex | AgentKind::Gemini => unreachable!("rejected above"),
+        };
+        let pending_approvals: Arc<Mutex<PendingApprovals>> =
+            Arc::new(Mutex::new(PendingApprovals::new()));
+        let ack_watermark = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        {
+            let mut map = self.sessions.lock().await;
+            map.insert(
+                session_id.clone(),
+                SessionEntry {
+                    workarea_id: workarea_id.clone(),
+                    chat_id: chat_id.clone(),
+                    cookie,
+                    permission_mode: permission_mode_enum,
+                    socket_path: socket_path.clone(),
+                    events: events.clone(),
+                    events_replay: Arc::clone(&events_replay),
+                    io: io.clone(),
+                    io_replay: Arc::clone(&io_replay),
+                    writer: writer_arc.clone(),
+                    child: child_arc.clone(),
+                    finished: Arc::clone(&finished),
+                    parser: Arc::clone(&parser),
+                    pending_approvals: Arc::clone(&pending_approvals),
+                    ack_watermark: Arc::clone(&ack_watermark),
+                },
+            );
+        }
+
+        let started = AgentEvent::Started {
+            session_id: session_id.clone(),
+        };
+        push_replay(&events_replay, started.clone()).await;
+        let _ = events.send(started);
+
+        let stdout_log = log_dir.join("stdout.log");
+        let pump_persistence = Arc::clone(&self.persistence);
+        let pump_session = session_id.clone();
+        let pump_workarea = workarea_id.clone();
+        let pump_chat = chat_id.clone();
+        let pump_events = events.clone();
+        let pump_events_replay = Arc::clone(&events_replay);
+        let pump_io = io.clone();
+        let pump_io_replay = Arc::clone(&io_replay);
+        let pump_sessions = Arc::clone(&self.sessions);
+        let pump_log = stdout_log.clone();
+        let pump_finished = Arc::clone(&finished);
+        let pump_parser = Arc::clone(&parser);
+        let pump_pending = Arc::clone(&pending_approvals);
+        let pump_writer = Arc::clone(&writer_arc);
+        let bypass = bypass_for_session(&self.persistence, session_id).await;
+        let pump_resolver = PermissionResolver::new(permission_mode_enum, bypass);
+        let pump_ack_watermark = Arc::clone(&ack_watermark);
+        tokio::spawn(async move {
+            run_read_pump(
+                read_half,
+                pump_session,
+                pump_workarea,
+                pump_chat,
+                pump_events,
+                pump_events_replay,
+                pump_io,
+                pump_io_replay,
+                pump_persistence,
+                pump_sessions,
+                pump_log,
+                pump_finished,
+                pump_parser,
+                pump_pending,
+                pump_writer,
+                pump_resolver,
+                pump_ack_watermark,
+            )
+            .await;
+        });
+
+        Ok(session_id.clone())
     }
 }
 

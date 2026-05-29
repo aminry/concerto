@@ -108,6 +108,7 @@ impl SessionsService for SessionsHandler {
                 echo_text: None,
                 cwd,
                 permission_mode,
+                resume_session_id: None,
             })
             .await
             .map_err(error_to_status)?;
@@ -289,6 +290,26 @@ impl SessionsService for SessionsHandler {
         Err(Status::unimplemented(
             "mcp.upsert: writing project-level .mcp.json is V1.0",
         ))
+    }
+
+    #[tracing::instrument(skip_all, name = "Sessions::ColdResumeSession")]
+    async fn cold_resume_session(
+        &self,
+        request: Request<ProtoSessionId>,
+    ) -> Result<Response<ProtoSession>, Status> {
+        let req = request.into_inner();
+        if req.value.is_empty() {
+            return Err(Status::invalid_argument("session id is required"));
+        }
+        let id = PersistSessionId(req.value);
+        crate::agent_supervisor::cold_resume::cold_resume_session(&self.supervisor, &id)
+            .await
+            .map_err(error_to_status)?;
+        let row = concerto_persist::sessions::get(self.persistence.readers(), &id)
+            .await
+            .map_err(error_to_status)?
+            .ok_or_else(|| Status::not_found(format!("session {id} not found")))?;
+        Ok(Response::new(session_to_proto(row)))
     }
 }
 
