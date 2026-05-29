@@ -13,6 +13,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../../state/useUiStore";
 import { useSessions } from "../../hooks/useSessions";
 import { createSession, deleteSession, type Session } from "../../api/sessions";
+import { errorMessage } from "../../api/client";
 import { SessionTab } from "../SessionTab";
 import { SessionTerminal } from "../SessionTerminal";
 import { SessionComposer } from "../SessionComposer";
@@ -58,7 +59,7 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
         queryKey: ["sessions", workareaId],
       });
     },
-    onError: (e) => setActionError(`Couldn't start session: ${String(e)}`),
+    onError: (e) => setActionError(`Couldn't start session: ${errorMessage(e)}`),
   });
 
   const deleteMutation = useMutation({
@@ -76,7 +77,7 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
         setActiveSession(nextActiveSessionId(sessions, id));
       }
     },
-    onError: (e) => setActionError(`Couldn't delete session: ${String(e)}`),
+    onError: (e) => setActionError(`Couldn't delete session: ${errorMessage(e)}`),
   });
 
   function handleClose(s: Session): void {

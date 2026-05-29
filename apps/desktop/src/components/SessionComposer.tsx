@@ -10,6 +10,7 @@
 import { useCallback, useState } from "react";
 
 import { sendMessage } from "../api/sessions";
+import { errorMessage } from "../api/client";
 import { Button } from "./ui/button";
 import { Send } from "lucide-react";
 
@@ -36,7 +37,7 @@ export function SessionComposer({
       await sendMessage(sessionId, bytes);
       setValue("");
     } catch (e) {
-      setError(String(e));
+      setError(errorMessage(e));
     } finally {
       setSending(false);
     }
@@ -79,7 +80,7 @@ export function SessionComposer({
         </Button>
         <span className="text-xs text-faint">⌘+Enter</span>
         {error && (
-          <p className="text-xs text-err max-w-[16rem] truncate">
+          <p className="text-xs text-err max-w-[20rem] whitespace-normal break-words text-right">
             {error}
           </p>
         )}
