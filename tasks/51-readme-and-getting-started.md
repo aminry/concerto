@@ -63,13 +63,13 @@ Write the user-facing `README.md` at the repo root and a short `docs/getting-sta
 4. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Fresh-Mac walkthrough verified by following the doc.
-- [ ] No outdated paths or commands.
-- [ ] `CHANGELOG.md` lists V0.1 features clearly.
-- [ ] No `TODO` / `FIXME` in docs.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Fresh-Mac walkthrough verified by following the doc.
+- [x] No outdated paths or commands.
+- [x] `CHANGELOG.md` lists V0.1 features clearly.
+- [x] No `TODO` / `FIXME` in docs.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `README.md` (new)
@@ -87,7 +87,18 @@ Refs: tasks/51-readme-and-getting-started.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** per-subsystem user docs deferred to V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:** `markdownlint` not installed locally; CI-side lint
+  is not configured for these new files. All three docs were hand-reviewed
+  for headings, link integrity, and code-block fencing; every internal
+  path and command was checked against the repo (`apps/desktop/`,
+  `scripts/install-macos.sh`, `~/.concerto/core.sock`, etc.).
+- **Open questions for next task:** Task 52's smoke gate v3 must keep the
+  walkthrough in `docs/getting-started.md` accurate — if the V0.1
+  happy-path scenario reorders any step (add repo → workspace →
+  workarea → session), update §4 of the getting-started doc and the
+  three-step "Run your first agent" block in `README.md` in lockstep.
+- **Deliberate debt:** per-subsystem user docs deferred to V1.0; the
+  fresh-Mac walkthrough is operator-verified at install time rather
+  than gated by automated CI.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` re-run locally
+  after writing the docs and passes (v2 — Task 27).
