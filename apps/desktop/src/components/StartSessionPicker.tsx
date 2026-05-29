@@ -48,7 +48,7 @@ export function StartSessionPicker(): JSX.Element | null {
       title="Start Session"
     >
       <div className="space-y-3">
-        <p className="text-slate-300 text-xs">Pick an agent for this workarea.</p>
+        <p className="text-muted text-xs">Pick an agent for this workarea.</p>
         <div className="flex gap-2">
           <Button
             variant="outline"
@@ -58,7 +58,7 @@ export function StartSessionPicker(): JSX.Element | null {
             echo (smoke)
           </Button>
           <Button
-            variant="default"
+            variant="primary"
             onClick={() => mutation.mutate("claude")}
             disabled={mutation.isPending || !workareaId}
           >
@@ -66,9 +66,9 @@ export function StartSessionPicker(): JSX.Element | null {
           </Button>
         </div>
         {mutation.isPending && (
-          <p className="text-xs text-slate-400">Creating session…</p>
+          <p className="text-xs text-muted">Creating session…</p>
         )}
-        {error && <p className="text-xs text-rose-400">{error}</p>}
+        {error && <p className="text-xs text-err">{error}</p>}
       </div>
     </Dialog>
   );

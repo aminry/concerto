@@ -151,12 +151,12 @@ export function AddRepositoryForm(): JSX.Element {
 
   return (
     <section className="space-y-4">
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted">
         Add Repository
       </h3>
       <form className="space-y-3" onSubmit={onSubmit}>
         <div>
-          <label className="block text-xs uppercase tracking-wider text-slate-500 mb-1">
+          <label className="block text-xs uppercase tracking-wider text-faint mb-1">
             URL
           </label>
           <Input
@@ -166,7 +166,7 @@ export function AddRepositoryForm(): JSX.Element {
           />
         </div>
         <div>
-          <label className="block text-xs uppercase tracking-wider text-slate-500 mb-1">
+          <label className="block text-xs uppercase tracking-wider text-faint mb-1">
             Name
           </label>
           <Input
@@ -176,8 +176,8 @@ export function AddRepositoryForm(): JSX.Element {
           />
         </div>
         <div>
-          <label className="block text-xs uppercase tracking-wider text-slate-500 mb-1">
-            Default branch <span className="text-slate-600">(optional)</span>
+          <label className="block text-xs uppercase tracking-wider text-faint mb-1">
+            Default branch <span className="text-faint">(optional)</span>
           </label>
           <Input
             value={defaultBranch}
@@ -185,10 +185,11 @@ export function AddRepositoryForm(): JSX.Element {
             placeholder="main"
           />
         </div>
-        {errorMsg && <p className="text-xs text-rose-400">{errorMsg}</p>}
+        {errorMsg && <p className="text-xs text-err">{errorMsg}</p>}
         <div className="flex justify-end">
           <Button
             type="submit"
+            variant="primary"
             disabled={mutation.isPending || !projectId || !url || !name}
           >
             {mutation.isPending ? "Adding…" : "Add + Clone"}
@@ -197,14 +198,14 @@ export function AddRepositoryForm(): JSX.Element {
       </form>
 
       <div className="space-y-3">
-        <h4 className="text-xs uppercase tracking-wider text-slate-500">
+        <h4 className="text-xs uppercase tracking-wider text-faint">
           Repositories
         </h4>
         {reposQuery.isLoading && (
-          <p className="text-xs text-slate-500">Loading…</p>
+          <p className="text-xs text-faint">Loading…</p>
         )}
         {reposQuery.data && reposQuery.data.repositories.length === 0 && (
-          <p className="text-xs text-slate-500">None yet.</p>
+          <p className="text-xs text-faint">None yet.</p>
         )}
         <ul className="space-y-1">
           {reposQuery.data?.repositories.map((r) => {
@@ -212,23 +213,23 @@ export function AddRepositoryForm(): JSX.Element {
             return (
               <li
                 key={r.id}
-                className="rounded border border-slate-800 px-3 py-2 text-xs"
+                className="rounded border border-border px-3 py-2 text-xs"
               >
-                <p className="text-slate-200">{r.name}</p>
-                <p className="text-slate-500 truncate">{r.url}</p>
+                <p className="text-foreground">{r.name}</p>
+                <p className="font-mono text-faint truncate">{r.url}</p>
                 {clone && !clone.done && !clone.error && (
                   <div className="mt-2 space-y-1">
                     <Progress value={percentFromProgress(clone.progress)} />
-                    <p className="text-slate-500">
+                    <p className="text-faint">
                       {clone.progress?.phase ?? "starting…"}
                     </p>
                   </div>
                 )}
                 {clone?.done && (
-                  <p className="mt-1 text-emerald-400">clone complete</p>
+                  <p className="mt-1 text-ok">clone complete</p>
                 )}
                 {clone?.error && (
-                  <p className="mt-1 text-rose-400">{clone.error}</p>
+                  <p className="mt-1 text-err">{clone.error}</p>
                 )}
               </li>
             );
