@@ -310,3 +310,6 @@ CREATE INDEX idx_suggestion_learn_workarea ON suggestion_learn(workarea_id);
 CREATE INDEX idx_suggestion_learn_rule ON suggestion_learn(rule_id, context_hash);
 ```
 
+## `crates/persist/migrations/0007_tool_approvals_urgent.sql`
+
+

@@ -338,6 +338,8 @@ fn map_agent_event(ev: AgentEvent, offset: u64) -> Option<Event> {
             tool,
             summary,
             payload_json,
+            urgent,
+            destructive_label,
         } => (
             session_id,
             SessionEventKind::AwaitingApproval(ProtoAwaitingApproval {
@@ -345,6 +347,8 @@ fn map_agent_event(ev: AgentEvent, offset: u64) -> Option<Event> {
                 tool,
                 summary,
                 payload_json,
+                urgent,
+                destructive_label,
             }),
         ),
         AgentEvent::ApprovalResolved {

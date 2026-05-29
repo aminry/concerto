@@ -42,6 +42,11 @@ pub struct NewToolApproval {
     pub decision: Option<String>,
     pub decided_at: Option<i64>,
     pub decided_by_device_id: Option<String>,
+    /// Task 43: true iff the destructive-command intercept fired. Persisted as
+    /// the `tool_approvals.urgent` integer column (migration 0007) and
+    /// surfaced on the `AwaitingApproval` event so clients render the
+    /// red-urgent prompt styling.
+    pub urgent: bool,
 }
 
 /// Row-shaped projection of a `tool_approvals` row.
@@ -55,6 +60,8 @@ pub struct ToolApproval {
     pub decided_at: Option<i64>,
     pub decided_by_device_id: Option<String>,
     pub decision: Option<String>,
+    /// Task 43: destructive-command intercept fired for this row.
+    pub urgent: bool,
 }
 
 /// Insert a new `tool_approvals` row.
@@ -69,8 +76,8 @@ pub async fn insert(conn: &mut SqliteConnection, row: NewToolApproval) -> Result
     sqlx::query(
         "INSERT INTO tool_approvals (
             id, session_id, tool_name, payload_json, requested_at,
-            decided_at, decided_by_device_id, decision
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            decided_at, decided_by_device_id, decision, urgent
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.session_id.0)
@@ -80,6 +87,7 @@ pub async fn insert(conn: &mut SqliteConnection, row: NewToolApproval) -> Result
     .bind(row.decided_at)
     .bind(&row.decided_by_device_id)
     .bind(&row.decision)
+    .bind(i64::from(row.urgent))
     .execute(conn)
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
@@ -119,7 +127,7 @@ pub async fn update_decision(
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<ToolApproval>> {
     let row = sqlx::query(
         "SELECT id, session_id, tool_name, payload_json, requested_at,
-                decided_at, decided_by_device_id, decision
+                decided_at, decided_by_device_id, decision, urgent
            FROM tool_approvals WHERE id = ?",
     )
     .bind(id)
@@ -138,7 +146,7 @@ pub async fn list_by_session(
 ) -> Result<Vec<ToolApproval>> {
     let rows = sqlx::query(
         "SELECT id, session_id, tool_name, payload_json, requested_at,
-                decided_at, decided_by_device_id, decision
+                decided_at, decided_by_device_id, decision, urgent
            FROM tool_approvals WHERE session_id = ?
           ORDER BY requested_at ASC",
     )
@@ -159,5 +167,6 @@ fn row_to_approval(row: sqlx::sqlite::SqliteRow) -> ToolApproval {
         decided_at: row.get::<Option<i64>, _>("decided_at"),
         decided_by_device_id: row.get::<Option<String>, _>("decided_by_device_id"),
         decision: row.get::<Option<String>, _>("decision"),
+        urgent: row.get::<i64, _>("urgent") != 0,
     }
 }

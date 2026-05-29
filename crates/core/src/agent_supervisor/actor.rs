@@ -51,7 +51,7 @@ use crate::agent_supervisor::parsers::{
     claude_code::ClaudeCodePack, echo::EchoPack, MsgRole, ParseEvent, ParserPack,
 };
 use crate::agent_supervisor::spawn::{spawn_host, wait_for_socket, SOCKET_POLL_BUDGET};
-use crate::security::{Decision, PermissionResolver};
+use crate::security::{is_destructive, Decision, DestructiveMatch, PermissionResolver};
 use crate::supervisor::{Actor, ActorContext};
 
 /// Channel capacity for the in-process per-session broadcast of
@@ -1973,6 +1973,32 @@ async fn dispatch_parse_event(
                 decision = Decision::AutoDeny;
             }
 
+            // Task 43: destructive-command intercept. Runs after the
+            // filesystem policy floor (a denied path stays denied — the
+            // deny-list is the hard floor, `design/12 §3.7`) and before
+            // the mode-class table. A pattern match promotes the
+            // decision to `MustAsk` (red-urgent) regardless of the
+            // resolver's verdict, unless `bypass_destructive_guard = true`
+            // on the effective row, in which case the intercept is
+            // bypassed (still audited via `urgent = true` on the row).
+            let destructive: Option<DestructiveMatch> = if denied_by_policy {
+                None
+            } else {
+                is_destructive(&tool, &payload)
+            };
+            if let Some(_dm) = destructive {
+                if resolver.bypass_destructive_guard() {
+                    // Entry ceremony was completed AND the workarea/
+                    // session row carries the bypass flag — auto-approve
+                    // (still audited).
+                    decision = Decision::AutoApprove;
+                } else {
+                    decision = Decision::MustAsk;
+                }
+            }
+            let urgent = destructive.is_some();
+            let destructive_label: Option<String> = destructive.map(|m| m.label.to_string());
+
             match decision {
                 Decision::AutoApprove | Decision::AutoApproveOnce | Decision::AutoDeny => {
                     // Persist the auto-row up front + inject the bytes
@@ -1995,6 +2021,7 @@ async fn dispatch_parse_event(
                         decision: Some(auto_string.clone()),
                         decided_at: Some(now_ms),
                         decided_by_device_id: None,
+                        urgent,
                     };
                     if let Ok(mut w) = persistence.writer().await.begin().await {
                         let _ = concerto_persist::tool_approvals::insert(&mut w, row).await;
@@ -2028,6 +2055,7 @@ async fn dispatch_parse_event(
                         decision: None,
                         decided_at: None,
                         decided_by_device_id: None,
+                        urgent,
                     };
                     if let Ok(mut w) = persistence.writer().await.begin().await {
                         let _ = concerto_persist::tool_approvals::insert(&mut w, row).await;
@@ -2044,6 +2072,8 @@ async fn dispatch_parse_event(
                         tool: tool.clone(),
                         summary,
                         payload_json,
+                        urgent,
+                        destructive_label: destructive_label.clone(),
                     };
                     push_replay(events_replay, awaiting.clone()).await;
                     let _ = events.send(awaiting);
