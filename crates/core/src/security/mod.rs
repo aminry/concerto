@@ -17,11 +17,13 @@
 //! Both literals are checked by [`permission::ack_for_yolo`] /
 //! [`permission::ack_for_bypass_destructive_guard`].
 
+pub mod destructive;
 pub mod managed;
 pub mod path_policy;
 pub mod permission;
 pub mod tool_classes;
 
+pub use destructive::{is_destructive, DestructiveMatch};
 pub use managed::{load_managed_policy, ManagedPolicy, ManagedPolicySource};
 pub use path_policy::{classify as classify_path, AllowList, DenyList, PathDecision};
 pub use permission::{

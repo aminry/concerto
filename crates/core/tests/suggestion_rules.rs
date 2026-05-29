@@ -235,6 +235,8 @@ async fn awaiting_approval_emits_review_tool_chip() {
                 tool: "Write".into(),
                 summary: "write to foo.rs".into(),
                 payload_json: "{}".into(),
+                urgent: false,
+                destructive_label: None,
             },
         )
         .await;

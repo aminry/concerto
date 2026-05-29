@@ -64,13 +64,13 @@ Add the destructive-command pattern intercept from `design/04 §3.10` and `desig
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Every pattern matches its target.
-- [ ] No false negatives on a smoke set of 20 dangerous commands.
-- [ ] Yolo-no-bypass still asks for destructive commands.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Every pattern matches its target.
+- [x] No false negatives on a smoke set of 20 dangerous commands.
+- [x] Yolo-no-bypass still asks for destructive commands.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/persist/migrations/0006_destructive.sql` (new)
@@ -94,7 +94,79 @@ Refs: tasks/43-destructive-command-intercept.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** patterns are hardcoded; user customization is V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - Migration number is **`0007_tool_approvals_urgent.sql`**, not the
+    `0006_destructive.sql` the spec called for — Tasks 30/36/38/39/40
+    already burned 0002–0006. The column is `urgent INTEGER NOT NULL
+    DEFAULT 0` per the SQLite-boolean convention shared with
+    `workareas.bypass_destructive_guard`. The `tool_approvals.decision`
+    CHECK set is untouched (no new values needed — urgent + destructive
+    use the same `auto_<mode>` / `approve|deny|approve_once` strings as
+    Task 33).
+  - **`PolicyVerdict` was NOT extended with a `Destructive` variant**
+    (pre-decision 6). Folding destructive into the path-policy verdict
+    enum entangled two orthogonal concerns: path policy is the hard
+    floor (DENY wins absolutely), the destructive intercept is a
+    "promote to MustAsk unless bypass" overlay. Instead the dispatch
+    site (`actor.rs::dispatch_parse_event`) chains them: path-policy
+    first (deny short-circuits), then `is_destructive` overrides the
+    mode-class decision. `urgent: bool` + `destructive_label:
+    Option<String>` flow into `NewToolApproval` and
+    `AgentEvent::AwaitingApproval` directly. Cleaner separation; the
+    `PolicyVerdict` enum stays single-responsibility.
+  - **Proto field numbers `5` (urgent) and `6` (destructive_label) on
+    `AwaitingApproval`**. The task plan called out reserving 1-4 — 1-4
+    are already populated by Task 33 (`approval_id`/`tool`/`summary`/
+    `payload_json`). 5/6 are the next free numbers; FROZEN going
+    forward.
+  - **`tool_name` parameter on `is_destructive` is `_unused`**. The
+    pattern table embeds the command keyword (`rm`, `git`, `kubectl`,
+    …), so the matcher operates on the stringified args blob alone.
+    The parameter is preserved in the public signature for V1.0's
+    per-tool pattern scoping (e.g. only treat `DROP TABLE` as
+    destructive in SQL-targeted tools).
+  - **`git branch -D` regex is case-sensitive `(?-i)`** even though
+    every other pattern is `(?i)`. Lowercase `-d` is git's safe-delete
+    (refuses to drop unmerged branches); only `-D` force-deletes. A
+    case-insensitive match would prompt on every benign branch cleanup
+    — the false-positive cost outweighs the safety win.
+  - **No proto wire bump for `ApprovalResolved.urgent`**: only
+    `AwaitingApproval` carries the flag. The resolved event downstream
+    is the audit record; clients re-read the original row via
+    `tool_approvals.urgent` if they need urgent in the resolved view.
+    Adding it is purely additive when V1.0 wants it.
+- **Open questions for next task:**
+  - **Task 44 (audit JSONL writer)** should treat
+    `tool_approvals.urgent = 1` as the gate for the "destructive"
+    audit channel — group all urgent rows under a separate JSONL
+    stream so security ops can `tail -f` just the destructive prompts.
+    The `destructive_label` is currently only surfaced on the
+    `AgentEvent::AwaitingApproval` event (not persisted on the row);
+    Task 44 may want a `destructive_label TEXT` column so the audit
+    log can render the category without re-running the matcher. The
+    label set is FROZEN by `PATTERNS` here.
+  - **Manual verification (DoD step 4)** — verifying the destructive
+    intercept end-to-end with real `claude` requires a parser-pack
+    capture of an actual destructive tool-call prompt; V0.1's
+    fixture-driven Claude Code pack does not emit one. The
+    pure-Rust + dispatch-overlay tests in
+    `crates/core/tests/destructive_intercept.rs` (smoke set + bypass +
+    yolo-no-bypass) cover the matrix; the manual capture is a Task 44
+    open item.
+- **Deliberate debt:**
+  - **Patterns are hardcoded in `PATTERNS`.** User-customizable
+    patterns + per-project additions are V1.0 (per task scope-out).
+    Adding a pattern is a one-line append at the head of the
+    `LazyLock`; removing one requires the security-review note in the
+    module docs.
+  - **`is_destructive` ignores `tool_name`.** See drift note. Folding
+    Bash-vs-Edit-vs-MCP-tool into the pattern table is V1.0.
+  - **No structured per-pattern audit metric** — the row carries
+    `urgent: bool` but not `destructive_label`. V2.0 dashboards land
+    when the audit log grows the label column (see Task 44 open
+    question).
+  - **End-to-end `claude` capture deferred** — see open question.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0
+  with "Smoke gate v2: PASSED". The destructive intercept only fires
+  when a parser pack emits `AwaitingApproval`; the echo pack never
+  does, so the gate stays single-shot.

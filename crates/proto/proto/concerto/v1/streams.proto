@@ -104,6 +104,14 @@ message AwaitingApproval {
   string tool = 2;
   string summary = 3;
   string payload_json = 4;
+  // Task 43: the destructive-command intercept fired for this gate.
+  // Clients render the prompt with red-urgent styling. Field number is
+  // FROZEN.
+  bool urgent = 5;
+  // Task 43: human-readable destructive-pattern label
+  // (`"force-push"`, `"recursive-delete"`, …). Unset when the gate
+  // fired for a non-destructive reason. Field number is FROZEN.
+  optional string destructive_label = 6;
 }
 
 // Task 33: an approval has been resolved (auto or manual). `decision`

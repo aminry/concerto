@@ -65,6 +65,14 @@ pub enum AgentEvent {
         tool: String,
         summary: String,
         payload_json: String,
+        /// Task 43: destructive-command intercept fired for this gate.
+        /// Clients render the prompt with the red-urgent styling.
+        urgent: bool,
+        /// Task 43: human-readable destructive-pattern label
+        /// (`"force-push"`, `"recursive-delete"`, …) — `None` when the
+        /// gate fired for a non-destructive reason. The label set is
+        /// frozen by [`crate::security::destructive::PATTERNS`].
+        destructive_label: Option<String>,
     },
     /// Task 33: an approval was resolved (auto or manual). `decision`
     /// is the `tool_approvals.decision` string (one of

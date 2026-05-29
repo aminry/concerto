@@ -257,6 +257,7 @@ async fn list_by_session_returns_inserted_rows() {
                 decision: Some("auto_auto".to_string()),
                 decided_at: Some(now),
                 decided_by_device_id: None,
+                urgent: false,
             },
         )
         .await
@@ -272,6 +273,7 @@ async fn list_by_session_returns_inserted_rows() {
                 decision: None,
                 decided_at: None,
                 decided_by_device_id: None,
+                urgent: false,
             },
         )
         .await
@@ -405,6 +407,7 @@ async fn resolve_approval_flips_pending_row_to_approve() {
         decision: None,
         decided_at: None,
         decided_by_device_id: None,
+        urgent: false,
     };
     {
         let mut writer = persistence.writer().await;
