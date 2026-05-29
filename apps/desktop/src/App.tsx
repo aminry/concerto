@@ -14,7 +14,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppLayout } from "./components/AppLayout";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { SettingsPanel } from "./components/SettingsPanel";
-import { StartSessionPicker } from "./components/StartSessionPicker";
 import { AutoUpdateToast, FirstRunClaudeToast } from "./components/Toast";
 import { useThemeController } from "./hooks/useTheme";
 import { LAYOUT_STORAGE_KEY, useUiStore } from "./state/useUiStore";
@@ -44,7 +43,6 @@ function App(): JSX.Element {
         <AppLayout />
         <NewWorkspaceModal />
         <SettingsPanel />
-        <StartSessionPicker />
         <FirstRunClaudeToast />
         <AutoUpdateToast />
       </div>

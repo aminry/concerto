@@ -72,10 +72,6 @@ export type UiStore = {
   newWorkspaceModalOpen: boolean;
   /// True when Settings (currently just Add Repository) is on screen.
   settingsOpen: boolean;
-  /// True when the "+ Start Session" picker dialog is open. Owned by
-  /// the workarea-detail panel; lifted into the store so the picker
-  /// component can sit at the App root and overlay everything.
-  startSessionPickerOpen: boolean;
   /// Task 46 — three-panel layout state. Persisted to `localStorage`
   /// under [`LAYOUT_STORAGE_KEY`] via the App-root effect.
   sidebarWidth: number;
@@ -95,7 +91,6 @@ export type UiStore = {
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void;
   setNewWorkspaceModalOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
-  setStartSessionPickerOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setSessionRegionHeight: (height: number) => void;
   setRightRailCollapsed: (collapsed: boolean) => void;
@@ -171,7 +166,6 @@ export const useUiStore = create<UiStore>((set) => ({
   expandedWorkspaces: new Set<string>(),
   newWorkspaceModalOpen: false,
   settingsOpen: false,
-  startSessionPickerOpen: false,
   sidebarWidth: initialLayout.sidebarWidth,
   sessionRegionHeight: initialLayout.sessionRegionHeight,
   rightRailCollapsed: initialLayout.rightRailCollapsed,
@@ -210,7 +204,6 @@ export const useUiStore = create<UiStore>((set) => ({
     }),
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
-  setStartSessionPickerOpen: (open) => set({ startSessionPickerOpen: open }),
   setSidebarWidth: (width) => set({ sidebarWidth: clampPercent(width) }),
   setSessionRegionHeight: (height) =>
     set({ sessionRegionHeight: clampPercent(height) }),

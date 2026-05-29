@@ -16,11 +16,15 @@ export function Menu({
   items,
   onSelect,
   align = "left",
+  label,
 }: {
   trigger: (open: boolean) => ReactNode;
   items: ReadonlyArray<MenuItem>;
   onSelect: (id: string) => void;
   align?: "left" | "right";
+  /// Accessible name for the trigger button. Required when the trigger is
+  /// icon-only (otherwise the button has no accessible name).
+  label?: string;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -48,6 +52,7 @@ export function Menu({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={label}
         className="inline-flex"
       >
         {trigger(open)}
