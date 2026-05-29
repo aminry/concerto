@@ -6,6 +6,8 @@
 // selected file, so the cost of the list itself is bounded by DOM nodes
 // (one per changed file).
 
+import { FileText } from "lucide-react";
+
 import type { FileDiff } from "../../api/diff";
 
 export type FileListSidebarProps = {
@@ -18,7 +20,7 @@ export function FileListSidebar(props: FileListSidebarProps): JSX.Element {
   const { files, selectedIndex, onSelect } = props;
   if (files.length === 0) {
     return (
-      <ul className="text-xs text-slate-500 px-2 py-2">
+      <ul className="text-xs text-faint px-2 py-2 h-full flex items-center justify-center text-center">
         <li>No changed files.</li>
       </ul>
     );
@@ -29,8 +31,8 @@ export function FileListSidebar(props: FileListSidebarProps): JSX.Element {
         const active = idx === selectedIndex;
         const stats = countAddDel(file);
         const cls = active
-          ? "w-full text-left px-2 py-1 bg-slate-800 text-slate-100 flex items-center gap-2"
-          : "w-full text-left px-2 py-1 text-slate-300 hover:bg-slate-900 flex items-center gap-2";
+          ? "w-full text-left px-2 py-1 rounded-md bg-accent/10 text-foreground flex items-center gap-2"
+          : "w-full text-left px-2 py-1 rounded-md text-muted hover:bg-surface-2 flex items-center gap-2";
         return (
           <li key={`${file.path}:${idx}`}>
             <button
@@ -40,12 +42,13 @@ export function FileListSidebar(props: FileListSidebarProps): JSX.Element {
               aria-pressed={active}
               title={file.path}
             >
+              <FileText size={14} className="shrink-0" />
               <KindChip kind={file.kind} />
               <span className="font-mono truncate flex-1">{file.path}</span>
-              <span className="font-mono text-emerald-400">
+              <span className="font-mono text-ok">
                 +{stats.added}
               </span>
-              <span className="font-mono text-rose-400">-{stats.removed}</span>
+              <span className="font-mono text-err">-{stats.removed}</span>
             </button>
           </li>
         );
@@ -85,15 +88,15 @@ function kindLabel(kind: FileDiff["kind"]): string {
 function kindClass(kind: FileDiff["kind"]): string {
   switch (kind) {
     case "DIFF_KIND_ADDED":
-      return "bg-emerald-900 text-emerald-200";
+      return "bg-ok/15 text-ok";
     case "DIFF_KIND_DELETED":
-      return "bg-rose-900 text-rose-200";
+      return "bg-err/15 text-err";
     case "DIFF_KIND_MODIFIED":
-      return "bg-amber-900 text-amber-200";
+      return "bg-warn/15 text-warn";
     case "DIFF_KIND_RENAMED":
-      return "bg-sky-900 text-sky-200";
+      return "bg-accent/15 text-accent";
     default:
-      return "bg-slate-800 text-slate-300";
+      return "bg-surface-2 text-muted";
   }
 }
 

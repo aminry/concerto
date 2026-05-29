@@ -9,6 +9,7 @@ import {
   useSessionEvents,
   type SessionStatusBadge,
 } from "../hooks/useSessionEvents";
+import { StatusDot, type DotStatus } from "./ui/status-dot";
 
 export type SessionTabProps = {
   session: Session;
@@ -28,41 +29,42 @@ export function SessionTab({
   const { status } = useSessionEvents(session.id, initial);
 
   const buttonClass = active
-    ? "px-3 py-1 text-xs rounded bg-slate-700 text-slate-100 flex items-center gap-2"
-    : "px-3 py-1 text-xs rounded bg-slate-900 text-slate-300 hover:bg-slate-800 flex items-center gap-2";
+    ? "px-3 py-1 text-xs rounded-md border border-accent bg-accent/10 text-foreground flex items-center gap-2"
+    : "px-3 py-1 text-xs rounded-md border border-border bg-surface text-muted hover:bg-surface-2 flex items-center gap-2";
 
   return (
     <button type="button" className={buttonClass} onClick={onClick}>
-      <StatusDot status={status} />
+      <StatusDot status={sessionStatusToDot(status)} />
       <span className="truncate max-w-[10rem]">{session.agent_kind}</span>
-      <span className="text-slate-500 truncate max-w-[6rem]">
+      <span className="font-mono text-faint truncate max-w-[6rem]">
         {session.id.slice(0, 8)}
       </span>
     </button>
   );
 }
 
-function StatusDot({ status }: { status: SessionStatusBadge }): JSX.Element {
-  const color = badgeColor(status);
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full ${color}`}
-      aria-label={`session status: ${status}`}
-    />
-  );
-}
-
-function badgeColor(status: SessionStatusBadge): string {
+// Map the session status — both the live `SessionStatusBadge` values
+// that drive this tab's dot and the raw persisted `Session.status`
+// vocabulary ({ starting | running | awaiting | finished | crashed })
+// — onto the semantic `StatusDot` palette.
+function sessionStatusToDot(status: SessionStatusBadge | string): DotStatus {
   switch (status) {
     case "running":
-      return "bg-blue-500";
-    case "finished":
-      return "bg-slate-500";
-    case "crashed":
-      return "bg-rose-500";
     case "starting":
+      return "running";
+    case "awaiting":
+      return "warning";
+    case "finished":
+    case "exited":
+    case "stopped":
+    case "done":
+      return "idle";
+    case "crashed":
+    case "failed":
+    case "error":
+      return "error";
     default:
-      return "bg-amber-500";
+      return "idle";
   }
 }
 

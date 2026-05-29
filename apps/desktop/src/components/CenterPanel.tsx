@@ -16,6 +16,7 @@ import { useUiStore } from "../state/useUiStore";
 import { useWorkarea } from "../hooks/useWorkareas";
 import { SessionRegion } from "./center/SessionRegion";
 import { CodePrRegion } from "./center/CodePrRegion";
+import { StatusDot, type DotStatus } from "./ui/status-dot";
 
 export function CenterPanel(): JSX.Element {
   const workareaId = useUiStore((s) => s.selectedWorkareaId);
@@ -26,7 +27,7 @@ export function CenterPanel(): JSX.Element {
 
   if (!workareaId) {
     return (
-      <main className="h-full flex items-center justify-center p-6 text-slate-400 text-sm">
+      <main className="h-full flex items-center justify-center p-6 text-muted text-sm">
         Select a workarea to start a session.
       </main>
     );
@@ -34,18 +35,18 @@ export function CenterPanel(): JSX.Element {
 
   return (
     <main className="h-full flex flex-col min-h-0">
-      <header className="shrink-0 border-b border-slate-800 px-3 py-2">
+      <header className="shrink-0 border-b border-border px-3 py-2">
         <div className="flex items-center gap-2 min-w-0">
-          {workarea && <StatusDot status={workarea.status} />}
-          <h2 className="text-sm font-semibold text-slate-200 truncate">
+          {workarea && <StatusDot status={workareaStatusToDot(workarea.status)} />}
+          <h2 className="text-sm font-semibold text-foreground truncate">
             {workarea?.composer_name ?? "Workarea"}
           </h2>
           {workarea && (
             <>
-              <span className="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+              <span className="text-xs px-1.5 py-0.5 rounded bg-surface-2 text-muted font-mono">
                 {workarea.branch_name}
               </span>
-              <span className="text-xs text-slate-500">{workarea.status}</span>
+              <span className="text-xs text-faint">{workarea.status}</span>
             </>
           )}
         </div>
@@ -60,7 +61,7 @@ export function CenterPanel(): JSX.Element {
           <Panel defaultSize={sessionRegionHeight} minSize={20}>
             <SessionRegion workareaId={workareaId} />
           </Panel>
-          <PanelResizeHandle className="h-1 bg-slate-800 hover:bg-slate-700 transition-colors" />
+          <PanelResizeHandle className="h-1 bg-border hover:bg-accent/40 transition-colors" />
           <Panel minSize={15}>
             <CodePrRegion workarea={workarea} />
           </Panel>
@@ -70,25 +71,15 @@ export function CenterPanel(): JSX.Element {
   );
 }
 
-function StatusDot({ status }: { status: string }): JSX.Element {
-  const color = statusColor(status);
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full ${color}`}
-      aria-label={`status: ${status}`}
-    />
-  );
-}
-
-function statusColor(status: string): string {
+function workareaStatusToDot(status: string): DotStatus {
   switch (status) {
     case "active":
-      return "bg-green-500";
-    case "awaiting":
-      return "bg-amber-500";
+      return "ok";
     case "running":
-      return "bg-blue-500";
+      return "running";
+    case "awaiting":
+      return "warning";
     default:
-      return "bg-gray-400";
+      return "idle";
   }
 }

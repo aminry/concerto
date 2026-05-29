@@ -17,6 +17,7 @@ import type { Workarea } from "../../api/workareas";
 import { listRepositories } from "../../api/repositories";
 import { useUiStore } from "../../state/useUiStore";
 import { DiffViewer } from "./DiffViewer";
+import { Tabs } from "../ui/tabs";
 
 export type CodePrRegionProps = {
   workarea: Workarea | null | undefined;
@@ -52,37 +53,21 @@ export function CodePrRegion({ workarea }: CodePrRegionProps): JSX.Element {
   return (
     <section className="h-full flex flex-col min-h-0 p-2 gap-2">
       <div className="shrink-0 flex items-center gap-2">
-        <span className="text-xs uppercase tracking-wider text-slate-500">
+        <span className="text-xs uppercase tracking-wide text-faint">
           Code & PRs:
         </span>
         <button
           type="button"
-          className="px-2 py-0.5 text-xs rounded bg-slate-800 text-slate-100 font-mono"
+          className="px-2 py-0.5 text-xs rounded-md bg-surface-2 text-foreground font-mono"
           aria-pressed="true"
         >
           {repoLabel}
         </button>
       </div>
-      <div className="shrink-0 flex items-center gap-1 border-b border-slate-800 pb-1">
-        {SUB_TABS.map((t) => {
-          const active = t.id === activeSubTab;
-          const cls = active
-            ? "px-2 py-0.5 text-xs rounded bg-slate-800 text-slate-100"
-            : "px-2 py-0.5 text-xs rounded text-slate-400 hover:bg-slate-900";
-          return (
-            <button
-              key={t.id}
-              type="button"
-              className={cls}
-              onClick={() => setActiveSubTab(t.id)}
-              aria-pressed={active}
-            >
-              {t.label}
-            </button>
-          );
-        })}
+      <div className="shrink-0">
+        <Tabs items={SUB_TABS} active={activeSubTab} onSelect={setActiveSubTab} />
       </div>
-      <div className="flex-1 min-h-0 rounded border border-slate-800 overflow-hidden">
+      <div className="flex-1 min-h-0 rounded border border-border overflow-hidden">
         {activeSubTab === "diff" ? (
           workarea ? (
             <DiffViewer
@@ -112,7 +97,7 @@ function Placeholder({
   children: React.ReactNode;
 }): JSX.Element {
   return (
-    <div className="h-full flex items-center justify-center text-xs text-slate-500 p-3 border border-dashed border-slate-800 m-px rounded">
+    <div className="h-full flex items-center justify-center text-xs text-faint p-3 border border-dashed border-border m-px rounded">
       {children}
     </div>
   );

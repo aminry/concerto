@@ -11,6 +11,7 @@ import { useCallback, useState } from "react";
 
 import { sendMessage } from "../api/sessions";
 import { Button } from "./ui/button";
+import { Send } from "lucide-react";
 
 export type SessionComposerProps = {
   sessionId: string;
@@ -53,7 +54,7 @@ export function SessionComposer({
   );
 
   return (
-    <div className="border-t border-slate-800 pt-2 pb-1 px-1 flex gap-2 items-end">
+    <div className="border-t border-border pt-2 pb-1 px-1 flex gap-2 items-end">
       <textarea
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -65,18 +66,20 @@ export function SessionComposer({
             : "Type a message… Cmd+Enter to send"
         }
         disabled={disabled || sending}
-        className="flex-1 resize-none bg-slate-900 border border-slate-800 rounded px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500 disabled:opacity-50 font-mono"
+        className="flex-1 resize-none bg-surface border border-border rounded-md px-2 py-1 text-sm text-foreground placeholder:text-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 font-mono"
       />
       <div className="flex flex-col items-end gap-1">
         <Button
-          variant="default"
+          variant="primary"
           onClick={() => void submit()}
           disabled={disabled || sending || value.length === 0}
         >
+          <Send size={14} />
           {sending ? "Sending…" : "Send"}
         </Button>
+        <span className="text-xs text-faint">⌘+Enter</span>
         {error && (
-          <p className="text-xs text-rose-400 max-w-[16rem] truncate">
+          <p className="text-xs text-err max-w-[16rem] truncate">
             {error}
           </p>
         )}

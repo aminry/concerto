@@ -17,6 +17,8 @@ import { SessionTab } from "../SessionTab";
 import { SessionTerminal } from "../SessionTerminal";
 import { SessionComposer } from "../SessionComposer";
 import { Button } from "../ui/button";
+import { Tabs } from "../ui/tabs";
+import { TerminalSquare } from "lucide-react";
 
 export type SessionRegionProps = {
   workareaId: string;
@@ -56,14 +58,14 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
   return (
     <section className="h-full flex flex-col min-h-0 p-2 gap-2">
       <div className="shrink-0 flex items-center gap-2 flex-wrap">
-        <span className="text-xs uppercase tracking-wider text-slate-500">
+        <span className="text-xs uppercase tracking-wide text-faint">
           Sessions:
         </span>
         {sessionsQuery.isLoading && (
-          <span className="text-xs text-slate-500">Loading…</span>
+          <span className="text-xs text-faint">Loading…</span>
         )}
         {sessionsQuery.isError && (
-          <span className="text-xs text-rose-400">
+          <span className="text-xs text-err">
             {String(sessionsQuery.error)}
           </span>
         )}
@@ -77,6 +79,7 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
         ))}
         <Button
           variant="outline"
+          size="sm"
           onClick={() => setStartSessionPickerOpen(true)}
         >
           + Start Session
@@ -84,6 +87,7 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
         {activeSession && !sessionDisabled && (
           <Button
             variant="ghost"
+            size="sm"
             onClick={() => stopMutation.mutate(activeSession.id)}
             disabled={stopMutation.isPending}
           >
@@ -106,7 +110,8 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
             />
           </>
         ) : (
-          <div className="flex-1 min-h-0 flex items-center justify-center text-slate-500 text-sm border border-dashed border-slate-800 rounded">
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 text-faint text-sm border border-dashed border-border rounded-lg">
+            <TerminalSquare size={28} />
             No sessions yet. Click “+ Start Session”.
           </div>
         )}
@@ -121,22 +126,13 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
 /// matches the design diagram.
 function SubTabHeader(): JSX.Element {
   return (
-    <div className="shrink-0 flex items-center gap-1 border-b border-slate-800 pb-1">
-      <button
-        type="button"
-        className="px-2 py-0.5 text-xs rounded bg-slate-800 text-slate-100"
-        aria-pressed="true"
-      >
-        Terminal
-      </button>
-      <button
-        type="button"
-        className="px-2 py-0.5 text-xs rounded text-slate-500 cursor-not-allowed"
-        title="Chat view comes in V1.0"
-        disabled
-      >
-        Chat
-      </button>
-    </div>
+    <Tabs
+      items={[
+        { id: "terminal", label: "Terminal" },
+        { id: "chat", label: "Chat", disabled: true, title: "Chat view comes in V1.0" },
+      ]}
+      active="terminal"
+      onSelect={() => {}}
+    />
   );
 }
