@@ -64,12 +64,12 @@ Implement the V0.1 rule engine — a small set of built-in rules that listen for
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] All 6 built-in rules fire under their conditions.
-- [ ] De-duplication verified.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] All 6 built-in rules fire under their conditions.
+- [x] De-duplication verified.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/persist/migrations/0005_suggestion_learn.sql` (new)
@@ -97,7 +97,7 @@ Refs: tasks/40-suggestion-rule-engine.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** suggestion_learn table created but unused; learning loop is V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:** Migration number is `0006_suggestion_learn.sql` (the task brief said `0005`, but Task 39 already used `0005_skills_index.sql`); `AgentEvent` extended with two additive variants — `ContextUsage { session_id, pct }` and `Crashed { session_id }` — so the `context_window_*` and `agent_crashed` rules have a signal to fire on. The variants are wired through the engine but the V0.1 wire-`session.events` mapper drops them (`map_agent_event` returns `Option<Event>`); they re-surface on the `suggestion.events` subject as chips. Tests run a 1-second supervisor-poll session pump from `main.rs` rather than wiring a back-channel from the supervisor — keeps the supervisor surface unchanged.
+- **Open questions for next task:** V1.0 parser packs need to start emitting `ContextUsage` so the context-window rules fire in production; Task 33's terminal-mode parsers do not surface it yet.
+- **Deliberate debt:** `suggestion_learn` table created but unused; learning loop is V1.0. The session-pump is a 1-second poll over `sessions WHERE ended_at IS NULL` — fine for V0.1 scale, but V1.0 should switch to a supervisor-side event channel once one exists. The `tests_failed` regex tolerates the common plural (`(?i)\d+ (test|spec)s? failed`) — the task brief said `(test|spec)`, the singular form still matches but the engineer should re-check this if parsers start surfacing structured test-fail events.
+- **Smoke-gate state:** unchanged (smoke gate still green).

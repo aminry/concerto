@@ -671,3 +671,38 @@ pub struct SkillFilter {
 }
 ```
 
+### struct `SuggestionLearnId`
+
+```rust
+pub struct SuggestionLearnId(pub String);
+```
+
+### struct `NewSuggestionLearn`
+
+```rust
+pub struct NewSuggestionLearn {
+    pub id: SuggestionLearnId,
+    pub workarea_id: Option<WorkareaId>,
+    pub rule_id: String,
+    /// Short free-form string (`accept | dismiss | snooze`). V0.1 does
+    /// not CHECK the set so V1.0 experiments can add values.
+    pub outcome: String,
+    pub context_hash: String,
+    /// Unix epoch milliseconds (caller-supplied).
+    pub created_at: i64,
+}
+```
+
+### struct `SuggestionLearn`
+
+```rust
+pub struct SuggestionLearn {
+    pub id: SuggestionLearnId,
+    pub workarea_id: Option<WorkareaId>,
+    pub rule_id: String,
+    pub outcome: String,
+    pub context_hash: String,
+    pub created_at: i64,
+}
+```
+

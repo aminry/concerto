@@ -102,4 +102,21 @@ pub enum AgentEvent {
         checkpoint_id: String,
         git_ref: String,
     },
+    /// Task 40: agent reported a context-window utilisation percentage.
+    /// `pct` is the 0..=100 integer the parser pack extracted from the
+    /// CLI's status line. V0.1 parser packs do not yet emit this — the
+    /// variant is wired so the Suggestion Engine's
+    /// `context_window_50` / `context_window_80` rules can fire as soon
+    /// as a parser pack starts surfacing the signal. The Suggestion
+    /// Engine consumes the event; downstream `Streams.session.events`
+    /// subscribers see no wire change in V0.1 (the variant is mapped to
+    /// nothing on the wire today; V1.0 adds the proto field).
+    ContextUsage { session_id: SessionId, pct: u8 },
+    /// Task 40: agent host crashed (read pump exited unexpectedly). V0.1
+    /// emits this only when the supervisor's adoption logic transitions
+    /// a row to `'crashed'` — the rule engine listens so the
+    /// `agent_crashed` chip can surface a "resume" suggestion. The
+    /// session row's `status` column is the authoritative truth; this
+    /// event is the in-process notification carrier.
+    Crashed { session_id: SessionId },
 }

@@ -22,6 +22,8 @@ use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
 #[cfg(unix)]
 use concerto_core::scheduler::{SchedulerActor, SchedulerConfig};
 use concerto_core::skills::{SkillsRegistryActor, SkillsRegistryConfig};
+#[cfg(unix)]
+use concerto_core::suggestions::{SuggestionEngineActor, SuggestionEngineConfig};
 use concerto_core::workspace_manager::{
     WorkareaManagerActor, WorkareaManagerConfig, WorkspaceManagerActor, WorkspaceManagerConfig,
 };
@@ -282,6 +284,33 @@ async fn run() -> Result<()> {
         Err(e) => tracing::warn!(error = %e, "skills.boot_refresh failed"),
     }
 
+    // Task 40: spawn the Suggestion Engine. Owns the V0.1 rule engine
+    // — six built-in rules + per-workarea state + dedup. The actor's
+    // `run` parks on shutdown; the cheap-to-clone handle is the
+    // meaningful surface. The engine attaches to live sessions via a
+    // background pump (1s tick) so newly-started sessions are picked
+    // up without a back-channel from the supervisor.
+    #[cfg(unix)]
+    let suggestions_handle = {
+        let actor = SuggestionEngineActor::new(Arc::clone(&persistence));
+        let handle = actor.handle();
+        drop(actor);
+        let factory_persistence = Arc::clone(&persistence);
+        runtime
+            .supervisor_mut()
+            .expect("supervisor present at boot")
+            .spawn::<SuggestionEngineActor, _>(
+                move || SuggestionEngineActor::new(Arc::clone(&factory_persistence)),
+                SuggestionEngineConfig,
+            )
+            .await?;
+        // Spawn the session-pump background task. Cancelled when the
+        // root shutdown token fires.
+        let shutdown_token = runtime.shutdown_token();
+        handle.spawn_session_pump(agent_supervisor_handle.clone(), shutdown_token);
+        handle
+    };
+
     // Task 31: boot-time crash adoption (`design/03 §6.5`). Scan every
     // non-archived workarea, probe `worktree_root`, transition rows
     // whose directory is missing to `'crashed'`. The user — not
@@ -328,6 +357,8 @@ async fn run() -> Result<()> {
     #[cfg(unix)]
     let factory_scheduler_handle = scheduler_handle.clone();
     let factory_skills_handle = skills_handle.clone();
+    #[cfg(unix)]
+    let factory_suggestions_handle = suggestions_handle.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -345,6 +376,8 @@ async fn run() -> Result<()> {
                     #[cfg(unix)]
                     Some(factory_scheduler_handle.clone()),
                     Some(factory_skills_handle.clone()),
+                    #[cfg(unix)]
+                    Some(factory_suggestions_handle.clone()),
                 )
             },
             ApiServerConfig { socket_path },

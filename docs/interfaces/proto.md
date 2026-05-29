@@ -681,6 +681,9 @@ message Event {
     SessionIoChunk session_io = 11;
     WorkspaceEvent workspace = 12;
     WorkareaEvent workarea = 13;
+    // Task 40: rule-engine chip emission. Carried on the
+    // `suggestion.events` subject (filter on workarea_id when set).
+    Chip suggestion = 14;
   }
 }
 ```
@@ -827,6 +830,81 @@ message WorkareaEvent {
 ```proto
 service Streams {
   rpc Subscribe(SubscribeRequest) returns (stream Event);
+}
+```
+
+## `crates/proto/proto/concerto/v1/suggestions.proto`
+
+- package: `concerto.v1`
+
+### message `Chip`
+
+```proto
+message Chip {
+  // Static rule identifier (see list above). Stable across runs.
+  string rule_id = 1;
+  // The workarea this chip is scoped to. Always set in V0.1.
+  string workarea_id = 2;
+  // Short human-readable label rendered on the chip.
+  string title = 3;
+  // Rule-supplied priority — higher wins when multiple chips compete
+  // for the same slot. V0.1 rules use the range `1..=100`.
+  int32 priority = 4;
+  // Unix epoch milliseconds the chip was emitted at.
+  int64 created_at_ms = 5;
+  // Action token (e.g. `compress | new_session | open_diff | resume |
+  // commit | review_tool`). V0.1 ships free-form strings so V1.0 can
+  // refine the catalog without a wire-format break.
+  string action = 6;
+}
+```
+
+### message `GetSuggestionsRequest`
+
+```proto
+message GetSuggestionsRequest {
+  string workarea_id = 1;
+}
+```
+
+### message `SuggestionsResponse`
+
+```proto
+message SuggestionsResponse {
+  repeated Chip chips = 1;
+}
+```
+
+### message `RecordSuggestionOutcomeRequest`
+
+```proto
+message RecordSuggestionOutcomeRequest {
+  string workarea_id = 1;
+  string rule_id = 2;
+  // Short string: `accept | dismiss | snooze` plus future
+  // `acted_upon`. V0.1 does not validate the set.
+  string outcome = 3;
+}
+```
+
+### message `RecordSuggestionOutcomeResponse`
+
+```proto
+message RecordSuggestionOutcomeResponse {
+}
+```
+
+### service `Suggestions`
+
+```proto
+service Suggestions {
+  // Current chip set for a workarea. V0.1 returns chips emitted in the
+  // last ~60s that have not been deduplicated. Order: priority desc,
+  // then `created_at_ms` desc.
+  rpc GetSuggestions(GetSuggestionsRequest) returns (SuggestionsResponse);
+  // V0.1: stub — logs the outcome and returns empty. V1.0: writes a
+  // `suggestion_learn` row and updates the rule's bucketed weight.
+  rpc RecordSuggestionOutcome(RecordSuggestionOutcomeRequest) returns (RecordSuggestionOutcomeResponse);
 }
 ```
 

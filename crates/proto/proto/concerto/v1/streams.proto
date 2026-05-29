@@ -17,6 +17,7 @@ syntax = "proto3";
 package concerto.v1;
 
 import "google/protobuf/timestamp.proto";
+import "concerto/v1/suggestions.proto";
 
 message SubscribeRequest {
   // Subject string from the locked catalog:
@@ -44,6 +45,9 @@ message Event {
     SessionIoChunk session_io = 11;
     WorkspaceEvent workspace = 12;
     WorkareaEvent workarea = 13;
+    // Task 40: rule-engine chip emission. Carried on the
+    // `suggestion.events` subject (filter on workarea_id when set).
+    Chip suggestion = 14;
   }
 }
 
