@@ -4,7 +4,7 @@
 export function FilesTab(): JSX.Element {
   return (
     <div className="p-3">
-      <p className="text-xs text-slate-400">
+      <p className="text-xs text-faint">
         Files panel arrives with the filesystem allow/deny surface.
       </p>
     </div>

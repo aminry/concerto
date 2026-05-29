@@ -5,7 +5,7 @@
 export function TodosTab(): JSX.Element {
   return (
     <div className="p-3">
-      <p className="text-xs text-slate-400">
+      <p className="text-xs text-faint">
         Todos arrive with Maestro (V1.0). The panel will list the active
         workarea's pending items.
       </p>
