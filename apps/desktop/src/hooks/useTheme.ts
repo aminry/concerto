@@ -1,33 +1,20 @@
-// Theme controller hook. Owns the user preference (persisted), watches the
-// OS color-scheme, and writes `data-theme` onto <html>. Returns the
-// preference, the effective theme, a setter, and a cycle helper for the
-// toggle.
+// Theme hook + one-shot controller.
+//
+// `useTheme()` is a read+actions view over the shared `useThemeStore`, so
+// EVERY consumer (StatusBar toggle, xterm, Monaco) observes the same
+// effective theme — a local-state hook would desync them.
+//
+// `useThemeController()` owns the side-effects (OS-preference listener +
+// writing `data-theme` onto <html>) and MUST be mounted exactly once,
+// near the app root.
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect } from "react";
 import {
-  isThemePreference,
   resolveTheme,
-  THEME_STORAGE_KEY,
   type EffectiveTheme,
   type ThemePreference,
 } from "../theme/resolveTheme";
-
-function loadPreference(): ThemePreference {
-  try {
-    const raw = localStorage.getItem(THEME_STORAGE_KEY);
-    return isThemePreference(raw) ? raw : "system";
-  } catch {
-    return "system";
-  }
-}
-
-function systemPrefersDark(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    !!window.matchMedia &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches
-  );
-}
+import { useThemeStore } from "../state/useThemeStore";
 
 export type UseThemeResult = {
   preference: ThemePreference;
@@ -38,40 +25,43 @@ export type UseThemeResult = {
 };
 
 export function useTheme(): UseThemeResult {
-  const [preference, setPreferenceState] =
-    useState<ThemePreference>(loadPreference);
-  const [systemDark, setSystemDark] = useState<boolean>(systemPrefersDark);
-
-  // Track OS changes so `system` preference stays live.
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
+  const preference = useThemeStore((s) => s.preference);
+  const systemDark = useThemeStore((s) => s.systemDark);
+  const setPreference = useThemeStore((s) => s.setPreference);
 
   const effective = resolveTheme(preference, systemDark);
 
-  // Apply to <html> whenever the effective theme changes.
+  const cycle = (): void => {
+    setPreference(
+      preference === "system"
+        ? "light"
+        : preference === "light"
+          ? "dark"
+          : "system",
+    );
+  };
+
+  return { preference, effective, setPreference, cycle };
+}
+
+/// Side-effects for the theme system. Mount once at the app root.
+/// Subscribes to the OS color-scheme and writes `data-theme` to <html>
+/// whenever the effective theme changes.
+export function useThemeController(): void {
+  const preference = useThemeStore((s) => s.preference);
+  const systemDark = useThemeStore((s) => s.systemDark);
+  const setSystemDark = useThemeStore((s) => s.setSystemDark);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e: MediaQueryListEvent): void => setSystemDark(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [setSystemDark]);
+
+  const effective = resolveTheme(preference, systemDark);
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", effective);
   }, [effective]);
-
-  const setPreference = useCallback((p: ThemePreference) => {
-    setPreferenceState(p);
-    try {
-      localStorage.setItem(THEME_STORAGE_KEY, p);
-    } catch {
-      // Persistence is best-effort; in-memory state still applies.
-    }
-  }, []);
-
-  const cycle = useCallback(() => {
-    setPreference(
-      preference === "system" ? "light" : preference === "light" ? "dark" : "system",
-    );
-  }, [preference, setPreference]);
-
-  return { preference, effective, setPreference, cycle };
 }

@@ -16,6 +16,7 @@ import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { StartSessionPicker } from "./components/StartSessionPicker";
 import { AutoUpdateToast, FirstRunClaudeToast } from "./components/Toast";
+import { useThemeController } from "./hooks/useTheme";
 import { LAYOUT_STORAGE_KEY, useUiStore } from "./state/useUiStore";
 
 const queryClient = new QueryClient({
@@ -36,6 +37,7 @@ const LAYOUT_PERSIST_DEBOUNCE_MS = 300;
 
 function App(): JSX.Element {
   useLayoutPersistence();
+  useThemeController();
   return (
     <QueryClientProvider client={queryClient}>
       <div className="h-screen w-screen bg-background text-foreground font-sans">
