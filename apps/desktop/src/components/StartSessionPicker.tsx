@@ -8,6 +8,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { createSession } from "../api/sessions";
+import { formatError } from "../api/errors";
 import { useUiStore } from "../state/useUiStore";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
@@ -33,7 +34,7 @@ export function StartSessionPicker(): JSX.Element | null {
       setOpen(false);
       setError(null);
     },
-    onError: (e) => setError(String(e)),
+    onError: (e) => setError(formatError(e)),
   });
 
   if (!open) return null;

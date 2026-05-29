@@ -52,11 +52,17 @@
       EnvironmentVariables intentionally minimal: launchd sets HOME and USER
       for a gui/<uid> agent, and concerto-core derives CONCERTO_HOME from
       $HOME when unset.
+
+      PATH includes ~/.local/bin because Claude Code's official installer
+      (`curl -fsSL claude.ai/install.sh | bash`) lands `claude` there.
+      Without it, spawning a `claude` session fails with ENOENT and the
+      session row gets stuck in `starting` because launchd's default PATH
+      doesn't cover the user-local bin.
     -->
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <string>__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
     </dict>
 </dict>
 </plist>

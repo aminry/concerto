@@ -77,6 +77,16 @@ message StopSessionRequest {
   string reason = 2;
 }
 
+// Inputs for `Sessions.ResizeSession`. Relays the user's xterm pane
+// geometry to the agent's PTY so full-screen TUIs (e.g. Claude Code)
+// render at the size the user actually sees. `rows`/`cols` are character
+// cells. Sent on terminal mount and on every pane resize.
+message ResizeSessionRequest {
+  string session_id = 1;
+  uint32 rows = 2;
+  uint32 cols = 3;
+}
+
 // Task 33: client's decision on a pending tool-approval gate.
 //
 // Mirrors the four legal values for a *user-initiated* resolution. The
@@ -190,6 +200,7 @@ service Sessions {
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
   rpc StopSession(StopSessionRequest) returns (google.protobuf.Empty);
+  rpc ResizeSession(ResizeSessionRequest) returns (google.protobuf.Empty);
   // Task 32: change `sessions.permission_mode` with entry-ceremony +
   // managed.json cap enforcement. Returns the updated `Session` row.
   rpc UpdateSessionPermissionMode(UpdateSessionPermissionModeRequest) returns (Session);

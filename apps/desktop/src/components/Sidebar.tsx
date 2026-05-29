@@ -30,6 +30,9 @@ export function Sidebar(): JSX.Element {
   const setNewWorkspaceModalOpen = useUiStore(
     (s) => s.setNewWorkspaceModalOpen,
   );
+  const setNewProjectModalOpen = useUiStore(
+    (s) => s.setNewProjectModalOpen,
+  );
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
 
   const projectsQuery = useProjects();
@@ -92,16 +95,28 @@ export function Sidebar(): JSX.Element {
           </p>
         )}
         {projectsQuery.data && projectsQuery.data.projects.length === 0 && (
-          <p className="px-2 text-xs text-slate-500">
-            No projects yet. Seed one via SQL — V0.1 has no creation UI.
-          </p>
+          <div className="px-2 space-y-2">
+            <p className="text-xs text-slate-500">No projects yet.</p>
+            <Button onClick={() => setNewProjectModalOpen(true)}>
+              + New Project
+            </Button>
+          </div>
         )}
 
         {project && (
           <section>
-            <p className="px-2 text-xs uppercase tracking-wider text-slate-500 mb-1">
-              Project
-            </p>
+            <div className="flex items-center justify-between px-2 mb-1">
+              <p className="text-xs uppercase tracking-wider text-slate-500">
+                Project
+              </p>
+              <Button
+                variant="ghost"
+                onClick={() => setNewProjectModalOpen(true)}
+                title="New project"
+              >
+                +
+              </Button>
+            </div>
             <p className="px-2 text-sm text-slate-200 mb-2">{project.name}</p>
 
             <div className="flex items-center justify-between px-2 mb-1">

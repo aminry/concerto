@@ -70,6 +70,9 @@ export type UiStore = {
   /// True while the New Workspace modal is open. The renderer-only
   /// flag keeps the modal state inspectable in dev tools.
   newWorkspaceModalOpen: boolean;
+  /// True while the New Project modal is open. Surfaced by the sidebar
+  /// when the user clicks the "+ Project" affordance.
+  newProjectModalOpen: boolean;
   /// True when Settings (currently just Add Repository) is on screen.
   settingsOpen: boolean;
   /// True when the "+ Start Session" picker dialog is open. Owned by
@@ -94,6 +97,7 @@ export type UiStore = {
   toggleWorkspaceExpanded: (workspaceId: string) => void;
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void;
   setNewWorkspaceModalOpen: (open: boolean) => void;
+  setNewProjectModalOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   setStartSessionPickerOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
@@ -170,6 +174,7 @@ export const useUiStore = create<UiStore>((set) => ({
   sidebarCollapsed: false,
   expandedWorkspaces: new Set<string>(),
   newWorkspaceModalOpen: false,
+  newProjectModalOpen: false,
   settingsOpen: false,
   startSessionPickerOpen: false,
   sidebarWidth: initialLayout.sidebarWidth,
@@ -209,6 +214,7 @@ export const useUiStore = create<UiStore>((set) => ({
       return { expandedWorkspaces: next };
     }),
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
+  setNewProjectModalOpen: (open) => set({ newProjectModalOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setStartSessionPickerOpen: (open) => set({ startSessionPickerOpen: open }),
   setSidebarWidth: (width) => set({ sidebarWidth: clampPercent(width) }),

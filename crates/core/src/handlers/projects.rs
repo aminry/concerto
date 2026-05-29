@@ -1,17 +1,21 @@
-//! gRPC `Projects` service handler (Task 24).
+//! gRPC `Projects` service handler.
 //!
-//! V0.1 surface: a single read RPC, `ListProjects`. Project creation
-//! over gRPC is deferred — V0.1 seeds the `projects` table via direct
-//! SQL (see `crates/persist/src/projects.rs`). The Desktop sidebar
-//! (Task 24) uses this RPC to populate its top-level node without
-//! hardcoding a project id.
+//! Surface: `ListProjects` (Task 24) and `CreateProject` (post-V0.1 — added
+//! so the Desktop sidebar can offer a "+ Project" affordance instead of
+//! requiring direct SQL seeding). Persistence is via
+//! [`concerto_persist::projects`]; the server assigns the UUIDv7 id and the
+//! `created_at` epoch-ms timestamp.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use concerto_persist::Persistence;
+use concerto_error::Error;
+use concerto_persist::{NewProject, Persistence, ProjectId};
 use concerto_proto::v1::projects_server::Projects as ProjectsService;
-use concerto_proto::v1::{ListProjectsRequest, ListProjectsResponse, Project as ProtoProject};
+use concerto_proto::v1::{
+    CreateProjectRequest, ListProjectsRequest, ListProjectsResponse, Project as ProtoProject,
+};
 use tonic::{Request, Response, Status};
 
 use crate::error_map::error_to_status;
@@ -42,6 +46,50 @@ impl ProjectsService for ProjectsHandler {
             projects: rows.into_iter().map(project_to_proto).collect(),
         }))
     }
+
+    #[tracing::instrument(skip_all, name = "Projects::CreateProject")]
+    async fn create_project(
+        &self,
+        request: Request<CreateProjectRequest>,
+    ) -> Result<Response<ProtoProject>, Status> {
+        let req = request.into_inner();
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(error_to_status(Error::Validation(
+                "name is required".into(),
+            )));
+        }
+        let icon = req.icon.and_then(|s| {
+            let t = s.trim().to_string();
+            (!t.is_empty()).then_some(t)
+        });
+        let id = ProjectId(uuid::Uuid::now_v7().to_string());
+        let created_at = now_unix_ms();
+        let new_project = NewProject {
+            id: id.clone(),
+            name: name.clone(),
+            icon: icon.clone(),
+            created_at,
+        };
+        let mut writer = self.persistence.writer().await;
+        concerto_persist::projects::insert(&mut writer, new_project)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ProtoProject {
+            id: id.0,
+            name,
+            icon,
+            created_at: Some(epoch_ms_to_ts(created_at)),
+            archived_at: None,
+        }))
+    }
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Convert a persisted `Project` into the wire shape.

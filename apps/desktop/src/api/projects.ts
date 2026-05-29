@@ -24,3 +24,17 @@ export async function listProjects(): Promise<ListProjectsResponse> {
     {},
   );
 }
+
+export type CreateProjectRequest = {
+  name: string;
+  icon?: string;
+};
+
+export async function createProject(
+  payload: CreateProjectRequest,
+): Promise<Project> {
+  return callRpc<CreateProjectRequest, Project>(
+    "Projects.CreateProject",
+    payload,
+  );
+}

@@ -39,6 +39,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLIST_TEMPLATE="$REPO_ROOT/dist/macos/com.concerto.core.plist"
 INSTALL_DIR="$HOME/Applications/concerto"
 BIN_PATH="$INSTALL_DIR/concerto-core"
+HOST_BIN_PATH="$INSTALL_DIR/concerto-agent-host"
 LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
 LAUNCH_AGENT_PATH="$LAUNCH_AGENT_DIR/com.concerto.core.plist"
 LOG_DIR="$HOME/concerto/logs"
@@ -64,23 +65,33 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
-echo "==> Building concerto-core (release)"
-(cd "$REPO_ROOT" && cargo build --release -p concerto-core)
+echo "==> Building concerto-core + concerto-agent-host (release)"
+(cd "$REPO_ROOT" && cargo build --release -p concerto-core -p concerto-agent-host)
 
 BUILT_BIN="$REPO_ROOT/target/release/concerto-core"
+BUILT_HOST_BIN="$REPO_ROOT/target/release/concerto-agent-host"
 if [ ! -x "$BUILT_BIN" ]; then
     echo "install-macos.sh: build did not produce $BUILT_BIN" >&2
     exit 1
 fi
+if [ ! -x "$BUILT_HOST_BIN" ]; then
+    # concerto-agent-host is a sibling binary the supervisor spawns per
+    # session. Without it, every CreateSession fails with `spawn
+    # agent-host: io: No such file or directory`.
+    echo "install-macos.sh: build did not produce $BUILT_HOST_BIN" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
-# 2. Install binary + log dir
+# 2. Install binaries + log dir
 # ---------------------------------------------------------------------------
-echo "==> Installing binary to $BIN_PATH"
+echo "==> Installing binaries to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
 cp -f "$BUILT_BIN" "$BIN_PATH"
 chmod +x "$BIN_PATH"
+cp -f "$BUILT_HOST_BIN" "$HOST_BIN_PATH"
+chmod +x "$HOST_BIN_PATH"
 
 # ---------------------------------------------------------------------------
 # 3. Render plist
@@ -121,6 +132,7 @@ launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENT_PATH"
 
 echo "==> Installed."
 echo "    Binary:       $BIN_PATH"
+echo "    Agent host:   $HOST_BIN_PATH"
 echo "    LaunchAgent:  $LAUNCH_AGENT_PATH"
 echo "    Logs:         $LOG_DIR/launchd-{out,err}.log"
 echo ""

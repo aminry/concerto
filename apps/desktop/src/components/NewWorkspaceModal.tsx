@@ -16,6 +16,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../state/useUiStore";
 import { createWorkspace } from "../api/workspaces";
 import { listRepositories, type Repository } from "../api/repositories";
+import { formatError } from "../api/errors";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
@@ -67,7 +68,7 @@ export function NewWorkspaceModal(): JSX.Element {
       setOpen(false);
     },
     onError: (e) => {
-      setErrorMsg(String(e));
+      setErrorMsg(formatError(e));
     },
   });
 

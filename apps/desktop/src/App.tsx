@@ -12,6 +12,7 @@ import { useEffect, useRef } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AppLayout } from "./components/AppLayout";
+import { NewProjectModal } from "./components/NewProjectModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { StartSessionPicker } from "./components/StartSessionPicker";
@@ -40,6 +41,7 @@ function App(): JSX.Element {
     <QueryClientProvider client={queryClient}>
       <div className="h-screen w-screen bg-slate-950 text-slate-100 font-mono">
         <AppLayout />
+        <NewProjectModal />
         <NewWorkspaceModal />
         <SettingsPanel />
         <StartSessionPicker />

@@ -24,6 +24,7 @@ import {
   onCloneProgress,
   type CloneProgressEvent,
 } from "../api/client";
+import { formatError } from "../api/errors";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Progress } from "./ui/progress";
@@ -132,13 +133,13 @@ export function AddRepositoryForm(): JSX.Element {
         .catch((e: unknown) => {
           setClonesRef.current((prev) =>
             prev.map((c) =>
-              c.repositoryId === repo.id ? { ...c, error: String(e) } : c,
+              c.repositoryId === repo.id ? { ...c, error: formatError(e) } : c,
             ),
           );
         });
     },
     onError: (e) => {
-      setErrorMsg(String(e));
+      setErrorMsg(formatError(e));
     },
   });
 
@@ -186,6 +187,12 @@ export function AddRepositoryForm(): JSX.Element {
           />
         </div>
         {errorMsg && <p className="text-xs text-rose-400">{errorMsg}</p>}
+        {!projectId && (
+          <p className="text-xs text-amber-400">
+            No project selected. Create one from the sidebar's
+            “+ New Project” button.
+          </p>
+        )}
         <div className="flex justify-end">
           <Button
             type="submit"
