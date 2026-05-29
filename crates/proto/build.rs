@@ -63,6 +63,12 @@ fn main() -> io::Result<()> {
         // every `Event` carries one regardless of which `body` variant
         // is set.
         "concerto.v1.Event.at",
+        // Task 38 — schedule timestamps.
+        "concerto.v1.Schedule.expires_at",
+        "concerto.v1.Schedule.last_run_at",
+        "concerto.v1.Schedule.created_at",
+        "concerto.v1.ScheduleRun.started_at",
+        "concerto.v1.ScheduleRun.ended_at",
     ];
 
     let mut builder = tonic_build::configure()

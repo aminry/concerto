@@ -26,6 +26,8 @@ pub mod logging;
 pub mod pid_file;
 pub mod repo_manager;
 pub mod runtime;
+#[cfg(unix)]
+pub mod scheduler;
 pub mod security;
 pub mod signals;
 pub mod supervisor;

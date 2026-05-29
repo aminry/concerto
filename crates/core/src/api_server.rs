@@ -29,6 +29,8 @@ use concerto_error::{Error, Result};
 #[cfg(unix)]
 use crate::agent_supervisor::AgentSupervisorHandle;
 use crate::repo_manager::RepoManager;
+#[cfg(unix)]
+use crate::scheduler::SchedulerHandle;
 use crate::supervisor::{Actor, ActorContext, SupervisorView};
 use crate::workspace_manager::{WorkareaManager, WorkspaceManager};
 use concerto_persist::Persistence;
@@ -75,6 +77,12 @@ pub struct ApiServerActor {
     /// projects without hardcoding a project id. V0.1 ships read-only;
     /// creation is still seeded via direct SQL.
     persistence: Option<Arc<Persistence>>,
+    /// Optional Scheduler handle. When `Some`, the gRPC `Schedules`
+    /// service is registered (Task 38). Wired in `main.rs` once the
+    /// Agent Supervisor exists (the Scheduler holds a supervisor
+    /// handle to drive `start_session` on fire).
+    #[cfg(unix)]
+    scheduler: Option<SchedulerHandle>,
 }
 
 impl ApiServerActor {
@@ -90,6 +98,8 @@ impl ApiServerActor {
             #[cfg(unix)]
             agent_supervisor: None,
             persistence: None,
+            #[cfg(unix)]
+            scheduler: None,
         }
     }
 
@@ -111,6 +121,8 @@ impl ApiServerActor {
             #[cfg(unix)]
             agent_supervisor: None,
             persistence: None,
+            #[cfg(unix)]
+            scheduler: None,
         }
     }
 
@@ -120,6 +132,7 @@ impl ApiServerActor {
     /// `workspace_manager` is `Some`; `Workareas` is registered when
     /// `workarea_manager` is `Some`. Task 19 added the workspace path;
     /// Task 20 added the workarea path.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_managers(
         started_at: Arc<SystemTime>,
         supervisor_view: SupervisorView,
@@ -128,6 +141,7 @@ impl ApiServerActor {
         workarea_manager: Option<WorkareaManager>,
         #[cfg(unix)] agent_supervisor: Option<AgentSupervisorHandle>,
         persistence: Option<Arc<Persistence>>,
+        #[cfg(unix)] scheduler: Option<SchedulerHandle>,
     ) -> Self {
         Self {
             started_at,
@@ -138,6 +152,8 @@ impl ApiServerActor {
             #[cfg(unix)]
             agent_supervisor,
             persistence,
+            #[cfg(unix)]
+            scheduler,
         }
     }
 }
@@ -163,6 +179,7 @@ impl Actor for ApiServerActor {
                 self.workarea_manager,
                 self.agent_supervisor,
                 self.persistence,
+                self.scheduler,
                 ctx.shutdown,
             )
             .await
@@ -179,6 +196,8 @@ impl Actor for ApiServerActor {
                 ctx.shutdown,
                 ctx.config,
             );
+            // `scheduler` is not present on non-unix targets — the
+            // field is `#[cfg(unix)]`.
             Err(Error::Internal(format!(
                 "UDS gRPC server not supported on {} in V0.1; Windows named-pipe support lands in V1.0",
                 std::env::consts::OS
@@ -198,6 +217,7 @@ async fn run_uds(
     workarea_manager: Option<WorkareaManager>,
     agent_supervisor: Option<AgentSupervisorHandle>,
     persistence: Option<Arc<Persistence>>,
+    scheduler: Option<SchedulerHandle>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -210,6 +230,7 @@ async fn run_uds(
     use crate::handlers::projects::ProjectsHandler;
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
+    use crate::handlers::schedules::SchedulesHandler;
     use crate::handlers::sessions::SessionsHandler;
     use crate::handlers::streams::StreamsHandler;
     use crate::handlers::workareas::WorkareasHandler;
@@ -217,6 +238,7 @@ async fn run_uds(
     use concerto_proto::v1::projects_server::ProjectsServer;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
+    use concerto_proto::v1::schedules_server::SchedulesServer;
     use concerto_proto::v1::sessions_server::SessionsServer;
     use concerto_proto::v1::streams_server::StreamsServer;
     use concerto_proto::v1::workareas_server::WorkareasServer;
@@ -314,6 +336,13 @@ async fn run_uds(
         let streams_service =
             StreamsServer::new(StreamsHandler::new(supervisor, workspace_mgr, workarea_mgr));
         builder = builder.add_service(streams_service);
+    }
+    // Task 38: `Schedules` only needs the scheduler handle. It is wired
+    // independently of the supervisor/workarea managers so a stripped-
+    // down test Core can still expose the schedule surface.
+    if let Some(scheduler) = scheduler {
+        let schedules_service = SchedulesServer::new(SchedulesHandler::new(scheduler));
+        builder = builder.add_service(schedules_service);
     }
 
     let serve_fut =

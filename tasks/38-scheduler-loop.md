@@ -61,13 +61,13 @@ Implement `/loop` — the session-scoped recurring task primitive from `design/0
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Loops fire and create schedule_runs rows.
-- [ ] Pause / delete take effect immediately.
-- [ ] Crash recovery rebuilds the BTreeMap correctly.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Loops fire and create schedule_runs rows.
+- [x] Pause / delete take effect immediately.
+- [x] Crash recovery rebuilds the BTreeMap correctly.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/persist/migrations/0003_schedules.sql` (new)
@@ -95,7 +95,18 @@ Refs: tasks/38-scheduler-loop.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** persistent scheduled tasks, cron, cloud sync, promote — all V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Migration is `0004_schedules.sql`.** The task body said `0003_schedules.sql`; pre-decision #1 in the orchestrator prompt corrected this to 0004 because Task 30 (`workareas.settings_json`) shipped as 0002 and Task 36 (`sessions.last_acked_seq`) shipped as 0003. Confirmed against the migrations directory before writing.
+  - **`schedules` schema is the V0.1 subset of design/09 §4.3**, not the full table. Columns shipped: `id, workarea_id, kind, interval_seconds, expires_at, last_run_at, paused, prompt, agent_kind, created_at`. The persistent-scheduled-task columns (`cron_expr`, `model`, `permission_mode`, `bypass_destructive_guard`, `worktree_mode`, `failure_policy_json`, `daily_budget_tokens`, `project_id`, `workspace_id`, `name`) from design/09 §4.3 are V1.0 and arrive in a later numbered migration alongside the cron + budget surface. `workarea_id` is `NOT NULL` per pre-decision #2 (loops are session-scoped); the `kind` CHECK is locked to `'loop'` for V0.1. `schedule_runs` similarly uses the pre-decision shape (`started_at, ended_at, terminal_state`) rather than design/09's `started_at, finished_at, status, tokens_in, tokens_out, error_message`; token bookkeeping rides with V1.0 budgets.
+  - **`SchedulerHandle::agent_supervisor` is `Option<AgentSupervisorHandle>`.** Pre-decision #4 listed an unconditional supervisor field; in practice the integration test wants to exercise the persistence + suppression paths without a real `concerto-agent-host` running, so the field is optional. Production `main.rs` always wires `Some(supervisor)` (see Task 38 §"Outputs" `crates/core/src/main.rs`); the `None` path errors `scheduler.no_supervisor` when the fire loop actually tries to start a session.
+  - **Inflight suppression checks the in-memory map AND the DB.** The pre-decision listed a `HashMap<ScheduleId, RunId>` check only; the implementation also queries `schedule_runs WHERE ended_at IS NULL` so a Core restart that lost the in-memory map still honours the suppression. Both checks emit the same `tracing::info!("schedule.suppressed reason=inflight")` log line so the wire-level audit shape is uniform.
+  - **`fire_schedule` inserts the run row BEFORE calling `start_session`.** This keeps the suppression window honest even if `start_session` takes a long time; on `start_session` failure the run row is patched to `terminal_state = 'failed'` via the `mark_run_failed` helper. The pre-decision's "insert after returning sid" ordering would let a slow supervisor leak overlapping fires.
+  - **Lifecycle watcher uses `subscribe_events_with_replay`** rather than plain `subscribe_events`. The supervisor's per-session broadcast may have already emitted `Exited` for a fast-finishing session by the time the watcher attaches; the replay buffer (locked surface from Task 23) closes that race. `TurnComplete` resolves to `terminal_state = 'completed'`; `Exited` with `signal.is_some()` or `exit_code != Some(0)` resolves to `'crashed'`; clean `Exited { exit_code: Some(0) | None, signal: None }` resolves to `'completed'`.
+  - **`ApiServerActor::with_managers` gained a `scheduler: Option<SchedulerHandle>` arg under `#[cfg(unix)]` — now 8 args.** Pre-decision #18 called this out; documented in the api_server.rs source. `#[allow(clippy::too_many_arguments)]` was added on the constructor (the lint was on the older 7-arg signature in clippy's eyes; the new arg pushes us over the lint threshold).
+  - **`docs/interfaces/proto.md` ordering: `schedules.proto` lands between `runtime.proto` and `sessions.proto` per the alphabetical sort in `scripts/regen-interfaces.sh`.** This is the same convention every other proto follows; no manual reorder.
+- **Open questions for next task:**
+  - **Task 39 (Skills Registry)** should consider whether the V1.0 cron surface (Task 38 §"Scope — out") reuses the `schedules.kind` discriminator or splits into a sibling table. The current `CHECK (kind = 'loop')` is intentionally narrow; widening it is a one-line migration. The proto's `Schedule.kind` is `string` (not enum) precisely so the V1.0 `'scheduled_task'` value lands without a wire break.
+  - **Task 40 (Suggestion Rule Engine)** may want to consume `schedule_runs` history to surface "this loop has been failing for 6 hours" suggestions. The read surface already exists (`schedule_runs::list_by_schedule`); no new persistence work needed.
+  - **V1.0 promote (loop → scheduled_task)** will need a new `schedules.kind` value plus a constructor on the handle. The current `SchedulerHandle::create_schedule` validates `kind == "loop"` early; the promote path can rebuild the row via the future write helper without touching the V0.1 surface.
+- **Deliberate debt:** persistent scheduled tasks, cron parsing, cloud-task sync, promote loop→scheduled, budget guardrails, jittered firing, per-account daily caps, `wait_for_check_runs`, and the 6 PRD §12.4 starter templates — all V1.0. No `TODO` / `FIXME` / `todo!()` / `unimplemented!()` markers in new code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0 with "Smoke gate v2: PASSED" — the new Scheduler actor is wired but the smoke gate doesn't currently exercise `Schedules.CreateSchedule`; Task 27's locked path (create project → repo → workspace → workarea → spawn echo session → assert output → archive workarea) is unaffected.

@@ -22,13 +22,16 @@ pub mod chat_messages;
 pub mod checkpoints;
 pub mod projects;
 pub mod repositories;
+pub mod schedule_runs;
+pub mod schedules;
 pub mod sessions;
 pub mod tool_approvals;
 pub mod workareas;
 pub mod workspaces;
 
 pub use api::{
-    NewChat, NewProject, NewRepository, NewSession, NewWorkarea, NewWorkareaRepo, NewWorkspace,
-    Persistence, PersistenceConfig, Project, ProjectId, Repository, RepositoryId, Session,
-    SessionId, Workarea, WorkareaId, Workspace, WorkspaceId, WriterGuard,
+    NewChat, NewProject, NewRepository, NewSchedule, NewScheduleRun, NewSession, NewWorkarea,
+    NewWorkareaRepo, NewWorkspace, Persistence, PersistenceConfig, Project, ProjectId, Repository,
+    RepositoryId, Schedule, ScheduleId, ScheduleRun, ScheduleRunId, Session, SessionId, Workarea,
+    WorkareaId, Workspace, WorkspaceId, WriterGuard,
 };

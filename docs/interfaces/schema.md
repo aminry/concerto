@@ -210,3 +210,55 @@ CREATE INDEX idx_devices_active ON devices(revoked_at) WHERE revoked_at IS NULL;
 ## `crates/persist/migrations/0003_sessions_last_acked_seq.sql`
 
 
+## `crates/persist/migrations/0004_schedules.sql`
+
+```sql
+CREATE TABLE schedules (
+    id                  TEXT PRIMARY KEY,
+    workarea_id         TEXT NOT NULL REFERENCES workareas(id) ON DELETE CASCADE,
+    kind                TEXT NOT NULL CHECK (kind = 'loop'),
+    interval_seconds    INTEGER NOT NULL,
+    expires_at          INTEGER NOT NULL,
+    last_run_at         INTEGER,
+    paused              INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0,1)),
+    prompt              TEXT NOT NULL,
+    agent_kind          TEXT NOT NULL DEFAULT 'claude'
+        CHECK (agent_kind IN ('claude','codex','gemini','maestro')),
+    created_at          INTEGER NOT NULL
+);
+```
+
+```sql
+CREATE INDEX idx_schedules_workarea ON schedules(workarea_id);
+```
+
+```sql
+CREATE INDEX idx_schedules_active
+    ON schedules(expires_at)
+    WHERE paused = 0;
+```
+
+```sql
+CREATE TABLE schedule_runs (
+    id                  TEXT PRIMARY KEY,
+    schedule_id         TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+    session_id          TEXT REFERENCES sessions(id),
+    started_at          INTEGER NOT NULL,
+    ended_at            INTEGER,
+    terminal_state      TEXT
+        CHECK (terminal_state IS NULL
+               OR terminal_state IN ('completed','failed','crashed'))
+);
+```
+
+```sql
+CREATE INDEX idx_schedule_runs_schedule
+    ON schedule_runs(schedule_id, started_at);
+```
+
+```sql
+CREATE INDEX idx_schedule_runs_inflight
+    ON schedule_runs(schedule_id)
+    WHERE ended_at IS NULL;
+```
+
