@@ -6,10 +6,21 @@
 
 import { Moon, Sun, MonitorSmartphone, GitBranch } from "lucide-react";
 import { useTheme } from "../hooks/useTheme";
+import { useCoreConnection } from "../hooks/useCoreConnection";
 import { StatusDot } from "./ui/status-dot";
 
 export function StatusBar(): JSX.Element {
   const { preference, cycle } = useTheme();
+  const { state: coreState } = useCoreConnection();
+
+  const coreDot =
+    coreState === "connected" ? "ok" : coreState === "connecting" ? "idle" : "error";
+  const coreLabel =
+    coreState === "connected"
+      ? "Core connected"
+      : coreState === "connecting"
+        ? "Connecting…"
+        : "Core unreachable";
 
   const ThemeIcon =
     preference === "dark" ? Moon : preference === "light" ? Sun : MonitorSmartphone;
@@ -18,11 +29,11 @@ export function StatusBar(): JSX.Element {
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-border bg-surface px-3 text-xs text-muted">
-      {/* Connection state: placeholder until the renderer surfaces the
-          transport status. Kept on the connected default. */}
+      {/* Connection state: polled liveness probe against the Core's
+          GetServerCapabilities RPC (see useCoreConnection). */}
       <span className="flex items-center gap-1.5">
-        <StatusDot status="ok" />
-        Core connected
+        <StatusDot status={coreDot} />
+        {coreLabel}
       </span>
       <span className="flex items-center gap-1.5 font-mono">
         <GitBranch size={12} />
