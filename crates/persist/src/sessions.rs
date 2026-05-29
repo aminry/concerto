@@ -55,7 +55,7 @@
 //! hosts (`HostFrame::Hello { last_seq }`).
 
 use concerto_error::{Error, Result};
-use sqlx::{Row, SqliteConnection, SqlitePool};
+use sqlx::{Connection, Row, SqliteConnection, SqlitePool};
 
 use crate::api::{NewChat, NewSession, Session, SessionId, WorkareaId};
 
@@ -217,6 +217,68 @@ pub async fn set_permission_mode(
     Ok(())
 }
 
+/// Hard-delete a session and everything that hangs off it, in one
+/// transaction. Supports the destructive `Sessions.DeleteSession` RPC.
+///
+/// The cascade has two flavours of dependent, handled here in the only
+/// order that satisfies the FK graph:
+///
+/// 1. **`schedule_runs.session_id`** → `REFERENCES sessions(id)` with no
+///    on-delete action (RESTRICT). Deleting the session while a run still
+///    points at it would be rejected. The column is nullable and the run
+///    history is worth keeping (it records that a /loop fired), so we
+///    NULL the link rather than delete the run.
+/// 2. **`checkpoints.chat_message_id`** → `REFERENCES chat_messages(id)`
+///    (RESTRICT). The session's `chats` (and their `chat_messages`)
+///    cascade-delete via `chats.session_id ON DELETE CASCADE`, but those
+///    cascading message deletes would be blocked by any checkpoint still
+///    referencing them. So we delete the session's checkpoints first.
+///
+/// After the two blockers are released, deleting the `sessions` row lets
+/// the automatic cascades fire: `chats` (→ `chat_messages`) and
+/// `tool_approvals` all carry `ON DELETE CASCADE`.
+///
+/// Deleting a non-existent id is not an error (it just affects 0 rows).
+///
+/// Relies on `PRAGMA foreign_keys = ON`, which the persistence layer sets
+/// on every connection (see [`crate::api`]); the cascades and RESTRICTs
+/// above are inert without it.
+pub async fn delete(conn: &mut SqliteConnection, id: &SessionId) -> Result<()> {
+    let mut tx = conn.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+
+    // 1. Unlink (don't delete) schedule_runs — preserve /loop run history.
+    sqlx::query("UPDATE schedule_runs SET session_id = NULL WHERE session_id = ?")
+        .bind(&id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+
+    // 2. Delete checkpoints anchored to this session's chat messages before
+    //    the chats/chat_messages cascade would trip the RESTRICT FK.
+    sqlx::query(
+        "DELETE FROM checkpoints WHERE chat_message_id IN (
+            SELECT cm.id FROM chat_messages cm
+            JOIN chats c ON cm.chat_id = c.id
+            WHERE c.session_id = ?
+         )",
+    )
+    .bind(&id.0)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+
+    // 3. Delete the session; chats (→ chat_messages) and tool_approvals
+    //    cascade automatically.
+    sqlx::query("DELETE FROM sessions WHERE id = ?")
+        .bind(&id.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+
+    tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 /// Fetch one session by id (read-only).
 pub async fn get(pool: &SqlitePool, id: &SessionId) -> Result<Option<Session>> {
     let row = sqlx::query(
@@ -290,5 +352,275 @@ fn row_to_session(row: sqlx::sqlite::SqliteRow) -> Session {
         last_heartbeat: row.get::<Option<i64>, _>("last_heartbeat"),
         status: row.get::<String, _>("status"),
         last_acked_seq: row.get::<i64, _>("last_acked_seq"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::{Persistence, PersistenceConfig};
+
+    async fn fresh_db() -> (tempfile::TempDir, Persistence) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("test.db");
+        let persist = Persistence::open(PersistenceConfig {
+            db_path,
+            max_readers: 2,
+        })
+        .await
+        .expect("open");
+        (dir, persist)
+    }
+
+    /// Seed the full project → workspace → workarea → session chain plus
+    /// every dependent that participates in the cascade (chat, chat_message,
+    /// checkpoint, tool_approval, schedule + schedule_run), delete the
+    /// session, and assert the cascade behaviour:
+    ///   * session / chat / chat_message / checkpoint / tool_approval gone;
+    ///   * schedule_run survives with `session_id` NULLed (history kept).
+    #[tokio::test]
+    async fn delete_removes_session_and_dependents() {
+        let (_dir, persist) = fresh_db().await;
+        let mut w = persist.writer().await;
+
+        // ----- project / repository / workspace / workarea ----------------
+        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
+            .bind("proj-1")
+            .bind("p")
+            .bind(0_i64)
+            .execute(&mut *w)
+            .await
+            .expect("project");
+        sqlx::query(
+            "INSERT INTO repositories \
+             (id, project_id, name, url, local_path, clone_strategy, default_branch) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("repo-1")
+        .bind("proj-1")
+        .bind("r")
+        .bind("git@example.com:r.git")
+        .bind("/tmp/repo-1")
+        .bind("full")
+        .bind("main")
+        .execute(&mut *w)
+        .await
+        .expect("repository");
+        sqlx::query(
+            "INSERT INTO workspaces (id, project_id, name, slug, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("ws-1")
+        .bind("proj-1")
+        .bind("w")
+        .bind("w")
+        .bind(0_i64)
+        .execute(&mut *w)
+        .await
+        .expect("workspace");
+        sqlx::query(
+            "INSERT INTO workareas \
+             (id, workspace_id, composer_name, branch_name, worktree_root, status, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("wa-1")
+        .bind("ws-1")
+        .bind("bach")
+        .bind("b")
+        .bind("/tmp/wa-1")
+        .bind("created")
+        .bind(0_i64)
+        .execute(&mut *w)
+        .await
+        .expect("workarea");
+
+        // ----- session (+ its session-kind chat) --------------------------
+        // `chats.session_id` is NOT NULL only when kind='session', and the
+        // sessions.chat_id FK needs a chat to exist first. Seed a maestro
+        // chat (session_id NULL) to satisfy sessions.chat_id, insert the
+        // session, then a real session-kind chat pointing back at it.
+        sqlx::query("INSERT INTO chats (id, session_id, kind, created_at) VALUES (?, NULL, ?, ?)")
+            .bind("chat-bootstrap")
+            .bind("maestro")
+            .bind(0_i64)
+            .execute(&mut *w)
+            .await
+            .expect("bootstrap chat");
+
+        insert(
+            &mut w,
+            NewSession {
+                id: SessionId("sess-1".into()),
+                workarea_id: WorkareaId("wa-1".into()),
+                chat_id: "chat-bootstrap".into(),
+                agent_kind: "claude".into(),
+                agent_version: None,
+                model: None,
+                mode: None,
+                host_pid: None,
+                host_socket: None,
+                pty_cookie: None,
+                external_session_id: None,
+                permission_mode: "normal".into(),
+                bypass_destructive_guard: false,
+                started_at: 0,
+                status: "running".into(),
+                last_acked_seq: 0,
+            },
+        )
+        .await
+        .expect("insert session");
+
+        sqlx::query("INSERT INTO chats (id, session_id, kind, created_at) VALUES (?, ?, ?, ?)")
+            .bind("chat-sess")
+            .bind("sess-1")
+            .bind("session")
+            .bind(0_i64)
+            .execute(&mut *w)
+            .await
+            .expect("session chat");
+
+        // ----- chat_message + checkpoint (RESTRICT FK on chat_message) ----
+        sqlx::query(
+            "INSERT INTO chat_messages (id, chat_id, role, content_json, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("msg-1")
+        .bind("chat-sess")
+        .bind("user")
+        .bind("{}")
+        .bind(0_i64)
+        .execute(&mut *w)
+        .await
+        .expect("chat message");
+        sqlx::query(
+            "INSERT INTO checkpoints \
+             (id, workarea_id, repository_id, chat_message_id, git_ref, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind("ck-1")
+        .bind("wa-1")
+        .bind("repo-1")
+        .bind("msg-1")
+        .bind("refs/x")
+        .bind(0_i64)
+        .execute(&mut *w)
+        .await
+        .expect("checkpoint");
+
+        // ----- tool_approval (auto-cascade) -------------------------------
+        sqlx::query(
+            "INSERT INTO tool_approvals \
+             (id, session_id, tool_name, payload_json, requested_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("ta-1")
+        .bind("sess-1")
+        .bind("Bash")
+        .bind("{}")
+        .bind(0_i64)
+        .execute(&mut *w)
+        .await
+        .expect("tool approval");
+
+        // ----- schedule + schedule_run (RESTRICT, must be NULLed) ---------
+        sqlx::query(
+            "INSERT INTO schedules \
+             (id, workarea_id, kind, interval_seconds, expires_at, prompt, created_at) \
+             VALUES (?, ?, 'loop', ?, ?, ?, ?)",
+        )
+        .bind("sch-1")
+        .bind("wa-1")
+        .bind(60_i64)
+        .bind(9_999_999_999_999_i64)
+        .bind("do the thing")
+        .bind(0_i64)
+        .execute(&mut *w)
+        .await
+        .expect("schedule");
+        sqlx::query(
+            "INSERT INTO schedule_runs (id, schedule_id, session_id, started_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind("run-1")
+        .bind("sch-1")
+        .bind("sess-1")
+        .bind(0_i64)
+        .execute(&mut *w)
+        .await
+        .expect("schedule run");
+
+        // ----- act --------------------------------------------------------
+        delete(&mut w, &SessionId("sess-1".into()))
+            .await
+            .expect("delete session");
+
+        // ----- assert: session gone everywhere ----------------------------
+        let n_sess: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
+            .bind("sess-1")
+            .fetch_one(&mut *w)
+            .await
+            .expect("count sessions");
+        assert_eq!(n_sess, 0, "session row must be deleted");
+
+        // chats + chat_messages cascaded (the session-kind chat + its message)
+        let n_chat: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats WHERE id = ?")
+            .bind("chat-sess")
+            .fetch_one(&mut *w)
+            .await
+            .expect("count chats");
+        assert_eq!(n_chat, 0, "session chat must cascade-delete");
+        let n_msg: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE id = ?")
+            .bind("msg-1")
+            .fetch_one(&mut *w)
+            .await
+            .expect("count chat_messages");
+        assert_eq!(n_msg, 0, "chat_message must cascade-delete");
+
+        // checkpoint explicitly deleted (would otherwise block the cascade)
+        let n_ck: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkpoints WHERE id = ?")
+            .bind("ck-1")
+            .fetch_one(&mut *w)
+            .await
+            .expect("count checkpoints");
+        assert_eq!(n_ck, 0, "checkpoint must be deleted");
+
+        // tool_approval cascaded
+        let n_ta: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tool_approvals WHERE id = ?")
+            .bind("ta-1")
+            .fetch_one(&mut *w)
+            .await
+            .expect("count tool_approvals");
+        assert_eq!(n_ta, 0, "tool_approval must cascade-delete");
+
+        // schedule_run SURVIVES with session_id NULLed
+        let n_run: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schedule_runs WHERE id = ?")
+            .bind("run-1")
+            .fetch_one(&mut *w)
+            .await
+            .expect("count schedule_runs");
+        assert_eq!(n_run, 1, "schedule_run must be preserved (history)");
+        let run_session: Option<String> =
+            sqlx::query_scalar("SELECT session_id FROM schedule_runs WHERE id = ?")
+                .bind("run-1")
+                .fetch_one(&mut *w)
+                .await
+                .expect("schedule_run session_id");
+        assert_eq!(run_session, None, "schedule_run.session_id must be NULLed");
+
+        // get() / list_by_workarea reflect the deletion (need the pool, not
+        // the writer guard — drop the guard first to avoid deadlock).
+        drop(w);
+        let got = get(persist.readers(), &SessionId("sess-1".into()))
+            .await
+            .expect("get");
+        assert!(got.is_none(), "get() must return None after delete");
+        let listed = list_by_workarea(persist.readers(), &WorkareaId("wa-1".into()))
+            .await
+            .expect("list");
+        assert!(
+            listed.iter().all(|s| s.id.0 != "sess-1"),
+            "deleted session must be absent from list_by_workarea"
+        );
     }
 }
