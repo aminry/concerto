@@ -67,7 +67,7 @@ export function Sidebar(): JSX.Element {
   }
 
   return (
-    <aside className="w-72 shrink-0 border-r border-slate-800 bg-slate-950 flex flex-col">
+    <aside className="h-full border-r border-slate-800 bg-slate-950 flex flex-col min-h-0">
       <header className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
         <h1 className="text-sm font-semibold tracking-wider uppercase text-slate-300">
           Concerto

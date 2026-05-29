@@ -35,14 +35,14 @@ export function WorkspaceDetail(): JSX.Element {
 
   if (!selectedWorkspaceId) {
     return (
-      <main className="flex-1 p-6 text-slate-400">
+      <main className="h-full p-6 text-slate-400 overflow-auto">
         <p>Select a workspace on the left to inspect it.</p>
       </main>
     );
   }
 
   return (
-    <main className="flex-1 p-6 overflow-auto space-y-4">
+    <main className="h-full p-6 overflow-auto space-y-4">
       <div className="flex justify-end">
         <Button
           disabled={mutation.isPending}

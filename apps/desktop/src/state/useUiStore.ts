@@ -7,8 +7,44 @@
 // `selectedWorkspaceId`, `selectedWorkareaId`) as the canonical
 // renderer selection state. Selecting a workarea implicitly pins its
 // parent workspace; selecting a workspace clears the workarea.
+//
+// Task 46 adds the three-panel layout state — sidebar width, session
+// region height, right-rail collapsed boolean, and active right-rail
+// tab. The layout state shape is frozen as the V0.1 wire shape in
+// `localStorage` (see `LAYOUT_STORAGE_KEY` below).
 
 import { create } from "zustand";
+
+/// Right-rail tabs per `design/15 §3.4` (V0.1 list).
+export type RightRailTab =
+  | "scheduler"
+  | "skills"
+  | "todos"
+  | "mcp"
+  | "files";
+
+/// `localStorage` key for the persisted layout state. Task 46 locks
+/// the schema:
+///
+///   { sidebarWidth: number, sessionRegionHeight: number,
+///     rightRailCollapsed: boolean, rightRailTab: string }
+///
+/// Numbers are percentages (0–100) of the parent container, which is
+/// what `react-resizable-panels` natively accepts. `rightRailTab` is
+/// the `RightRailTab` string.
+export const LAYOUT_STORAGE_KEY = "concerto.layout.v1";
+
+/// Defaults used when no persisted state exists. Mirrors the design
+/// doc's diagram (sidebar ~20%, center split 55/45, right rail open
+/// on Scheduler).
+export const LAYOUT_DEFAULTS = {
+  sidebarWidth: 20,
+  sessionRegionHeight: 55,
+  rightRailCollapsed: false,
+  rightRailTab: "scheduler" as RightRailTab,
+};
+
+export type LayoutState = typeof LAYOUT_DEFAULTS;
 
 export type UiStore = {
   selectedWorkspaceId: string | null;
@@ -33,6 +69,12 @@ export type UiStore = {
   /// the workarea-detail panel; lifted into the store so the picker
   /// component can sit at the App root and overlay everything.
   startSessionPickerOpen: boolean;
+  /// Task 46 — three-panel layout state. Persisted to `localStorage`
+  /// under [`LAYOUT_STORAGE_KEY`] via the App-root effect.
+  sidebarWidth: number;
+  sessionRegionHeight: number;
+  rightRailCollapsed: boolean;
+  rightRailTab: RightRailTab;
   setSelectedWorkspace: (id: string | null) => void;
   setSelectedWorkarea: (id: string | null) => void;
   setSelectedProject: (id: string | null) => void;
@@ -43,7 +85,63 @@ export type UiStore = {
   setNewWorkspaceModalOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   setStartSessionPickerOpen: (open: boolean) => void;
+  setSidebarWidth: (width: number) => void;
+  setSessionRegionHeight: (height: number) => void;
+  setRightRailCollapsed: (collapsed: boolean) => void;
+  setRightRailTab: (tab: RightRailTab) => void;
 };
+
+/// Load the persisted layout state from `localStorage`. Bad / missing
+/// data falls back to the defaults — this keeps the renderer alive
+/// even when the storage is corrupted.
+function loadLayoutState(): LayoutState {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return { ...LAYOUT_DEFAULTS };
+  }
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return { ...LAYOUT_DEFAULTS };
+    const parsed = JSON.parse(raw) as Partial<LayoutState>;
+    return {
+      sidebarWidth:
+        typeof parsed.sidebarWidth === "number"
+          ? clampPercent(parsed.sidebarWidth)
+          : LAYOUT_DEFAULTS.sidebarWidth,
+      sessionRegionHeight:
+        typeof parsed.sessionRegionHeight === "number"
+          ? clampPercent(parsed.sessionRegionHeight)
+          : LAYOUT_DEFAULTS.sessionRegionHeight,
+      rightRailCollapsed:
+        typeof parsed.rightRailCollapsed === "boolean"
+          ? parsed.rightRailCollapsed
+          : LAYOUT_DEFAULTS.rightRailCollapsed,
+      rightRailTab: isRightRailTab(parsed.rightRailTab)
+        ? parsed.rightRailTab
+        : LAYOUT_DEFAULTS.rightRailTab,
+    };
+  } catch {
+    return { ...LAYOUT_DEFAULTS };
+  }
+}
+
+function clampPercent(value: number): number {
+  if (Number.isNaN(value)) return 0;
+  if (value < 5) return 5;
+  if (value > 95) return 95;
+  return value;
+}
+
+function isRightRailTab(value: unknown): value is RightRailTab {
+  return (
+    value === "scheduler" ||
+    value === "skills" ||
+    value === "todos" ||
+    value === "mcp" ||
+    value === "files"
+  );
+}
+
+const initialLayout = loadLayoutState();
 
 export const useUiStore = create<UiStore>((set) => ({
   selectedWorkspaceId: null,
@@ -55,6 +153,10 @@ export const useUiStore = create<UiStore>((set) => ({
   newWorkspaceModalOpen: false,
   settingsOpen: false,
   startSessionPickerOpen: false,
+  sidebarWidth: initialLayout.sidebarWidth,
+  sessionRegionHeight: initialLayout.sessionRegionHeight,
+  rightRailCollapsed: initialLayout.rightRailCollapsed,
+  rightRailTab: initialLayout.rightRailTab,
   setSelectedWorkspace: (id) =>
     set({
       selectedWorkspaceId: id,
@@ -89,4 +191,9 @@ export const useUiStore = create<UiStore>((set) => ({
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setStartSessionPickerOpen: (open) => set({ startSessionPickerOpen: open }),
+  setSidebarWidth: (width) => set({ sidebarWidth: clampPercent(width) }),
+  setSessionRegionHeight: (height) =>
+    set({ sessionRegionHeight: clampPercent(height) }),
+  setRightRailCollapsed: (collapsed) => set({ rightRailCollapsed: collapsed }),
+  setRightRailTab: (tab) => set({ rightRailTab: tab }),
 }));
