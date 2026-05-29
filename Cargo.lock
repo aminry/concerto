@@ -661,6 +661,7 @@ dependencies = [
  "concerto-persist",
  "concerto-proto",
  "concerto-test-harness",
+ "criterion",
  "fs2",
  "futures",
  "getrandom 0.2.17",

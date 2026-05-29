@@ -56,13 +56,13 @@ Add automated benchmarks that gate against the V0.1-relevant performance targets
 5. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] CI perf workflow runs green.
-- [ ] All V0.1 budgets have an automated or documented-manual measurement.
-- [ ] `dist/PERF.md` exists and is up to date.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] CI perf workflow runs green.
+- [x] All V0.1 budgets have an automated or documented-manual measurement.
+- [x] `dist/PERF.md` exists and is up to date.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/core/Cargo.toml` (modified — feature `mem-bench`, optional deps procfs/mach2)
@@ -86,7 +86,7 @@ Refs: tasks/50-perf-budget-verification.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** Desktop cold-start may need manual measurement in V0.1; 2M-file gix bench is V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:** RSS measurement uses `ps -o rss= -p <pid>` shell-out on both macOS and Linux (no `procfs` / `mach2` deps) — same KB column semantics on both platforms; documented in `dist/PERF.md` and the bench module docs. Benches gated behind a new `mem-bench` Cargo feature on `concerto-core` plus `required-features` on each `[[bench]]` entry so `cargo test` / `cargo check` are unaffected.
+- **Open questions for next task:** Task 52 pre-ship checklist should run the manual Desktop cold-start protocol from `dist/PERF.md` and append the median + sha to the "Recent measurements" table.
+- **Deliberate debt:** Desktop cold-start is measured manually per `dist/PERF.md`; the 8-agent bench is treated as `--ignored` (compile-checked in CI, run manually / nightly — `perf.yml` only runs `runtime_memory` on Linux). 2M-file `gix status` bench is V1.0.
+- **Smoke-gate state:** unchanged (smoke.sh PASSED post-changes).

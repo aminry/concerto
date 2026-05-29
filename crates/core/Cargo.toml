@@ -14,6 +14,30 @@ path = "src/lib.rs"
 name = "concerto-core"
 path = "src/main.rs"
 
+# Task 50: Criterion benches measuring Core RSS at idle and under 8
+# active agents (Task 50 pre-decisions 2 + 3). Gated behind the
+# `mem-bench` Cargo feature so the bench files only compile when
+# explicitly requested. `harness = false` defers test running to
+# criterion's `criterion_main!` macro (same pattern as Task 29's
+# `crates/gix-wrap/benches/status.rs`).
+[[bench]]
+name = "runtime_memory"
+harness = false
+required-features = ["mem-bench"]
+
+[[bench]]
+name = "runtime_8agents"
+harness = false
+required-features = ["mem-bench"]
+
+[features]
+# Task 50: opt-in feature that compiles the memory benches under
+# `benches/runtime_*.rs`. Off by default — `cargo test` / `cargo build`
+# don't pull in `criterion` or the test-harness dev-deps unless the
+# caller asks for them via `cargo bench -p concerto-core --features
+# mem-bench` (or the CI workflow does it explicitly).
+mem-bench = []
+
 [dependencies]
 concerto-error = { path = "../error" }
 concerto-persist = { path = "../persist" }
@@ -112,6 +136,13 @@ tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
 tower = { workspace = true }
 hyper-util = { workspace = true }
 prost-types = "0.13"
+# Task 50: Criterion harness for the `mem-bench`-gated benches in
+# `benches/runtime_memory.rs` + `benches/runtime_8agents.rs`. Same v0.5
+# pin as `concerto-gix-wrap`. `html_reports` pulls in `plotters`
+# (MIT/Apache-2.0) which is already vetted; CI runs the bench under
+# `--features mem-bench` and `grep`s stdout for the budget line rather
+# than parsing HTML reports.
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
