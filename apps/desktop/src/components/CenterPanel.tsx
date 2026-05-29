@@ -16,7 +16,8 @@ import { useUiStore } from "../state/useUiStore";
 import { useWorkarea } from "../hooks/useWorkareas";
 import { SessionRegion } from "./center/SessionRegion";
 import { CodePrRegion } from "./center/CodePrRegion";
-import { StatusDot, type DotStatus } from "./ui/status-dot";
+import { StatusDot } from "./ui/status-dot";
+import { workareaStatusToDot } from "../lib/workareaStatus";
 
 export function CenterPanel(): JSX.Element {
   const workareaId = useUiStore((s) => s.selectedWorkareaId);
@@ -69,17 +70,4 @@ export function CenterPanel(): JSX.Element {
       </div>
     </main>
   );
-}
-
-function workareaStatusToDot(status: string): DotStatus {
-  switch (status) {
-    case "active":
-      return "ok";
-    case "running":
-      return "running";
-    case "awaiting":
-      return "warning";
-    default:
-      return "idle";
-  }
 }

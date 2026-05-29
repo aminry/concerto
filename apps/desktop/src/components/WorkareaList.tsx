@@ -4,15 +4,18 @@
 // the React Query gate (`enabled: !!workspaceId`) handles the "don't
 // fetch until needed" rule from `tasks/25 §Implementation notes`.
 //
-// Status dot colors mirror `design/15 §3.4`:
+// Status dot colors mirror `design/15 §3.4` — see the shared mapper in
+// `lib/workareaStatus.ts`:
 //   - active   → green
-//   - awaiting → amber
 //   - running  → blue
-//   - everything else (created, paused, archived, crashed) → grey
+//   - awaiting → amber
+//   - crashed  → red
+//   - created | paused | archived → grey
 
 import { useWorkareas } from "../hooks/useWorkareas";
 import { useUiStore } from "../state/useUiStore";
-import { StatusDot, type DotStatus } from "./ui/status-dot";
+import { StatusDot } from "./ui/status-dot";
+import { workareaStatusToDot } from "../lib/workareaStatus";
 
 export type WorkareaListProps = {
   workspaceId: string;
@@ -52,7 +55,7 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
               onClick={() => setSelectedWorkarea(wa.id)}
             >
               <span className="flex items-center gap-2">
-                <StatusDot status={statusToDot(wa.status)} />
+                <StatusDot status={workareaStatusToDot(wa.status)} />
                 <span className="truncate">{wa.composer_name}</span>
                 <span className="ml-auto text-faint truncate font-mono">
                   {wa.branch_name}
@@ -64,36 +67,4 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
       })}
     </ul>
   );
-}
-
-// Maps a `concerto.v1.Workarea` status string to a `DotStatus`.
-// Workarea statuses ∈ { created | active | running | awaiting |
-// paused | archived | crashed }. Unknown values fall back to "idle".
-function statusToDot(status: string): DotStatus {
-  switch (status) {
-    // `active` reads as green (the workarea is live/healthy) per
-    // design/15 §3.4; `running` (an agent actively executing) is blue.
-    case "active":
-    case "ok":
-      return "ok";
-    case "running":
-    case "starting":
-      return "running";
-    case "awaiting":
-    case "blocked":
-      return "warning";
-    case "failed":
-    case "error":
-    case "crashed":
-      return "error";
-    case "archived":
-    case "idle":
-    case "done":
-    case "stopped":
-    case "paused":
-    case "created":
-      return "idle";
-    default:
-      return "idle";
-  }
 }
