@@ -40,7 +40,7 @@ export function SkillsTab(): JSX.Element {
           <div className="flex items-center gap-2">
             <span
               className={`inline-block h-2 w-2 rounded-full ${
-                s.enabled ? "bg-accent" : "bg-gray-400"
+                s.enabled ? "bg-accent" : "bg-faint"
               }`}
               aria-label={s.enabled ? "enabled" : "disabled"}
             />

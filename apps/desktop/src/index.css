@@ -12,7 +12,7 @@
 @tailwind utilities;
 
 /* The xterm viewport defaults its background to inherit; the panel
-   inside SessionTerminal already sets slate-900 so we just need to
+   inside SessionTerminal already sets bg-surface so we just need to
    keep the cursor visible in our theme. */
 .xterm-viewport {
   background-color: transparent !important;
