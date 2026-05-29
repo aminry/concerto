@@ -60,6 +60,8 @@ regex = { workspace = true }
 # Task 35: TOML parser for `~/.codex/config.toml`'s `[mcp_servers.*]`
 # table. Promoted to a workspace dep so the version stays consistent.
 toml = { workspace = true }
+# Task 39: YAML frontmatter parser for `SKILL.md` files. Workspace pin.
+serde_yaml = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via

@@ -684,6 +684,113 @@ pub struct ScheduleRun {
     pub terminal_state: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Skills (Task 39).
+//
+// V0.1 surface: discovery (personal + project scopes) + per-(scope,
+// project, name) enable/disable. Marketplace install, sandbox try, and
+// invocation tracking are V1.0 per `tasks/39 §"Scope — out"`. The schema
+// is locked by migration 0005; only the V0.1 columns are projected here.
+// ---------------------------------------------------------------------------
+
+/// Newtype around a `skills_index.id` (UUIDv7 string per migration 0005).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SkillId(pub String);
+
+impl SkillId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SkillId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Scope axis for a `skills_index` row. Mirrors the four-scope contract
+/// in `design/06 §1`. V0.1 actively discovers `Personal` and `Project`;
+/// `Plugin` / `Enterprise` exist on the row but are not walked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SkillScope {
+    Personal,
+    Project,
+    Plugin,
+    Enterprise,
+}
+
+impl SkillScope {
+    /// Lowercase SQL form (matches the migration 0005 CHECK set).
+    pub fn as_sql_str(self) -> &'static str {
+        match self {
+            SkillScope::Personal => "personal",
+            SkillScope::Project => "project",
+            SkillScope::Plugin => "plugin",
+            SkillScope::Enterprise => "enterprise",
+        }
+    }
+
+    /// Inverse of [`Self::as_sql_str`]. Returns `None` for unknown
+    /// values (the SQL CHECK constraint should normally make this
+    /// unreachable from the DB side).
+    pub fn from_sql_str(s: &str) -> Option<Self> {
+        match s {
+            "personal" => Some(SkillScope::Personal),
+            "project" => Some(SkillScope::Project),
+            "plugin" => Some(SkillScope::Plugin),
+            "enterprise" => Some(SkillScope::Enterprise),
+            _ => None,
+        }
+    }
+}
+
+/// Insert/upsert-time shape for a `skills_index` row. `tools_json` is
+/// the already-encoded JSON array (the caller serialises so this layer
+/// stays dumb).
+#[derive(Debug, Clone)]
+pub struct NewSkill {
+    pub id: SkillId,
+    pub scope: SkillScope,
+    /// MUST be `Some` when `scope == SkillScope::Project`; MUST be
+    /// `None` otherwise.
+    pub project_id: Option<ProjectId>,
+    pub name: String,
+    pub slash_command: Option<String>,
+    pub description: Option<String>,
+    /// JSON-encoded list of tool names (e.g. `'["Read","Edit"]'`).
+    pub tools_json: String,
+    pub source_path: String,
+    pub discovered_at: i64,
+}
+
+/// Row-shaped projection of a `skills_index` row. `enabled` defaults to
+/// `true` on insert; the toggle path flips it without touching anything
+/// else so re-discovery preserves the user's choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRow {
+    pub id: SkillId,
+    pub scope: SkillScope,
+    pub project_id: Option<ProjectId>,
+    pub name: String,
+    pub slash_command: Option<String>,
+    pub description: Option<String>,
+    pub tools_json: String,
+    pub source_path: String,
+    pub enabled: bool,
+    pub discovered_at: i64,
+}
+
+/// Filter for [`crate::skills::list`]. All fields are optional; absent
+/// means "no filter on that axis".
+#[derive(Debug, Clone, Default)]
+pub struct SkillFilter {
+    pub scope: Option<SkillScope>,
+    pub project_id: Option<ProjectId>,
+    pub enabled_only: bool,
+}
+
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
 ///
 /// Every pragma the design doc lists as mandatory (`journal_mode = WAL`,

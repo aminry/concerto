@@ -62,13 +62,13 @@ Discover skills across the four scopes (personal `~/.claude/skills/`, project `<
 6. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Discovery covers personal + project scopes.
-- [ ] Toggle persists.
-- [ ] Malformed files don't break discovery.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Discovery covers personal + project scopes.
+- [x] Toggle persists.
+- [x] Malformed files don't break discovery.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/persist/migrations/0004_skills_index.sql` (new)
@@ -94,7 +94,18 @@ Refs: tasks/39-skills-registry.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** plugin/enterprise scopes are stubs; slash-command execution is V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:**
+  - **Migration number is `0005_skills_index.sql`** (not `0004_skills_index.sql` as the task spec named it). Tasks 30/36/38 had already taken `0002`/`0003`/`0004` between the spec being written and Task 39 landing, so the next free slot is `0005`. The schema is otherwise as the spec describes — `id / scope / project_id / name / slash_command / description / tools_json / source_path / enabled / discovered_at` with `UNIQUE(scope, project_id, name)`. Per-scope CHECK enforces the four-scope contract from `design/06 §1`; the `marketplace_id`, `pinned_version`, `visibility`, `last_used_at`, `invocation_count`, `kind` columns from `design/06 §4` are intentionally omitted in V0.1 and arrive with V1.0's marketplace migration.
+  - **`ApiServerActor::with_managers` grew a 9th argument** (`skills_registry: Option<SkillsRegistryHandle>`). `#[allow(clippy::too_many_arguments)]` was already on the constructor for the same reason Tasks 19/20/22/23/38 each added a slot. The `run_uds` glue takes the matching 10th positional argument and adds `Skills` to the registered services block.
+  - **Boot-time discovery runs once before the gRPC server starts accepting traffic** (`main.rs` calls `skills_handle.refresh(None).await` after the actor is spawned). Errors are logged + swallowed so a broken `~/.claude/skills/` directory does not gate Core boot; the UI just sees an empty list until the user calls `Skills.RefreshMarketplaces`.
+  - **Hand-rolled YAML frontmatter splitter** in `crates/core/src/skills/discovery.rs::parse_frontmatter` instead of pulling in `gray_matter` (which adds a transitive dep tree). Strategy: strip BOM, require the first non-BOM line to be `---`, accumulate body lines until the next `---`, parse the body via `serde_yaml::from_str::<SkillFrontmatter>`. Empty file / missing leading delim / missing trailing delim / malformed YAML all surface as a descriptive `String` error the walker pushes onto `report.errors`. Unit tests pin all four failure modes in `discovery::tests`.
+  - **`SkillScope` derives `PartialOrd, Ord`** (beyond the spec-implied minimum) so the integration test can `sort()` a `Vec<(SkillScope, &str)>` for deterministic comparison. Cheap copy enum; no impact on the wire surface.
+  - **`SkillsRegistryHandle::refresh` returns a `SkillsRefreshReport`** (`{ discovered_count: u64, errors: Vec<String> }`) which the gRPC handler converts into `RefreshMarketplacesResponse { discovered_count: i64, errors: repeated string }`. The wire field carries `i64` because `repeated/int64` is the standard proto3 pattern; the persistence layer's `u64` row count is widened on the way out.
+- **Open questions for next task:**
+  - **Task 40 (suggestion rule engine)** is the next consumer of the skills surface — once it lands, the engine will read the same `skills_index` rows to drive its rule matching. The `SkillsRegistryHandle` is already the right plumbing point; no new persistence layer needed.
+  - **The fs watcher hinted at in `design/06 §3` is V1.0**. V0.1 ships on-demand refresh via `Skills.RefreshMarketplaces`; the watcher arrives once we wire `notify-rs` into the workspace, which the design doc reserves for the marketplace surface anyway.
+  - **The `plugin` / `enterprise` scopes** are reserved on the row + the wire but not actively walked. When plugin discovery lands (V1.0), the addition is purely additive — a new `walk_scope` call inside `discover` and a new gRPC field on the wire that already accepts the string value.
+- **Deliberate debt:**
+  - Plugin/enterprise scopes are stubs (the V0.1 walk only touches `personal` + `project`). Slash-command execution surface (the Maestro/agent flow) is V1.0. Marketplace install / sandbox / invocation tracking are V1.0+ per `tasks/39 §"Scope — out"`. The fs watcher that `design/06 §3` describes is V1.0; V0.1 ships on-demand refresh via the same `Skills.RefreshMarketplaces` RPC name so the wire shape does not break when the marketplace half lands behind it.
+  - No `TODO`/`FIXME`/`todo!()`/`unimplemented!()` markers in new code; rustfmt-clean, clippy-clean (`-D warnings`).
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` (v2) still boots the Core, exercises the project/repo/workspace/workarea + echo session flow, and shuts down cleanly. The Task 39 RPCs (`Skills.*`) are exercised by `crates/core/tests/skills_discovery.rs` against a `SkillsRegistryHandle` directly — no separate gRPC integration test is needed because the handler is a thin wrapper.

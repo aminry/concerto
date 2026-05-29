@@ -1,0 +1,91 @@
+// Skills registry entity shape + service surface (Task 39).
+//
+// V0.1 ships discovery (personal + project scopes) and per-(scope,
+// project, name) enable/disable. Marketplace install (V1.0), sandbox
+// "Try this skill" (V1.0), and enterprise allow/deny lists (V2.0) are
+// out of scope here; `RefreshMarketplaces` is reused for the V0.1 on-
+// demand re-scan so the wire name doesn't change when V1.0 adds the
+// real marketplace fetch path behind it.
+//
+// Field numbers in this file are FROZEN as of Task 39.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+message Skill {
+  // UUIDv7 string. Stable across re-discovery — keyed off
+  // `(scope, project_id, name)` in the index.
+  string id = 1;
+  // One of `personal | project | plugin | enterprise`. V0.1 actively
+  // discovers `personal` and `project`; `plugin` / `enterprise` are
+  // stubs but reserved on the wire so V1.0 can land them without a
+  // field-number bump.
+  string scope = 2;
+  // Empty when `scope != "project"`.
+  string project_id = 3;
+  // Skill name — frontmatter `name`, or the skill directory name when
+  // the frontmatter omits it.
+  string name = 4;
+  // Frontmatter `slash-command`. Empty when the skill does not declare
+  // one. V0.1 surfaces this for the UI; the Maestro/agent flow that
+  // invokes slash commands is V1.0.
+  string slash_command = 5;
+  // Frontmatter `description`. Empty when missing.
+  string description = 6;
+  // Frontmatter `tools` list. Empty when missing.
+  repeated string tools = 7;
+  // Absolute path to the skill directory (the parent of `SKILL.md`).
+  string source_path = 8;
+  // Per-project enable/disable. Defaults to `true` on discovery; the
+  // toggle path flips it without touching anything else.
+  bool enabled = 9;
+}
+
+message ListSkillsRequest {
+  // Empty string means "no filter".
+  optional string scope = 1;
+  // Empty string means "no filter".
+  optional string project_id = 2;
+  // When `true`, return only rows with `enabled = true`.
+  optional bool enabled_only = 3;
+}
+
+message ListSkillsResponse {
+  repeated Skill skills = 1;
+}
+
+message ToggleSkillRequest {
+  string skill_id = 1;
+  bool enable = 2;
+}
+
+// V0.1 refresh request. `project_id` scopes the per-project walk; when
+// empty the discovery scan covers `~/.claude/skills/` only. The wire
+// name follows `design/06 §5.1` so V1.0's real marketplace refresh
+// (`add_marketplace` / `refresh_marketplaces`) can land behind the
+// same RPC without a wire break.
+message RefreshMarketplacesRequest {
+  optional string project_id = 1;
+}
+
+message RefreshMarketplacesResponse {
+  // Total `skills_index` rows touched by the rescan.
+  int64 discovered_count = 1;
+  // Per-file parse errors collected during the walk. V0.1 keeps the
+  // error surface simple — a free-form message per offending file —
+  // because the UI just renders the list as a warning panel.
+  repeated string errors = 2;
+}
+
+service Skills {
+  // List skills, optionally filtered by scope / project / enabled.
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse);
+  // Enable or disable a skill by id. Returns the updated row so the
+  // UI can rerender without an extra fetch.
+  rpc ToggleSkill(ToggleSkillRequest) returns (Skill);
+  // V0.1: re-run the discovery walk. V1.0 will add real marketplace
+  // refresh behind the same RPC. `project_id` scopes the per-project
+  // half of the walk; when empty only the personal scope is rescanned.
+  rpc RefreshMarketplaces(RefreshMarketplacesRequest) returns (RefreshMarketplacesResponse);
+}

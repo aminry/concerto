@@ -608,3 +608,66 @@ pub struct ScheduleRun {
 }
 ```
 
+### struct `SkillId`
+
+```rust
+pub struct SkillId(pub String);
+```
+
+### enum `SkillScope`
+
+```rust
+pub enum SkillScope {
+    Personal,
+    Project,
+    Plugin,
+    Enterprise,
+}
+```
+
+### struct `NewSkill`
+
+```rust
+pub struct NewSkill {
+    pub id: SkillId,
+    pub scope: SkillScope,
+    /// MUST be `Some` when `scope == SkillScope::Project`; MUST be
+    /// `None` otherwise.
+    pub project_id: Option<ProjectId>,
+    pub name: String,
+    pub slash_command: Option<String>,
+    pub description: Option<String>,
+    /// JSON-encoded list of tool names (e.g. `'["Read","Edit"]'`).
+    pub tools_json: String,
+    pub source_path: String,
+    pub discovered_at: i64,
+}
+```
+
+### struct `SkillRow`
+
+```rust
+pub struct SkillRow {
+    pub id: SkillId,
+    pub scope: SkillScope,
+    pub project_id: Option<ProjectId>,
+    pub name: String,
+    pub slash_command: Option<String>,
+    pub description: Option<String>,
+    pub tools_json: String,
+    pub source_path: String,
+    pub enabled: bool,
+    pub discovered_at: i64,
+}
+```
+
+### struct `SkillFilter`
+
+```rust
+pub struct SkillFilter {
+    pub scope: Option<SkillScope>,
+    pub project_id: Option<ProjectId>,
+    pub enabled_only: bool,
+}
+```
+

@@ -12,6 +12,7 @@ pub mod runtime;
 pub mod schedules;
 #[cfg(unix)]
 pub mod sessions;
+pub mod skills;
 #[cfg(unix)]
 pub mod streams;
 pub mod workareas;
