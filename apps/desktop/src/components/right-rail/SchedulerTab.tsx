@@ -1,0 +1,61 @@
+// Right-rail Scheduler tab — lists `/loop` schedules for the selected
+// workarea (Task 38 surface). V0.1 is read-only; create / pause / delete
+// affordances arrive with the Maestro work in a later phase.
+
+import { useUiStore } from "../../state/useUiStore";
+import { useSchedules } from "../../hooks/useSchedules";
+
+export function SchedulerTab(): JSX.Element {
+  const workareaId = useUiStore((s) => s.selectedWorkareaId);
+  const query = useSchedules(workareaId);
+
+  if (!workareaId) {
+    return (
+      <p className="text-xs text-slate-500 p-3">
+        Select a workarea to see its schedules.
+      </p>
+    );
+  }
+  if (query.isLoading) {
+    return <p className="text-xs text-slate-500 p-3">Loading…</p>;
+  }
+  if (query.isError) {
+    return (
+      <p className="text-xs text-rose-400 p-3">
+        Failed to load schedules: {String(query.error)}
+      </p>
+    );
+  }
+  const schedules = query.data?.schedules ?? [];
+  if (schedules.length === 0) {
+    return (
+      <p className="text-xs text-slate-500 p-3">
+        No schedules yet. Use /loop in a session to add one.
+      </p>
+    );
+  }
+  return (
+    <ul className="p-2 space-y-1">
+      {schedules.map((s) => (
+        <li
+          key={s.id}
+          className="rounded border border-slate-800 bg-slate-900 px-2 py-1.5"
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${
+                s.paused ? "bg-gray-400" : "bg-emerald-500"
+              }`}
+              aria-label={s.paused ? "paused" : "active"}
+            />
+            <span className="text-xs font-mono text-slate-200">{s.kind}</span>
+            <span className="ml-auto text-xs text-slate-500">
+              every {s.interval_seconds}s
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-slate-400 truncate">{s.prompt}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}

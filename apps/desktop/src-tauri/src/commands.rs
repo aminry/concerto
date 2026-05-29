@@ -28,16 +28,19 @@ use std::sync::Mutex;
 use concerto_proto::v1::projects_client::ProjectsClient;
 use concerto_proto::v1::repositories_client::RepositoriesClient;
 use concerto_proto::v1::runtime_client::RuntimeClient;
+use concerto_proto::v1::schedules_client::SchedulesClient;
 use concerto_proto::v1::sessions_client::SessionsClient;
+use concerto_proto::v1::skills_client::SkillsClient;
 use concerto_proto::v1::streams_client::StreamsClient;
 use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
     AddRepoRequest, CloneRequest, CreateSessionRequest, CreateWorkareaRequest,
-    CreateWorkspaceRequest, ListProjectsRequest, ListRepositoriesRequest, ListSessionsRequest,
-    ListWorkareasRequest, ListWorkspacesRequest, PermissionMode, SendMessageRequest,
-    SessionId as ProtoSessionId, StopSessionRequest, SubscribeRequest,
-    WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
+    CreateWorkspaceRequest, ListProjectsRequest, ListRepositoriesRequest, ListSchedulesRequest,
+    ListSessionsRequest, ListSkillsRequest, ListWorkareasRequest, ListWorkspacesRequest,
+    McpScopeRequest, PermissionMode, SendMessageRequest, SessionId as ProtoSessionId,
+    StopSessionRequest, SubscribeRequest, WorkareaId as ProtoWorkareaId,
+    WorkspaceId as ProtoWorkspaceId,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -416,6 +419,37 @@ struct CloneRepositoryPayload {
     repository_id: String,
 }
 
+/// Payload wrapper for `Schedules.ListSchedules`. Task 46 wires the
+/// right-rail Scheduler tab; the request mirrors the proto's
+/// `ListSchedulesRequest` shape.
+#[derive(Debug, Deserialize)]
+struct ListSchedulesPayload {
+    workarea_id: String,
+}
+
+/// Payload wrapper for `Skills.ListSkills`. All three filter fields are
+/// optional — the right-rail Skills tab passes `project_id` only.
+#[derive(Debug, Deserialize, Default)]
+struct ListSkillsPayload {
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    enabled_only: Option<bool>,
+}
+
+/// Payload wrapper for `Sessions.ListMcpServers`. The right-rail MCP
+/// tab passes `repository_id` when scoping to project; both fields are
+/// optional per the proto.
+#[derive(Debug, Deserialize, Default)]
+struct ListMcpServersPayload {
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    repository_id: Option<String>,
+}
+
 /// Method-dispatch core, factored out of the Tauri command so it can
 /// be unit-tested against a tempdir socket without standing up the
 /// Tauri runtime.
@@ -626,6 +660,45 @@ pub(crate) async fn dispatch(
                 })
                 .await
                 .map(|_| Value::Null)
+        }
+        "Schedules.ListSchedules" => {
+            let req: ListSchedulesPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ListSchedules: {e}"))
+            })?;
+            let mut client = SchedulesClient::new(channel);
+            client
+                .list_schedules(ListSchedulesRequest {
+                    workarea_id: req.workarea_id,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Skills.ListSkills" => {
+            let req: ListSkillsPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ListSkills: {e}"))
+            })?;
+            let mut client = SkillsClient::new(channel);
+            client
+                .list_skills(ListSkillsRequest {
+                    scope: req.scope,
+                    project_id: req.project_id,
+                    enabled_only: req.enabled_only,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Sessions.ListMcpServers" => {
+            let req: ListMcpServersPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ListMcpServers: {e}"))
+            })?;
+            let mut client = SessionsClient::new(channel);
+            client
+                .list_mcp_servers(McpScopeRequest {
+                    scope: req.scope,
+                    repository_id: req.repository_id,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }
         other => return Err(CoreClientError::NotImplemented(other.to_string())),
     };

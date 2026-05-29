@@ -24,7 +24,10 @@ export type RpcMethod =
   | "Sessions.GetSession"
   | "Sessions.CreateSession"
   | "Sessions.SendMessage"
-  | "Sessions.StopSession";
+  | "Sessions.StopSession"
+  | "Sessions.ListMcpServers"
+  | "Schedules.ListSchedules"
+  | "Skills.ListSkills";
 
 export async function callRpc<TRequest, TResponse>(
   method: RpcMethod,
