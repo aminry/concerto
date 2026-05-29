@@ -67,11 +67,21 @@ message ListProjectsResponse {
 }
 ```
 
+### message `CreateProjectRequest`
+
+```proto
+message CreateProjectRequest {
+  string name = 1;
+  optional string icon = 2;
+}
+```
+
 ### service `Projects`
 
 ```proto
 service Projects {
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc CreateProject(CreateProjectRequest) returns (Project);
 }
 ```
 
@@ -405,6 +415,16 @@ message StopSessionRequest {
 }
 ```
 
+### message `ResizeSessionRequest`
+
+```proto
+message ResizeSessionRequest {
+  string session_id = 1;
+  uint32 rows = 2;
+  uint32 cols = 3;
+}
+```
+
 ### enum `ApprovalDecision`
 
 ```proto
@@ -500,6 +520,7 @@ service Sessions {
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
   rpc StopSession(StopSessionRequest) returns (google.protobuf.Empty);
+  rpc ResizeSession(ResizeSessionRequest) returns (google.protobuf.Empty);
   // Task 32: change `sessions.permission_mode` with entry-ceremony +
   // managed.json cap enforcement. Returns the updated `Session` row.
   rpc UpdateSessionPermissionMode(UpdateSessionPermissionModeRequest) returns (Session);

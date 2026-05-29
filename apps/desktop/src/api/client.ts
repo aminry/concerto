@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export type RpcMethod =
   | "Runtime.GetServerCapabilities"
   | "Projects.ListProjects"
+  | "Projects.CreateProject"
   | "Workspaces.ListWorkspaces"
   | "Workspaces.GetWorkspace"
   | "Workspaces.CreateWorkspace"
@@ -26,6 +27,7 @@ export type RpcMethod =
   | "Sessions.CreateSession"
   | "Sessions.SendMessage"
   | "Sessions.StopSession"
+  | "Sessions.ResizeSession"
   | "Sessions.ListMcpServers"
   | "Schedules.ListSchedules"
   | "Skills.ListSkills";
@@ -48,11 +50,23 @@ export async function unsubscribe(id: string): Promise<void> {
   await invoke<void>("concerto_unsubscribe", { id });
 }
 
+/// Map a gRPC subject (which uses dots, e.g. `session.io.<sid>`) to the
+/// Tauri event-bus name. Tauri 2 rejects event names containing '.', so
+/// dots become slashes (`concerto/session/io/<sid>`). MUST stay in sync
+/// with the Rust side in `src-tauri/src/commands.rs`
+/// (`concerto_subscribe`). `split`/`join` avoids relying on
+/// `String.replaceAll` (ES2021) for broad target compatibility.
+function eventNameForSubject(subject: string): string {
+  return `concerto/${subject.split(".").join("/")}`;
+}
+
 export async function onConcertoEvent<T>(
   subject: string,
   callback: (payload: T) => void,
 ): Promise<UnlistenFn> {
-  return listen<T>(`concerto/${subject}`, (event) => callback(event.payload));
+  return listen<T>(eventNameForSubject(subject), (event) =>
+    callback(event.payload),
+  );
 }
 
 /// Probe `PATH` for `name`. Returns the absolute path string when the

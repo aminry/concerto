@@ -55,6 +55,7 @@ done
 # ---------------------------------------------------------------------------
 INSTALL_DIR="$HOME/Applications/concerto"
 BIN_PATH="$INSTALL_DIR/concerto-core"
+HOST_BIN_PATH="$INSTALL_DIR/concerto-agent-host"
 LAUNCH_AGENT_PATH="$HOME/Library/LaunchAgents/com.concerto.core.plist"
 
 SERVICE_LABEL="com.concerto.core"
@@ -79,6 +80,11 @@ fi
 if [ -f "$BIN_PATH" ]; then
     echo "==> Removing $BIN_PATH"
     rm -f "$BIN_PATH"
+fi
+
+if [ -f "$HOST_BIN_PATH" ]; then
+    echo "==> Removing $HOST_BIN_PATH"
+    rm -f "$HOST_BIN_PATH"
 fi
 
 # Clean up the install dir if it ended up empty.

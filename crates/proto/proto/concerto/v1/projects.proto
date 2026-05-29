@@ -1,10 +1,10 @@
-// Projects service — minimal read surface (Task 24).
+// Projects service — minimal read surface (Task 24) + create (post-V0.1).
 //
-// V0.1 does not expose project creation over gRPC; projects are seeded
-// via direct SQL (see `crates/persist/src/projects.rs`). Task 24 adds
-// `ListProjects` so the Desktop sidebar can populate its top-level
-// node without hardcoding a project id. Create/Update/Archive arrive
-// in a later phase.
+// `ListProjects` lets the Desktop sidebar populate its top-level node
+// without hardcoding a project id. `CreateProject` was deferred in V0.1
+// (projects had to be seeded via direct SQL) but the Sidebar surfaces it
+// as a "+ Project" affordance once the table is empty, so the RPC is now
+// part of the wire surface. Update/Archive still arrive in a later phase.
 //
 // Field numbers in this file are FROZEN as of Task 24.
 
@@ -30,6 +30,14 @@ message ListProjectsResponse {
   repeated Project projects = 1;
 }
 
+// Inputs for `Projects.CreateProject`. Server assigns `id` (UUIDv7) and
+// `created_at` (server clock) — the caller only provides display fields.
+message CreateProjectRequest {
+  string name = 1;
+  optional string icon = 2;
+}
+
 service Projects {
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc CreateProject(CreateProjectRequest) returns (Project);
 }

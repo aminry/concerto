@@ -79,6 +79,16 @@ fn main() -> io::Result<()> {
         // we want — downstream crates use `prost_types::Timestamp` etc.
         // directly without re-export gymnastics.
         .type_attribute(".", serde_derive)
+        // Serialize oneof variants by their proto field name (snake_case)
+        // rather than serde's default of the Rust variant identifier
+        // (PascalCase). Without this, `Event.body` serializes as
+        // `{"SessionIo": …}` and the Desktop renderer — which keys on the
+        // proto field name `{"session_io": …}` per the proto3-JSON
+        // convention — never matches, so session terminal output and live
+        // workspace/workarea events silently never reach the UI. This is a
+        // no-op for message structs (prost already emits snake_case field
+        // names) and only affects oneof/enum variant naming.
+        .type_attribute(".", "#[serde(rename_all = \"snake_case\")]")
         .out_dir(env::var("OUT_DIR").expect("OUT_DIR"));
 
     for field in timestamp_fields {
