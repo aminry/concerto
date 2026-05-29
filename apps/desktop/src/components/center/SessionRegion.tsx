@@ -7,7 +7,7 @@
 // terminal mounts, the composer below sends bytes via
 // `Sessions.SendMessage`.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useUiStore } from "../../state/useUiStore";
@@ -17,6 +17,8 @@ import { SessionTab } from "../SessionTab";
 import { SessionTerminal } from "../SessionTerminal";
 import { SessionComposer } from "../SessionComposer";
 import { Menu } from "../ui/menu";
+import { Dialog } from "../ui/dialog";
+import { Button } from "../ui/button";
 import { Plus, TerminalSquare } from "lucide-react";
 
 export type SessionRegionProps = {
@@ -30,6 +32,9 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
 
   const sessionsQuery = useSessions(workareaId);
   const sessions = sessionsQuery.data?.sessions ?? [];
+
+  const [confirmSession, setConfirmSession] = useState<Session | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeSessionId && sessions.length > 0) {
@@ -47,16 +52,19 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
     mutationFn: async (agentKind: string) =>
       createSession({ workareaId, agentKind }),
     onSuccess: (session) => {
+      setActionError(null);
       setActiveSession(session.id);
       void queryClient.invalidateQueries({
         queryKey: ["sessions", workareaId],
       });
     },
+    onError: (e) => setActionError(`Couldn't start session: ${String(e)}`),
   });
 
   const deleteMutation = useMutation({
     mutationFn: async (sessionId: string) => deleteSession(sessionId),
     onSuccess: (_, id) => {
+      setActionError(null);
       void queryClient.invalidateQueries({
         queryKey: ["sessions", workareaId],
       });
@@ -68,16 +76,13 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
         setActiveSession(nextActiveSessionId(sessions, id));
       }
     },
+    onError: (e) => setActionError(`Couldn't delete session: ${String(e)}`),
   });
 
   function handleClose(s: Session): void {
     const running = ["starting", "running", "awaiting"].includes(s.status);
-    if (
-      running &&
-      !window.confirm(
-        "Stop and delete this running session? This permanently removes its transcript.",
-      )
-    ) {
+    if (running) {
+      setConfirmSession(s);
       return;
     }
     deleteMutation.mutate(s.id);
@@ -85,26 +90,40 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
 
   return (
     <section className="h-full flex flex-col min-h-0 p-2 gap-2">
-      <div className="shrink-0 flex items-stretch overflow-x-auto bg-surface border-b border-border">
-        {sessions.map((s) => (
-          <SessionTab
-            key={s.id}
-            session={s}
-            active={s.id === activeSessionId}
-            onClick={() => setActiveSession(s.id)}
-            onClose={() => handleClose(s)}
-          />
-        ))}
+      <div className="shrink-0 flex items-stretch bg-surface border-b border-border">
+        <div className="flex items-stretch overflow-x-auto min-w-0">
+          {sessions.map((s) => (
+            <SessionTab
+              key={s.id}
+              session={s}
+              active={s.id === activeSessionId}
+              onClick={() => setActiveSession(s.id)}
+              onClose={() => handleClose(s)}
+            />
+          ))}
+          {sessionsQuery.isLoading && (
+            <span className="self-center px-3 text-xs text-faint">Loading…</span>
+          )}
+          {sessionsQuery.isError && (
+            <span className="self-center px-3 text-xs text-err">
+              {String(sessionsQuery.error)}
+            </span>
+          )}
+        </div>
         <NewSessionMenu onPick={(agentKind) => createMutation.mutate(agentKind)} />
-        {sessionsQuery.isLoading && (
-          <span className="self-center px-3 text-xs text-faint">Loading…</span>
-        )}
-        {sessionsQuery.isError && (
-          <span className="self-center px-3 text-xs text-err">
-            {String(sessionsQuery.error)}
-          </span>
-        )}
       </div>
+      {actionError && (
+        <div className="shrink-0 flex items-center justify-between gap-2 rounded-md border border-err/40 bg-err/10 px-3 py-1.5 text-xs text-err">
+          <span className="truncate">{actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-err/80 hover:text-err shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="flex-1 min-h-0 flex flex-col gap-2">
         {activeSession ? (
           <>
@@ -129,6 +148,37 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
           </div>
         )}
       </div>
+      <Dialog
+        open={confirmSession !== null}
+        onClose={() => setConfirmSession(null)}
+        title="Delete running session?"
+      >
+        <p className="text-sm text-muted">
+          This session is still running. Stop the agent and permanently delete
+          the session — including its transcript, approvals, and checkpoints?
+          This can’t be undone.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setConfirmSession(null)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => {
+              const id = confirmSession?.id;
+              setConfirmSession(null);
+              if (id) deleteMutation.mutate(id);
+            }}
+          >
+            Stop &amp; delete
+          </Button>
+        </div>
+      </Dialog>
     </section>
   );
 }
