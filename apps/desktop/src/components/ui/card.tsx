@@ -5,7 +5,7 @@
 import type { HTMLAttributes } from "react";
 
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  const combined = ["rounded-md border border-slate-800 bg-slate-900", className ?? ""]
+  const combined = ["rounded-md border border-border bg-surface", className ?? ""]
     .join(" ")
     .trim();
   return <div className={combined} {...props} />;
@@ -15,7 +15,7 @@ export function CardHeader({
   className,
   ...props
 }: HTMLAttributes<HTMLDivElement>) {
-  const combined = ["px-4 py-3 border-b border-slate-800", className ?? ""]
+  const combined = ["px-4 py-3 border-b border-border", className ?? ""]
     .join(" ")
     .trim();
   return <div className={combined} {...props} />;
@@ -26,7 +26,7 @@ export function CardTitle({
   ...props
 }: HTMLAttributes<HTMLHeadingElement>) {
   const combined = [
-    "text-sm font-semibold uppercase tracking-wider text-slate-300",
+    "text-sm font-semibold uppercase tracking-wide text-muted",
     className ?? "",
   ]
     .join(" ")
@@ -38,7 +38,7 @@ export function CardContent({
   className,
   ...props
 }: HTMLAttributes<HTMLDivElement>) {
-  const combined = ["px-4 py-3 text-sm text-slate-200", className ?? ""]
+  const combined = ["px-4 py-3 text-sm text-foreground", className ?? ""]
     .join(" ")
     .trim();
   return <div className={combined} {...props} />;
