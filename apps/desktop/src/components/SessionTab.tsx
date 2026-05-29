@@ -43,8 +43,15 @@ export function SessionTab({
       )}
       <StatusDot status={sessionStatusToDot(status)} />
       <span className="truncate max-w-[10rem]">{session.agent_kind}</span>
-      <span className="font-mono text-faint truncate max-w-[6rem]">
-        {session.id.slice(0, 8)}
+      <span
+        className="font-mono text-faint truncate max-w-[6rem]"
+        title={session.id}
+      >
+        {/* UUIDv7 ids share a long leading timestamp prefix for sessions
+            created close together, so slicing from the front shows the
+            same chars on every tab. Show the trailing (random) segment,
+            which is distinct per session; full id is in the tooltip. */}
+        {session.id.slice(-6)}
       </span>
       <button
         type="button"
