@@ -10,12 +10,20 @@
 
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import {
+  ChevronDown,
+  ChevronRight,
+  FolderGit2,
+  Plus,
+  RefreshCw,
+  Settings,
+} from "lucide-react";
 
 import { useProjects } from "../hooks/useProjects";
 import { useWorkspaces } from "../hooks/useWorkspaces";
 import { useEventSubscription } from "../hooks/useEventSubscription";
 import { useUiStore } from "../state/useUiStore";
-import { Button } from "./ui/button";
+import { IconButton } from "./ui/icon-button";
 import { WorkareaList } from "./WorkareaList";
 import type { Workspace } from "../api/workspaces";
 
@@ -67,65 +75,65 @@ export function Sidebar(): JSX.Element {
   }
 
   return (
-    <aside className="h-full border-r border-slate-800 bg-slate-950 flex flex-col min-h-0">
-      <header className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-        <h1 className="text-sm font-semibold tracking-wider uppercase text-slate-300">
+    <aside className="h-full border-r border-border bg-surface flex flex-col min-h-0">
+      <header className="px-4 py-3 border-b border-border flex items-center justify-between">
+        <h1 className="text-sm font-semibold tracking-wide text-foreground">
           Concerto
         </h1>
-        <div className="flex gap-1">
-          <Button variant="outline" onClick={onRefresh}>
-            Refresh
-          </Button>
-          <Button variant="ghost" onClick={() => setSettingsOpen(true)}>
-            Settings
-          </Button>
+        <div className="flex gap-0.5">
+          <IconButton label="Refresh" onClick={onRefresh}>
+            <RefreshCw size={15} />
+          </IconButton>
+          <IconButton label="Settings" onClick={() => setSettingsOpen(true)}>
+            <Settings size={15} />
+          </IconButton>
         </div>
       </header>
 
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-3">
         {projectsQuery.isLoading && (
-          <p className="px-2 text-xs text-slate-500">Loading projects…</p>
+          <p className="px-2 text-xs text-faint">Loading projects…</p>
         )}
         {projectsQuery.isError && (
-          <p className="px-2 text-xs text-rose-400">
+          <p className="px-2 text-xs text-err">
             Failed to load projects: {String(projectsQuery.error)}
           </p>
         )}
         {projectsQuery.data && projectsQuery.data.projects.length === 0 && (
-          <p className="px-2 text-xs text-slate-500">
+          <p className="px-2 text-xs text-faint">
             No projects yet. Seed one via SQL — V0.1 has no creation UI.
           </p>
         )}
 
         {project && (
           <section>
-            <p className="px-2 text-xs uppercase tracking-wider text-slate-500 mb-1">
+            <p className="px-2 text-xs uppercase tracking-wide text-faint mb-1">
               Project
             </p>
-            <p className="px-2 text-sm text-slate-200 mb-2">{project.name}</p>
+            <p className="px-2 text-sm text-foreground mb-2">{project.name}</p>
 
             <div className="flex items-center justify-between px-2 mb-1">
-              <p className="text-xs uppercase tracking-wider text-slate-500">
+              <p className="text-xs uppercase tracking-wide text-faint">
                 Workspaces
               </p>
-              <Button
-                variant="ghost"
+              <IconButton
+                label="New workspace"
                 onClick={() => setNewWorkspaceModalOpen(true)}
               >
-                +
-              </Button>
+                <Plus size={14} />
+              </IconButton>
             </div>
             {workspacesQuery.isLoading && (
-              <p className="px-2 text-xs text-slate-500">Loading…</p>
+              <p className="px-2 text-xs text-faint">Loading…</p>
             )}
             {workspacesQuery.isError && (
-              <p className="px-2 text-xs text-rose-400">
+              <p className="px-2 text-xs text-err">
                 Failed to load workspaces: {String(workspacesQuery.error)}
               </p>
             )}
             {workspacesQuery.data &&
               workspacesQuery.data.workspaces.length === 0 && (
-                <p className="px-2 text-xs text-slate-500">No workspaces yet.</p>
+                <p className="px-2 text-xs text-faint">No workspaces yet.</p>
               )}
             <ul className="space-y-0.5">
               {workspacesQuery.data?.workspaces.map((ws) => (
@@ -162,23 +170,28 @@ function WorkspaceNode({
   onToggleExpanded,
 }: WorkspaceNodeProps): JSX.Element {
   const buttonClass = active
-    ? "flex-1 text-left px-2 py-1 rounded text-sm bg-slate-800 text-slate-100"
-    : "flex-1 text-left px-2 py-1 rounded text-sm text-slate-300 hover:bg-slate-900";
+    ? "flex-1 text-left px-2 py-1 rounded-md text-sm bg-accent/10 text-foreground"
+    : "flex-1 text-left px-2 py-1 rounded-md text-sm text-muted hover:bg-surface-2";
   return (
     <li>
       <div className="flex items-center gap-1">
         <button
           type="button"
-          className="px-1 text-slate-500 hover:text-slate-200"
+          className="px-1 text-faint hover:text-foreground"
           onClick={onToggleExpanded}
           aria-label={expanded ? "Collapse" : "Expand"}
         >
-          {expanded ? "▾" : "▸"}
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </button>
         <button type="button" className={buttonClass} onClick={onSelect}>
-          <span className="block truncate">{workspace.name}</span>
-          <span className="block text-xs text-slate-500 truncate">
-            {workspace.slug}
+          <span className="flex items-center gap-2 min-w-0">
+            <FolderGit2 size={14} className="text-faint shrink-0" />
+            <span className="min-w-0">
+              <span className="block truncate">{workspace.name}</span>
+              <span className="block text-xs text-faint truncate font-mono">
+                {workspace.slug}
+              </span>
+            </span>
           </span>
         </button>
       </div>

@@ -12,6 +12,7 @@
 
 import { useWorkareas } from "../hooks/useWorkareas";
 import { useUiStore } from "../state/useUiStore";
+import { StatusDot, type DotStatus } from "./ui/status-dot";
 
 export type WorkareaListProps = {
   workspaceId: string;
@@ -23,17 +24,17 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
   const setSelectedWorkarea = useUiStore((s) => s.setSelectedWorkarea);
 
   if (query.isLoading) {
-    return <p className="text-xs text-slate-500">Loading workareas…</p>;
+    return <p className="text-xs text-faint">Loading workareas…</p>;
   }
   if (query.isError) {
     return (
-      <p className="text-xs text-rose-400">
+      <p className="text-xs text-err">
         Failed: {String(query.error)}
       </p>
     );
   }
   if (!query.data || query.data.workareas.length === 0) {
-    return <p className="text-xs text-slate-500">No workareas yet.</p>;
+    return <p className="text-xs text-faint">No workareas yet.</p>;
   }
 
   return (
@@ -41,8 +42,8 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
       {query.data.workareas.map((wa) => {
         const active = wa.id === selectedWorkareaId;
         const buttonClass = active
-          ? "w-full text-left px-2 py-1 rounded text-xs bg-slate-800 text-slate-100"
-          : "w-full text-left px-2 py-1 rounded text-xs text-slate-300 hover:bg-slate-900";
+          ? "w-full text-left px-2 py-1 rounded-md text-xs bg-accent/10 text-foreground"
+          : "w-full text-left px-2 py-1 rounded-md text-xs text-muted hover:bg-surface-2";
         return (
           <li key={wa.id}>
             <button
@@ -51,9 +52,9 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
               onClick={() => setSelectedWorkarea(wa.id)}
             >
               <span className="flex items-center gap-2">
-                <StatusDot status={wa.status} />
+                <StatusDot status={statusToDot(wa.status)} />
                 <span className="truncate">{wa.composer_name}</span>
-                <span className="ml-auto text-slate-500 truncate">
+                <span className="ml-auto text-faint truncate font-mono">
                   {wa.branch_name}
                 </span>
               </span>
@@ -65,25 +66,34 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
   );
 }
 
-function StatusDot({ status }: { status: string }): JSX.Element {
-  const color = statusColor(status);
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full ${color}`}
-      aria-label={`status: ${status}`}
-    />
-  );
-}
-
-function statusColor(status: string): string {
+// Maps a `concerto.v1.Workarea` status string to a `DotStatus`.
+// Workarea statuses ∈ { created | active | running | awaiting |
+// paused | archived | crashed }. Unknown values fall back to "idle".
+function statusToDot(status: string): DotStatus {
   switch (status) {
+    // `active` reads as green (the workarea is live/healthy) per
+    // design/15 §3.4; `running` (an agent actively executing) is blue.
     case "active":
-      return "bg-green-500";
-    case "awaiting":
-      return "bg-amber-500";
+    case "ok":
+      return "ok";
     case "running":
-      return "bg-blue-500";
+    case "starting":
+      return "running";
+    case "awaiting":
+    case "blocked":
+      return "warning";
+    case "failed":
+    case "error":
+    case "crashed":
+      return "error";
+    case "archived":
+    case "idle":
+    case "done":
+    case "stopped":
+    case "paused":
+    case "created":
+      return "idle";
     default:
-      return "bg-gray-400";
+      return "idle";
   }
 }
