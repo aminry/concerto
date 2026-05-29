@@ -224,6 +224,20 @@ async fn run() -> Result<()> {
         Err(e) => tracing::warn!(error = %e, "crash-adoption sweep failed"),
     }
 
+    // Task 36: PTY hot-reconnect sweep (`design/04 §6.4`). Scan
+    // `<data_dir>/runtime/agents/*.sock` and re-attach to every
+    // `concerto-agent-host` that survived the previous Core's exit.
+    // Runs AFTER the supervisor actor is spawned (so the handle's
+    // `sessions_map` is wired) and BEFORE the gRPC server starts
+    // accepting traffic (so a `Sessions.Get` for an adopted session
+    // sees the re-registered in-memory entry, not a "not found" race).
+    #[cfg(unix)]
+    match concerto_core::agent_supervisor::adopt_orphans(&agent_supervisor_handle).await {
+        Ok(0) => tracing::debug!("pty hot-reconnect sweep: no surviving hosts"),
+        Ok(n) => tracing::info!(adopted = n, "pty hot-reconnect sweep complete"),
+        Err(e) => tracing::warn!(error = %e, "pty hot-reconnect sweep failed"),
+    }
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
     // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`

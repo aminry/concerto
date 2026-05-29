@@ -44,6 +44,15 @@
 //!   `'crashed'`). The Agent Supervisor walks this state machine in
 //!   `start_session` (`starting → running` after `Hello/Ready`) and
 //!   `stop_session` (`running → finished`).
+//!
+//! ## V0.1 + Task 36 column additions
+//!
+//! Migration 0003 adds `last_acked_seq INTEGER NOT NULL DEFAULT 0`, the
+//! persisted watermark of bytes the Core has consumed from the
+//! agent-host's bridge ring buffer. The bridge pump writes it
+//! opportunistically (~every 5s) so a crash loses at most that window;
+//! `adopt_orphans` reads it on boot when reconnecting to surviving
+//! hosts (`HostFrame::Hello { last_seq }`).
 
 use concerto_error::{Error, Result};
 use sqlx::{Row, SqliteConnection, SqlitePool};
@@ -79,8 +88,8 @@ pub async fn insert(conn: &mut SqliteConnection, s: NewSession) -> Result<Sessio
             id, workarea_id, chat_id, agent_kind, agent_version, model, mode,
             host_pid, host_socket, pty_cookie, external_session_id,
             permission_mode, bypass_destructive_guard,
-            started_at, status
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            started_at, status, last_acked_seq
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id.0)
     .bind(&s.workarea_id.0)
@@ -97,6 +106,7 @@ pub async fn insert(conn: &mut SqliteConnection, s: NewSession) -> Result<Sessio
     .bind(s.bypass_destructive_guard as i64)
     .bind(s.started_at)
     .bind(&s.status)
+    .bind(s.last_acked_seq)
     .execute(conn)
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
@@ -117,6 +127,24 @@ pub async fn update_host(
         .bind(host_pid)
         .bind(host_socket)
         .bind(status)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+/// Task 36: persist the highest `seq` the Core has consumed from the
+/// agent-host bridge ring buffer. Called from the read-pump's ack
+/// scheduler (~every 5 s) so a Core crash loses at most that window of
+/// ack progress. Cheap single-row UPDATE.
+pub async fn update_last_acked(
+    conn: &mut SqliteConnection,
+    id: &SessionId,
+    seq: i64,
+) -> Result<()> {
+    sqlx::query("UPDATE sessions SET last_acked_seq = ? WHERE id = ?")
+        .bind(seq)
         .bind(&id.0)
         .execute(conn)
         .await
@@ -174,7 +202,7 @@ pub async fn get(pool: &SqlitePool, id: &SessionId) -> Result<Option<Session>> {
         "SELECT id, workarea_id, chat_id, agent_kind, agent_version, model, mode,
                 host_pid, host_socket, pty_cookie, external_session_id,
                 permission_mode, bypass_destructive_guard,
-                started_at, ended_at, last_heartbeat, status
+                started_at, ended_at, last_heartbeat, status, last_acked_seq
          FROM sessions WHERE id = ?",
     )
     .bind(&id.0)
@@ -211,7 +239,7 @@ pub async fn list_by_workarea(pool: &SqlitePool, workarea_id: &WorkareaId) -> Re
         "SELECT id, workarea_id, chat_id, agent_kind, agent_version, model, mode,
                 host_pid, host_socket, pty_cookie, external_session_id,
                 permission_mode, bypass_destructive_guard,
-                started_at, ended_at, last_heartbeat, status
+                started_at, ended_at, last_heartbeat, status, last_acked_seq
          FROM sessions WHERE workarea_id = ? ORDER BY started_at DESC",
     )
     .bind(&workarea_id.0)
@@ -240,5 +268,6 @@ fn row_to_session(row: sqlx::sqlite::SqliteRow) -> Session {
         ended_at: row.get::<Option<i64>, _>("ended_at"),
         last_heartbeat: row.get::<Option<i64>, _>("last_heartbeat"),
         status: row.get::<String, _>("status"),
+        last_acked_seq: row.get::<i64, _>("last_acked_seq"),
     }
 }

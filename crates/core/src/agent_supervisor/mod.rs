@@ -40,6 +40,7 @@
 #![cfg(unix)]
 
 pub mod actor;
+pub mod adopt;
 pub mod approval;
 pub mod bridge;
 pub mod checkpoint;
@@ -52,6 +53,7 @@ pub use actor::{
     AgentKind, AgentSupervisorActor, AgentSupervisorConfig, AgentSupervisorHandle, SessionIoChunk,
     StartSessionRequest,
 };
+pub use adopt::adopt_orphans;
 pub use events::{AgentEvent, MessageRole};
 pub use mcp::{list_mcp_servers, McpScope, McpScopeFilter, McpServer};
 pub use parsers::{MsgRole, ParseEvent, ParserPack};

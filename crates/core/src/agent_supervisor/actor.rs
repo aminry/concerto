@@ -141,7 +141,7 @@ const MAX_REPLAY_EVENTS: usize = 64;
 const MAX_REPLAY_IO: usize = 64;
 
 /// Per-session in-process state held by the supervisor.
-struct SessionEntry {
+pub(super) struct SessionEntry {
     workarea_id: WorkareaId,
     /// `sessions.chat_id` — cached so the read-pump's checkpoint /
     /// revert paths (Task 34) don't have to round-trip the DB to
@@ -191,6 +191,16 @@ struct SessionEntry {
     /// Task 33: pending approvals awaiting a `Sessions.ResolveApproval`
     /// call. Keyed by `tool_approvals.id`.
     pending_approvals: Arc<Mutex<PendingApprovals>>,
+    /// Task 36: the highest `seq` the Core has consumed from this
+    /// session's bridge. Updated by the read pump on every
+    /// `StdoutBytes` / `StderrBytes`; the ack-send + ack-persist
+    /// tickers read it asynchronously. Kept on the entry so future
+    /// `Sessions.Get`-style introspection can surface it without
+    /// plumbing a separate channel. The pump owns its own
+    /// `Arc::clone` of the atomic and reads/writes it directly, so
+    /// the field-as-stored is "never read" today — that's deliberate.
+    #[allow(dead_code)]
+    ack_watermark: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Cloneable, shareable handle to the Agent Supervisor's state.
@@ -239,6 +249,28 @@ impl AgentSupervisorHandle {
     /// through `api_server`.
     pub fn persistence(&self) -> Arc<Persistence> {
         Arc::clone(&self.persistence)
+    }
+
+    /// Task 36: borrow the data dir so `adopt::adopt_orphans` can scan
+    /// `<data_dir>/runtime/agents/*.sock` for surviving host UDSes.
+    pub fn data_dir(&self) -> Arc<PathBuf> {
+        Arc::clone(&self.data_dir)
+    }
+
+    /// Task 36: borrow the config dir — needed when adoption re-builds
+    /// a `PermissionResolver` from the persisted permission mode (the
+    /// resolver consults `managed.json` under the config dir).
+    pub fn config_dir(&self) -> Arc<PathBuf> {
+        Arc::clone(&self.config_dir)
+    }
+
+    /// Task 36: borrow the in-memory session map so the adoption helper
+    /// can insert a re-attached `SessionEntry`. The map is held private
+    /// because every other surface goes through methods on this
+    /// handle; the adoption path is the lone place that constructs
+    /// entries without going through `start_session`.
+    pub(super) fn sessions_map(&self) -> Arc<Mutex<HashMap<SessionId, SessionEntry>>> {
+        Arc::clone(&self.sessions)
     }
 
     /// Subscribe to the per-session [`AgentEvent`] broadcast. Returns
@@ -435,6 +467,7 @@ impl AgentSupervisorHandle {
                     bypass_destructive_guard: false,
                     started_at: now_ms,
                     status: "starting".to_string(),
+                    last_acked_seq: 0,
                 },
             )
             .await?;
@@ -473,7 +506,10 @@ impl AgentSupervisorHandle {
             }
         };
         let (mut read_half, mut write_half) = stream.into_split();
-        let hello = build_hello(env!("CARGO_PKG_VERSION"), cookie);
+        // First connect: pass last_seq = 0. Task 36's `adopt_orphans`
+        // path uses the persisted `sessions.last_acked_seq` watermark
+        // instead.
+        let hello = build_hello(env!("CARGO_PKG_VERSION"), cookie, 0);
         if let Err(e) = write_frame(&mut write_half, &hello).await {
             let _ = child.kill().await;
             self.mark_failed(&session_id).await;
@@ -546,6 +582,7 @@ impl AgentSupervisorHandle {
         };
         let pending_approvals: Arc<Mutex<PendingApprovals>> =
             Arc::new(Mutex::new(PendingApprovals::new()));
+        let ack_watermark = Arc::new(std::sync::atomic::AtomicU64::new(0));
         {
             let mut map = self.sessions.lock().await;
             map.insert(
@@ -565,6 +602,7 @@ impl AgentSupervisorHandle {
                     finished: Arc::clone(&finished),
                     parser: Arc::clone(&parser),
                     pending_approvals: Arc::clone(&pending_approvals),
+                    ack_watermark: Arc::clone(&ack_watermark),
                 },
             );
         }
@@ -597,6 +635,7 @@ impl AgentSupervisorHandle {
         // workarea bypass off the just-resolved row.
         let bypass = bypass_for_session(&self.persistence, &session_id).await;
         let pump_resolver = PermissionResolver::new(permission_mode_enum, bypass);
+        let pump_ack_watermark = Arc::clone(&ack_watermark);
         tokio::spawn(async move {
             run_read_pump(
                 read_half,
@@ -615,6 +654,7 @@ impl AgentSupervisorHandle {
                 pump_pending,
                 pump_writer,
                 pump_resolver,
+                pump_ack_watermark,
             )
             .await;
         });
@@ -1015,6 +1055,23 @@ async fn bypass_for_session(persistence: &Persistence, session_id: &SessionId) -
 /// Long-running task that drains the bridge connection's read half and
 /// emits `AgentEvent`s. Returns when the connection closes (`Eof`) or
 /// when the host signals `AgentExited`.
+///
+/// ## Task 36: ack semantics
+///
+/// As `StdoutBytes` / `StderrBytes` frames arrive, the pump tracks the
+/// highest `seq` it has consumed (the *watermark*) in
+/// [`Self::ack_watermark`]. Two sibling tasks share that watermark via
+/// an `AtomicU64`:
+///
+/// - **Bridge ack ticker** — sends `HostFrame::Ack { seq = watermark }`
+///   to the host every 100 ms OR every 100 bytes (whichever first), so
+///   the host can prune its ring buffer.
+/// - **Persist ack ticker** — writes the watermark to
+///   `sessions.last_acked_seq` every 5 s so a Core crash loses at most
+///   that window of ack progress.
+///
+/// On `AgentExited` or EOF the pump signals both tickers via a
+/// `CancellationToken` so they exit cleanly.
 #[allow(clippy::too_many_arguments)]
 async fn run_read_pump(
     mut read_half: tokio::net::unix::OwnedReadHalf,
@@ -1033,7 +1090,32 @@ async fn run_read_pump(
     pending_approvals: Arc<Mutex<PendingApprovals>>,
     writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
     resolver: PermissionResolver,
+    ack_watermark: Arc<std::sync::atomic::AtomicU64>,
 ) {
+    use std::sync::atomic::Ordering;
+
+    // Spawn the ack-send + ack-persist tickers. They exit when the
+    // CancellationToken below fires (set on EOF / AgentExited).
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let ack_send_task = {
+        let cancel = cancel.clone();
+        let writer = Arc::clone(&writer);
+        let watermark = Arc::clone(&ack_watermark);
+        let session_id = session_id.clone();
+        tokio::spawn(async move {
+            run_ack_send_ticker(writer, watermark, session_id, cancel).await;
+        })
+    };
+    let ack_persist_task = {
+        let cancel = cancel.clone();
+        let persistence = Arc::clone(&persistence);
+        let watermark = Arc::clone(&ack_watermark);
+        let session_id = session_id.clone();
+        tokio::spawn(async move {
+            run_ack_persist_ticker(persistence, watermark, session_id, cancel).await;
+        })
+    };
+
     // Open the per-session stdout log file for append.
     let log_file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -1047,6 +1129,11 @@ async fn run_read_pump(
     // the buf and the pack drains it, but the buf is owned by the
     // pump so V1.0's partial-line accumulating packs work too.
     let mut parser_buf: Vec<u8> = Vec::new();
+
+    // Byte-count threshold so a chatty agent gets an Ack independently
+    // of the 100 ms timer. Reset each time the send-ticker fires.
+    let mut bytes_since_ack: usize = 0;
+    let ack_byte_threshold: usize = 100;
 
     loop {
         let frame = match read_frame(&mut read_half).await {
@@ -1062,7 +1149,19 @@ async fn run_read_pump(
             }
         };
         match frame {
-            HostFrame::StdoutBytes { data, .. } => {
+            HostFrame::StdoutBytes { seq, data } => {
+                // Task 36: advance the ack watermark. Use max() because
+                // the host's seq is monotonic but defensive against
+                // re-ordering (the host serialises but the AtomicU64
+                // load/store could race the persist task otherwise).
+                update_watermark(&ack_watermark, seq);
+                bytes_since_ack = bytes_since_ack.saturating_add(data.len());
+                if bytes_since_ack >= ack_byte_threshold {
+                    bytes_since_ack = 0;
+                    let seq_now = ack_watermark.load(Ordering::Relaxed);
+                    let mut w = writer.lock().await;
+                    let _ = write_frame(&mut *w, &HostFrame::Ack { seq: seq_now }).await;
+                }
                 if let Some(lf) = &log_file {
                     let mut f = lf.lock().await;
                     let _ = f.write_all(&data).await;
@@ -1092,7 +1191,8 @@ async fn run_read_pump(
                     .await;
                 }
             }
-            HostFrame::StderrBytes { data, .. } => {
+            HostFrame::StderrBytes { seq, data } => {
+                update_watermark(&ack_watermark, seq);
                 // V0.1 surfaces stderr-as-assistant-message too; the
                 // host never emits this frame in V0.1 (portable-pty
                 // merges stderr into stdout) but the code path is
@@ -1157,6 +1257,112 @@ async fn run_read_pump(
             }
             other => {
                 tracing::debug!(?other, "ignoring unexpected frame from host");
+            }
+        }
+    }
+
+    // Task 36: stop the ack tickers + flush the final watermark to the
+    // DB so a subsequent `adopt_orphans` sees the correct resume point
+    // for any host that survived. The cancel token wakes the persist
+    // ticker from its sleep; we then await both handles so the test
+    // suite doesn't see "stranded task" warnings.
+    cancel.cancel();
+    let _ = ack_send_task.await;
+    let _ = ack_persist_task.await;
+    let final_seq = ack_watermark.load(Ordering::Relaxed) as i64;
+    if final_seq > 0 {
+        let mut w = persistence.writer().await;
+        let _ = concerto_persist::sessions::update_last_acked(&mut w, &session_id, final_seq).await;
+    }
+}
+
+/// Task 36: monotonically advance `watermark` to `seq` (no-op if `seq`
+/// is older than the current value). Used by the read pump to track the
+/// highest `StdoutBytes` / `StderrBytes` seq it has surfaced.
+fn update_watermark(watermark: &std::sync::atomic::AtomicU64, seq: u64) {
+    use std::sync::atomic::Ordering;
+    let mut current = watermark.load(Ordering::Relaxed);
+    while seq > current {
+        match watermark.compare_exchange_weak(current, seq, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(c) => current = c,
+        }
+    }
+}
+
+/// Task 36: periodic `HostFrame::Ack` sender. Fires every 100 ms and
+/// sends the current watermark; the host prunes its ring buffer past
+/// this point. Exits when `cancel` fires.
+async fn run_ack_send_ticker(
+    writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    watermark: Arc<std::sync::atomic::AtomicU64>,
+    session_id: SessionId,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    use std::sync::atomic::Ordering;
+    let mut last_sent: u64 = 0;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
+            _ = interval.tick() => {
+                let seq = watermark.load(Ordering::Relaxed);
+                if seq > last_sent {
+                    last_sent = seq;
+                    let mut w = writer.lock().await;
+                    if let Err(e) = write_frame(&mut *w, &HostFrame::Ack { seq }).await {
+                        tracing::debug!(
+                            session = %session_id,
+                            error = %e,
+                            "ack send failed; bridge likely closed",
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Task 36: periodic `sessions.last_acked_seq` writer. Fires every 5 s
+/// so a Core crash loses at most that window of ack progress.
+async fn run_ack_persist_ticker(
+    persistence: Arc<Persistence>,
+    watermark: Arc<std::sync::atomic::AtomicU64>,
+    session_id: SessionId,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    use std::sync::atomic::Ordering;
+    let mut last_persisted: u64 = 0;
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Skip the first immediate tick — there's no ack to persist on boot.
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                break;
+            }
+            _ = interval.tick() => {
+                let seq = watermark.load(Ordering::Relaxed);
+                if seq > last_persisted {
+                    last_persisted = seq;
+                    let mut w = persistence.writer().await;
+                    if let Err(e) = concerto_persist::sessions::update_last_acked(
+                        &mut w,
+                        &session_id,
+                        seq as i64,
+                    ).await {
+                        tracing::warn!(
+                            session = %session_id,
+                            error = %e,
+                            "persist last_acked_seq failed",
+                        );
+                    }
+                }
             }
         }
     }
@@ -1626,4 +1832,135 @@ impl Actor for AgentSupervisorActor {
 #[allow(dead_code)]
 fn _hint_path_field(p: &Path) -> &Path {
     p
+}
+
+/// Task 36: re-attach a surviving `concerto-agent-host` to its in-memory
+/// supervisor state after a Core restart. Called by `adopt::adopt_orphans`
+/// once the cookie-verified `Hello`/`Ready` exchange has succeeded on
+/// the given UDS halves.
+///
+/// The function is essentially a slimmed-down post-handshake half of
+/// `start_session`: it rebuilds the parser pack and resolver from the
+/// persisted row, seeds the ack watermark from `last_acked_seq`,
+/// inserts a fresh [`SessionEntry`] into the supervisor's map, and
+/// spawns the bridge read pump. We deliberately do *not* re-emit
+/// `AgentEvent::Started` — the session was already running before the
+/// restart; clients that watch the `Streams` subject pick up live
+/// frames again as the replay drains.
+pub async fn adopt_resume_session(
+    handle: &AgentSupervisorHandle,
+    row: &concerto_persist::Session,
+    cookie: [u8; 32],
+    read_half: tokio::net::unix::OwnedReadHalf,
+    write_half: tokio::net::unix::OwnedWriteHalf,
+    last_acked_seq: u64,
+) -> Result<()> {
+    let session_id = row.id.clone();
+    let workarea_id = row.workarea_id.clone();
+    let chat_id = row.chat_id.clone();
+    let socket_path = PathBuf::from(row.host_socket.clone().unwrap_or_default());
+
+    let permission_mode_enum = crate::security::parse_permission_mode(&row.permission_mode)?;
+
+    // Build the per-CLI parser pack. The DB stores `agent_kind` not the
+    // V0.1 in-process `AgentKind` enum, so we map back: 'claude' rows
+    // get the Claude parser; anything else (codex/gemini/maestro
+    // placeholders) gets the echo pack as a safe pass-through. The
+    // codex/gemini start_session path errors NOT_IMPLEMENTED, so in
+    // practice only the claude pack ever runs here in V0.1.
+    let parser: Arc<dyn ParserPack> = match row.agent_kind.as_str() {
+        "claude" => Arc::new(ClaudeCodePack::new()),
+        _ => Arc::new(EchoPack::new()),
+    };
+
+    let (events, _) = broadcast::channel(EVENTS_CAPACITY);
+    let (io, _) = broadcast::channel(EVENTS_CAPACITY);
+    let events_replay = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+    let io_replay = Arc::new(Mutex::new(Vec::<SessionIoChunk>::new()));
+    let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer_arc = Arc::new(Mutex::new(write_half));
+    // No `Child` on adoption: the host outlived the previous Core and
+    // we never spawned it ourselves. `stop_session` falls back to
+    // killing by `host_pid` when this is None (V0.1: it just removes
+    // the entry; PID-kill on stop is V1.0 cleanup). The `Mutex<Option>`
+    // shape is preserved so the rest of the supervisor doesn't need a
+    // separate "adopted" code path.
+    let child_arc = Arc::new(Mutex::new(None::<Child>));
+    let pending_approvals: Arc<Mutex<PendingApprovals>> =
+        Arc::new(Mutex::new(PendingApprovals::new()));
+    let ack_watermark = Arc::new(std::sync::atomic::AtomicU64::new(last_acked_seq));
+
+    let bypass = bypass_for_session(&handle.persistence(), &session_id).await;
+    let resolver = PermissionResolver::new(permission_mode_enum, bypass);
+
+    let map_arc = handle.sessions_map();
+    {
+        let mut map = map_arc.lock().await;
+        map.insert(
+            session_id.clone(),
+            SessionEntry {
+                workarea_id: workarea_id.clone(),
+                chat_id: chat_id.clone(),
+                cookie,
+                permission_mode: permission_mode_enum,
+                socket_path: socket_path.clone(),
+                events: events.clone(),
+                events_replay: Arc::clone(&events_replay),
+                io: io.clone(),
+                io_replay: Arc::clone(&io_replay),
+                writer: writer_arc.clone(),
+                child: child_arc.clone(),
+                finished: Arc::clone(&finished),
+                parser: Arc::clone(&parser),
+                pending_approvals: Arc::clone(&pending_approvals),
+                ack_watermark: Arc::clone(&ack_watermark),
+            },
+        );
+    }
+
+    let pump_persistence = handle.persistence();
+    let pump_log = handle
+        .data_dir()
+        .join("agents")
+        .join(&session_id.0)
+        .join("stdout.log");
+    let pump_session = session_id.clone();
+    let pump_workarea = workarea_id;
+    let pump_chat = chat_id;
+    let pump_events = events.clone();
+    let pump_events_replay = Arc::clone(&events_replay);
+    let pump_io = io.clone();
+    let pump_io_replay = Arc::clone(&io_replay);
+    let pump_sessions = map_arc;
+    let pump_finished = Arc::clone(&finished);
+    let pump_parser = Arc::clone(&parser);
+    let pump_pending = Arc::clone(&pending_approvals);
+    let pump_writer = Arc::clone(&writer_arc);
+    let pump_resolver = resolver;
+    let pump_ack_watermark = Arc::clone(&ack_watermark);
+
+    tokio::spawn(async move {
+        run_read_pump(
+            read_half,
+            pump_session,
+            pump_workarea,
+            pump_chat,
+            pump_events,
+            pump_events_replay,
+            pump_io,
+            pump_io_replay,
+            pump_persistence,
+            pump_sessions,
+            pump_log,
+            pump_finished,
+            pump_parser,
+            pump_pending,
+            pump_writer,
+            pump_resolver,
+            pump_ack_watermark,
+        )
+        .await;
+    });
+
+    Ok(())
 }
