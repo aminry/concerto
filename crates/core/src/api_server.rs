@@ -31,6 +31,7 @@ use crate::agent_supervisor::AgentSupervisorHandle;
 use crate::repo_manager::RepoManager;
 #[cfg(unix)]
 use crate::scheduler::SchedulerHandle;
+use crate::skills::SkillsRegistryHandle;
 use crate::supervisor::{Actor, ActorContext, SupervisorView};
 use crate::workspace_manager::{WorkareaManager, WorkspaceManager};
 use concerto_persist::Persistence;
@@ -83,6 +84,9 @@ pub struct ApiServerActor {
     /// handle to drive `start_session` on fire).
     #[cfg(unix)]
     scheduler: Option<SchedulerHandle>,
+    /// Optional Skills Registry handle. When `Some`, the gRPC `Skills`
+    /// service is registered (Task 39).
+    skills_registry: Option<SkillsRegistryHandle>,
 }
 
 impl ApiServerActor {
@@ -100,6 +104,7 @@ impl ApiServerActor {
             persistence: None,
             #[cfg(unix)]
             scheduler: None,
+            skills_registry: None,
         }
     }
 
@@ -123,6 +128,7 @@ impl ApiServerActor {
             persistence: None,
             #[cfg(unix)]
             scheduler: None,
+            skills_registry: None,
         }
     }
 
@@ -142,6 +148,7 @@ impl ApiServerActor {
         #[cfg(unix)] agent_supervisor: Option<AgentSupervisorHandle>,
         persistence: Option<Arc<Persistence>>,
         #[cfg(unix)] scheduler: Option<SchedulerHandle>,
+        skills_registry: Option<SkillsRegistryHandle>,
     ) -> Self {
         Self {
             started_at,
@@ -154,6 +161,7 @@ impl ApiServerActor {
             persistence,
             #[cfg(unix)]
             scheduler,
+            skills_registry,
         }
     }
 }
@@ -180,6 +188,7 @@ impl Actor for ApiServerActor {
                 self.agent_supervisor,
                 self.persistence,
                 self.scheduler,
+                self.skills_registry,
                 ctx.shutdown,
             )
             .await
@@ -193,6 +202,7 @@ impl Actor for ApiServerActor {
                 self.workspace_manager,
                 self.workarea_manager,
                 self.persistence,
+                self.skills_registry,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -218,6 +228,7 @@ async fn run_uds(
     agent_supervisor: Option<AgentSupervisorHandle>,
     persistence: Option<Arc<Persistence>>,
     scheduler: Option<SchedulerHandle>,
+    skills_registry: Option<SkillsRegistryHandle>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -232,6 +243,7 @@ async fn run_uds(
     use crate::handlers::runtime::RuntimeHandler;
     use crate::handlers::schedules::SchedulesHandler;
     use crate::handlers::sessions::SessionsHandler;
+    use crate::handlers::skills::SkillsHandler;
     use crate::handlers::streams::StreamsHandler;
     use crate::handlers::workareas::WorkareasHandler;
     use crate::handlers::workspaces::WorkspacesHandler;
@@ -240,6 +252,7 @@ async fn run_uds(
     use concerto_proto::v1::runtime_server::RuntimeServer;
     use concerto_proto::v1::schedules_server::SchedulesServer;
     use concerto_proto::v1::sessions_server::SessionsServer;
+    use concerto_proto::v1::skills_server::SkillsServer;
     use concerto_proto::v1::streams_server::StreamsServer;
     use concerto_proto::v1::workareas_server::WorkareasServer;
     use concerto_proto::v1::workspaces_server::WorkspacesServer;
@@ -343,6 +356,14 @@ async fn run_uds(
     if let Some(scheduler) = scheduler {
         let schedules_service = SchedulesServer::new(SchedulesHandler::new(scheduler));
         builder = builder.add_service(schedules_service);
+    }
+    // Task 39: `Skills` registry. Independent of every other manager
+    // — discovery walks the filesystem, the toggle path writes
+    // `skills_index` directly, and the in-process broadcast channel
+    // for `skill.*` events is V1.0.
+    if let Some(skills_registry) = skills_registry {
+        let skills_service = SkillsServer::new(SkillsHandler::new(skills_registry));
+        builder = builder.add_service(skills_service);
     }
 
     let serve_fut =

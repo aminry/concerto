@@ -262,3 +262,30 @@ CREATE INDEX idx_schedule_runs_inflight
     WHERE ended_at IS NULL;
 ```
 
+## `crates/persist/migrations/0005_skills_index.sql`
+
+```sql
+CREATE TABLE skills_index (
+    id              TEXT PRIMARY KEY,
+    scope           TEXT NOT NULL
+        CHECK (scope IN ('personal','project','plugin','enterprise')),
+    project_id      TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    slash_command   TEXT,
+    description     TEXT,
+    tools_json      TEXT NOT NULL DEFAULT '[]',
+    source_path     TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+    discovered_at   INTEGER NOT NULL,
+    UNIQUE(scope, project_id, name)
+);
+```
+
+```sql
+CREATE INDEX idx_skills_index_scope ON skills_index(scope);
+```
+
+```sql
+CREATE INDEX idx_skills_index_project ON skills_index(project_id);
+```
+

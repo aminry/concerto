@@ -147,3 +147,9 @@ regex = "1"
 # itself); MIT/Apache-2.0. Default features include `parse` + `display`
 # which is all we need for the read-only listing surface.
 toml = "0.8"
+# Task 39: parse the YAML frontmatter in `SKILL.md` files. `serde_yaml`
+# is the de-facto Rust YAML lib (MIT/Apache-2.0). The skills registry
+# parses the chunk between the first and second `---` lines with
+# `serde_yaml::from_str::<SkillFrontmatter>` and falls back gracefully
+# on parse errors.
+serde_yaml = "0.9"

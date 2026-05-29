@@ -21,6 +21,7 @@ use concerto_core::repo_manager::{RepoManagerActor, RepoManagerConfig};
 use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
 #[cfg(unix)]
 use concerto_core::scheduler::{SchedulerActor, SchedulerConfig};
+use concerto_core::skills::{SkillsRegistryActor, SkillsRegistryConfig};
 use concerto_core::workspace_manager::{
     WorkareaManagerActor, WorkareaManagerConfig, WorkspaceManagerActor, WorkspaceManagerConfig,
 };
@@ -244,6 +245,43 @@ async fn run() -> Result<()> {
         handle
     };
 
+    // Task 39: spawn the Skills Registry. Holds an Arc<Persistence>
+    // and the user's `~/` for the personal-scope walk; the actor's
+    // `run` parks on shutdown. The handle exposes list / toggle /
+    // refresh as the frozen V0.1 surface.
+    let home_dir = home::home_dir()
+        .ok_or_else(|| concerto_error::Error::Internal("home::home_dir() returned None".into()))?;
+    let skills_actor = SkillsRegistryActor::new(Arc::clone(&persistence), home_dir.clone());
+    let skills_handle = skills_actor.handle();
+    drop(skills_actor);
+    let skills_factory_persistence = Arc::clone(&persistence);
+    let skills_factory_home = home_dir.clone();
+    runtime
+        .supervisor_mut()
+        .expect("supervisor present at boot")
+        .spawn::<SkillsRegistryActor, _>(
+            move || {
+                SkillsRegistryActor::new(
+                    Arc::clone(&skills_factory_persistence),
+                    skills_factory_home.clone(),
+                )
+            },
+            SkillsRegistryConfig,
+        )
+        .await?;
+    // Boot-time discovery so the index reflects what's on disk before
+    // the gRPC server starts accepting traffic. Errors don't gate the
+    // boot — the UI still works; the user just sees an empty list
+    // until they request a refresh.
+    match skills_handle.refresh(None).await {
+        Ok(report) => tracing::info!(
+            discovered = report.discovered_count,
+            errors = report.errors.len(),
+            "skills.boot_refresh complete"
+        ),
+        Err(e) => tracing::warn!(error = %e, "skills.boot_refresh failed"),
+    }
+
     // Task 31: boot-time crash adoption (`design/03 §6.5`). Scan every
     // non-archived workarea, probe `worktree_root`, transition rows
     // whose directory is missing to `'crashed'`. The user — not
@@ -289,6 +327,7 @@ async fn run() -> Result<()> {
     let factory_persistence = Arc::clone(&persistence);
     #[cfg(unix)]
     let factory_scheduler_handle = scheduler_handle.clone();
+    let factory_skills_handle = skills_handle.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -305,6 +344,7 @@ async fn run() -> Result<()> {
                     Some(Arc::clone(&factory_persistence)),
                     #[cfg(unix)]
                     Some(factory_scheduler_handle.clone()),
+                    Some(factory_skills_handle.clone()),
                 )
             },
             ApiServerConfig { socket_path },
