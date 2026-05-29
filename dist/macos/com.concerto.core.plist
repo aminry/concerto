@@ -49,14 +49,21 @@
     <string>__HOME__/concerto/logs/launchd-err.log</string>
 
     <!--
-      EnvironmentVariables intentionally minimal: launchd sets HOME and USER
-      for a gui/<uid> agent, and concerto-core derives CONCERTO_HOME from
-      $HOME when unset.
+      EnvironmentVariables: launchd sets HOME and USER for a gui/<uid>
+      agent, and concerto-core derives CONCERTO_HOME from $HOME when unset.
+
+      PATH must include the dirs where agent CLIs install, because a
+      LaunchAgent does NOT inherit the user's interactive-shell PATH.
+      Agent CLIs like `claude` install to ~/.local/bin (and historically
+      ~/.claude/local); without these on PATH the agent-host fails with
+      "Unable to spawn claude ... not found in PATH" and sessions never
+      start. User-local dirs are listed first so user-installed CLIs win.
+      __HOME__ is substituted with $HOME by scripts/install-macos.sh.
     -->
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <string>__HOME__/.local/bin:__HOME__/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
     </dict>
 </dict>
 </plist>
