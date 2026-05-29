@@ -31,6 +31,12 @@ fn main() {
     // thread; the closure inside `.invoke_handler` is hot path only
     // for IPC, not init.
     tauri::Builder::default()
+        // Task 53: auto-update. The plugin reads `plugins.updater` from
+        // `tauri.conf.json`; with `endpoints: []` it is a no-op at
+        // runtime, so unsigned / self-host builds (no manifest) don't
+        // error. The renderer drives the check via
+        // `@tauri-apps/plugin-updater` (see `src/hooks/useAutoUpdate.ts`).
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             commands::manage_subscriptions(app);
             // Task 48: install the menu-bar tray. The call also wires

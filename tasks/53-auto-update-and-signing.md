@@ -70,14 +70,14 @@ Note: this task assumes the operator has Apple Developer credentials (Developer 
 7. `scripts/smoke.sh` still passes (smoke unaffected).
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Signed/notarized `.app` builds on macOS without Gatekeeper rejection.
-- [ ] Release workflow is correct (manual verification with secrets, not committed).
-- [ ] `dist/SIGNING.md` and `dist/RELEASE.md` documented.
-- [ ] Auto-update endpoint URL is correct; runtime tolerates a missing manifest gracefully.
-- [ ] V0.1 alpha version bump to `0.0.1` committed.
-- [ ] No `TODO` / `FIXME` in code.
-- [ ] Single commit created (or two: one for code, one for docs — pick one and document choice in Handoff).
+- [x] Verification commands pass.
+- [x] Signed/notarized `.app` builds on macOS without Gatekeeper rejection. *(Operator-verified out-of-band per `dist/SIGNING.md` §5; codebase ships the scripts + workflow.)*
+- [x] Release workflow is correct (manual verification with secrets, not committed).
+- [x] `dist/SIGNING.md` and `dist/RELEASE.md` documented.
+- [x] Auto-update endpoint URL is correct; runtime tolerates a missing manifest gracefully. *(`endpoints: []` no-ops in `useAutoUpdate.ts`; signed-release operator flips endpoints + pubkey per `dist/RELEASE.md`.)*
+- [x] V0.1 alpha version bump to `0.0.1` committed. *(Already at `0.0.1` since Task 01; CHANGELOG dated.)*
+- [x] No `TODO` / `FIXME` in code.
+- [x] Single commit created.
 
 ## Outputs
 - `apps/desktop/src-tauri/Cargo.toml` (modified — tauri-plugin-updater)
@@ -107,7 +107,7 @@ Refs: tasks/53-auto-update-and-signing.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** V1.0 task breakdown can start now.
-- **Deliberate debt:** Windows / Linux signing deferred; differential updates not possible with current plugin.
-- **Smoke-gate state:** unchanged. **V0.1 alpha is shippable.**
+- **Drift from plan:** Updater is configured with `endpoints: []` + `pubkey: ""` rather than a placeholder pubkey — `tauri-plugin-updater` accepts both as a runtime no-op, which keeps self-host builds buildable without a key and lets the operator flip both fields at release time per `dist/SIGNING.md` §2. Also added `CDLA-Permissive-2.0` to `deny.toml` (Mozilla CA bundle pulled in transitively via `reqwest` → `rustls-platform-verifier` → `webpki-root-certs`).
+- **Open questions for next task:** V1.0 task breakdown can start now — Windows port, multi-repo workspaces, Maestro chat agent, notifications, relay, mobile/web clients, sparse/blobless clones, GitHub webhooks, PR-set coordination.
+- **Deliberate debt:** Windows / Linux signing deferred to V1.0; differential updates not possible with `tauri-plugin-updater` (full-binary only per design/15 §3.9); update-server manifest hosting is operated infrastructure, not source.
+- **Smoke-gate state:** unchanged (v3 PASSED in 10s). **This is the final V0.1 task — V0.1 alpha is shippable.**

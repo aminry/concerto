@@ -40,6 +40,14 @@ allow = [
     # upstream maintainers; we redistribute the compiled artifact under our
     # own permissive terms.
     "CC0-1.0",
+    # Permissive data-sharing license (Linux Foundation). Added in Task 53
+    # because `tauri-plugin-updater` → `reqwest` → `rustls-platform-verifier`
+    # → `webpki-root-certs` ships the Mozilla CA bundle under CDLA-2.0. The
+    # data is a verbatim copy of Mozilla's trust store — no copyleft, no
+    # patent grant restrictions; redistribution is unrestricted as long as
+    # the license text accompanies it (already in the crate's source tree).
+    # Operator-ratified 2026-05-28.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

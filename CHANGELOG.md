@@ -7,7 +7,7 @@ releases may make breaking changes between alphas.
 
 ---
 
-## 0.0.1 — V0.1 alpha
+## 0.0.1 — V0.1 alpha (2026-05-28)
 
 The first end-to-end Concerto release. macOS-only, single-repo
 workspaces, Claude + Codex agents, co-located deployment. See
@@ -137,6 +137,13 @@ this release was built under, and
 - **Smoke gate v3** (full V0.1 happy-path scenario, run in CI) —
   [`tasks/52-smoke-gate-v3.md`](tasks/52-smoke-gate-v3.md).
 - **Tauri auto-update + macOS codesign + notarization** —
+  `tauri-plugin-updater` wired with a daily check and a green
+  "Restart to update" toast (no-op when `endpoints` are empty, so
+  self-host builds don't error); `scripts/sign-macos.sh`,
+  `scripts/notarize-macos.sh`, `scripts/bump-version.sh`, and the
+  `.github/workflows/release.yml` tag-triggered pipeline operate the
+  signed-bundle path documented in [`dist/SIGNING.md`](dist/SIGNING.md)
+  + [`dist/RELEASE.md`](dist/RELEASE.md) —
   [`tasks/53-auto-update-and-signing.md`](tasks/53-auto-update-and-signing.md).
 
 ### Known limitations (V0.1)

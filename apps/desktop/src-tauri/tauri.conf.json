@@ -28,5 +28,14 @@
     "active": false,
     "targets": "all",
     "icon": []
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [],
+      "pubkey": "",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

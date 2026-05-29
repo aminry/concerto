@@ -4,6 +4,7 @@
   "description": "Concerto V0.1 — minimum capabilities. Renderer can only use Tauri's core primitives (event bus + custom command invocation); no fs, no shell, no http. See design/15 §3.1 (deny-by-default).",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "updater:default"
   ]
 }

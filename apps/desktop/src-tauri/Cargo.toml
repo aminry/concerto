@@ -24,6 +24,13 @@ tauri-build = { version = "2", default-features = false }
 # via `tauri::image::Image::from_path`. `updater` / `notification` come
 # online in Phase 4.
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# Task 53: auto-update plumbing. The plugin checks an endpoint manifest,
+# verifies the ed25519 signature against the `updater.pubkey` baked into
+# `tauri.conf.json`, and exposes a JS API (`@tauri-apps/plugin-updater`)
+# the renderer drives. With `endpoints: []` the runtime is a no-op —
+# matches the design/15 §3.9 "tolerate missing manifest gracefully" rule
+# and lets self-hosters build unsigned without a server. MIT/Apache-2.0.
+tauri-plugin-updater = "2"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
