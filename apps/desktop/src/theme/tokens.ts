@@ -31,3 +31,32 @@ export const THEME_COLORS: Record<EffectiveTheme, ThemeColors> = {
     ok: "#3fb950", warn: "#d29922", err: "#f85149", run: "#58a6ff",
   },
 };
+
+// Per-theme ANSI 16-color palette for the xterm terminal. Without this,
+// xterm falls back to its built-in dark-tuned defaults, which are
+// near-invisible on the light surface. Values are GitHub's terminal
+// palette (light + dark), chosen for legibility on each background.
+export type TerminalAnsi = {
+  black: string; red: string; green: string; yellow: string;
+  blue: string; magenta: string; cyan: string; white: string;
+  brightBlack: string; brightRed: string; brightGreen: string;
+  brightYellow: string; brightBlue: string; brightMagenta: string;
+  brightCyan: string; brightWhite: string;
+};
+
+export const TERMINAL_ANSI: Record<EffectiveTheme, TerminalAnsi> = {
+  light: {
+    black: "#24292f", red: "#cf222e", green: "#116329", yellow: "#7d4e00",
+    blue: "#0969da", magenta: "#8250df", cyan: "#1b7c83", white: "#6e7781",
+    brightBlack: "#57606a", brightRed: "#a40e26", brightGreen: "#1a7f37",
+    brightYellow: "#633c01", brightBlue: "#218bff", brightMagenta: "#a475f9",
+    brightCyan: "#3192aa", brightWhite: "#8c959f",
+  },
+  dark: {
+    black: "#484f58", red: "#ff7b72", green: "#3fb950", yellow: "#d29922",
+    blue: "#58a6ff", magenta: "#bc8cff", cyan: "#39c5cf", white: "#b1bac4",
+    brightBlack: "#6e7681", brightRed: "#ffa198", brightGreen: "#56d364",
+    brightYellow: "#e3b341", brightBlue: "#79c0ff", brightMagenta: "#d2a8ff",
+    brightCyan: "#56d4dd", brightWhite: "#ffffff",
+  },
+};

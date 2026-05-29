@@ -24,7 +24,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { sendMessage } from "../api/sessions";
 import { useSessionIO } from "../hooks/useSessionIO";
 import { useTheme } from "../hooks/useTheme";
-import { THEME_COLORS } from "../theme/tokens";
+import { THEME_COLORS, TERMINAL_ANSI } from "../theme/tokens";
 
 export type SessionTerminalProps = {
   sessionId: string;
@@ -58,6 +58,7 @@ function xtermTheme(effective: "light" | "dark") {
     cursor: c.accent,
     cursorAccent: c.surface,
     selectionBackground: effective === "dark" ? "#33415580" : "#c7d2fe80",
+    ...TERMINAL_ANSI[effective],
   };
 }
 
