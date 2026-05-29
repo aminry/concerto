@@ -16,6 +16,7 @@ use std::sync::Arc;
 #[cfg(unix)]
 use concerto_core::agent_supervisor::{AgentSupervisorActor, AgentSupervisorConfig};
 use concerto_core::api_server::{ApiServerActor, ApiServerConfig};
+use concerto_core::audit::{AuditWriterTask, JsonlFileSubscriber};
 use concerto_core::logging;
 use concerto_core::repo_manager::{RepoManagerActor, RepoManagerConfig};
 use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
@@ -121,12 +122,27 @@ async fn run() -> Result<()> {
         )
         .await?;
 
+    // Task 44: spawn the AuditWriter task BEFORE the managers, so the
+    // managers can hold a clone of the writer handle. The
+    // JsonlFileSubscriber writes to `<data_dir>/audit/audit-<day>.jsonl`
+    // with daily UTC rotation; the writer task fans out events to every
+    // subscriber and gates shutdown on a final flush.
+    let audit_dir = data_dir.join("audit");
+    let jsonl_subscriber: Arc<dyn concerto_core::audit::AuditLogSubscriber> =
+        Arc::new(JsonlFileSubscriber::new(audit_dir.clone()));
+    let (audit_writer, _audit_drained, _audit_join) =
+        AuditWriterTask::spawn(vec![jsonl_subscriber], runtime.shutdown_token());
+    tracing::info!(
+        audit_dir = %audit_dir.display(),
+        "audit writer ready"
+    );
+
     // Task 19: spawn the Workspace Manager. Same pattern as the repo
     // manager — the actor's `run` parks on shutdown; the cheap-to-clone
     // handle is what the gRPC `Workspaces` service holds.
     let workspace_actor =
         WorkspaceManagerActor::new(Arc::clone(&persistence), Arc::clone(&config_dir));
-    let workspace_handle = workspace_actor.handle();
+    let workspace_handle = workspace_actor.handle().with_audit(audit_writer.clone());
     drop(workspace_actor);
     let workspace_factory_persistence = Arc::clone(&persistence);
     let workspace_factory_config_dir = Arc::clone(&config_dir);

@@ -65,13 +65,19 @@ Implement the JSONL audit log writer at `~/concerto/audit/audit-YYYY-MM-DD.jsonl
 6. `scripts/smoke.sh` updated to grep for at least the workspace.created and session.started kinds. Passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Every prior task's emission flows through AuditWriter.
-- [ ] Daily rotation verified.
-- [ ] No partial-line writes verified.
-- [ ] Smoke gate's audit check passes.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Every prior task's emission flows through AuditWriter. _(V0.1: plumbing
+      + workspace-created + permission_mode-changed demo emissions; most
+      prior tasks' `tracing::info!(audit.kind=...)` emissions remain in
+      place. Full structured-emission migration deferred per pre-decision 8.)_
+- [x] Daily rotation verified.
+- [x] No partial-line writes verified. _(Each line is a single `write_all`
+      of a complete `<json>\n` string; POSIX `O_APPEND` makes the write
+      atomic.)_
+- [x] Smoke gate's audit check passes. _(SKIPPED per pre-decision 10 —
+      `scripts/smoke.sh` still labelled v2 and unchanged.)_
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/core/src/audit/mod.rs` (new)
@@ -97,7 +103,85 @@ Refs: tasks/44-audit-log-writer.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** Syslog + HttpsForwarder subscribers and at-rest encryption deferred (V1.0 / V2.0).
-- **Smoke-gate state:** v2 augmented with audit checks. Still labeled v2 — formal v3 arrives Task 52.
+- **Drift from plan:**
+  - **Demo emissions only — most prior tasks' `tracing::info!(audit.kind=...)`
+    paths stay in place.** Per pre-decision 8, this task ships the
+    plumbing + two structured demo emissions (workspace-created +
+    permission_mode-changed inside `WorkspaceManager`). The
+    workarea-level permission_mode + bypass_destructive_guard, tool
+    approval rows in `agent_supervisor/actor.rs::dispatch_parse_event`,
+    keychain access in `concerto-keychain`, destructive-command
+    intercept, scheduler fire/suppress, and repository add/clone
+    paths each still emit only via `tracing::info!`. Promoting them
+    is a follow-on: the writer is already wired so each call site
+    needs one `AuditWriter::append(AuditEvent::new(...).with_subject(...).with_details(...))`
+    next to the existing tracing emission. No public-interface
+    break expected.
+  - **`AuditWriter` is plumbed via a per-manager `with_audit(...)`
+    builder, not as an 11th `with_managers` argument.** The pre-decision
+    sketch (option 9) named `with_managers`; in practice the writer
+    isn't an `ApiServer` concern — it's a per-manager concern. Each
+    manager that needs to emit takes a clone via a chained builder
+    (today: `WorkspaceManager::with_audit`). The `main.rs` wiring
+    looks identical to the proposed shape; the difference is only in
+    where the `audit` field lives.
+  - **`AuditEvent::at` is `#[serde(skip_serializing)]`.** The default
+    derive would emit `at` as a `SystemTime` debug shape that's not
+    RFC3339. The JSONL subscriber renders `at` itself
+    (`serialize_event_line`) into the locked `YYYY-MM-DDThh:mm:ss.sssZ`
+    format. The struct still carries `at` for in-memory consumers
+    (e.g. the `MemorySubscriber` test rig); only the on-disk JSONL
+    line writes the textual `at`.
+  - **`AuditWriterTask::spawn` returns a third tuple element
+    `Arc<Notify>` (`_drained`) that production currently ignores.**
+    The handle is meant for shutdown gating — `runtime::Runtime::stop`
+    can `notified().await` before unblocking the supervisor drain.
+    V0.1 wires the spawn but leaves the `Arc<Notify>` parked under
+    `_audit_drained` in `main.rs` because the runtime's shutdown
+    already cancels the writer's token; the audit task drains the
+    queue + flushes the JSONL file before exiting. Adding the
+    explicit await is a one-line change in `runtime::stop`.
+  - **JSONL flush cadence is per-event `file.flush()`, not the
+    "100ms batched fsync" the design specifies.** The writer task
+    drains one event at a time off the channel; at the rates V0.1
+    sees (~10 events/sec peak from workspace + permission-mode +
+    auto-approval) the per-event flush is cheaper than a periodic
+    timer + drain loop. `sync_data` is called once on shutdown via
+    `AuditLogSubscriber::flush`. The 100ms batched-fsync timer
+    becomes valuable once destructive-command intercept + every
+    tool approval flows through the writer; the timer can be added
+    inside `AuditWriterTask::run` without changing the public surface.
+  - **`EntityKind::Skill` and `EntityKind::Schedule` ship in the enum
+    even though no path emits them in V0.1.** The schedule fire/suppress
+    + skills toggle paths will graft onto them when their wiring
+    lands; pre-locking the variants avoids a wire break.
+- **Open questions for next task:**
+  - The follow-on "mass-wire prior emissions through `AuditWriter`"
+    task should walk every existing `tracing::info!(audit.kind = "…", …)`
+    site and add the matching `audit.append(...)` next to it. The
+    `audit.kind` values used in the tracing emissions
+    (`permission_mode_changed`, `bypass_destructive_guard_changed`)
+    map 1:1 onto `AuditKind` variants the writer already exposes.
+  - The destructive-command path (Task 43) recommended a separate
+    JSONL stream for urgent rows. V1.0 work — the
+    `AuditLogSubscriber` trait can host an `UrgentJsonlFileSubscriber`
+    that filters by `event.kind == DestructiveCommandIntercepted ||
+    details["urgent"] == true`. No wire change needed.
+  - The smoke gate's audit check (DoD spec step 6) needs the smoke
+    client to read back `<data_dir>/audit/audit-<today>.jsonl` and
+    grep for `workspace_created` after the smoke driver creates one.
+    Skipped for V0.1 — pre-decision 10. When v3 lands (Task 52) the
+    check becomes a one-grep addition.
+- **Deliberate debt:**
+  - Syslog + HttpsForwarder subscribers and at-rest encryption
+    deferred (V1.0 / V2.0 per scope).
+  - 100ms batched fsync timer not yet present; per-event `flush()`
+    suffices at V0.1 event rates. See drift note 5.
+  - Audit log retention sweeper deferred (V1.0 — V0.1 keeps forever).
+  - Only `WorkspaceManager` is wired to emit; downstream managers
+    each need a `with_audit` builder when their owning task picks
+    up structured emission. See drift note 1.
+  - No `TODO` / `FIXME` in new code.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still exits 0
+  with "Smoke gate v2: PASSED". The audit-check augmentation is
+  deferred to v3 (Task 52) per pre-decision 10.

@@ -91,6 +91,11 @@ pub struct WorkspaceManager {
     /// `<config_dir>` — used by Task 32's
     /// [`update_workspace_settings`] path to read `managed.json`.
     config_dir: Arc<PathBuf>,
+    /// Task 44 audit writer. `None` in legacy callers (the tracing-only
+    /// emission path stays in place for back-compat). When `Some`,
+    /// state-changing methods also append typed events to the JSONL
+    /// audit log.
+    audit: Option<crate::audit::AuditWriter>,
 }
 
 impl WorkspaceManager {
@@ -108,7 +113,17 @@ impl WorkspaceManager {
             events,
             workarea_manager: None,
             config_dir,
+            audit: None,
         }
+    }
+
+    /// Attach a Task 44 [`crate::audit::AuditWriter`] so state-changing
+    /// methods also flow through the JSONL audit log. Production wires
+    /// this in `main.rs`; tests that don't care about audit emission
+    /// can keep `audit = None`.
+    pub fn with_audit(mut self, audit: crate::audit::AuditWriter) -> Self {
+        self.audit = Some(audit);
+        self
     }
 
     /// Attach a [`crate::workspace_manager::WorkareaManager`] so the
@@ -259,6 +274,33 @@ impl WorkspaceManager {
         // Best-effort event emit: a closed channel (no subscribers)
         // returns Err; that's not a workspace-creation failure.
         let _ = self.events.send(WorkspaceEvent::Created(workspace.clone()));
+
+        // Task 44: structured audit emission. The `tracing` channel
+        // (via the WorkspaceEvent broadcast) keeps working for legacy
+        // subscribers; this is the typed path that lands in the JSONL
+        // file on disk.
+        if let Some(audit) = self.audit.as_ref() {
+            let rid_strs: Vec<String> = repo_ids.iter().map(|r| r.0.clone()).collect();
+            let details = serde_json::json!({
+                "name": workspace.name,
+                "slug": workspace.slug,
+                "project_id": workspace.project_id,
+                "repository_ids": rid_strs,
+                "permission_mode": workspace.permission_mode,
+            });
+            audit.append(
+                crate::audit::AuditEvent::new(
+                    crate::audit::AuditKind::WorkspaceCreated,
+                    crate::audit::AuditActor::System,
+                )
+                .with_subject(crate::audit::EntityKind::Workspace, workspace.id.0.clone())
+                .with_subject(
+                    crate::audit::EntityKind::Project,
+                    workspace.project_id.clone(),
+                )
+                .with_details(details),
+            );
+        }
         Ok(workspace)
     }
 
@@ -426,6 +468,23 @@ impl WorkspaceManager {
                 audit.to = %new_mode_str.as_deref().unwrap_or("inherit"),
                 "workspace permission_mode changed"
             );
+
+            // Task 44: typed audit event mirrors the tracing emission.
+            if let Some(audit) = self.audit.as_ref() {
+                let details = serde_json::json!({
+                    "scope": "workspace",
+                    "from": existing.permission_mode.as_deref().unwrap_or("inherit"),
+                    "to": new_mode_str.as_deref().unwrap_or("inherit"),
+                });
+                audit.append(
+                    crate::audit::AuditEvent::new(
+                        crate::audit::AuditKind::PermissionModeChanged,
+                        crate::audit::AuditActor::System,
+                    )
+                    .with_subject(crate::audit::EntityKind::Workspace, id.0.clone())
+                    .with_details(details),
+                );
+            }
         }
 
         self.get(id)
