@@ -32,6 +32,14 @@ allow = [
     # `target-lexicon` (a Linux-only `system-deps` build-time dep pulled in
     # by Tauri's gtk/webkit chain) ships under this combined identifier.
     "Apache-2.0 WITH LLVM-exception",
+    # Public-domain dedication. FSF-approved as a free license; functionally
+    # equivalent to a no-attribution permissive license (no copyleft, no
+    # patent grant restrictions). Added in Task 42 because `notify` (the
+    # cross-platform filesystem-watch crate we use for managed.json
+    # hot-reload) is licensed CC0-1.0. The dedication is unilateral by the
+    # upstream maintainers; we redistribute the compiled artifact under our
+    # own permissive terms.
+    "CC0-1.0",
 ]
 confidence-threshold = 0.93
 

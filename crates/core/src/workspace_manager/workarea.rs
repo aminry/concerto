@@ -613,7 +613,7 @@ impl WorkareaManager {
                         crate::security::ACK_YOLO
                     )));
                 }
-                let managed = crate::security::load_managed_policy(&self.config_dir);
+                let managed = crate::security::load_managed_policy(&self.config_dir)?;
                 let _capped = crate::security::permission::enforce_managed_cap(parsed, &managed)?;
                 Some(parsed.as_str().to_string())
             }
@@ -667,7 +667,7 @@ impl WorkareaManager {
                 crate::security::ACK_BYPASS_DESTRUCTIVE_GUARD
             )));
         }
-        let managed = crate::security::load_managed_policy(&self.config_dir);
+        let managed = crate::security::load_managed_policy(&self.config_dir)?;
         crate::security::permission::enforce_managed_bypass(enable, &managed)?;
 
         let mut writer = self.persistence.writer().await;

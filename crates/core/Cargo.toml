@@ -66,6 +66,9 @@ serde_yaml = { workspace = true }
 # policy. Workspace pin. Used as the fallback when
 # `std::fs::canonicalize` fails (e.g. paths that don't exist yet).
 path-clean = { workspace = true }
+# Task 42: filesystem-watch crate driving the managed.json hot-reload
+# watcher in `crates/core/src/security/managed.rs`. Workspace pin.
+notify = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via

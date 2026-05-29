@@ -63,14 +63,14 @@ Tie together everything from Tasks 32, 33, 41 so the four permission modes (`str
 6. `scripts/smoke.sh` → if smoke gate updated to include the mode check, it passes.
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] All four modes verified end-to-end.
-- [ ] Managed cap + allow_yolo + allow_bypass_destructive_guard verified.
-- [ ] Hot reload verified.
-- [ ] Deny-list-still-applies-in-yolo verified.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] All four modes verified end-to-end.
+- [x] Managed cap + allow_yolo + allow_bypass_destructive_guard verified.
+- [x] Hot reload verified.
+- [x] Deny-list-still-applies-in-yolo verified.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/core/src/security/managed.rs` (modified — full schema + hot reload)
@@ -95,7 +95,101 @@ Refs: tasks/42-permission-modes-runtime.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** tool classification table is const; tomled config is V1.0.
-- **Smoke-gate state:** mode-enforcement check added if feasible (note in handoff).
+- **Drift from plan:**
+  - **`load_managed_policy` now returns `Result<ManagedPolicy>` instead of
+    `ManagedPolicy`.** The schema-version tripwire (pre-decision 11) needs
+    a typed error path: a `version > 1` file is `Error::Internal` so the
+    operator notices forward-compat mismatch. RPC-handler callers in
+    `workspace_manager/actor.rs`, `workspace_manager/workarea.rs`, and
+    `agent_supervisor/actor.rs::update_session_permission_mode` propagate
+    via `?` — those return `Result` already. The two resolver-time
+    callers (`security::permission::resolve_effective_mode` and the
+    supervisor's `resolve_for_new_session` helper) use
+    `.unwrap_or_default()` so a broken org artifact degrades to
+    permissive for session resolution; the RPC entry points are where
+    the loud failure surfaces.
+  - **Subcode wire strings are embedded in `Error::PolicyLocked` message
+    bodies, not promoted to dedicated error variants.** The wire code
+    returned by `Error::wire_code()` is still `policy.locked` (Task 32
+    contract); the message body carries
+    `policy.yolo_blocked` / `policy.bypass_blocked` / `policy.locked`
+    (the generic) as a prefix. `ConcertoError.code` over the wire stays
+    `policy.locked`; clients switch on the message prefix. This mirrors
+    Task 19's `validation` + embedded `workspace.v0_single_repo_only`
+    pattern, so we did not add new wire codes for this task.
+  - **`ManagedPolicySource` watches the parent directory non-recursively**
+    instead of the file itself. `notify`-rs cannot deliver create events
+    for a not-yet-existing file (the file path is not registered yet),
+    so a watcher rooted at `<config_dir>` survives a future
+    `managed.json` materialization. The debounce loop coalesces the
+    typical write+rename event burst (500 ms window) into one
+    re-parse.
+  - **`notify = "8"` (CC0-1.0) added to `deny.toml`.** CC0-1.0 is a
+    public-domain dedication — FSF-approved, functionally permissive,
+    no copyleft and no attribution requirement. The allowlist entry
+    documents the justification. `notify` 9.x is RC at this writing;
+    pre-decision 5 explicitly said "use latest stable", so we pinned at
+    8.2.0. Default features set to `["macos_fsevent"]` only — V0.1 ships
+    macOS-first and we do not want the implicit kqueue / inotify
+    backends pulling extra deps on platforms we are not targeting yet.
+  - **`PermissionResolver::classify` now consults `tool_classes::TOOL_CLASSES`
+    (a `LazyLock<HashMap>`) rather than the inline `match` Task 33 shipped.**
+    The canonical tool names are now the Claude Code built-ins
+    (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `NotebookEdit`, `Bash`,
+    `Delete`). Unknown tools default to `Restricted` (conservative
+    posture per `tool_classes` module docs) — flipped from Task 33's
+    `Safe` default. The tool-approval integration tests
+    (`crates/core/tests/tool_approval.rs`) were updated to use the new
+    canonical names; the existing parser fixture still emits lowercase
+    `"edit"`, which is independent of the classify table and remains
+    untouched.
+  - **`ManagedPolicy` gained `version`, `preamble_template_path`, and
+    `max_reasoning_level` fields.** All struct-update-syntax callers
+    (`..ManagedPolicy::default()`) keep working; the two new fields are
+    parsed but not enforced in V0.1, locking the schema surface ahead
+    of Tasks 44 (audit) and the V1.0 deliberation work.
+- **Open questions for next task:**
+  - **Task 43 (destructive-command intercept)** should slot into the
+    supervisor's `dispatch_parse_event` between the resolver's
+    `decide()` and the `policy_override()` call. The classification
+    table's `Bash` entry stays `Restricted`; Task 43's pattern matcher
+    promotes specific command lines (e.g. `rm -rf`, `git push --force`)
+    to `Dangerous` so `auto` mode asks for them. The promoted-class
+    decision string would naturally fold into the existing
+    `auto_<mode>` / `denied_by_policy` row strings.
+  - **Task 44 (audit JSONL writer)** should grep for the embedded
+    subcode prefixes (`policy.yolo_blocked`, `policy.bypass_blocked`,
+    `policy.locked`) inside `tracing::warn!`/`error!` events for the
+    refusal audit channel. The strings are frozen here.
+  - **`ManagedPolicySource` is plumbed at the type level but not yet
+    wired into the runtime startup.** The synchronous
+    `load_managed_policy(&config_dir)?` calls inside the RPC handlers
+    are still the enforcement path (re-read on every RPC; cheap because
+    the file is < 1 KB). A future task can build one
+    `ManagedPolicySource` at `main.rs` boot, hand the receiver to the
+    supervisor's `SessionEntry`, and skip the per-RPC file read — at
+    that point the resolver's bypass / cap re-fetch lands "for free"
+    on the next turn boundary.
+  - **`crates/core/src/security/tool_classes.rs` is still inline.**
+    The TOML-driven `tool-classifications.toml` flagged in `design/04
+    §3.10` is V1.0 polish; until then, adding a tool to the table is a
+    one-line edit at the head of the const init.
+- **Deliberate debt:**
+  - **Tool classification table is const.** The TOML file is V1.0.
+  - **Subcodes are message-body strings, not dedicated error variants.**
+    See drift note. Promotion to a new `Error::PolicyYoloBlocked` /
+    `Error::PolicyBypassBlocked` variant is straightforward when Task 44
+    wants typed-error switching at the audit boundary; the wire
+    contract (string-prefix discrimination) is frozen here.
+  - **`ManagedPolicySource` is built-but-unwired.** The watcher
+    + debounce loop is tested in isolation
+    (`crates/core/tests/permission_runtime.rs::hot_reload_observes_managed_json_changes`)
+    but no production code consumes it yet. See open question.
+  - **No `TODO`/`FIXME`/`todo!()`/`unimplemented!()` markers in new code.**
+- **Smoke-gate state:** unchanged. Per pre-decision 8 the mode-enforcement
+  smoke check is SKIPPED for V0.1 — exercising it requires the smoke
+  client to drive `Sessions.UpdateSessionPermissionMode` AND fake a
+  tool-call event, which is impractical against the existing echo
+  agent. The behaviour is covered by
+  `crates/core/tests/permission_runtime.rs` instead;
+  `scripts/smoke.sh` still exits 0 with "Smoke gate v2: PASSED".
