@@ -19,6 +19,8 @@ use concerto_core::api_server::{ApiServerActor, ApiServerConfig};
 use concerto_core::logging;
 use concerto_core::repo_manager::{RepoManagerActor, RepoManagerConfig};
 use concerto_core::runtime::{Runtime, RuntimeConfig, StartOutcome};
+#[cfg(unix)]
+use concerto_core::scheduler::{SchedulerActor, SchedulerConfig};
 use concerto_core::workspace_manager::{
     WorkareaManagerActor, WorkareaManagerConfig, WorkspaceManagerActor, WorkspaceManagerConfig,
 };
@@ -214,6 +216,34 @@ async fn run() -> Result<()> {
     let workarea_handle = workarea_handle.with_agent_supervisor(agent_supervisor_handle.clone());
     let workspace_handle = workspace_handle.with_workarea_manager(workarea_handle.clone());
 
+    // Task 38: spawn the Scheduler. Owns the `/loop` fire wheel and the
+    // expiration sweep; takes a supervisor clone so the fire path can
+    // call `start_session` directly. Runs after the Agent Supervisor
+    // exists (`SchedulerActor::new` requires the handle).
+    #[cfg(unix)]
+    let scheduler_handle = {
+        let scheduler_actor =
+            SchedulerActor::new(Arc::clone(&persistence), agent_supervisor_handle.clone());
+        let handle = scheduler_actor.handle();
+        drop(scheduler_actor);
+        let factory_persistence = Arc::clone(&persistence);
+        let factory_supervisor = agent_supervisor_handle.clone();
+        runtime
+            .supervisor_mut()
+            .expect("supervisor present at boot")
+            .spawn::<SchedulerActor, _>(
+                move || {
+                    SchedulerActor::new(
+                        Arc::clone(&factory_persistence),
+                        factory_supervisor.clone(),
+                    )
+                },
+                SchedulerConfig,
+            )
+            .await?;
+        handle
+    };
+
     // Task 31: boot-time crash adoption (`design/03 §6.5`). Scan every
     // non-archived workarea, probe `worktree_root`, transition rows
     // whose directory is missing to `'crashed'`. The user — not
@@ -257,6 +287,8 @@ async fn run() -> Result<()> {
     #[cfg(unix)]
     let factory_agent_handle = agent_supervisor_handle.clone();
     let factory_persistence = Arc::clone(&persistence);
+    #[cfg(unix)]
+    let factory_scheduler_handle = scheduler_handle.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -271,6 +303,8 @@ async fn run() -> Result<()> {
                     #[cfg(unix)]
                     Some(factory_agent_handle.clone()),
                     Some(Arc::clone(&factory_persistence)),
+                    #[cfg(unix)]
+                    Some(factory_scheduler_handle.clone()),
                 )
             },
             ApiServerConfig { socket_path },

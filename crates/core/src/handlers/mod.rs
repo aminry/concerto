@@ -9,6 +9,8 @@ pub mod projects;
 pub mod repositories;
 pub mod runtime;
 #[cfg(unix)]
+pub mod schedules;
+#[cfg(unix)]
 pub mod sessions;
 #[cfg(unix)]
 pub mod streams;

@@ -570,6 +570,120 @@ pub struct Session {
     pub last_acked_seq: i64,
 }
 
+// ---------------------------------------------------------------------------
+// Schedules (Task 38).
+//
+// V0.1 surface: session-scoped `/loop` only. Persistent scheduled tasks
+// (`kind = 'scheduled_task'`), cloud-task sync, promote, and budget
+// guardrails are V1.0. The schema is locked by migration 0004; only the
+// V0.1 columns are projected here.
+// ---------------------------------------------------------------------------
+
+/// Newtype around a `schedules.id` (UUIDv7 string per migration 0004).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScheduleId(pub String);
+
+impl ScheduleId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ScheduleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Newtype around a `schedule_runs.id` (UUIDv7 string per migration 0004).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScheduleRunId(pub String);
+
+impl ScheduleRunId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ScheduleRunId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Insert-time shape for a `schedules` row.
+///
+/// `kind` is `"loop"` in V0.1 — the CHECK constraint will reject any
+/// other value. `interval_seconds` MUST be in 30..=604800; the
+/// [`crate::schedules::insert`] helper does not re-validate (the
+/// [`crate::api::Persistence`] layer is dumb storage), so the caller
+/// (the Scheduler) is responsible for bounds-checking. `expires_at`
+/// defaults to `created_at + 3 days` in the Scheduler.
+#[derive(Debug, Clone)]
+pub struct NewSchedule {
+    pub id: ScheduleId,
+    pub workarea_id: WorkareaId,
+    /// V0.1: always `"loop"`.
+    pub kind: String,
+    pub interval_seconds: i64,
+    pub expires_at: i64,
+    pub last_run_at: Option<i64>,
+    pub paused: bool,
+    pub prompt: String,
+    /// One of `claude|codex|gemini|maestro` (CHECK enforced).
+    pub agent_kind: String,
+    pub created_at: i64,
+}
+
+/// Row-shaped projection of a `schedules` row. V0.1 projects only the
+/// columns migration 0004 defines; the design/09 §4.3 columns deferred
+/// to V1.0 are not modelled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Schedule {
+    pub id: ScheduleId,
+    pub workarea_id: WorkareaId,
+    pub kind: String,
+    pub interval_seconds: i64,
+    pub expires_at: i64,
+    pub last_run_at: Option<i64>,
+    pub paused: bool,
+    pub prompt: String,
+    pub agent_kind: String,
+    pub created_at: i64,
+}
+
+/// Insert-time shape for a `schedule_runs` row.
+///
+/// `session_id` is `None` at insert time when the run is inserted as
+/// part of the inflight-suppression check before the supervisor has
+/// returned a session id; the Scheduler patches it via
+/// [`crate::schedule_runs::update_session`] once `start_session`
+/// resolves. `ended_at` and `terminal_state` are always `NULL` at
+/// insert; they're set together by
+/// [`crate::schedule_runs::update_terminal`].
+#[derive(Debug, Clone)]
+pub struct NewScheduleRun {
+    pub id: ScheduleRunId,
+    pub schedule_id: ScheduleId,
+    pub session_id: Option<SessionId>,
+    pub started_at: i64,
+}
+
+/// Row-shaped projection of a `schedule_runs` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleRun {
+    pub id: ScheduleRunId,
+    pub schedule_id: ScheduleId,
+    pub session_id: Option<SessionId>,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    /// `None` while inflight; one of `completed|failed|crashed` once
+    /// the lifecycle watcher resolves the run.
+    pub terminal_state: Option<String>,
+}
+
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
 ///
 /// Every pragma the design doc lists as mandatory (`journal_mode = WAL`,

@@ -534,3 +534,77 @@ pub struct Session {
 }
 ```
 
+### struct `ScheduleId`
+
+```rust
+pub struct ScheduleId(pub String);
+```
+
+### struct `ScheduleRunId`
+
+```rust
+pub struct ScheduleRunId(pub String);
+```
+
+### struct `NewSchedule`
+
+```rust
+pub struct NewSchedule {
+    pub id: ScheduleId,
+    pub workarea_id: WorkareaId,
+    /// V0.1: always `"loop"`.
+    pub kind: String,
+    pub interval_seconds: i64,
+    pub expires_at: i64,
+    pub last_run_at: Option<i64>,
+    pub paused: bool,
+    pub prompt: String,
+    /// One of `claude|codex|gemini|maestro` (CHECK enforced).
+    pub agent_kind: String,
+    pub created_at: i64,
+}
+```
+
+### struct `Schedule`
+
+```rust
+pub struct Schedule {
+    pub id: ScheduleId,
+    pub workarea_id: WorkareaId,
+    pub kind: String,
+    pub interval_seconds: i64,
+    pub expires_at: i64,
+    pub last_run_at: Option<i64>,
+    pub paused: bool,
+    pub prompt: String,
+    pub agent_kind: String,
+    pub created_at: i64,
+}
+```
+
+### struct `NewScheduleRun`
+
+```rust
+pub struct NewScheduleRun {
+    pub id: ScheduleRunId,
+    pub schedule_id: ScheduleId,
+    pub session_id: Option<SessionId>,
+    pub started_at: i64,
+}
+```
+
+### struct `ScheduleRun`
+
+```rust
+pub struct ScheduleRun {
+    pub id: ScheduleRunId,
+    pub schedule_id: ScheduleId,
+    pub session_id: Option<SessionId>,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    /// `None` while inflight; one of `completed|failed|crashed` once
+    /// the lifecycle watcher resolves the run.
+    pub terminal_state: Option<String>,
+}
+```
+

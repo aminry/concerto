@@ -1,0 +1,104 @@
+// Schedule entity shape + service surface (Task 38).
+//
+// V0.1 ships the `/loop` primitive only — session-scoped recurring
+// tasks tied to a workarea. Persistent scheduled tasks
+// (`kind = scheduled_task`), cloud-task sync, promotion, and budget
+// guardrails are V1.0 and are NOT modelled on this surface.
+//
+// Field numbers in this file are FROZEN as of Task 38.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+message Schedule {
+  string id = 1;
+  string workarea_id = 2;
+  // kind ∈ { loop } in V0.1. The proto field is `string` (not enum) to
+  // allow the V1.0 `scheduled_task` value without a wire break.
+  string kind = 3;
+  // Interval in seconds. Frozen bounds 30..=604800 enforced server-side.
+  int64 interval_seconds = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  optional google.protobuf.Timestamp last_run_at = 6;
+  bool paused = 7;
+  string prompt = 8;
+  // agent_kind ∈ { claude | codex | gemini | maestro }. V0.1 supports
+  // claude end-to-end; codex/gemini are accepted on the schedule row
+  // but the fire path errors NOT_IMPLEMENTED when the supervisor's
+  // `start_session` runs them. Maestro is reserved for V1.0.
+  string agent_kind = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+// Identifier-only request payload. Wraps the schedule primary key.
+message ScheduleId {
+  string value = 1;
+}
+
+// Inputs for `Schedules.CreateSchedule`.
+//
+// `kind` MUST equal `"loop"` in V0.1 (other values → INVALID_ARGUMENT).
+// `interval_seconds` MUST be in 30..=604800 (other values →
+// INVALID_ARGUMENT). When `expires_at_unix_ms` is `0` the server
+// defaults to `created_at + 3 days` per design/05 §1.
+message CreateScheduleRequest {
+  string workarea_id = 1;
+  string kind = 2;
+  int64 interval_seconds = 3;
+  string prompt = 4;
+  // One of `claude|codex|gemini|maestro`. Empty string defaults to
+  // `"claude"`.
+  string agent_kind = 5;
+  // Unix epoch milliseconds. `0` means "use the design/05 default
+  // (now + 3 days)".
+  int64 expires_at_unix_ms = 6;
+}
+
+message ListSchedulesRequest {
+  string workarea_id = 1;
+}
+
+message ListSchedulesResponse {
+  repeated Schedule schedules = 1;
+}
+
+// One row from `schedule_runs` projected for the gRPC surface.
+message ScheduleRun {
+  string id = 1;
+  string schedule_id = 2;
+  // Empty when the run failed before the supervisor returned a
+  // session id (suppression / pre-handshake failure).
+  string session_id = 3;
+  google.protobuf.Timestamp started_at = 4;
+  optional google.protobuf.Timestamp ended_at = 5;
+  // Empty while inflight; one of `completed|failed|crashed` once the
+  // lifecycle watcher resolves the run.
+  string terminal_state = 6;
+}
+
+message ScheduleHistoryResponse {
+  repeated ScheduleRun runs = 1;
+}
+
+service Schedules {
+  // Create a `/loop` schedule.
+  //
+  // Validates the workarea exists and is not archived; validates the
+  // interval bounds; defaults `agent_kind = "claude"` and
+  // `expires_at = created_at + 3 days` per design/05. Returns the
+  // freshly-inserted row.
+  rpc CreateSchedule(CreateScheduleRequest) returns (Schedule);
+  // List schedules for a workarea, oldest first.
+  rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse);
+  // Pause a schedule. The fire loop deletes its in-memory entry; the
+  // row remains for audit. Idempotent.
+  rpc PauseSchedule(ScheduleId) returns (Schedule);
+  // Delete a schedule. `schedule_runs` rows cascade.
+  rpc DeleteSchedule(ScheduleId) returns (google.protobuf.Empty);
+  // Return the run history (newest first).
+  rpc GetScheduleHistory(ScheduleId) returns (ScheduleHistoryResponse);
+}
