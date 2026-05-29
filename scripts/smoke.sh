@@ -10,20 +10,42 @@
 #     Streams.Subscribe(session.io.<sid>), stop the session, shut Core
 #     down cleanly. On-disk worktree layout (`.context/` + repo/.git) is
 #     verified inline.
-#   - Phase 3 (Tasks 42 + 44): permission modes, audit log presence, /loop.
-#   - Phase 4 (Task 52): full V0.1 happy-path scenario.
+#   - Phase 3 (Task 52): permission-mode flip + audit-log presence +
+#     /loop create/list + skills discovery + MCP listing — see
+#     `dist/SMOKE.md` for the full gate-level coverage table.
 #
 # Contract:
 #   - Exit 0 = pass, non-zero = fail. Output is human-readable.
 #   - CONCERTO_HOME points to a tempdir for the duration of the script.
 #     Tasks must not rely on the literal path ~/concerto/.
 #   - Linux/macOS only in V0.1; Windows port (scripts/smoke.ps1) is V1.0.
+#
+# Flags:
+#   --ci-mode   Skip checks that are inappropriate for unattended CI
+#               runners. V0.1 is a no-op (everything is CI-safe today);
+#               documented so the workflow file can pass the flag now
+#               and future gh-CLI / network-touching checks can opt in.
 
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 . "$(dirname "$0")/lib/common.sh"
+
+CI_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --ci-mode)
+            CI_MODE=1
+            ;;
+        *)
+            fail "unknown flag: $arg"
+            ;;
+    esac
+done
+export CI_MODE
+
+START_TS=$(date +%s)
 
 # Only manage CONCERTO_HOME ourselves if the caller didn't pre-set it; that
 # way an externally-provided directory isn't rm -rf'd on exit.
@@ -55,7 +77,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Smoke gate v2: starting (CONCERTO_HOME=$CONCERTO_HOME)"
+echo "Smoke gate v3: starting (CONCERTO_HOME=$CONCERTO_HOME, ci_mode=$CI_MODE)"
 
 # ---------------------------------------------------------------------------
 # Phase 1 — Core boot + UDS + GetServerCapabilities + clean shutdown.
@@ -65,18 +87,44 @@ CORE_CONFIG_DIR="$CONCERTO_HOME/.concerto"
 CORE_DATA_DIR="$CONCERTO_HOME/concerto"
 mkdir -p "$CORE_CONFIG_DIR" "$CORE_DATA_DIR"
 
+# `FAKE_HOME` is what we pass as `HOME` to the Core process. The skills
+# registry walks `<HOME>/.claude/skills/` at boot; the MCP surfacer
+# walks `<HOME>/.claude/mcp.json` on each request. Pointing Core at a
+# scratch home means the smoke gate can plant fixtures there without
+# touching the developer's real ~/.claude/.
+FAKE_HOME="$CONCERTO_HOME/fake-home"
+mkdir -p "$FAKE_HOME/.claude/skills"
+
 # Pre-build all the binaries the smoke gate exercises so `cargo run`
 # doesn't slip a compile step into the wall clock. `--quiet` keeps the
 # build noise out of smoke output; real errors still surface because
 # cargo writes them to stderr. `concerto-agent-host` is pre-built because
 # the supervisor (Task 22) spawns it for `agent-kind=echo` sessions and
 # resolves it through `current_exe().parent()`.
-echo "Smoke gate v2: building concerto-core, concerto-agent-host, smoke-client..."
+echo "Smoke gate v3: building concerto-core, concerto-agent-host, smoke-client..."
 cargo build --quiet -p concerto-core -p concerto-agent-host -p concerto-smoke-client
 
-echo "Smoke gate v2: starting concerto-core in background..."
+echo "Smoke gate v3: starting concerto-core in background..."
 CORE_LOG="$CONCERTO_HOME/core.log"
-CONCERTO_CONFIG_DIR="$CORE_CONFIG_DIR" CONCERTO_DATA_DIR="$CORE_DATA_DIR" \
+# `HOME=$FAKE_HOME` redirects skills + MCP filesystem lookups. The Core
+# process still reads `CONCERTO_CONFIG_DIR` + `CONCERTO_DATA_DIR` for
+# its own state directories; HOME only governs the agent-config scans.
+#
+# `RUSTUP_HOME` / `CARGO_HOME` must be forwarded explicitly so the
+# rustup wrapper (`cargo` resolves through it) still finds its config —
+# otherwise it tries to re-download the toolchain under the fake HOME
+# and the Core fails to launch within the wait_for_file budget.
+# Resolve defaults the same way rustup does: `$RUSTUP_HOME` else
+# `~/.rustup`, `$CARGO_HOME` else `~/.cargo`. The smoke gate captures
+# the developer's real HOME via the parent process so we can fall
+# back to it for those defaults.
+REAL_HOME="$HOME"
+SMOKE_RUSTUP_HOME="${RUSTUP_HOME:-$REAL_HOME/.rustup}"
+SMOKE_CARGO_HOME="${CARGO_HOME:-$REAL_HOME/.cargo}"
+HOME="$FAKE_HOME" \
+    RUSTUP_HOME="$SMOKE_RUSTUP_HOME" \
+    CARGO_HOME="$SMOKE_CARGO_HOME" \
+    CONCERTO_CONFIG_DIR="$CORE_CONFIG_DIR" CONCERTO_DATA_DIR="$CORE_DATA_DIR" \
     cargo run --quiet --bin concerto-core > "$CORE_LOG" 2>&1 &
 CORE_PID=$!
 
@@ -89,7 +137,7 @@ if ! wait_for_file "$SOCKET" 15; then
     sed 's/^/    /' "$CORE_LOG" >&2 || true
     fail "core.sock not created within 15s"
 fi
-echo "Smoke gate v2: Core ready (socket: $SOCKET)"
+echo "Smoke gate v3: Core ready (socket: $SOCKET)"
 
 # Convenience: every subsequent smoke-client invocation passes
 # `--socket "$SOCKET"`. The data-dir is also exported so the
@@ -102,9 +150,9 @@ SMOKE_CLIENT=(cargo run --quiet -p concerto-smoke-client --bin smoke-client --)
 # ---------------------------------------------------------------------------
 
 # Call GetServerCapabilities and confirm the response advertises UDS.
-echo "Smoke gate v2: calling Runtime.GetServerCapabilities..."
+echo "Smoke gate v3: calling Runtime.GetServerCapabilities..."
 RESPONSE=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" caps)
-echo "Smoke gate v2: response: $RESPONSE"
+echo "Smoke gate v3: response: $RESPONSE"
 if ! echo "$RESPONSE" | grep -q '"transport_kind": *"TRANSPORT_KIND_UDS"'; then
     echo "smoke: core log:" >&2
     sed 's/^/    /' "$CORE_LOG" >&2 || true
@@ -116,7 +164,7 @@ fi
 #           round-trip via the smoke-client subcommands (Task 27).
 # ---------------------------------------------------------------------------
 
-echo "Smoke gate v2: creating bare test repo..."
+echo "Smoke gate v3: creating bare test repo..."
 BARE="$CONCERTO_HOME/bare-repo.git"
 mkdir -p "$BARE"
 git init --bare --quiet "$BARE"
@@ -131,7 +179,7 @@ git -C "$TMP" add -A
 git -C "$TMP" -c user.email=smoke@test -c user.name=Smoke commit -m "seed" --quiet
 git -C "$TMP" push --quiet origin main
 
-echo "Smoke gate v2: creating project / repo / workspace / workarea..."
+echo "Smoke gate v3: creating project / repo / workspace / workarea..."
 PROJECT_ID=$("${SMOKE_CLIENT[@]}" add-project --name "smoke")
 REPO_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" add-repo --project-id "$PROJECT_ID" --url "file://$BARE")
 "${SMOKE_CLIENT[@]}" --socket "$SOCKET" clone --repo-id "$REPO_ID" || fail "clone"
@@ -161,7 +209,7 @@ for repo_dir in "$WT_ROOT"/*/; do
 done
 [ "$REPO_GIT_FOUND" -eq 1 ] || fail "repo .git missing in workarea root $WT_ROOT"
 
-echo "Smoke gate v2: spawning echo session and streaming output..."
+echo "Smoke gate v3: spawning echo session and streaming output..."
 if ! SID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" start-session --workarea-id "$WA_ID" --agent-kind echo 2>&1); then
     echo "smoke: start-session failed; output:" >&2
     echo "$SID" >&2
@@ -189,11 +237,70 @@ fi
 "${SMOKE_CLIENT[@]}" --socket "$SOCKET" stop-session --session-id "$SID" || true
 
 # ---------------------------------------------------------------------------
+# Phase 3 — permission-mode flip, audit log, /loop, skills discovery,
+#           MCP listing (Task 52).
+# ---------------------------------------------------------------------------
+
+echo "Smoke gate v3: flipping workarea permission mode to auto..."
+PERM_RESP=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" set-perm-mode \
+    --workarea "$WA_ID" --mode auto)
+if [ "$PERM_RESP" != "PERMISSION_MODE_AUTO" ]; then
+    fail "set-perm-mode: expected PERMISSION_MODE_AUTO, got '$PERM_RESP'"
+fi
+
+echo "Smoke gate v3: verifying audit log contains workspace_created..."
+# Task 44 wires `WorkspaceCreated` into `WorkspaceManager::create_workspace`
+# so Phase 2's `new-workspace` step is guaranteed to have emitted a row.
+# The JSONL lives under `<data_dir>/audit/audit-<YYYY-MM-DD>.jsonl`.
+AUDIT_FILE="$CORE_DATA_DIR/audit/audit-$(date -u +%F).jsonl"
+[ -f "$AUDIT_FILE" ] || fail "audit log file not present at $AUDIT_FILE"
+if ! grep -q '"kind":"workspace_created"' "$AUDIT_FILE"; then
+    echo "smoke: audit log contents:" >&2
+    sed 's/^/    /' "$AUDIT_FILE" >&2 || true
+    fail "audit log missing workspace_created"
+fi
+
+echo "Smoke gate v3: creating /loop schedule..."
+LOOP_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" create-loop \
+    --workarea "$WA_ID" --interval 30 --prompt "tick")
+[ -n "$LOOP_ID" ] || fail "create-loop returned empty id"
+LIST_OUT=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" list-loops --workarea "$WA_ID")
+echo "$LIST_OUT" | grep -qx "$LOOP_ID" || fail "list-loops missing $LOOP_ID; got: $LIST_OUT"
+
+echo "Smoke gate v3: planting fake SKILL.md fixture..."
+mkdir -p "$FAKE_HOME/.claude/skills/test-skill"
+cat > "$FAKE_HOME/.claude/skills/test-skill/SKILL.md" <<'EOF'
+---
+name: test-skill
+description: smoke gate v3 skill fixture
+---
+Body.
+EOF
+SKILLS_OUT=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" list-skills --scope personal)
+echo "$SKILLS_OUT" | grep -qx "test-skill" || fail "list-skills missing test-skill; got: $SKILLS_OUT"
+
+echo "Smoke gate v3: planting fake mcp.json fixture..."
+mkdir -p "$FAKE_HOME/.claude"
+cat > "$FAKE_HOME/.claude/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "test-mcp": {
+      "command": "/bin/true",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+EOF
+MCP_OUT=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" list-mcp --scope personal)
+echo "$MCP_OUT" | grep -qx "test-mcp" || fail "list-mcp missing test-mcp; got: $MCP_OUT"
+
+# ---------------------------------------------------------------------------
 # Clean shutdown — SIGTERM the core, wait for it to exit, verify the
 # pid file + socket were cleaned up.
 # ---------------------------------------------------------------------------
 
-echo "Smoke gate v2: shutting down Core..."
+echo "Smoke gate v3: shutting down Core..."
 kill -TERM "$CORE_PID"
 if ! wait "$CORE_PID"; then
     fail "core did not exit cleanly"
@@ -208,7 +315,7 @@ if [ -e "$SOCKET" ]; then
     fail "core.sock not cleaned up at $SOCKET"
 fi
 
-# Phase 3 checks — added in Tasks 42 + 44
-# Phase 4 checks — added in Task 52
-
-echo "Smoke gate v2: PASSED"
+END_TS=$(date +%s)
+ELAPSED=$(( END_TS - START_TS ))
+echo "Smoke gate v3: PASSED"
+echo "V0.1 alpha — ${ELAPSED} seconds, all checks PASSED."

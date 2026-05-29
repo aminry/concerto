@@ -7,8 +7,15 @@ on:
 
 jobs:
   smoke:
-    name: scripts/smoke.sh
-    runs-on: ubuntu-latest
+    name: scripts/smoke.sh (${{ matrix.os }})
+    # Task 52: smoke gate v3 runs on macOS in addition to Linux. V0.1
+    # ships macOS-primary, so the macOS leg is the canonical pass; the
+    # ubuntu leg catches POSIX-portability regressions.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,4 +29,9 @@ jobs:
       # webkit/gtk Linux deps the desktop crate needs are NOT required
       # here. If a future phase adds Desktop to the smoke gate, install
       # them then (see .github/workflows/ci.yml for the apt list).
-      - run: scripts/smoke.sh
+      #
+      # Task 52: `--ci-mode` is currently a no-op (every check is
+      # CI-safe); the flag is wired now so future network-touching
+      # checks (real gh CLI, push-notification round-trips) can opt
+      # out without restructuring the workflow.
+      - run: scripts/smoke.sh --ci-mode
