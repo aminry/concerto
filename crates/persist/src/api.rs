@@ -791,6 +791,63 @@ pub struct SkillFilter {
     pub enabled_only: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Suggestion learn (Task 40).
+//
+// V0.1 ships the `suggestion_learn` table with insert + list-by-workarea
+// helpers, but the rule engine does NOT write to it (per `design/07 §2`'s
+// "rule engine only" row and `tasks/40 §"Scope — out"`). The table is
+// created here so V1.0's learning loop can land behind the existing
+// `Suggestions.RecordSuggestionOutcome` RPC stub without a wire-format
+// break. The schema is locked by migration 0006.
+// ---------------------------------------------------------------------------
+
+/// Newtype around a `suggestion_learn.id` (UUIDv7 string per migration 0006).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SuggestionLearnId(pub String);
+
+impl SuggestionLearnId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SuggestionLearnId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Insert-time shape for a `suggestion_learn` row. `workarea_id` is
+/// `None` when the chip was Maestro-scoped (no workarea context).
+/// `context_hash` is `''` in V0.1 — the field exists for V1.0's bucketed
+/// weighting (`design/07 §6.2`); V0.1's `RecordSuggestionOutcome` stub
+/// does not populate it.
+#[derive(Debug, Clone)]
+pub struct NewSuggestionLearn {
+    pub id: SuggestionLearnId,
+    pub workarea_id: Option<WorkareaId>,
+    pub rule_id: String,
+    /// Short free-form string (`accept | dismiss | snooze`). V0.1 does
+    /// not CHECK the set so V1.0 experiments can add values.
+    pub outcome: String,
+    pub context_hash: String,
+    /// Unix epoch milliseconds (caller-supplied).
+    pub created_at: i64,
+}
+
+/// Row-shaped projection of a `suggestion_learn` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestionLearn {
+    pub id: SuggestionLearnId,
+    pub workarea_id: Option<WorkareaId>,
+    pub rule_id: String,
+    pub outcome: String,
+    pub context_hash: String,
+    pub created_at: i64,
+}
+
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
 ///
 /// Every pragma the design doc lists as mandatory (`journal_mode = WAL`,

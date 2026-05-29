@@ -289,3 +289,24 @@ CREATE INDEX idx_skills_index_scope ON skills_index(scope);
 CREATE INDEX idx_skills_index_project ON skills_index(project_id);
 ```
 
+## `crates/persist/migrations/0006_suggestion_learn.sql`
+
+```sql
+CREATE TABLE suggestion_learn (
+    id            TEXT PRIMARY KEY,
+    workarea_id   TEXT REFERENCES workareas(id) ON DELETE CASCADE,
+    rule_id       TEXT NOT NULL,
+    outcome       TEXT NOT NULL,
+    context_hash  TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL
+);
+```
+
+```sql
+CREATE INDEX idx_suggestion_learn_workarea ON suggestion_learn(workarea_id);
+```
+
+```sql
+CREATE INDEX idx_suggestion_learn_rule ON suggestion_learn(rule_id, context_hash);
+```
+

@@ -1,0 +1,77 @@
+// Suggestion engine entity shape + service surface (Task 40).
+//
+// V0.1 ships a rule-only engine — six built-in rules listen to
+// `session.events` and emit chips that surface here via
+// `GetSuggestions(workarea_id)` and the `suggestion.events` stream
+// subject (filter: workarea_id). The learning loop that consumes
+// `RecordSuggestionOutcome` is V1.0 per `design/07 §2` and
+// `tasks/40 §"Scope — out"`; the RPC ships as a stub in V0.1 (logs the
+// event via `tracing::info!`).
+//
+// Field numbers in this file are FROZEN as of Task 40.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+// One actionable suggestion produced by the rule engine.
+//
+// V0.1 ships six built-in `rule_id` values (`design/07 §3.2` row
+// "V0.1 rules"):
+//   * `context_window_50`
+//   * `context_window_80`
+//   * `tests_failed`
+//   * `turn_complete_with_uncommitted`
+//   * `awaiting_approval`
+//   * `agent_crashed`
+//
+// New rules use new ids without breaking the wire shape.
+message Chip {
+  // Static rule identifier (see list above). Stable across runs.
+  string rule_id = 1;
+  // The workarea this chip is scoped to. Always set in V0.1.
+  string workarea_id = 2;
+  // Short human-readable label rendered on the chip.
+  string title = 3;
+  // Rule-supplied priority — higher wins when multiple chips compete
+  // for the same slot. V0.1 rules use the range `1..=100`.
+  int32 priority = 4;
+  // Unix epoch milliseconds the chip was emitted at.
+  int64 created_at_ms = 5;
+  // Action token (e.g. `compress | new_session | open_diff | resume |
+  // commit | review_tool`). V0.1 ships free-form strings so V1.0 can
+  // refine the catalog without a wire-format break.
+  string action = 6;
+}
+
+message GetSuggestionsRequest {
+  string workarea_id = 1;
+}
+
+message SuggestionsResponse {
+  repeated Chip chips = 1;
+}
+
+// Stub in V0.1 — the rule engine does not write to `suggestion_learn`.
+// The RPC accepts the call, logs via `tracing::info!`, and returns
+// empty. V1.0's learning loop will start populating rows.
+message RecordSuggestionOutcomeRequest {
+  string workarea_id = 1;
+  string rule_id = 2;
+  // Short string: `accept | dismiss | snooze` plus future
+  // `acted_upon`. V0.1 does not validate the set.
+  string outcome = 3;
+}
+
+message RecordSuggestionOutcomeResponse {
+}
+
+service Suggestions {
+  // Current chip set for a workarea. V0.1 returns chips emitted in the
+  // last ~60s that have not been deduplicated. Order: priority desc,
+  // then `created_at_ms` desc.
+  rpc GetSuggestions(GetSuggestionsRequest) returns (SuggestionsResponse);
+  // V0.1: stub — logs the outcome and returns empty. V1.0: writes a
+  // `suggestion_learn` row and updates the rule's bucketed weight.
+  rpc RecordSuggestionOutcome(RecordSuggestionOutcomeRequest) returns (RecordSuggestionOutcomeResponse);
+}

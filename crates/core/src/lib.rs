@@ -31,5 +31,7 @@ pub mod scheduler;
 pub mod security;
 pub mod signals;
 pub mod skills;
+#[cfg(unix)]
+pub mod suggestions;
 pub mod supervisor;
 pub mod workspace_manager;

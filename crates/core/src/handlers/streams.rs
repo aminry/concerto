@@ -57,10 +57,11 @@ use concerto_proto::v1::streams_server::Streams as StreamsService;
 use concerto_proto::v1::{
     event::Body as EventBody, session_event::Kind as SessionEventKind, AgentExited, AgentMessage,
     AgentStarted, ApprovalResolved as ProtoApprovalResolved,
-    AwaitingApproval as ProtoAwaitingApproval, CheckpointCreated as ProtoCheckpointCreated, Event,
-    SessionEvent as ProtoSessionEvent, SessionIoChunk as ProtoSessionIoChunk, SubscribeRequest,
-    ToolCall as ProtoToolCall, TurnComplete as ProtoTurnComplete,
-    WorkareaEvent as ProtoWorkareaEvent, WorkspaceEvent as ProtoWorkspaceEvent,
+    AwaitingApproval as ProtoAwaitingApproval, CheckpointCreated as ProtoCheckpointCreated,
+    Chip as ProtoChip, Event, SessionEvent as ProtoSessionEvent,
+    SessionIoChunk as ProtoSessionIoChunk, SubscribeRequest, ToolCall as ProtoToolCall,
+    TurnComplete as ProtoTurnComplete, WorkareaEvent as ProtoWorkareaEvent,
+    WorkspaceEvent as ProtoWorkspaceEvent,
 };
 use futures::Stream;
 use tokio::sync::Mutex;
@@ -69,6 +70,7 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 
 use crate::agent_supervisor::{AgentEvent, AgentSupervisorHandle, SessionIoChunk};
+use crate::suggestions::{Chip, SuggestionEngineHandle};
 use crate::workspace_manager::{WorkareaEvent, WorkareaManager, WorkspaceEvent, WorkspaceManager};
 
 /// Parsed subject — V0.1 catalog only.
@@ -78,6 +80,10 @@ pub enum Subject {
     SessionIo(PersistSessionId),
     WorkspaceEvents,
     WorkareaEvents,
+    /// Task 40 — `suggestion.events`. Optional `workarea_id` filter
+    /// in the trailing segment (`suggestion.events.<workarea_id>`);
+    /// `None` means "every workarea".
+    SuggestionEvents(Option<String>),
 }
 
 /// Implements the generated `Streams` service trait.
@@ -86,6 +92,11 @@ pub struct StreamsHandler {
     supervisor: AgentSupervisorHandle,
     workspaces: WorkspaceManager,
     workareas: WorkareaManager,
+    /// Optional suggestion engine handle. Wired by Task 40; when
+    /// `None`, the `suggestion.events` subject returns
+    /// `INVALID_ARGUMENT` (the subject is parsable but no producer is
+    /// attached).
+    suggestions: Option<SuggestionEngineHandle>,
     /// Per-subject monotonic offset map. Subjects are keyed by their
     /// canonical string form.
     offsets: Arc<Mutex<HashMap<String, Arc<AtomicU64>>>>,
@@ -101,8 +112,17 @@ impl StreamsHandler {
             supervisor,
             workspaces,
             workareas,
+            suggestions: None,
             offsets: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Attach a [`SuggestionEngineHandle`] so the `suggestion.events`
+    /// subject has a producer. Returns `self` for chaining at
+    /// construction time (the api_server builder uses this pattern).
+    pub fn with_suggestions(mut self, suggestions: SuggestionEngineHandle) -> Self {
+        self.suggestions = Some(suggestions);
+        self
     }
 
     /// Acquire (or lazily create) the offset counter for `subject`.
@@ -142,16 +162,18 @@ impl StreamsService for StreamsHandler {
                     .await
                     .ok_or_else(|| Status::not_found(format!("session {sid} not running")))?;
                 let counter_for_replay = Arc::clone(&counter);
-                let replay_iter = futures::stream::iter(replay.into_iter().map(move |ev| {
+                let replay_iter = futures::stream::iter(replay.into_iter().filter_map(move |ev| {
                     let offset = counter_for_replay.fetch_add(1, Ordering::Relaxed);
-                    Ok(map_agent_event(ev, offset))
+                    map_agent_event(ev, offset).map(Ok)
                 }));
                 let live = BroadcastStream::new(rx).filter_map(move |item| {
                     let counter = Arc::clone(&counter);
-                    item.ok().map(|ev| {
-                        let offset = counter.fetch_add(1, Ordering::Relaxed);
-                        Ok(map_agent_event(ev, offset))
-                    })
+                    item.ok()
+                        .and_then(|ev| {
+                            let offset = counter.fetch_add(1, Ordering::Relaxed);
+                            map_agent_event(ev, offset)
+                        })
+                        .map(Ok)
                 });
                 Box::pin(replay_iter.chain(live))
             }
@@ -197,6 +219,28 @@ impl StreamsService for StreamsHandler {
                 });
                 Box::pin(s)
             }
+            Subject::SuggestionEvents(filter_workarea) => {
+                let engine = self.suggestions.as_ref().ok_or_else(|| {
+                    Status::invalid_argument(
+                        "streams.suggestion_engine_unavailable: suggestion engine not attached",
+                    )
+                })?;
+                let rx = engine.subscribe();
+                let s = BroadcastStream::new(rx).filter_map(move |item| {
+                    let counter = Arc::clone(&counter);
+                    let filter = filter_workarea.clone();
+                    item.ok().and_then(|chip| {
+                        if let Some(ref expected) = filter {
+                            if chip.workarea_id.as_str() != expected {
+                                return None;
+                            }
+                        }
+                        let offset = counter.fetch_add(1, Ordering::Relaxed);
+                        Some(Ok(map_suggestion_event(chip, offset)))
+                    })
+                });
+                Box::pin(s)
+            }
         };
         Ok(Response::new(stream))
     }
@@ -216,6 +260,21 @@ pub fn parse_subject(s: &str) -> Result<Subject, Status> {
             return Err(invalid_subject(s));
         }
         return Ok(Subject::SessionIo(PersistSessionId(sid.to_string())));
+    }
+    // Task 40: `suggestion.events` (with optional trailing
+    // `.<workarea_id>` filter). The trailing form is preferred over
+    // using `SubscribeRequest.filter` because V0.1 ignores `filter`.
+    if let Some(rest) = s.strip_prefix("suggestion.events") {
+        if rest.is_empty() {
+            return Ok(Subject::SuggestionEvents(None));
+        }
+        if let Some(wid) = rest.strip_prefix('.') {
+            if wid.is_empty() {
+                return Err(invalid_subject(s));
+            }
+            return Ok(Subject::SuggestionEvents(Some(wid.to_string())));
+        }
+        return Err(invalid_subject(s));
     }
     match s {
         "workspace.events" => Ok(Subject::WorkspaceEvents),
@@ -240,8 +299,10 @@ fn now_ts() -> prost_types::Timestamp {
 }
 
 /// Map an in-process [`AgentEvent`] into a wire [`Event`] for the
-/// `session.events.<sid>` subject.
-fn map_agent_event(ev: AgentEvent, offset: u64) -> Event {
+/// `session.events.<sid>` subject. Returns `None` for variants that the
+/// V0.1 wire surface does not yet carry (`ContextUsage`, `Crashed`) so
+/// the streaming layer can filter them out without conflating signals.
+fn map_agent_event(ev: AgentEvent, offset: u64) -> Option<Event> {
     let (session_id, kind) = match ev {
         AgentEvent::Started { session_id } => (
             session_id,
@@ -327,15 +388,23 @@ fn map_agent_event(ev: AgentEvent, offset: u64) -> Event {
                 git_ref,
             }),
         ),
+        // Task 40: `ContextUsage` and `Crashed` are V0.1 internal-only
+        // signals consumed by the Suggestion Engine. The
+        // `session.events` wire surface does not carry them yet (the
+        // proto fields arrive with V1.0's structured parser packs); the
+        // mapper returns `None` so `filter_map` drops the frame on the
+        // gRPC stream. Subscribers that care about these signals use
+        // the `suggestion.events` subject instead.
+        AgentEvent::ContextUsage { .. } | AgentEvent::Crashed { .. } => return None,
     };
-    Event {
+    Some(Event {
         offset,
         at: Some(now_ts()),
         body: Some(EventBody::Session(ProtoSessionEvent {
             session_id: session_id.to_string(),
             kind: Some(kind),
         })),
-    }
+    })
 }
 
 fn map_session_io(chunk: SessionIoChunk, offset: u64) -> Event {
@@ -362,6 +431,21 @@ fn map_workspace_event(ev: WorkspaceEvent, offset: u64) -> Event {
         body: Some(EventBody::Workspace(ProtoWorkspaceEvent {
             workspace_id,
             kind,
+        })),
+    }
+}
+
+fn map_suggestion_event(chip: Chip, offset: u64) -> Event {
+    Event {
+        offset,
+        at: Some(now_ts()),
+        body: Some(EventBody::Suggestion(ProtoChip {
+            rule_id: chip.rule_id,
+            workarea_id: chip.workarea_id.0,
+            title: chip.title,
+            priority: chip.priority,
+            created_at_ms: chip.created_at,
+            action: chip.action.as_wire_str().to_string(),
         })),
     }
 }
