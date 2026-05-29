@@ -167,6 +167,19 @@ pub enum Error {
     #[error("policy.locked: {0}")]
     PolicyLocked(String),
 
+    /// VCS provider failure (gh CLI shell-out non-zero exit or
+    /// JSON-parse error; future API client errors). Added in Task 45.
+    /// Surfaces as `Code::Internal` over gRPC.
+    #[error("vcs: {0}")]
+    Vcs(String),
+
+    /// VCS authentication missing (e.g. `gh auth status` reports the
+    /// user is not logged in). Added in Task 45. Surfaces as
+    /// `Code::FailedPrecondition` over gRPC so the UI can walk the user
+    /// through `gh auth login` without treating the failure as a bug.
+    #[error("vcs.not_authenticated: {0}")]
+    VcsNotAuthenticated(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -703,6 +716,56 @@ pub struct SuggestionLearn {
     pub outcome: String,
     pub context_hash: String,
     pub created_at: i64,
+}
+```
+
+### struct `PullRequestId`
+
+```rust
+pub struct PullRequestId(pub String);
+```
+
+### struct `NewPullRequest`
+
+```rust
+pub struct NewPullRequest {
+    pub id: PullRequestId,
+    pub workarea_id: WorkareaId,
+    pub repository_id: RepositoryId,
+    /// V0.1: always `"github"`.
+    pub provider: String,
+    pub pr_number: i64,
+    pub base_ref: String,
+    pub head_ref: String,
+    /// One of `open|closed|merged|draft` for the GitHub provider.
+    pub state: String,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub head_sha: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+```
+
+### struct `PullRequest`
+
+```rust
+pub struct PullRequest {
+    pub id: PullRequestId,
+    pub workarea_id: WorkareaId,
+    pub repository_id: RepositoryId,
+    pub provider: String,
+    pub pr_number: i64,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub state: String,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub head_sha: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 ```
 

@@ -19,9 +19,9 @@ use concerto_proto::v1::workareas_server::Workareas as WorkareasService;
 use concerto_proto::v1::{
     ArchiveWorkareaRequest, CreateWorkareaRequest, DiffHunk as ProtoDiffHunk,
     DiffKind as ProtoDiffKind, DiffPayload as ProtoDiffPayload, FileDiff as ProtoFileDiff,
-    GetDiffRequest, ListWorkareasRequest, ListWorkareasResponse, PermissionMode,
-    SetWorkareaBypassDestructiveGuardRequest, UpdateWorkareaPermissionModeRequest,
-    Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
+    GetDiffRequest, GetWorkareaPrSetResponse, ListWorkareasRequest, ListWorkareasResponse,
+    PermissionMode, PullRequest as ProtoPullRequest, SetWorkareaBypassDestructiveGuardRequest,
+    UpdateWorkareaPermissionModeRequest, Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
 };
 use tonic::{Request, Response, Status};
 
@@ -213,6 +213,26 @@ impl WorkareasService for WorkareasHandler {
         Ok(Response::new(workarea_to_proto(row)))
     }
 
+    #[tracing::instrument(skip_all, name = "Workareas::GetWorkareaPrSet")]
+    async fn get_workarea_pr_set(
+        &self,
+        request: Request<ProtoWorkareaId>,
+    ) -> Result<Response<GetWorkareaPrSetResponse>, Status> {
+        let req = request.into_inner();
+        if req.value.is_empty() {
+            return Err(Status::invalid_argument("workarea id is required"));
+        }
+        let id = PersistWorkareaId(req.value);
+        let rows = self
+            .workarea_manager
+            .list_pr_set(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(GetWorkareaPrSetResponse {
+            pull_requests: rows.into_iter().map(pull_request_to_proto).collect(),
+        }))
+    }
+
     #[tracing::instrument(skip_all, name = "Workareas::SetWorkareaBypassDestructiveGuard")]
     async fn set_workarea_bypass_destructive_guard(
         &self,
@@ -311,6 +331,25 @@ fn diff_kind_to_i32(k: &concerto_gix_wrap::DiffKind) -> i32 {
 
 fn path_to_string(p: &std::path::Path) -> String {
     p.to_string_lossy().into_owned()
+}
+
+fn pull_request_to_proto(row: concerto_persist::PullRequest) -> ProtoPullRequest {
+    ProtoPullRequest {
+        id: row.id.to_string(),
+        workarea_id: row.workarea_id.to_string(),
+        repository_id: row.repository_id.to_string(),
+        provider: row.provider,
+        pr_number: row.pr_number,
+        base_ref: row.base_ref,
+        head_ref: row.head_ref,
+        state: row.state,
+        title: row.title,
+        body: row.body,
+        url: row.url,
+        head_sha: row.head_sha,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
 }
 
 fn permission_mode_to_i32(s: &str) -> i32 {

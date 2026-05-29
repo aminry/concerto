@@ -23,6 +23,7 @@ package concerto.v1;
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "concerto/v1/common.proto";
+import "concerto/v1/vcs.proto";
 
 message Workarea {
   string id = 1;
@@ -148,6 +149,14 @@ message SetWorkareaBypassDestructiveGuardRequest {
   string acknowledgement = 3;
 }
 
+// Task 45: response shape for `Workareas.GetWorkareaPrSet`. The
+// workarea's PR set is the implicit set of `pull_requests` rows
+// keyed by `workarea_id` (design/13 §4). V0.1 single-repo workareas
+// have 0 or 1 entries; V1.0 multi-repo workareas may have more.
+message GetWorkareaPrSetResponse {
+  repeated PullRequest pull_requests = 1;
+}
+
 service Workareas {
   rpc CreateWorkarea(CreateWorkareaRequest) returns (Workarea);
   rpc GetWorkarea(WorkareaId) returns (Workarea);
@@ -170,4 +179,8 @@ service Workareas {
   // entry-ceremony + managed.json policy enforcement. Returns the
   // updated `Workarea` row.
   rpc SetWorkareaBypassDestructiveGuard(SetWorkareaBypassDestructiveGuardRequest) returns (Workarea);
+  // Task 45: list every cached PR row for this workarea (implicit PR
+  // set per `design/13 §4`). V0.1 returns rows ordered by `pr_number`;
+  // PR-set merge ordering (`merge_order`) is V1.0.
+  rpc GetWorkareaPrSet(WorkareaId) returns (GetWorkareaPrSetResponse);
 }

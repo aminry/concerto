@@ -69,6 +69,11 @@ path-clean = { workspace = true }
 # Task 42: filesystem-watch crate driving the managed.json hot-reload
 # watcher in `crates/core/src/security/managed.rs`. Workspace pin.
 notify = { workspace = true }
+# Task 45: VCS provider (`gh` CLI shell-out) writes PR title / body to
+# temp files and passes `--title-file` / `--body-file` so newlines and
+# backticks don't need shell escaping. `tempfile` is already vetted
+# (dev-dep historically); promoted here to a production dep.
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via

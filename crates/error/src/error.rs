@@ -22,6 +22,8 @@ impl Error {
             Error::NotFound(_) => "not_found",
             Error::Policy(_) => "policy",
             Error::PolicyLocked(_) => "policy.locked",
+            Error::Vcs(_) => "vcs",
+            Error::VcsNotAuthenticated(_) => "vcs.not_authenticated",
             Error::Internal(_) => "internal",
         }
     }

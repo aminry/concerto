@@ -916,6 +916,129 @@ service Suggestions {
 }
 ```
 
+## `crates/proto/proto/concerto/v1/vcs.proto`
+
+- package: `concerto.v1`
+
+### message `PullRequest`
+
+```proto
+message PullRequest {
+  string id = 1;
+  string workarea_id = 2;
+  string repository_id = 3;
+  string provider = 4;
+  int64 pr_number = 5;
+  string base_ref = 6;
+  string head_ref = 7;
+  string state = 8;
+  string title = 9;
+  string body = 10;
+  string url = 11;
+  string head_sha = 12;
+  int64 created_at = 13;
+  int64 updated_at = 14;
+}
+```
+
+### message `CheckRun`
+
+```proto
+message CheckRun {
+  string name = 1;
+  // status ∈ { queued | in_progress | completed }
+  string status = 2;
+  // conclusion (only set when status == completed) ∈
+  // { success | failure | neutral | cancelled | timed_out | action_required | stale | skipped }
+  string conclusion = 3;
+  string details_url = 4;
+}
+```
+
+### message `GetPrRequest`
+
+```proto
+message GetPrRequest {
+  string repository_id = 1;
+  int64 pr_number = 2;
+}
+```
+
+### message `CreatePrRequest`
+
+```proto
+message CreatePrRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  string base = 3;
+  string head = 4;
+  string title = 5;
+  string body = 6;
+}
+```
+
+### message `MergePrRequest`
+
+```proto
+message MergePrRequest {
+  string repository_id = 1;
+  int64 pr_number = 2;
+  // One of merge | squash | rebase. Empty defaults to `merge`.
+  string method = 3;
+}
+```
+
+### message `GetChecksRequest`
+
+```proto
+message GetChecksRequest {
+  string repository_id = 1;
+  string sha = 2;
+}
+```
+
+### message `GetChecksResponse`
+
+```proto
+message GetChecksResponse {
+  repeated CheckRun checks = 1;
+}
+```
+
+### message `FetchIssueRequest`
+
+```proto
+message FetchIssueRequest {
+  string repository_id = 1;
+  int64 issue_number = 2;
+}
+```
+
+### message `Issue`
+
+```proto
+message Issue {
+  int64 number = 1;
+  string title = 2;
+  string body = 3;
+  string state = 4;
+  string url = 5;
+  repeated string labels = 6;
+}
+```
+
+### service `Vcs`
+
+```proto
+service Vcs {
+  rpc GetPullRequest(GetPrRequest) returns (PullRequest);
+  rpc CreatePullRequest(CreatePrRequest) returns (PullRequest);
+  rpc MergePullRequest(MergePrRequest) returns (google.protobuf.Empty);
+  rpc GetChecks(GetChecksRequest) returns (GetChecksResponse);
+  rpc FetchIssue(FetchIssueRequest) returns (Issue);
+}
+```
+
 ## `crates/proto/proto/concerto/v1/workareas.proto`
 
 - package: `concerto.v1`
@@ -1056,6 +1179,14 @@ message SetWorkareaBypassDestructiveGuardRequest {
 }
 ```
 
+### message `GetWorkareaPrSetResponse`
+
+```proto
+message GetWorkareaPrSetResponse {
+  repeated PullRequest pull_requests = 1;
+}
+```
+
 ### service `Workareas`
 
 ```proto
@@ -1081,6 +1212,10 @@ service Workareas {
   // entry-ceremony + managed.json policy enforcement. Returns the
   // updated `Workarea` row.
   rpc SetWorkareaBypassDestructiveGuard(SetWorkareaBypassDestructiveGuardRequest) returns (Workarea);
+  // Task 45: list every cached PR row for this workarea (implicit PR
+  // set per `design/13 §4`). V0.1 returns rows ordered by `pr_number`;
+  // PR-set merge ordering (`merge_order`) is V1.0.
+  rpc GetWorkareaPrSet(WorkareaId) returns (GetWorkareaPrSetResponse);
 }
 ```
 

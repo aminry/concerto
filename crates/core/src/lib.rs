@@ -35,4 +35,5 @@ pub mod skills;
 #[cfg(unix)]
 pub mod suggestions;
 pub mod supervisor;
+pub mod vcs;
 pub mod workspace_manager;

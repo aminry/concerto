@@ -313,3 +313,33 @@ CREATE INDEX idx_suggestion_learn_rule ON suggestion_learn(rule_id, context_hash
 ## `crates/persist/migrations/0007_tool_approvals_urgent.sql`
 
 
+## `crates/persist/migrations/0008_pull_requests.sql`
+
+```sql
+CREATE TABLE pull_requests (
+    id              TEXT PRIMARY KEY,
+    workarea_id     TEXT NOT NULL REFERENCES workareas(id) ON DELETE CASCADE,
+    repository_id   TEXT NOT NULL REFERENCES repositories(id),
+    provider        TEXT NOT NULL,
+    pr_number       INTEGER NOT NULL,
+    base_ref        TEXT NOT NULL,
+    head_ref        TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL DEFAULT '',
+    url             TEXT NOT NULL DEFAULT '',
+    head_sha        TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    UNIQUE(workarea_id, repository_id)
+);
+```
+
+```sql
+CREATE INDEX idx_pull_requests_workarea ON pull_requests(workarea_id);
+```
+
+```sql
+CREATE INDEX idx_pull_requests_repo ON pull_requests(repository_id);
+```
+

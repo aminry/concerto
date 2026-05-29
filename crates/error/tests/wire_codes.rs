@@ -77,6 +77,25 @@ fn secrets_wire_code_and_display() {
 }
 
 #[test]
+fn vcs_wire_code_and_display() {
+    let err = Error::Vcs("gh exit 1: not authenticated".to_string());
+    assert_eq!(err.wire_code(), "vcs");
+    assert_eq!(err.to_string(), "vcs: gh exit 1: not authenticated");
+    assert!(format!("{err:?}").contains("Vcs"));
+}
+
+#[test]
+fn vcs_not_authenticated_wire_code_and_display() {
+    let err = Error::VcsNotAuthenticated("run `gh auth login`".to_string());
+    assert_eq!(err.wire_code(), "vcs.not_authenticated");
+    assert_eq!(
+        err.to_string(),
+        "vcs.not_authenticated: run `gh auth login`"
+    );
+    assert!(format!("{err:?}").contains("VcsNotAuthenticated"));
+}
+
+#[test]
 fn from_std_io_error() {
     let io_err = std::io::Error::other("oops");
     let err: Error = io_err.into();

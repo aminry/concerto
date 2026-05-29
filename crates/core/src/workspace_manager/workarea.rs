@@ -387,6 +387,23 @@ impl WorkareaManager {
         concerto_persist::workareas::get(self.persistence.readers(), id).await
     }
 
+    /// List the cached `pull_requests` rows for this workarea.
+    ///
+    /// Task 45: the workarea's PR set is the implicit set of rows
+    /// keyed by `workarea_id` (`design/13 §4`). V0.1 returns them
+    /// ordered by `pr_number`; PR-set merge ordering (`merge_order`)
+    /// is V1.0.
+    pub async fn list_pr_set(
+        &self,
+        workarea_id: &WorkareaId,
+    ) -> Result<Vec<concerto_persist::PullRequest>> {
+        if self.get(workarea_id).await?.is_none() {
+            return Err(Error::NotFound(format!("workarea {workarea_id} not found")));
+        }
+        concerto_persist::pull_requests::list_by_workarea(self.persistence.readers(), workarea_id)
+            .await
+    }
+
     /// List workareas in a workspace.
     pub async fn list_by_workspace(
         &self,

@@ -848,6 +848,77 @@ pub struct SuggestionLearn {
     pub created_at: i64,
 }
 
+// ---------------------------------------------------------------------------
+// Pull requests (Task 45).
+//
+// VCS Provider Integration cache for per-(workarea, repository) PR
+// state. Schema is locked by migration 0008; helpers live in
+// `crates/persist/src/pull_requests.rs`. Canonical state lives on
+// GitHub — this table is a low-latency cache the UI reads from.
+// ---------------------------------------------------------------------------
+
+/// Newtype around a `pull_requests.id` (UUIDv7 string per migration 0008).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PullRequestId(pub String);
+
+impl PullRequestId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PullRequestId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Upsert-time shape for a `pull_requests` row.
+///
+/// `provider` is `"github"` for the V0.1 backend; the column accepts
+/// `"gitlab"` / `"bitbucket"` for V2.0 adapters without a schema
+/// change. Timestamps are caller-supplied unix epoch milliseconds; the
+/// persistence layer is dumb storage and does not read the wall clock.
+#[derive(Debug, Clone)]
+pub struct NewPullRequest {
+    pub id: PullRequestId,
+    pub workarea_id: WorkareaId,
+    pub repository_id: RepositoryId,
+    /// V0.1: always `"github"`.
+    pub provider: String,
+    pub pr_number: i64,
+    pub base_ref: String,
+    pub head_ref: String,
+    /// One of `open|closed|merged|draft` for the GitHub provider.
+    pub state: String,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub head_sha: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Row-shaped projection of a `pull_requests` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequest {
+    pub id: PullRequestId,
+    pub workarea_id: WorkareaId,
+    pub repository_id: RepositoryId,
+    pub provider: String,
+    pub pr_number: i64,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub state: String,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+    pub head_sha: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
 ///
 /// Every pragma the design doc lists as mandatory (`journal_mode = WAL`,

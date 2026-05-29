@@ -66,6 +66,14 @@ pub fn error_to_status(err: Error) -> Status {
         // Org-managed policy lockout (Task 32 — `managed.json` caps
         // `max_permission_mode` below the requested mode).
         "policy.locked" => Code::PermissionDenied,
+        // VCS provider failure (Task 45 — `gh` shell-out non-zero exit
+        // or JSON parse failure). Internal because clients can't
+        // recover by retrying with different inputs.
+        "vcs" => Code::Internal,
+        // VCS not authenticated (Task 45 — `gh auth status` failure).
+        // FailedPrecondition so the UI can guide the user through
+        // `gh auth login` without treating it as a hard bug.
+        "vcs.not_authenticated" => Code::FailedPrecondition,
         // Catch-all for invariants the type system can't capture.
         "internal" => Code::Internal,
         // Future variants get logged so we notice an unmapped code in
