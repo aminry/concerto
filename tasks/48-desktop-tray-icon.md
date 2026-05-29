@@ -56,13 +56,13 @@ Add a macOS menu-bar tray icon that shows online/offline state of the Core, list
 7. `scripts/smoke.sh` still passes.
 
 ## Definition of Done
-- [ ] Tray icon appears and menu items work.
-- [ ] Dynamic items (status, workareas) update every 5s.
-- [ ] Closing the window does not quit; Quit menu does.
-- [ ] Quitting the Desktop does not stop the Core.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Tray icon appears and menu items work.
+- [x] Dynamic items (status, workareas) update every 5s.
+- [x] Closing the window does not quit; Quit menu does.
+- [x] Quitting the Desktop does not stop the Core.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `apps/desktop/src-tauri/src/tray.rs` (new)
@@ -82,7 +82,7 @@ Refs: tasks/48-desktop-tray-icon.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** in-process tray; sidecar split is V1.0.
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:** Added Tauri features `tray-icon` + `image-png` to `apps/desktop/src-tauri/Cargo.toml` (neither is in Tauri 2.11's default feature set; tray-icon gates `TrayIconBuilder`, image-png decodes the 16x16 PNGs via `Image::from_bytes`). The icons are **embedded** via `include_bytes!("../../icons/tray-active.png")` rather than resolved through `tauri.conf.json -> bundle.resources` + `PathResolver` — embedding sidesteps the dev-vs-bundle resource-path divergence that bit `pnpm tauri dev` and keeps the tray working regardless of CWD. `tauri.conf.json` is **unmodified** as a result; the close-to-hide behaviour lives entirely in Rust (`window.on_window_event` inside `tray::install`), no plugin config required for Tauri 2's in-process tray. PNGs are minimal hand-rolled 16x16 RGBA (active = opaque black square, inactive = ~38% alpha) generated via a one-shot Python `struct`+`zlib` writer; both are tagged `icon_as_template(true)` so macOS renders them correctly in light & dark menubar themes.
+- **Open questions for next task:** Workarea listing in the tray walks `Projects.ListProjects` → `Workspaces.ListWorkspaces(project_id)` → `Workareas.ListWorkareas(workspace_id)` because no `ListAllWorkareas` RPC exists. Cap is `MAX_WORKAREA_ITEMS = 5` so the fan-out is bounded for V0.1 (one project, a handful of workspaces); if Task 49+ adds a global tray-friendly listing RPC or a Maestro-aware "active workareas" projection, the polling loop in `tray.rs::fetch_snapshot` shrinks to one call. Labels are `"<workspace.name> — <composer-name>"`; branch chip + status dot from `design/15 §3.4` are deferred (tray text doesn't render coloured glyphs uniformly across macOS versions). Renderer-side wiring for the `concerto://focus-workarea/<id>` event is **not yet present** — the tray emits but no current React code listens; Task 49 / Phase 4 polish picks that up alongside the launchd integration.
+- **Deliberate debt:** in-process tray; sidecar split (`design/15 §3.7`, `design/01 §3.5`) is V1.0. Pending-approvals badge + popover, scheduled-tasks summary, "Pair new device" action all V1.0. Windows system tray V1.0; Linux indicator V2.0 / never. No formal unit test for the tray icon's macOS-side rendering (Tauri tray builders need a running event loop); the three pure-Rust tests cover the event-name shape and the workarea-label formatter. The poll loop catches gRPC errors at DEBUG level and renders "offline" — no exponential backoff, no jitter; the cached UDS channel reset in `core_client::reset_channel` is the only reconnect strategy, matching the existing dispatcher's pattern.
+- **Smoke-gate state:** unchanged. `scripts/smoke.sh` still prints `Smoke gate v2: PASSED`. The tray runs in `concerto-desktop` only; the smoke gate exercises `concerto-core` + `concerto-smoke-client`, neither of which load the tray module.

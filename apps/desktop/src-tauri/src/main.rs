@@ -24,6 +24,7 @@
 
 mod commands;
 mod core_client;
+mod tray;
 
 fn main() {
     // Tauri 2's `tauri::Builder` runs the event loop on the calling
@@ -32,6 +33,9 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             commands::manage_subscriptions(app);
+            // Task 48: install the menu-bar tray. The call also wires
+            // close-to-hide on macOS and spawns the 5s status poll.
+            tray::install(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
