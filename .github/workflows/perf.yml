@@ -1,0 +1,83 @@
+name: perf
+
+# Task 50: gate the V0.1 performance budgets from `design/00 §7.7`.
+#
+# Two jobs:
+#   - `bench-compile`: validates the `mem-bench`-gated benches *compile*
+#     on macOS and Linux. Cheap; runs on every PR that touches the
+#     bench files, the Cargo manifest, or this workflow.
+#   - `idle-rss`: runs `runtime_memory` on Linux and asserts the printed
+#     RSS line is under the 100 MB budget. Heavier (≈3 min wall) so it
+#     only runs on push to main + on PRs that touch the bench surface.
+#
+# `runtime_8agents` is intentionally NOT invoked here. The 8-agent bench
+# spawns 9 subprocesses per iteration and stresses the test environment
+# heavily — per Task 50 spec it is run manually / from nightly with
+# `cargo bench -p concerto-core --features mem-bench --bench
+# runtime_8agents`. Treat it as `--ignored` for CI purposes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'crates/core/benches/**'
+      - 'crates/core/Cargo.toml'
+      - 'crates/test-harness/**'
+      - '.github/workflows/perf.yml'
+      - 'dist/PERF.md'
+
+jobs:
+  bench-compile:
+    name: cargo bench --no-run / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo bench --no-run -p concerto-core --features mem-bench
+        run: cargo bench -p concerto-core --features mem-bench --no-run
+
+  idle-rss:
+    name: idle Core RSS (Linux)
+    runs-on: ubuntu-latest
+    # Compile gate must pass first; no point in burning bench-runtime
+    # minutes if the bench files don't even build.
+    needs: bench-compile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo bench (runtime_memory)
+        id: bench
+        run: |
+          set -o pipefail
+          cargo bench -p concerto-core --features mem-bench \
+            --bench runtime_memory -- --quiet \
+            2>&1 | tee bench.out
+      - name: Gate on CONCERTO_PERF idle_rss_kb line
+        # The bench prints `CONCERTO_PERF idle_rss_kb=<N> budget_kb=<B>`
+        # on every iteration (`println!` from the iter closure). The
+        # bench itself `assert!`s the budget, so any over-budget run
+        # would already have failed `cargo bench` — this step is a
+        # second-layer check that the printed line exists, so a silent
+        # regression (e.g. the println being dropped) can't slip
+        # through. See Task 50 pre-decision 9.
+        run: |
+          if ! grep -q 'CONCERTO_PERF idle_rss_kb=' bench.out; then
+            echo "::error::missing CONCERTO_PERF idle_rss_kb line — bench did not run"
+            exit 1
+          fi
+          grep 'CONCERTO_PERF idle_rss_kb=' bench.out
