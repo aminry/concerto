@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Concerto</title>
+    <script>
+      // Pre-paint theme: read saved preference (system|light|dark) and set
+      // data-theme before first paint to avoid a flash of the wrong theme.
+      // Mirrors src/theme/resolveTheme.ts (added in a later task).
+      (function () {
+        try {
+          var pref = localStorage.getItem("concerto.theme.v1") || "system";
+          var dark =
+            pref === "dark" ||
+            (pref === "system" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.setAttribute(
+            "data-theme",
+            dark ? "dark" : "light"
+          );
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

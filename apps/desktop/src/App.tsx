@@ -38,7 +38,7 @@ function App(): JSX.Element {
   useLayoutPersistence();
   return (
     <QueryClientProvider client={queryClient}>
-      <div className="h-screen w-screen bg-slate-950 text-slate-100 font-mono">
+      <div className="h-screen w-screen bg-background text-foreground font-sans">
         <AppLayout />
         <NewWorkspaceModal />
         <SettingsPanel />
