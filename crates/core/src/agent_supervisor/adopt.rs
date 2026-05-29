@@ -97,8 +97,162 @@ pub async fn adopt_orphans(handle: &AgentSupervisorHandle) -> Result<usize> {
             }
         }
     }
-    tracing::info!(adopted, "adopt_orphans: sweep complete");
+
+    // Task 37 cold-path sweep: any session row left in
+    // `starting|running|awaiting` after the hot pass either (a) never had
+    // a socket on disk to begin with (host died before binding, or the
+    // file was reaped by the OS), or (b) we already walked it above and
+    // mark_crashed flipped the row. The cold pass handles only the (a)
+    // case — rows that are still `starting|running|awaiting` here are the
+    // ones the hot pass never visited. For each: read `final-info.json`
+    // if present (host wrote it before dying), then either mark
+    // `finished`/`crashed` per the exit code or mark `crashed`
+    // unconditionally. If the project setting `auto_resume_agents` is
+    // true AND the row has an `external_session_id`, fire cold resume.
+    let cold = match find_cold_candidates(handle).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "adopt_orphans: cold-path SELECT failed");
+            Vec::new()
+        }
+    };
+    let mut cold_resumed = 0usize;
+    for sid in cold {
+        match cold_path_one(handle, &sid).await {
+            Ok(true) => cold_resumed += 1,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    session = %sid,
+                    error = %e,
+                    "adopt_orphans: cold-path error"
+                );
+            }
+        }
+    }
+
+    tracing::info!(adopted, cold_resumed, "adopt_orphans: sweep complete");
     Ok(adopted)
+}
+
+/// Task 37: find every session row whose status is `starting`,
+/// `running`, or `awaiting` (i.e. "should be live") and which the hot
+/// pass did NOT just re-attach. We detect "didn't re-attach" by
+/// checking that the session id is absent from the supervisor's
+/// in-memory map.
+async fn find_cold_candidates(handle: &AgentSupervisorHandle) -> Result<Vec<SessionId>> {
+    let persistence = handle.persistence();
+    let pool = persistence.readers();
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM sessions
+         WHERE ended_at IS NULL
+           AND status IN ('starting','running','awaiting')",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| concerto_error::Error::Sqlx(Box::new(e)))?;
+    let map = handle.sessions_map();
+    let live = map.lock().await;
+    let mut out = Vec::new();
+    for (id,) in rows {
+        let sid = SessionId(id);
+        if !live.contains_key(&sid) {
+            out.push(sid);
+        }
+    }
+    Ok(out)
+}
+
+/// Cold-path handler for a single session. Reads `final-info.json` if
+/// present, then either marks the row finished/crashed per the
+/// recorded exit code (host died after writing the file) or marks it
+/// crashed unconditionally (host vanished without writing — most
+/// likely reboot). Optionally auto-resumes per the project setting.
+///
+/// Returns `Ok(true)` iff cold resume was attempted AND succeeded;
+/// `Ok(false)` for "left in terminal state per final-info" or
+/// "left crashed, no auto-resume".
+async fn cold_path_one(handle: &AgentSupervisorHandle, session_id: &SessionId) -> Result<bool> {
+    let data_dir = handle.data_dir();
+    let final_info_path = data_dir
+        .join("agents")
+        .join(&session_id.0)
+        .join("final-info.json");
+
+    // Decide the terminal state to write before considering auto-resume.
+    let final_info = read_final_info(&final_info_path).await;
+    let status = match &final_info {
+        Some(fi) => {
+            // The host wrote final-info BEFORE the previous Core exited.
+            // Treat exit_code == Some(0) as `finished`, anything else
+            // (Some(non-zero), None with signal, or None at all) as
+            // `crashed`. The `signal` field corroborates abnormal exit.
+            let clean = matches!(fi.exit_code, Some(0)) && fi.signal.is_none();
+            if clean {
+                "finished"
+            } else {
+                "crashed"
+            }
+        }
+        None => "crashed",
+    };
+    {
+        let persistence = handle.persistence();
+        let mut w = persistence.writer().await;
+        let _ = concerto_persist::sessions::update_status(&mut w, session_id, status).await;
+        // Stamp `ended_at` only if it's not already set. Use NOW because
+        // the host's `exited_at_unix_ms` may be present in final-info but
+        // mark_ended takes a single param; the supervisor's existing
+        // mark_ended forces `status = 'finished'` which would clobber a
+        // 'crashed' write. So do this in-place with raw SQL.
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let ended_at = final_info
+            .as_ref()
+            .map(|fi| fi.exited_at_unix_ms)
+            .unwrap_or(now_ms);
+        let _ = sqlx::query("UPDATE sessions SET ended_at = COALESCE(ended_at, ?) WHERE id = ?")
+            .bind(ended_at)
+            .bind(&session_id.0)
+            .execute(&mut *w)
+            .await;
+    }
+    tracing::info!(
+        session = %session_id,
+        status,
+        had_final_info = final_info.is_some(),
+        "adopt_orphans: cold-path classified"
+    );
+
+    // If the previous host crashed (or vanished), consider auto-resume.
+    // `finished` means the agent ended cleanly — no resume needed.
+    if status == "crashed" {
+        return crate::agent_supervisor::cold_resume::maybe_auto_resume(handle, session_id).await;
+    }
+    Ok(false)
+}
+
+/// Minimal projection of the host's `FinalInfo` JSON. We don't need
+/// the full schema for the cold-path classification (just the exit
+/// code, signal, and exit timestamp), so this is a thin
+/// duplicate-of-convenience kept inside `core` — depending on
+/// `concerto_agent_host::api::FinalInfo` would pull the entire
+/// agent-host crate into Core's link graph just for one struct.
+#[derive(serde::Deserialize)]
+struct FinalInfo {
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    signal: Option<i32>,
+    #[serde(default)]
+    exited_at_unix_ms: i64,
+}
+
+async fn read_final_info(path: &std::path::Path) -> Option<FinalInfo> {
+    let raw = tokio::fs::read_to_string(path).await.ok()?;
+    serde_json::from_str::<FinalInfo>(&raw).ok()
 }
 
 /// Try to adopt a single socket. Returns `Ok(true)` on success,

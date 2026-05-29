@@ -172,6 +172,7 @@ async fn echo_round_trip_streams_message_and_marks_finished() {
             echo_text: Some("hello-from-echo".to_string()),
             cwd: cwd.clone(),
             permission_mode: None,
+            resume_session_id: None,
         })
         .await
         .expect("start_session");
@@ -232,6 +233,7 @@ async fn codex_kind_returns_not_implemented() {
             echo_text: None,
             cwd: data_dir,
             permission_mode: None,
+            resume_session_id: None,
         })
         .await
         .unwrap_err();
@@ -259,6 +261,7 @@ async fn unknown_workarea_errors_not_found() {
             echo_text: Some("ignored".into()),
             cwd: data_dir,
             permission_mode: None,
+            resume_session_id: None,
         })
         .await
         .unwrap_err();

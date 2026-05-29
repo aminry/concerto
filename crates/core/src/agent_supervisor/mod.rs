@@ -44,6 +44,7 @@ pub mod adopt;
 pub mod approval;
 pub mod bridge;
 pub mod checkpoint;
+pub mod cold_resume;
 pub mod events;
 pub mod mcp;
 pub mod parsers;
@@ -54,6 +55,7 @@ pub use actor::{
     StartSessionRequest,
 };
 pub use adopt::adopt_orphans;
+pub use cold_resume::{cold_resume_session, maybe_auto_resume};
 pub use events::{AgentEvent, MessageRole};
 pub use mcp::{list_mcp_servers, McpScope, McpScopeFilter, McpServer};
 pub use parsers::{MsgRole, ParseEvent, ParserPack};

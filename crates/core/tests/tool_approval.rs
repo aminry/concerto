@@ -329,6 +329,7 @@ async fn resolve_approval_unknown_id_errors_already_resolved() {
             echo_text: Some("payload".to_string()),
             cwd: data_dir.clone(),
             permission_mode: None,
+            resume_session_id: None,
         })
         .await
         .expect("start_session");
@@ -375,6 +376,7 @@ async fn resolve_approval_flips_pending_row_to_approve() {
             echo_text: Some("payload".to_string()),
             cwd: data_dir.clone(),
             permission_mode: None,
+            resume_session_id: None,
         })
         .await
         .expect("start_session");
