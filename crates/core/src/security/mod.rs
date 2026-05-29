@@ -20,11 +20,13 @@
 pub mod managed;
 pub mod path_policy;
 pub mod permission;
+pub mod tool_classes;
 
-pub use managed::{load_managed_policy, ManagedPolicy};
+pub use managed::{load_managed_policy, ManagedPolicy, ManagedPolicySource};
 pub use path_policy::{classify as classify_path, AllowList, DenyList, PathDecision};
 pub use permission::{
     ack_for_bypass_destructive_guard, ack_for_yolo, parse_permission_mode, resolve_effective_mode,
     Decision, EffectiveMode, ModeSource, PermissionMode, PermissionResolver, ToolClass,
-    ACK_BYPASS_DESTRUCTIVE_GUARD, ACK_YOLO,
+    ACK_BYPASS_DESTRUCTIVE_GUARD, ACK_YOLO, POLICY_BYPASS_BLOCKED, POLICY_LOCKED_GENERIC,
+    POLICY_YOLO_BLOCKED,
 };

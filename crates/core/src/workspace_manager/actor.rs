@@ -403,7 +403,7 @@ impl WorkspaceManager {
             let new_mode_str: Option<String> = match req {
                 Some(s) => {
                     let parsed = crate::security::parse_permission_mode(s)?;
-                    let managed = crate::security::load_managed_policy(&self.config_dir);
+                    let managed = crate::security::load_managed_policy(&self.config_dir)?;
                     let _capped =
                         crate::security::permission::enforce_managed_cap(parsed, &managed)?;
                     Some(parsed.as_str().to_string())

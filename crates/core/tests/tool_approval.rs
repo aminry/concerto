@@ -42,10 +42,14 @@ use tempfile::TempDir;
 // 1. PermissionResolver decision matrix.
 // ----------------------------------------------------------------------------
 
+// Task 42 promoted the inline classify table to
+// `crate::security::tool_classes::TOOL_CLASSES`. The canonical tool
+// names are now the Claude Code built-ins (capital-letter `Read`,
+// `Write`, `Delete`, `Bash`). The matrix tests follow.
 #[test]
 fn resolver_matrix_strict_always_asks() {
     let r = PermissionResolver::new(PermissionMode::Strict, false);
-    for tool in ["ls", "edit", "rm"] {
+    for tool in ["Read", "Write", "Delete"] {
         assert_eq!(
             r.decide(tool),
             Decision::MustAsk,
@@ -57,26 +61,28 @@ fn resolver_matrix_strict_always_asks() {
 #[test]
 fn resolver_matrix_normal_safe_auto_else_ask() {
     let r = PermissionResolver::new(PermissionMode::Normal, false);
-    assert_eq!(r.decide("ls"), Decision::AutoApprove);
-    assert_eq!(r.decide("edit"), Decision::MustAsk);
-    assert_eq!(r.decide("rm"), Decision::MustAsk);
+    assert_eq!(r.decide("Read"), Decision::AutoApprove);
+    assert_eq!(r.decide("Write"), Decision::MustAsk);
+    assert_eq!(r.decide("Delete"), Decision::MustAsk);
 }
 
 #[test]
 fn resolver_matrix_auto_approves_safe_and_restricted() {
     let r = PermissionResolver::new(PermissionMode::Auto, false);
-    assert_eq!(r.decide("ls"), Decision::AutoApprove);
-    assert_eq!(r.decide("edit"), Decision::AutoApprove);
-    assert_eq!(r.decide("rm"), Decision::MustAsk);
+    assert_eq!(r.decide("Read"), Decision::AutoApprove);
+    assert_eq!(r.decide("Write"), Decision::AutoApprove);
+    assert_eq!(r.decide("Delete"), Decision::MustAsk);
 }
 
 #[test]
 fn resolver_matrix_yolo_dangerous_gated_on_bypass() {
     let r_safe = PermissionResolver::new(PermissionMode::Yolo, false);
-    assert_eq!(r_safe.decide("rm"), Decision::MustAsk);
+    assert_eq!(r_safe.decide("Delete"), Decision::MustAsk);
     let r_open = PermissionResolver::new(PermissionMode::Yolo, true);
-    assert_eq!(r_open.decide("rm"), Decision::AutoApprove);
-    assert_eq!(r_open.decide("drop"), Decision::AutoApprove);
+    assert_eq!(r_open.decide("Delete"), Decision::AutoApprove);
+    // Safe + Restricted are unconditional autoapprove in yolo.
+    assert_eq!(r_open.decide("Read"), Decision::AutoApprove);
+    assert_eq!(r_open.decide("Write"), Decision::AutoApprove);
 }
 
 #[test]
@@ -94,13 +100,16 @@ fn resolver_auto_decision_string_mirrors_mode() {
 #[test]
 fn resolver_classifies_inline_table() {
     let r = PermissionResolver::new(PermissionMode::Normal, false);
-    assert_eq!(r.classify("ls"), ToolClass::Safe);
-    assert_eq!(r.classify("edit"), ToolClass::Restricted);
-    assert_eq!(r.classify("write"), ToolClass::Restricted);
-    assert_eq!(r.classify("apply_patch"), ToolClass::Restricted);
-    assert_eq!(r.classify("delete"), ToolClass::Dangerous);
-    assert_eq!(r.classify("rm"), ToolClass::Dangerous);
-    assert_eq!(r.classify("drop"), ToolClass::Dangerous);
+    assert_eq!(r.classify("Read"), ToolClass::Safe);
+    assert_eq!(r.classify("Glob"), ToolClass::Safe);
+    assert_eq!(r.classify("Grep"), ToolClass::Safe);
+    assert_eq!(r.classify("Write"), ToolClass::Restricted);
+    assert_eq!(r.classify("Edit"), ToolClass::Restricted);
+    assert_eq!(r.classify("NotebookEdit"), ToolClass::Restricted);
+    assert_eq!(r.classify("Bash"), ToolClass::Restricted);
+    assert_eq!(r.classify("Delete"), ToolClass::Dangerous);
+    // Task 42: unknown tools default to Restricted (conservative).
+    assert_eq!(r.classify("Mystery"), ToolClass::Restricted);
 }
 
 // ----------------------------------------------------------------------------

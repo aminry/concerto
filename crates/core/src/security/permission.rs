@@ -209,8 +209,14 @@ pub async fn resolve_effective_mode(
         false
     };
 
-    // Apply managed.json cap.
-    let managed = load_managed_policy(config_dir);
+    // Apply managed.json cap. A malformed (version-mismatch) file is
+    // treated as "no policy" for the resolver path — the loud failure
+    // mode lives at the RPC handlers (where elevated-mode requests
+    // would otherwise silently slip past). The synchronous
+    // [`load_managed_policy`] returns the typed error so RPC code can
+    // surface it; here we degrade to permissive so a broken org artifact
+    // does not block session resolution.
+    let managed = load_managed_policy(config_dir).unwrap_or_default();
     if let Some(cap) = managed.max_permission_mode {
         if mode.rank() > cap.rank() {
             mode = cap;
@@ -260,20 +266,40 @@ fn project_default_from_settings(settings_json: &str) -> Result<Option<Permissio
 ///
 /// Used by the RPC handlers to reject `yolo` requests when
 /// `managed.json` caps to `auto` (etc.). The error carries the
-/// `policy.locked` wire code per `design/12 §3.8`.
+/// `policy.locked` wire code per `design/12 §3.8`; the message body
+/// embeds a more-specific subcode the handlers and audit log can
+/// switch on:
+///
+/// - [`POLICY_YOLO_BLOCKED`] (`policy.yolo_blocked`) — set when
+///   `allow_yolo = false` rejects a `yolo` request.
+/// - [`POLICY_LOCKED_GENERIC`] (`policy.locked`) — set when the
+///   `max_permission_mode` cap forbids the requested rank for any
+///   reason other than `allow_yolo`.
+///
+/// Subcodes are frozen by Task 42.
 pub fn enforce_managed_cap(
     requested: PermissionMode,
     managed: &ManagedPolicy,
 ) -> Result<PermissionMode> {
     if !managed.allow_yolo && requested == PermissionMode::Yolo {
-        return Err(Error::PolicyLocked(
-            "policy.locked: managed.json forbids yolo".to_string(),
-        ));
+        return Err(Error::PolicyLocked(format!(
+            "{POLICY_YOLO_BLOCKED}: managed.json forbids yolo"
+        )));
     }
     if let Some(cap) = managed.max_permission_mode {
         if requested.rank() > cap.rank() {
+            // Refine the subcode when the cap binds specifically on
+            // yolo — operators wiring an audit log on
+            // `policy.yolo_blocked` expect both the `allow_yolo = false`
+            // case AND a `max_permission_mode = auto` cap to surface
+            // the same way (both reject yolo).
+            let subcode = if requested == PermissionMode::Yolo {
+                POLICY_YOLO_BLOCKED
+            } else {
+                POLICY_LOCKED_GENERIC
+            };
             return Err(Error::PolicyLocked(format!(
-                "policy.locked: managed.json caps permission_mode to {} (requested {})",
+                "{subcode}: managed.json caps permission_mode to {} (requested {})",
                 cap.as_str(),
                 requested.as_str()
             )));
@@ -283,15 +309,33 @@ pub fn enforce_managed_cap(
 }
 
 /// Reject a `bypass_destructive_guard = true` request when managed
-/// policy disallows it. Returns `Ok(())` when permitted.
+/// policy disallows it. Returns `Ok(())` when permitted. The error
+/// message embeds the [`POLICY_BYPASS_BLOCKED`] subcode.
 pub fn enforce_managed_bypass(enable: bool, managed: &ManagedPolicy) -> Result<()> {
     if enable && !managed.allow_bypass_destructive_guard {
-        return Err(Error::PolicyLocked(
-            "policy.locked: managed.json forbids bypass_destructive_guard".to_string(),
-        ));
+        return Err(Error::PolicyLocked(format!(
+            "{POLICY_BYPASS_BLOCKED}: managed.json forbids bypass_destructive_guard"
+        )));
     }
     Ok(())
 }
+
+/// Wire subcode embedded in the message body of an
+/// [`Error::PolicyLocked`] when `managed.json` disallows yolo (either
+/// via `allow_yolo = false` or via `max_permission_mode < yolo`).
+/// Frozen by Task 42.
+pub const POLICY_YOLO_BLOCKED: &str = "policy.yolo_blocked";
+
+/// Wire subcode embedded in the message body of an
+/// [`Error::PolicyLocked`] when `managed.json.allow_bypass_destructive_guard
+/// = false` rejects a `bypass_destructive_guard = true` request.
+/// Frozen by Task 42.
+pub const POLICY_BYPASS_BLOCKED: &str = "policy.bypass_blocked";
+
+/// Generic subcode used when the cap binds for a non-yolo reason. The
+/// wire code reported by [`Error::wire_code`] is `policy.locked`; this
+/// constant is the message-body prefix the audit log can grep for.
+pub const POLICY_LOCKED_GENERIC: &str = "policy.locked";
 
 /// Classification of a tool name into a safety bucket. V0.1 uses an
 /// inline table per `design/04 §3.10`; the per-tool TOML file
@@ -376,21 +420,17 @@ impl PermissionResolver {
         self.bypass_destructive_guard
     }
 
-    /// Classify a tool name. V0.1's inline table per `design/04 §3.10`:
+    /// Classify a tool name via the
+    /// [`tool_classes`](crate::security::tool_classes) lookup table.
     ///
-    /// - `edit`, `write`, `apply_patch` → [`ToolClass::Restricted`].
-    /// - `delete`, `rm`, `drop` → [`ToolClass::Dangerous`].
-    /// - everything else → [`ToolClass::Safe`].
-    ///
-    /// The match is case-sensitive and exact — parser packs are
-    /// responsible for normalising tool names before the resolver sees
-    /// them (V1.0's TOML keys are also lowercase).
+    /// Task 42 promoted the classification to a
+    /// `LazyLock<HashMap<&'static str, ToolClass>>` so adding a new
+    /// tool is a one-line table edit. Unknown tool names default to
+    /// [`ToolClass::Restricted`] (conservative posture per
+    /// `tool_classes` module docs); see
+    /// [`crate::security::tool_classes::classify_tool`] for the table.
     pub fn classify(&self, tool: &str) -> ToolClass {
-        match tool {
-            "edit" | "write" | "apply_patch" => ToolClass::Restricted,
-            "delete" | "rm" | "drop" => ToolClass::Dangerous,
-            _ => ToolClass::Safe,
-        }
+        crate::security::tool_classes::classify_tool(tool)
     }
 
     /// Decision matrix per `design/04 §3.10`:
@@ -487,6 +527,10 @@ mod tests {
         };
         let err = enforce_managed_cap(PermissionMode::Yolo, &mp).unwrap_err();
         assert!(matches!(err, Error::PolicyLocked(_)));
+        // The cap binds on yolo → subcode is the more-specific
+        // `policy.yolo_blocked` so the audit log groups all "yolo
+        // refusals" together.
+        assert!(format!("{err}").contains(POLICY_YOLO_BLOCKED));
         assert_eq!(
             enforce_managed_cap(PermissionMode::Auto, &mp).unwrap(),
             PermissionMode::Auto
@@ -494,61 +538,88 @@ mod tests {
     }
 
     #[test]
-    fn managed_allow_yolo_false_blocks_yolo() {
+    fn managed_allow_yolo_false_blocks_yolo_with_subcode() {
         let mp = ManagedPolicy {
             allow_yolo: false,
             ..ManagedPolicy::default()
         };
-        assert!(enforce_managed_cap(PermissionMode::Yolo, &mp).is_err());
+        let err = enforce_managed_cap(PermissionMode::Yolo, &mp).unwrap_err();
+        assert!(format!("{err}").contains(POLICY_YOLO_BLOCKED));
         assert!(enforce_managed_cap(PermissionMode::Auto, &mp).is_ok());
     }
 
     #[test]
-    fn classify_inline_table() {
+    fn managed_bypass_blocked_has_subcode() {
+        let mp = ManagedPolicy {
+            allow_bypass_destructive_guard: false,
+            ..ManagedPolicy::default()
+        };
+        let err = enforce_managed_bypass(true, &mp).unwrap_err();
+        assert!(format!("{err}").contains(POLICY_BYPASS_BLOCKED));
+        // Disabling never errors.
+        assert!(enforce_managed_bypass(false, &mp).is_ok());
+    }
+
+    #[test]
+    fn managed_cap_below_yolo_uses_generic_subcode_for_non_yolo() {
+        // Cap to normal; request auto → generic policy.locked subcode
+        // (not yolo_blocked).
+        let mp = ManagedPolicy {
+            max_permission_mode: Some(PermissionMode::Normal),
+            ..ManagedPolicy::default()
+        };
+        let err = enforce_managed_cap(PermissionMode::Auto, &mp).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains(POLICY_LOCKED_GENERIC));
+        assert!(!msg.contains(POLICY_YOLO_BLOCKED));
+    }
+
+    #[test]
+    fn classify_consults_tool_classes_table() {
         let r = PermissionResolver::new(PermissionMode::Normal, false);
-        assert_eq!(r.classify("ls"), ToolClass::Safe);
-        assert_eq!(r.classify("edit"), ToolClass::Restricted);
-        assert_eq!(r.classify("write"), ToolClass::Restricted);
-        assert_eq!(r.classify("apply_patch"), ToolClass::Restricted);
-        assert_eq!(r.classify("delete"), ToolClass::Dangerous);
-        assert_eq!(r.classify("rm"), ToolClass::Dangerous);
-        assert_eq!(r.classify("drop"), ToolClass::Dangerous);
+        assert_eq!(r.classify("Read"), ToolClass::Safe);
+        assert_eq!(r.classify("Write"), ToolClass::Restricted);
+        assert_eq!(r.classify("Edit"), ToolClass::Restricted);
+        assert_eq!(r.classify("Bash"), ToolClass::Restricted);
+        assert_eq!(r.classify("Delete"), ToolClass::Dangerous);
+        // Unknown tool defaults to Restricted (conservative).
+        assert_eq!(r.classify("Mystery"), ToolClass::Restricted);
     }
 
     #[test]
     fn decide_matrix_strict() {
         let r = PermissionResolver::new(PermissionMode::Strict, false);
-        assert_eq!(r.decide("ls"), Decision::MustAsk);
-        assert_eq!(r.decide("edit"), Decision::MustAsk);
-        assert_eq!(r.decide("rm"), Decision::MustAsk);
+        assert_eq!(r.decide("Read"), Decision::MustAsk);
+        assert_eq!(r.decide("Write"), Decision::MustAsk);
+        assert_eq!(r.decide("Delete"), Decision::MustAsk);
     }
 
     #[test]
     fn decide_matrix_normal() {
         let r = PermissionResolver::new(PermissionMode::Normal, false);
-        assert_eq!(r.decide("ls"), Decision::AutoApprove);
-        assert_eq!(r.decide("edit"), Decision::MustAsk);
-        assert_eq!(r.decide("rm"), Decision::MustAsk);
+        assert_eq!(r.decide("Read"), Decision::AutoApprove);
+        assert_eq!(r.decide("Write"), Decision::MustAsk);
+        assert_eq!(r.decide("Delete"), Decision::MustAsk);
     }
 
     #[test]
     fn decide_matrix_auto() {
         let r = PermissionResolver::new(PermissionMode::Auto, false);
-        assert_eq!(r.decide("ls"), Decision::AutoApprove);
-        assert_eq!(r.decide("edit"), Decision::AutoApprove);
-        assert_eq!(r.decide("rm"), Decision::MustAsk);
+        assert_eq!(r.decide("Read"), Decision::AutoApprove);
+        assert_eq!(r.decide("Write"), Decision::AutoApprove);
+        assert_eq!(r.decide("Delete"), Decision::MustAsk);
     }
 
     #[test]
     fn decide_matrix_yolo() {
         let r = PermissionResolver::new(PermissionMode::Yolo, false);
-        assert_eq!(r.decide("ls"), Decision::AutoApprove);
-        assert_eq!(r.decide("edit"), Decision::AutoApprove);
+        assert_eq!(r.decide("Read"), Decision::AutoApprove);
+        assert_eq!(r.decide("Write"), Decision::AutoApprove);
         // Dangerous + bypass=false → still MustAsk.
-        assert_eq!(r.decide("rm"), Decision::MustAsk);
+        assert_eq!(r.decide("Delete"), Decision::MustAsk);
         // Dangerous + bypass=true → AutoApprove.
         let r2 = PermissionResolver::new(PermissionMode::Yolo, true);
-        assert_eq!(r2.decide("rm"), Decision::AutoApprove);
+        assert_eq!(r2.decide("Delete"), Decision::AutoApprove);
     }
 
     #[test]

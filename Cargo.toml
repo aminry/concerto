@@ -163,3 +163,12 @@ serde_yaml = "0.9"
 # `<deny>/new-file` still classifies as Denied. MIT-licensed; no
 # transitive deps.
 path-clean = "1"
+# Task 42: cross-platform filesystem notifications for the managed.json
+# hot-reload watcher in `crates/core/src/security/managed.rs`. Pinned to
+# notify 8 (current stable; v9 is still RC at this writing). CC0-1.0
+# itself — a public-domain dedication, functionally permissive and
+# compatible with the design/00 §6.11 "permissive-only" posture; the
+# license is added to `deny.toml` with a justification. The watcher
+# debounces events at 500ms and broadcasts the parsed
+# [`ManagedPolicy`] via a `tokio::sync::watch::Sender`.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }

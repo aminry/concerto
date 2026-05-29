@@ -423,7 +423,7 @@ impl AgentSupervisorHandle {
         let permission_mode = match req.permission_mode.clone() {
             Some(s) => {
                 let parsed = crate::security::parse_permission_mode(&s)?;
-                let managed = crate::security::load_managed_policy(&self.config_dir);
+                let managed = crate::security::load_managed_policy(&self.config_dir)?;
                 let _capped = crate::security::permission::enforce_managed_cap(parsed, &managed)?;
                 parsed.as_str().to_string()
             }
@@ -972,7 +972,7 @@ impl AgentSupervisorHandle {
                 crate::security::ACK_YOLO
             )));
         }
-        let managed = crate::security::load_managed_policy(&self.config_dir);
+        let managed = crate::security::load_managed_policy(&self.config_dir)?;
         let _capped = crate::security::permission::enforce_managed_cap(parsed, &managed)?;
 
         let existing = concerto_persist::sessions::get(self.persistence.readers(), id)
@@ -1773,7 +1773,11 @@ async fn resolve_for_new_session(
         false
     };
 
-    let managed = load_managed_policy(config_dir);
+    // A malformed (version-mismatch) managed.json degrades to permissive
+    // for this resolver path — RPC handlers see the loud failure
+    // separately. Mirrors the behaviour in
+    // [`crate::security::resolve_effective_mode`].
+    let managed = load_managed_policy(config_dir).unwrap_or_default();
     if let Some(cap) = managed.max_permission_mode {
         if mode.rank() > cap.rank() {
             mode = cap;
