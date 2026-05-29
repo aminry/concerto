@@ -40,7 +40,9 @@ use tokio::net::UnixStream;
 use tokio::process::Child;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::agent_supervisor::approval::{user_decision_string, PendingApprovals};
+use crate::agent_supervisor::approval::{
+    policy_override, user_decision_string, PendingApprovals, PolicyVerdict, DENIED_BY_POLICY,
+};
 use crate::agent_supervisor::bridge::{
     build_hello, read_frame, write_frame, FrameError, HostFrame,
 };
@@ -1793,6 +1795,22 @@ async fn resolve_for_new_session(
     })
 }
 
+/// Task 41: build the per-workarea `(AllowList, DenyList)` pair the
+/// path-policy classifier needs. Wraps
+/// [`crate::security::path_policy::for_workarea_from_db`] with a
+/// best-effort home-dir lookup — V0.1 reads `$HOME` directly because
+/// the `home` crate's `home_dir()` is the canonical accessor everywhere
+/// else in this crate. On lookup failure the deny-list expands against
+/// an empty root, which conservatively makes every `~/.ssh`-style path
+/// match the lexical fallback in `canonicalize_or_clean`.
+async fn build_path_policy(
+    persistence: &Persistence,
+    workarea_id: &WorkareaId,
+) -> Result<(crate::security::AllowList, crate::security::DenyList)> {
+    let home = home::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    crate::security::path_policy::for_workarea_from_db(persistence, workarea_id, &home).await
+}
+
 /// Task 33: route a single [`ParseEvent`] coming off the parser pack to
 /// the right sink (broadcasts, persistence, approval wait-loop).
 ///
@@ -1922,16 +1940,48 @@ async fn dispatch_parse_event(
             payload,
         } => {
             // Resolve the verdict from the cached permission mode.
-            let decision = resolver.decide(&tool);
+            let mut decision = resolver.decide(&tool);
             let approval_id = uuid::Uuid::now_v7().to_string();
             let now_ms = now_unix_ms();
             let payload_json = payload.to_string();
 
+            // Task 41: consult the filesystem allow/deny policy. The
+            // deny-list is the hard floor — a matching path forces
+            // AutoDeny regardless of mode, and the row is persisted with
+            // `decision = "denied_by_policy"` so the audit log can
+            // distinguish a policy denial from a user `"deny"`. Outside
+            // / Allowed / no-path-extracted all fall through to the
+            // mode-class decision above.
+            let policy_verdict = match build_path_policy(persistence, workarea_id).await {
+                Ok((allow, deny)) => policy_override(&tool, &payload, &allow, &deny),
+                Err(e) => {
+                    tracing::warn!(
+                        session = %session_id,
+                        workarea = %workarea_id,
+                        error = %e,
+                        "path_policy: failed to build allow/deny lists; falling through to mode-class decision"
+                    );
+                    PolicyVerdict::Passthrough
+                }
+            };
+            let denied_by_policy = matches!(policy_verdict, PolicyVerdict::Denied);
+            if denied_by_policy {
+                decision = Decision::AutoDeny;
+            }
+
             match decision {
                 Decision::AutoApprove | Decision::AutoApproveOnce | Decision::AutoDeny => {
                     // Persist the auto-row up front + inject the bytes
-                    // right back into the agent's stdin.
-                    let auto_string = resolver.auto_decision_string().to_string();
+                    // right back into the agent's stdin. Task 41:
+                    // when the policy floor (deny-list) forced the
+                    // decision, the row carries `denied_by_policy`
+                    // instead of `auto_<mode>` so the audit log can
+                    // distinguish.
+                    let auto_string = if denied_by_policy {
+                        DENIED_BY_POLICY.to_string()
+                    } else {
+                        resolver.auto_decision_string().to_string()
+                    };
                     let row = concerto_persist::tool_approvals::NewToolApproval {
                         id: approval_id.clone(),
                         session_id: session_id.clone(),

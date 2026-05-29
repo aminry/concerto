@@ -62,6 +62,10 @@ regex = { workspace = true }
 toml = { workspace = true }
 # Task 39: YAML frontmatter parser for `SKILL.md` files. Workspace pin.
 serde_yaml = { workspace = true }
+# Task 41: lexical path cleaning for the filesystem allow/deny
+# policy. Workspace pin. Used as the fallback when
+# `std::fs::canonicalize` fails (e.g. paths that don't exist yet).
+path-clean = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via

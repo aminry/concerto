@@ -49,6 +49,7 @@ pub mod events;
 pub mod mcp;
 pub mod parsers;
 pub mod spawn;
+pub mod tool_args;
 
 pub use actor::{
     AgentKind, AgentSupervisorActor, AgentSupervisorConfig, AgentSupervisorHandle, SessionIoChunk,

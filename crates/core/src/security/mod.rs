@@ -18,9 +18,11 @@
 //! [`permission::ack_for_bypass_destructive_guard`].
 
 pub mod managed;
+pub mod path_policy;
 pub mod permission;
 
 pub use managed::{load_managed_policy, ManagedPolicy};
+pub use path_policy::{classify as classify_path, AllowList, DenyList, PathDecision};
 pub use permission::{
     ack_for_bypass_destructive_guard, ack_for_yolo, parse_permission_mode, resolve_effective_mode,
     Decision, EffectiveMode, ModeSource, PermissionMode, PermissionResolver, ToolClass,
