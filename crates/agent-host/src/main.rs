@@ -232,6 +232,16 @@ mod unix {
         mut resize_rx: tokio::sync::mpsc::UnboundedReceiver<(u16, u16)>,
         rt: tokio::runtime::Handle,
     ) -> (Option<i32>, Option<i32>) {
+        // Emit a message to the session terminal via the ring buffer. Used
+        // by the PTY-setup error paths so a failure is visible to the user
+        // instead of only landing in the daemon log.
+        let emit_to_terminal = |msg: String| {
+            let s = state.clone();
+            rt.block_on(async move {
+                record_chunk(&s, msg.into_bytes()).await;
+            });
+        };
+
         let pty_system = portable_pty::native_pty_system();
         let pair = match pty_system.openpty(PtySize {
             rows: 24,
@@ -242,6 +252,9 @@ mod unix {
             Ok(p) => p,
             Err(e) => {
                 error!(error = %e, "openpty failed");
+                emit_to_terminal(format!(
+                    "\r\n\x1b[31m[concerto] terminal setup failed: {e}\x1b[0m\r\n"
+                ));
                 return (None, None);
             }
         };
@@ -260,6 +273,12 @@ mod unix {
             Ok(c) => c,
             Err(e) => {
                 error!(error = %e, bin = ?agent_bin, "spawn agent CLI failed");
+                emit_to_terminal(format!(
+                    "\r\n\x1b[31m[concerto] Failed to start agent '{}':\x1b[0m {}\r\n\
+                     \x1b[2m[concerto] Check the agent CLI is installed and on the Core daemon's PATH.\x1b[0m\r\n",
+                    agent_bin.display(),
+                    e,
+                ));
                 return (None, None);
             }
         };
@@ -272,6 +291,9 @@ mod unix {
             Ok(r) => r,
             Err(e) => {
                 error!(error = %e, "clone PTY reader failed");
+                emit_to_terminal(format!(
+                    "\r\n\x1b[31m[concerto] terminal setup failed: {e}\x1b[0m\r\n"
+                ));
                 let _ = child.kill();
                 return (None, None);
             }
@@ -280,6 +302,9 @@ mod unix {
             Ok(w) => w,
             Err(e) => {
                 error!(error = %e, "take PTY writer failed");
+                emit_to_terminal(format!(
+                    "\r\n\x1b[31m[concerto] terminal setup failed: {e}\x1b[0m\r\n"
+                ));
                 let _ = child.kill();
                 return (None, None);
             }
