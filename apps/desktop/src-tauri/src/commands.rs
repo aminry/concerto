@@ -36,11 +36,11 @@ use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
     AddRepoRequest, CloneRequest, CreateSessionRequest, CreateWorkareaRequest,
-    CreateWorkspaceRequest, ListProjectsRequest, ListRepositoriesRequest, ListSchedulesRequest,
-    ListSessionsRequest, ListSkillsRequest, ListWorkareasRequest, ListWorkspacesRequest,
-    McpScopeRequest, PermissionMode, SendMessageRequest, SessionId as ProtoSessionId,
-    StopSessionRequest, SubscribeRequest, WorkareaId as ProtoWorkareaId,
-    WorkspaceId as ProtoWorkspaceId,
+    CreateWorkspaceRequest, GetDiffRequest, ListProjectsRequest, ListRepositoriesRequest,
+    ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListWorkareasRequest,
+    ListWorkspacesRequest, McpScopeRequest, PermissionMode, SendMessageRequest,
+    SessionId as ProtoSessionId, StopSessionRequest, SubscribeRequest,
+    WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -397,6 +397,16 @@ struct ListWorkareasPayload {
     include_archived: bool,
 }
 
+/// Payload wrapper for `Workareas.GetWorkareaRepoDiff` (Task 29 RPC,
+/// Task 47 renderer surface). Identifies the `(workarea, repository)`
+/// pair; the Core resolves the matching per-repo worktree and returns
+/// a structured `DiffPayload`.
+#[derive(Debug, Deserialize)]
+struct GetWorkareaRepoDiffPayload {
+    workarea_id: String,
+    repository_id: String,
+}
+
 /// Payload wrapper for `Repositories.AddRepository`.
 #[derive(Debug, Deserialize)]
 struct AddRepositoryPayload {
@@ -551,6 +561,19 @@ pub(crate) async fn dispatch(
                 .create_workarea(CreateWorkareaRequest {
                     workspace_id: req.workspace_id,
                     permission_mode: req.permission_mode.and_then(normalize_permission_mode),
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Workareas.GetWorkareaRepoDiff" => {
+            let req: GetWorkareaRepoDiffPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for GetWorkareaRepoDiff: {e}"))
+            })?;
+            let mut client = WorkareasClient::new(channel);
+            client
+                .get_workarea_repo_diff(GetDiffRequest {
+                    workarea_id: req.workarea_id,
+                    repository_id: req.repository_id,
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))

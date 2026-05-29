@@ -23,6 +23,12 @@ export type RightRailTab =
   | "mcp"
   | "files";
 
+/// Task 47 — Monaco diff view modes. `split` shows the side-by-side
+/// editor; `unified` flips Monaco's `renderSideBySide` off so the
+/// before/after collapse into a single column. The state is persisted
+/// alongside the rest of the layout so the choice survives reloads.
+export type DiffViewMode = "split" | "unified";
+
 /// `localStorage` key for the persisted layout state. Task 46 locks
 /// the schema:
 ///
@@ -42,6 +48,7 @@ export const LAYOUT_DEFAULTS = {
   sessionRegionHeight: 55,
   rightRailCollapsed: false,
   rightRailTab: "scheduler" as RightRailTab,
+  diffViewMode: "split" as DiffViewMode,
 };
 
 export type LayoutState = typeof LAYOUT_DEFAULTS;
@@ -75,6 +82,10 @@ export type UiStore = {
   sessionRegionHeight: number;
   rightRailCollapsed: boolean;
   rightRailTab: RightRailTab;
+  /// Task 47 — selected mode for the Monaco diff viewer in the
+  /// `CodePrRegion`'s Diff sub-tab. Persisted with the rest of the
+  /// layout state.
+  diffViewMode: DiffViewMode;
   setSelectedWorkspace: (id: string | null) => void;
   setSelectedWorkarea: (id: string | null) => void;
   setSelectedProject: (id: string | null) => void;
@@ -89,6 +100,7 @@ export type UiStore = {
   setSessionRegionHeight: (height: number) => void;
   setRightRailCollapsed: (collapsed: boolean) => void;
   setRightRailTab: (tab: RightRailTab) => void;
+  setDiffViewMode: (mode: DiffViewMode) => void;
 };
 
 /// Load the persisted layout state from `localStorage`. Bad / missing
@@ -118,6 +130,9 @@ function loadLayoutState(): LayoutState {
       rightRailTab: isRightRailTab(parsed.rightRailTab)
         ? parsed.rightRailTab
         : LAYOUT_DEFAULTS.rightRailTab,
+      diffViewMode: isDiffViewMode(parsed.diffViewMode)
+        ? parsed.diffViewMode
+        : LAYOUT_DEFAULTS.diffViewMode,
     };
   } catch {
     return { ...LAYOUT_DEFAULTS };
@@ -141,6 +156,10 @@ function isRightRailTab(value: unknown): value is RightRailTab {
   );
 }
 
+function isDiffViewMode(value: unknown): value is DiffViewMode {
+  return value === "split" || value === "unified";
+}
+
 const initialLayout = loadLayoutState();
 
 export const useUiStore = create<UiStore>((set) => ({
@@ -157,6 +176,7 @@ export const useUiStore = create<UiStore>((set) => ({
   sessionRegionHeight: initialLayout.sessionRegionHeight,
   rightRailCollapsed: initialLayout.rightRailCollapsed,
   rightRailTab: initialLayout.rightRailTab,
+  diffViewMode: initialLayout.diffViewMode,
   setSelectedWorkspace: (id) =>
     set({
       selectedWorkspaceId: id,
@@ -196,4 +216,5 @@ export const useUiStore = create<UiStore>((set) => ({
     set({ sessionRegionHeight: clampPercent(height) }),
   setRightRailCollapsed: (collapsed) => set({ rightRailCollapsed: collapsed }),
   setRightRailTab: (tab) => set({ rightRailTab: tab }),
+  setDiffViewMode: (mode) => set({ diffViewMode: mode }),
 }));

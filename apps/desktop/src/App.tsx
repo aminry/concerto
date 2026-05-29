@@ -59,6 +59,7 @@ function useLayoutPersistence(): void {
   const sessionRegionHeight = useUiStore((s) => s.sessionRegionHeight);
   const rightRailCollapsed = useUiStore((s) => s.rightRailCollapsed);
   const rightRailTab = useUiStore((s) => s.rightRailTab);
+  const diffViewMode = useUiStore((s) => s.diffViewMode);
   const firstRunRef = useRef(true);
   const timerRef = useRef<number | null>(null);
 
@@ -80,6 +81,7 @@ function useLayoutPersistence(): void {
             sessionRegionHeight,
             rightRailCollapsed,
             rightRailTab,
+            diffViewMode,
           }),
         );
       } catch {
@@ -94,7 +96,13 @@ function useLayoutPersistence(): void {
         timerRef.current = null;
       }
     };
-  }, [sidebarWidth, sessionRegionHeight, rightRailCollapsed, rightRailTab]);
+  }, [
+    sidebarWidth,
+    sessionRegionHeight,
+    rightRailCollapsed,
+    rightRailTab,
+    diffViewMode,
+  ]);
 }
 
 export default App;
