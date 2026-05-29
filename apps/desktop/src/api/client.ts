@@ -26,6 +26,7 @@ export type RpcMethod =
   | "Sessions.CreateSession"
   | "Sessions.SendMessage"
   | "Sessions.StopSession"
+  | "Sessions.DeleteSession"
   | "Sessions.ListMcpServers"
   | "Schedules.ListSchedules"
   | "Skills.ListSkills";

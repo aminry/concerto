@@ -94,6 +94,16 @@ export async function stopSession(
   );
 }
 
+/// Destructive: stops the session if running, then permanently deletes
+/// it server-side (chat thread, approvals, checkpoints). The Core's
+/// `DeleteSession` takes a `SessionId { value }`; the shell maps the
+/// `{ id }` payload to it (same convention as GetSession).
+export async function deleteSession(sessionId: string): Promise<void> {
+  await callRpc<{ id: string }, null>("Sessions.DeleteSession", {
+    id: sessionId,
+  });
+}
+
 /// Shape of an `Event` frame emitted under `concerto/session.io.<sid>`.
 /// Prost-serde's oneof representation puts the variant under `body`
 /// keyed by the proto field name. `session_io` carries
