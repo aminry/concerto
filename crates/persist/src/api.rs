@@ -537,6 +537,10 @@ pub struct NewSession {
     pub started_at: i64,
     /// One of `starting|running|awaiting|finished|crashed`.
     pub status: String,
+    /// Task 36: highest `seq` the Core has ack'd to the agent host.
+    /// Initial inserts always pass `0`; the bridge pump persists this
+    /// opportunistically and `adopt_orphans` reads it on boot.
+    pub last_acked_seq: i64,
 }
 
 /// Row-shaped projection of a `sessions` row.
@@ -559,6 +563,11 @@ pub struct Session {
     pub ended_at: Option<i64>,
     pub last_heartbeat: Option<i64>,
     pub status: String,
+    /// Task 36: highest `seq` the Core has ack'd to the agent host.
+    /// Persisted opportunistically by the bridge pump (every ~5s); used
+    /// by `adopt_orphans` on Core boot to resume the host's ring buffer
+    /// past this watermark.
+    pub last_acked_seq: i64,
 }
 
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
