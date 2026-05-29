@@ -17,5 +17,6 @@ pub mod skills;
 pub mod streams;
 #[cfg(unix)]
 pub mod suggestions;
+pub mod vcs;
 pub mod workareas;
 pub mod workspaces;

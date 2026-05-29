@@ -21,6 +21,7 @@ pub mod api;
 pub mod chat_messages;
 pub mod checkpoints;
 pub mod projects;
+pub mod pull_requests;
 pub mod repositories;
 pub mod schedule_runs;
 pub mod schedules;
@@ -32,9 +33,10 @@ pub mod workareas;
 pub mod workspaces;
 
 pub use api::{
-    NewChat, NewProject, NewRepository, NewSchedule, NewScheduleRun, NewSession, NewSkill,
-    NewSuggestionLearn, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence, PersistenceConfig,
-    Project, ProjectId, Repository, RepositoryId, Schedule, ScheduleId, ScheduleRun, ScheduleRunId,
-    Session, SessionId, SkillFilter, SkillId, SkillRow, SkillScope, SuggestionLearn,
-    SuggestionLearnId, Workarea, WorkareaId, Workspace, WorkspaceId, WriterGuard,
+    NewChat, NewProject, NewPullRequest, NewRepository, NewSchedule, NewScheduleRun, NewSession,
+    NewSkill, NewSuggestionLearn, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
+    PersistenceConfig, Project, ProjectId, PullRequest, PullRequestId, Repository, RepositoryId,
+    Schedule, ScheduleId, ScheduleRun, ScheduleRunId, Session, SessionId, SkillFilter, SkillId,
+    SkillRow, SkillScope, SuggestionLearn, SuggestionLearnId, Workarea, WorkareaId, Workspace,
+    WorkspaceId, WriterGuard,
 };

@@ -35,6 +35,7 @@ use crate::skills::SkillsRegistryHandle;
 #[cfg(unix)]
 use crate::suggestions::SuggestionEngineHandle;
 use crate::supervisor::{Actor, ActorContext, SupervisorView};
+use crate::vcs::VcsHandle;
 use crate::workspace_manager::{WorkareaManager, WorkspaceManager};
 use concerto_persist::Persistence;
 
@@ -95,6 +96,10 @@ pub struct ApiServerActor {
     /// subject.
     #[cfg(unix)]
     suggestions: Option<SuggestionEngineHandle>,
+    /// Optional VCS Provider handle. When `Some`, the gRPC `Vcs`
+    /// service is registered (Task 45). The handle is cheap to clone
+    /// and lazily resolves the `gh` binary path on first use.
+    vcs: Option<VcsHandle>,
 }
 
 impl ApiServerActor {
@@ -115,6 +120,7 @@ impl ApiServerActor {
             skills_registry: None,
             #[cfg(unix)]
             suggestions: None,
+            vcs: None,
         }
     }
 
@@ -141,6 +147,7 @@ impl ApiServerActor {
             skills_registry: None,
             #[cfg(unix)]
             suggestions: None,
+            vcs: None,
         }
     }
 
@@ -162,6 +169,7 @@ impl ApiServerActor {
         #[cfg(unix)] scheduler: Option<SchedulerHandle>,
         skills_registry: Option<SkillsRegistryHandle>,
         #[cfg(unix)] suggestions: Option<SuggestionEngineHandle>,
+        vcs: Option<VcsHandle>,
     ) -> Self {
         Self {
             started_at,
@@ -177,6 +185,7 @@ impl ApiServerActor {
             skills_registry,
             #[cfg(unix)]
             suggestions,
+            vcs,
         }
     }
 }
@@ -205,6 +214,7 @@ impl Actor for ApiServerActor {
                 self.scheduler,
                 self.skills_registry,
                 self.suggestions,
+                self.vcs,
                 ctx.shutdown,
             )
             .await
@@ -219,6 +229,7 @@ impl Actor for ApiServerActor {
                 self.workarea_manager,
                 self.persistence,
                 self.skills_registry,
+                self.vcs,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -248,6 +259,7 @@ async fn run_uds(
     scheduler: Option<SchedulerHandle>,
     skills_registry: Option<SkillsRegistryHandle>,
     suggestions: Option<SuggestionEngineHandle>,
+    vcs: Option<VcsHandle>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -265,6 +277,7 @@ async fn run_uds(
     use crate::handlers::skills::SkillsHandler;
     use crate::handlers::streams::StreamsHandler;
     use crate::handlers::suggestions::SuggestionsHandler;
+    use crate::handlers::vcs::VcsHandler;
     use crate::handlers::workareas::WorkareasHandler;
     use crate::handlers::workspaces::WorkspacesHandler;
     use concerto_proto::v1::projects_server::ProjectsServer;
@@ -275,6 +288,7 @@ async fn run_uds(
     use concerto_proto::v1::skills_server::SkillsServer;
     use concerto_proto::v1::streams_server::StreamsServer;
     use concerto_proto::v1::suggestions_server::SuggestionsServer;
+    use concerto_proto::v1::vcs_server::VcsServer;
     use concerto_proto::v1::workareas_server::WorkareasServer;
     use concerto_proto::v1::workspaces_server::WorkspacesServer;
 
@@ -396,6 +410,14 @@ async fn run_uds(
     if let Some(suggestions) = suggestions {
         let suggestions_service = SuggestionsServer::new(SuggestionsHandler::new(suggestions));
         builder = builder.add_service(suggestions_service);
+    }
+    // Task 45: `Vcs` provider integration via `gh` CLI shell-out.
+    // Independent of every other manager — the handle owns its own
+    // (lazy) `gh` path resolution + an `Arc<Persistence>` for the
+    // `pull_requests` cache.
+    if let Some(vcs) = vcs {
+        let vcs_service = VcsServer::new(VcsHandler::new(vcs));
+        builder = builder.add_service(vcs_service);
     }
 
     let serve_fut =

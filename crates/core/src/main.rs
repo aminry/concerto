@@ -25,6 +25,7 @@ use concerto_core::scheduler::{SchedulerActor, SchedulerConfig};
 use concerto_core::skills::{SkillsRegistryActor, SkillsRegistryConfig};
 #[cfg(unix)]
 use concerto_core::suggestions::{SuggestionEngineActor, SuggestionEngineConfig};
+use concerto_core::vcs::{VcsConfig, VcsProviderActor};
 use concerto_core::workspace_manager::{
     WorkareaManagerActor, WorkareaManagerConfig, WorkspaceManagerActor, WorkspaceManagerConfig,
 };
@@ -351,6 +352,33 @@ async fn run() -> Result<()> {
         Err(e) => tracing::warn!(error = %e, "pty hot-reconnect sweep failed"),
     }
 
+    // Task 45: spawn the VCS Provider. Same actor pattern as the
+    // skills registry — the actor's `run` parks on shutdown; the
+    // handle holds an `Arc<Persistence>` for the cached
+    // `pull_requests` rows and lazily resolves the `gh` binary on
+    // first use. The probe (`gh auth status`) runs at boot but does
+    // NOT gate startup: a missing or unauthenticated `gh` produces
+    // a warning, and the per-RPC error surfaces the same condition
+    // to the caller.
+    let vcs_actor = VcsProviderActor::new(Arc::clone(&persistence));
+    let vcs_handle = vcs_actor.handle();
+    drop(vcs_actor);
+    let vcs_factory_persistence = Arc::clone(&persistence);
+    runtime
+        .supervisor_mut()
+        .expect("supervisor present at boot")
+        .spawn::<VcsProviderActor, _>(
+            move || VcsProviderActor::new(Arc::clone(&vcs_factory_persistence)),
+            VcsConfig,
+        )
+        .await?;
+    match vcs_handle.check_auth().await {
+        Ok(()) => tracing::info!("vcs.gh_auth ok"),
+        Err(e) => {
+            tracing::warn!(error = %e, "vcs.gh_auth probe failed (UI will prompt on first use)")
+        }
+    }
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
     // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`
@@ -375,6 +403,7 @@ async fn run() -> Result<()> {
     let factory_skills_handle = skills_handle.clone();
     #[cfg(unix)]
     let factory_suggestions_handle = suggestions_handle.clone();
+    let factory_vcs_handle = vcs_handle.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -394,6 +423,7 @@ async fn run() -> Result<()> {
                     Some(factory_skills_handle.clone()),
                     #[cfg(unix)]
                     Some(factory_suggestions_handle.clone()),
+                    Some(factory_vcs_handle.clone()),
                 )
             },
             ApiServerConfig { socket_path },

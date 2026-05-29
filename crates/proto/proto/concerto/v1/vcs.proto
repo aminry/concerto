@@ -1,0 +1,134 @@
+// VCS (Version Control System) provider service surface — V0.1 GitHub
+// via `gh` CLI shell-out (Task 45, design/13 §2 V0.1 row, §5).
+//
+// V0.1 scope: GitHub only, via the `gh` CLI binary on the user's PATH.
+// The full octocrab REST/GraphQL client + webhook receiver + PR-set
+// coordinated-merge semantics are V1.0; GitLab / Bitbucket are V2.0.
+//
+// Field numbers in this file are FROZEN as of Task 45.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "google/protobuf/empty.proto";
+
+// Cached PR projection — mirrors a row from the `pull_requests` table
+// (migration 0008). `provider` is `"github"` for V0.1 GitHub repos.
+// `state` is one of `open|closed|merged|draft` for the GitHub provider.
+//
+// `body` may be large but is bounded by GitHub's 65535-character PR
+// body limit; the wire is not chunked.
+message PullRequest {
+  string id = 1;
+  string workarea_id = 2;
+  string repository_id = 3;
+  string provider = 4;
+  int64 pr_number = 5;
+  string base_ref = 6;
+  string head_ref = 7;
+  string state = 8;
+  string title = 9;
+  string body = 10;
+  string url = 11;
+  string head_sha = 12;
+  int64 created_at = 13;
+  int64 updated_at = 14;
+}
+
+// A single GitHub check run for `head_sha`. Mirrors `gh pr view --json
+// statusCheckRollup` entries one-to-one (plus the surrounding
+// repository field). V0.1 reports the GitHub-side `status` /
+// `conclusion` strings verbatim; the UI maps them onto a colour band.
+message CheckRun {
+  string name = 1;
+  // status ∈ { queued | in_progress | completed }
+  string status = 2;
+  // conclusion (only set when status == completed) ∈
+  // { success | failure | neutral | cancelled | timed_out | action_required | stale | skipped }
+  string conclusion = 3;
+  string details_url = 4;
+}
+
+// Inputs for `Vcs.GetPullRequest`. The server reads the live PR JSON
+// via `gh pr view --json <fields>` on `(repository_id, pr_number)`,
+// upserts the cached `pull_requests` row, and returns it.
+message GetPrRequest {
+  string repository_id = 1;
+  int64 pr_number = 2;
+}
+
+// Inputs for `Vcs.CreatePullRequest`. The server resolves
+// `repository_id` to the local clone's full name (`owner/repo`) via
+// the persisted `repositories` row, shells out to `gh pr create
+// --json` with the given base/head/title/body, persists the result
+// to `pull_requests`, and returns it.
+//
+// `head` is the branch name (already pushed by the agent); the server
+// does NOT push on the caller's behalf in V0.1. `base` defaults to the
+// repository's `default_branch` when empty.
+message CreatePrRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  string base = 3;
+  string head = 4;
+  string title = 5;
+  string body = 6;
+}
+
+// Inputs for `Vcs.MergePullRequest`. `method` MUST be one of
+// `merge|squash|rebase` (lowercase). The server invokes
+// `gh pr merge --<method>` and refreshes the cached row.
+message MergePrRequest {
+  string repository_id = 1;
+  int64 pr_number = 2;
+  // One of merge | squash | rebase. Empty defaults to `merge`.
+  string method = 3;
+}
+
+// Inputs for `Vcs.GetChecks`. Returns the list of check runs for the
+// given commit SHA on the given repository. The server shells out to
+// `gh api /repos/<owner>/<repo>/commits/<sha>/check-runs --jq` for the
+// flat list shape.
+message GetChecksRequest {
+  string repository_id = 1;
+  string sha = 2;
+}
+
+message GetChecksResponse {
+  repeated CheckRun checks = 1;
+}
+
+// Inputs for `Vcs.FetchIssue`. V0.1 supports GitHub issues on the same
+// host as the repository (single-host inference); cross-host fetch is
+// V1.0. `issue_number` is the GitHub `#<n>` integer.
+message FetchIssueRequest {
+  string repository_id = 1;
+  int64 issue_number = 2;
+}
+
+// GitHub issue projection — minimal V0.1 shape consumed by the
+// workspace-creation-from-issue flow. Body is capped to GitHub's 65k
+// limit; labels are returned verbatim as lowercase strings.
+message Issue {
+  int64 number = 1;
+  string title = 2;
+  string body = 3;
+  string state = 4;
+  string url = 5;
+  repeated string labels = 6;
+}
+
+// V0.1 VCS service surface, frozen at Task 45. The five RPCs cover the
+// GitHub operations the Workarea + Maestro subsystems need for the
+// V0.1 demo path: create a PR, look it up, merge it, see its checks,
+// fetch a referenced issue. Everything else — review threads,
+// deployments, PR-set coordinated merge, webhooks, GitLab / Bitbucket
+// — lives in V1.0 / V2.0 per `design/13 §2`.
+service Vcs {
+  rpc GetPullRequest(GetPrRequest) returns (PullRequest);
+  rpc CreatePullRequest(CreatePrRequest) returns (PullRequest);
+  rpc MergePullRequest(MergePrRequest) returns (google.protobuf.Empty);
+  rpc GetChecks(GetChecksRequest) returns (GetChecksResponse);
+  rpc FetchIssue(FetchIssueRequest) returns (Issue);
+}

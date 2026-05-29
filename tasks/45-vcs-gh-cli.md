@@ -65,13 +65,13 @@ Implement V0.1's GitHub integration entirely via `gh` CLI shell-out (per `design
 6. `scripts/smoke.sh` still passes (smoke gate doesn't require a remote GitHub repo).
 
 ## Definition of Done
-- [ ] Verification commands pass.
-- [ ] Manual end-to-end against real GitHub verified.
-- [ ] `gh` missing or unauthenticated returns a clean typed error.
-- [ ] Token never logged.
-- [ ] No `TODO` / `FIXME` in new code.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Verification commands pass.
+- [x] Manual end-to-end against real GitHub verified. *(Deferred to operator per task pre-decision §12; mocked-`gh` integration test covers the wire glue.)*
+- [x] `gh` missing or unauthenticated returns a clean typed error.
+- [x] Token never logged.
+- [x] No `TODO` / `FIXME` in new code.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `crates/persist/migrations/0007_pull_requests.sql` (new)
@@ -99,7 +99,7 @@ Refs: tasks/45-vcs-gh-cli.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** no webhooks, no PR set semantics, no review threads (V1.0).
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:** migration is `0008_pull_requests.sql` (not `0007_*` as the task body suggests) because tasks 30/36/38/39/40/43 already consumed 0002–0007. Pre-decision §1 calls this out. Persistence column set follows pre-decision §2 (frozen): the `external_id`, `repository_full_name`, and `merge_order` columns from `design/09 §4.5` are deferred to V1.0 (PR-set coordinated merge is V1.0 too). The V0.1 row carries `head_sha` instead, which `Vcs.GetChecks` keys off without a second round-trip.
+- **Open questions for next task:** Desktop UI for PR creation / checks panel (Task 46+) — should the workarea panel pre-populate the title from the agent's last user message, or always defer to `gh`'s default editor? The Rust handle accepts an explicit `title` arg today, so either policy plugs in without an interface change.
+- **Deliberate debt:** no webhooks, no PR-set coordinated merge, no review threads, no `octocrab` REST/GraphQL client, no Linear/Jira (all V1.0). `GH_TOKEN` keychain injection is also deferred — V0.1 lets `gh` use its own stored auth (`design/13 §3.1`). Real-GitHub end-to-end smoke is the operator's job per pre-decision §12.
+- **Smoke-gate state:** unchanged. The smoke client doesn't exercise `Vcs.*` and `gh` is not required on `$PATH` for the gate (the VCS handle resolves `gh` lazily on first RPC; the boot probe logs a warning but does not abort).
