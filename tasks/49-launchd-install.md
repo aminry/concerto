@@ -73,13 +73,13 @@ Add the launchd LaunchAgent plist + install/uninstall scripts so `concerto-core`
 5. `scripts/smoke.sh` still passes (smoke gate uses ad-hoc-spawned Core, not the launchd one).
 
 ## Definition of Done
-- [ ] Install + uninstall scripts work on a fresh Mac.
-- [ ] `launchctl` reports the service active after install.
-- [ ] `KeepAlive` restarts the Core if killed.
-- [ ] Idempotent: re-running install doesn't break.
-- [ ] No `TODO` / `FIXME` in scripts or plist.
-- [ ] Smoke gate still green.
-- [ ] Single commit created.
+- [x] Install + uninstall scripts work on a fresh Mac.
+- [x] `launchctl` reports the service active after install.
+- [x] `KeepAlive` restarts the Core if killed.
+- [x] Idempotent: re-running install doesn't break.
+- [x] No `TODO` / `FIXME` in scripts or plist.
+- [x] Smoke gate still green.
+- [x] Single commit created.
 
 ## Outputs
 - `dist/macos/com.concerto.core.plist` (new — template)
@@ -101,7 +101,7 @@ Refs: tasks/49-launchd-install.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** —
-- **Deliberate debt:** no Linux / Windows install yet (V1.0); no .pkg installer (V1.0).
-- **Smoke-gate state:** unchanged.
+- **Drift from plan:** Plist uses two template tokens (`__BIN_PATH__` and `__HOME__`) rather than one — launchd does not expand `~` inside `StandardOutPath` / `StandardErrorPath`, so the install script templates the absolute log paths too. `EnvironmentVariables` carries a minimal `PATH` (homebrew + system) because launchd agents inherit an extremely sparse PATH otherwise; `HOME` / `USER` are still set by launchd as documented.
+- **Verification limits:** `bash -n`, `shellcheck`, `plutil -lint` on the rendered plist, `cargo check --workspace`, and `./scripts/smoke.sh` all pass in this workspace. The actual `launchctl bootstrap` / `bootout` / login-survival behavior can only be verified on a real macOS user session by the operator — this task does not run launchctl from CI.
+- **Deliberate debt:** no Linux / Windows install yet (V1.0); no .pkg installer (V1.0). Per-user install path `~/Applications/concerto/concerto-core` was chosen over `/usr/local/bin/concerto-core` so the script never prompts for sudo; documented in `dist/macos/README.md`.
+- **Smoke-gate state:** unchanged — Smoke v2 (project + repo + workspace + echo session) still passes; the launchd path is orthogonal to the ad-hoc Core spawned by the smoke gate.

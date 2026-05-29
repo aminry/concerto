@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Concerto Core LaunchAgent template.
+
+  This file is a TEMPLATE: the install script substitutes the literal token
+  __BIN_PATH__ with the absolute path to the installed concerto-core binary
+  before writing the rendered plist to:
+
+      ~/Library/LaunchAgents/com.concerto.core.plist
+
+  Service control uses `launchctl bootstrap` / `bootout` (the modern
+  replacements for `load` / `unload`, which are deprecated on macOS 11+).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.concerto.core</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__BIN_PATH__</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+      Restart on crash only, not on clean exit. A clean exit means the
+      operator (or `concertoctl shutdown`) intentionally stopped Core; we
+      should not fight that.
+    -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <!--
+      launchd expands ~ inside StandardOutPath / StandardErrorPath against
+      the agent's HOME, which is the loading user's home directory.
+    -->
+    <key>StandardOutPath</key>
+    <string>__HOME__/concerto/logs/launchd-out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/concerto/logs/launchd-err.log</string>
+
+    <!--
+      EnvironmentVariables intentionally minimal: launchd sets HOME and USER
+      for a gui/<uid> agent, and concerto-core derives CONCERTO_HOME from
+      $HOME when unset.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>
