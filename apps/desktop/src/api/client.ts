@@ -18,6 +18,7 @@ export type RpcMethod =
   | "Workareas.GetWorkarea"
   | "Workareas.ListWorkareas"
   | "Workareas.CreateWorkarea"
+  | "Workareas.GetWorkareaRepoDiff"
   | "Repositories.AddRepository"
   | "Repositories.ListByProject"
   | "Sessions.ListSessions"
