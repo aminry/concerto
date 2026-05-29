@@ -153,3 +153,13 @@ toml = "0.8"
 # `serde_yaml::from_str::<SkillFrontmatter>` and falls back gracefully
 # on parse errors.
 serde_yaml = "0.9"
+# Task 41: lexical path normalization for the filesystem allow/deny
+# policy in `crates/core/src/security/path_policy.rs`. `path-clean` is a
+# tiny crate (≈100 lines, MIT) that implements Rob Pike's path.Clean
+# algorithm — it collapses `..` / `.` / repeated separators WITHOUT
+# touching the filesystem. We use it as the fallback when
+# `std::fs::canonicalize` fails (e.g. the path doesn't exist yet), so a
+# write to `<allow>/new-file` still classifies as Allowed and a write to
+# `<deny>/new-file` still classifies as Denied. MIT-licensed; no
+# transitive deps.
+path-clean = "1"
