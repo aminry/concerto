@@ -1,0 +1,149 @@
+name: release
+
+# Task 53: tag-triggered macOS release.
+#
+# Builds aarch64 + x86_64 .app bundles via `pnpm tauri build`, signs
+# them with the Developer ID Application cert, notarizes via
+# notarytool, and uploads the artifacts to a GitHub release.
+#
+# Secrets required (see dist/SIGNING.md):
+#   APPLE_CERTIFICATE         — base64'd .p12 of the Developer ID Application cert.
+#   APPLE_CERTIFICATE_PASSWORD — password protecting the .p12.
+#   APPLE_SIGNING_IDENTITY    — e.g. "Developer ID Application: Concerto Inc (TEAMID)".
+#   APPLE_TEAM_ID             — Apple Developer Team ID.
+#   APPLE_API_ISSUER          — App Store Connect API issuer UUID.
+#   APPLE_API_KEY_ID          — App Store Connect API key ID.
+#   APPLE_API_PRIVATE_KEY     — base64'd .p8 private key.
+#   TAURI_SIGNING_PRIVATE_KEY — Tauri updater ed25519 private key.
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — password protecting the key.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  bundle:
+    name: bundle / ${{ matrix.target }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install desktop deps
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri bundle
+        working-directory: apps/desktop
+        env:
+          # Tauri's updater signing — the plugin embeds a detached
+          # signature alongside the bundle and writes the JSON manifest
+          # the auto-updater fetches at runtime.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Decode the cert and import it into a transient keychain.
+          # The keychain is destroyed at job end so the runner is clean
+          # for re-use.
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/release.keychain"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Codesign
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APP_PATH: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Concerto.app
+        run: ./scripts/sign-macos.sh
+
+      - name: Store notarytool credentials
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/api_key.p8"
+          echo "$APPLE_API_PRIVATE_KEY" | base64 --decode > "$KEY_PATH"
+          xcrun notarytool store-credentials concerto-notarytool \
+            --key "$KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER"
+
+      - name: Notarize
+        env:
+          KEYCHAIN_PROFILE: concerto-notarytool
+          APP_PATH: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Concerto.app
+        run: ./scripts/notarize-macos.sh
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUNDLE_DIR="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          # Tauri emits both .app + .dmg; we ship the .dmg + the
+          # updater manifest (latest.json + .sig) so the auto-update
+          # endpoint can mirror them.
+          ASSETS=()
+          for f in "$BUNDLE_DIR/macos"/*.app.tar.gz \
+                   "$BUNDLE_DIR/macos"/*.app.tar.gz.sig \
+                   "$BUNDLE_DIR/dmg"/*.dmg; do
+              [ -e "$f" ] && ASSETS+=("$f")
+          done
+          # Create the release on first matrix leg; subsequent legs
+          # upload into it. `gh release create --notes-file` is
+          # idempotent w.r.t. the create call when used with `|| true`.
+          gh release view "${GITHUB_REF_NAME}" \
+            || gh release create "${GITHUB_REF_NAME}" \
+                  --title "${GITHUB_REF_NAME}" \
+                  --notes "Concerto ${GITHUB_REF_NAME} — see CHANGELOG.md."
+          gh release upload "${GITHUB_REF_NAME}" "${ASSETS[@]}" --clobber
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -e "$KEYCHAIN_PATH" ]; then
+              security delete-keychain "$KEYCHAIN_PATH" || true
+          fi

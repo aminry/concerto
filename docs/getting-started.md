@@ -157,6 +157,21 @@ Run `./scripts/smoke.sh` directly — its output is human-readable. The
 smoke gate uses a tempdir `CONCERTO_HOME`, so it can't corrupt your real
 data.
 
+**"Concerto.app is damaged and can't be opened" / Gatekeeper rejection.**
+You've downloaded an **unsigned** local or self-host build. The signed
+official releases (see [`../dist/RELEASE.md`](../dist/RELEASE.md)) are
+notarized and don't hit this. To run an unsigned build, strip the
+quarantine xattr macOS adds to downloaded files:
+
+```sh
+xattr -d com.apple.quarantine /Applications/Concerto.app
+```
+
+(Adjust the path if the bundle lives elsewhere — e.g. inside
+`apps/desktop/src-tauri/target/release/bundle/macos/` for a local
+`pnpm tauri build`.) This is a one-time per-bundle workaround; it does
+**not** disable Gatekeeper system-wide.
+
 ---
 
 ## 6. Where things live

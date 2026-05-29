@@ -15,7 +15,7 @@ import { AppLayout } from "./components/AppLayout";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { StartSessionPicker } from "./components/StartSessionPicker";
-import { FirstRunClaudeToast } from "./components/Toast";
+import { AutoUpdateToast, FirstRunClaudeToast } from "./components/Toast";
 import { LAYOUT_STORAGE_KEY, useUiStore } from "./state/useUiStore";
 
 const queryClient = new QueryClient({
@@ -44,6 +44,7 @@ function App(): JSX.Element {
         <SettingsPanel />
         <StartSessionPicker />
         <FirstRunClaudeToast />
+        <AutoUpdateToast />
       </div>
     </QueryClientProvider>
   );
