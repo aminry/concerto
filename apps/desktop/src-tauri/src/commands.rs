@@ -684,6 +684,16 @@ pub(crate) async fn dispatch(
                 .await
                 .map(|_| Value::Null)
         }
+        "Sessions.DeleteSession" => {
+            let req: IdPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for DeleteSession: {e}"))
+            })?;
+            let mut client = SessionsClient::new(channel);
+            client
+                .delete_session(ProtoSessionId { value: req.id })
+                .await
+                .map(|_| Value::Null)
+        }
         "Schedules.ListSchedules" => {
             let req: ListSchedulesPayload = serde_json::from_value(payload).map_err(|e| {
                 CoreClientError::Rpc(format!("invalid payload for ListSchedules: {e}"))
