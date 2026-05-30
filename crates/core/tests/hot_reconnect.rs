@@ -18,8 +18,12 @@
 //!   fails).
 //! - Construct supervisor handle B on a fresh runtime. Call
 //!   `adopt_orphans(&B)` and assert it adopts exactly one session.
-//! - Assert the adopted session id matches the original and the DB
-//!   row is back to `status = 'running'`.
+//! - Assert the session is re-registered (subscribable via B). The
+//!   echo agent exits during the restart window, so the surviving host
+//!   has a buffered `AgentExited`; adoption sets `running` as a baseline
+//!   and the replayed exit then settles the row to `status =
+//!   'finished'`. The test waits for that settled state rather than
+//!   racing the read pump on the transient `running` baseline.
 //! - Stop the session via B (kills the host process tree).
 //!
 //! Drift from the task spec
@@ -283,12 +287,30 @@ fn adopts_surviving_host_after_supervisor_restart() {
             .await
             .expect("subscribe via B; session entry should exist after adoption");
 
-        // The session row should be `running` again.
-        let row_b = concerto_persist::sessions::get(persistence.readers(), &session_id)
-            .await
-            .unwrap()
-            .expect("session row exists after adoption");
-        assert_eq!(row_b.status, "running", "row status after adoption");
+        // The agent (`echo MARKER1; sleep 1`) exits during the restart
+        // window, so the surviving host has a buffered `AgentExited`.
+        // Adoption sets `running` as a baseline, then re-attaches the
+        // bridge whose read pump replays the buffered exit and settles
+        // the row to `finished`. Poll for that settled state instead of
+        // reading once and racing the read pump (the previous
+        // `== "running"` read was flaky for exactly that reason).
+        let row_b = {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let row = concerto_persist::sessions::get(persistence.readers(), &session_id)
+                    .await
+                    .unwrap()
+                    .expect("session row exists after adoption");
+                if row.status == "finished" || tokio::time::Instant::now() >= deadline {
+                    break row;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        };
+        assert_eq!(
+            row_b.status, "finished",
+            "adopted session should settle to finished after its buffered exit replays"
+        );
         // last_acked_seq is best-effort; the 5 s persist ticker may
         // not have fired between MARKER1 and the simulated restart,
         // so we only check non-negativity (column type enforces it).

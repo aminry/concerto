@@ -15,13 +15,18 @@
 
 import { create } from "zustand";
 
-/// Right-rail tabs per `design/15 §3.4` (V0.1 list).
+/// Right-rail tabs per `design/15 §3.4` (V0.1 list). The Code & PRs
+/// surface (`diff` / `checks` / `pr`) moved here from the center panel's
+/// bottom region so the session terminal occupies the full center height.
 export type RightRailTab =
   | "scheduler"
   | "skills"
   | "todos"
   | "mcp"
-  | "files";
+  | "files"
+  | "diff"
+  | "checks"
+  | "pr";
 
 /// Task 47 — Monaco diff view modes. `split` shows the side-by-side
 /// editor; `unified` flips Monaco's `renderSideBySide` off so the
@@ -151,7 +156,10 @@ function isRightRailTab(value: unknown): value is RightRailTab {
     value === "skills" ||
     value === "todos" ||
     value === "mcp" ||
-    value === "files"
+    value === "files" ||
+    value === "diff" ||
+    value === "checks" ||
+    value === "pr"
   );
 }
 

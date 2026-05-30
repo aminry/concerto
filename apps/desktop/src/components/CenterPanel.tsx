@@ -1,28 +1,22 @@
 // Center panel of the three-panel layout (Task 46).
 //
-// Vertically split into two resizable regions per `design/15 §3.4`:
+// The session terminal (`SessionRegion`: session tab strip + xterm panel
+// + composer) fills the full center height. The Code & PRs surface
+// (Diff / Checks / PR) used to sit in a vertical split below it; it now
+// lives in the right rail (`RightRail.tsx`) so the terminal is no longer
+// height-constrained.
 //
-//   - Top    → `SessionRegion` (session tab strip + xterm panel + composer).
-//   - Bottom → `CodePrRegion` (per-repo tabs with Diff / Checks / PR sub-tabs).
-//
-// The header above the split carries the workarea composer + branch
-// chip + status dot (moved here from Task 26's `WorkareaDetail`). The
-// vertical split persists its size in the store via the App-root
-// effect; the default is 55/45 per the design diagram.
-
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+// The header carries the workarea composer + branch chip + status dot
+// (moved here from Task 26's `WorkareaDetail`).
 
 import { useUiStore } from "../state/useUiStore";
 import { useWorkarea } from "../hooks/useWorkareas";
 import { SessionRegion } from "./center/SessionRegion";
-import { CodePrRegion } from "./center/CodePrRegion";
 import { StatusDot } from "./ui/status-dot";
 import { workareaStatusToDot } from "../lib/workareaStatus";
 
 export function CenterPanel(): JSX.Element {
   const workareaId = useUiStore((s) => s.selectedWorkareaId);
-  const sessionRegionHeight = useUiStore((s) => s.sessionRegionHeight);
-  const setSessionRegionHeight = useUiStore((s) => s.setSessionRegionHeight);
   const workareaQuery = useWorkarea(workareaId);
   const workarea = workareaQuery.data ?? null;
 
@@ -53,20 +47,7 @@ export function CenterPanel(): JSX.Element {
         </div>
       </header>
       <div className="flex-1 min-h-0">
-        <PanelGroup
-          direction="vertical"
-          onLayout={(sizes) => {
-            if (sizes[0] !== undefined) setSessionRegionHeight(sizes[0]);
-          }}
-        >
-          <Panel defaultSize={sessionRegionHeight} minSize={20}>
-            <SessionRegion workareaId={workareaId} />
-          </Panel>
-          <PanelResizeHandle className="h-1 bg-border hover:bg-accent/40 transition-colors" />
-          <Panel minSize={15}>
-            <CodePrRegion workarea={workarea} />
-          </Panel>
-        </PanelGroup>
+        <SessionRegion workareaId={workareaId} />
       </div>
     </main>
   );

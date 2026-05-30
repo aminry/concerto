@@ -1,39 +1,39 @@
-// Bottom region of the center panel — per-repo tabs hosting Diff /
-// Checks / PR sub-tabs per `design/15 §3.4`.
+// Code & PRs surface — per-repo Diff / Checks / PR content.
 //
-// V0.1 workareas pin a single repository. Task 47 wires the real
-// Monaco diff viewer into the `Diff` sub-tab; `Checks` and `PR` remain
-// stub cards in V0.1.
+// Originally the bottom region of the center panel; moved into the right
+// rail (see `RightRail.tsx`) so the session terminal occupies the full
+// center height. The rail's tab strip now drives which sub-view shows, so
+// this component is controlled via the `subTab` prop instead of owning its
+// own tab state, and resolves the active workarea from the store rather
+// than receiving it as a prop.
+//
+// V0.1 workareas pin a single repository. Task 47 wires the real Monaco
+// diff viewer into the `Diff` view; `Checks` and `PR` remain stub cards.
 //
 // Repository resolution: the workarea wire surface still doesn't carry
 // the linked `repository_id` (see Task 46 Handoff Notes for the gap).
 // V0.1 single-repo projects make picking the first repository under
 // `selectedProjectId` correct; multi-repo workareas are V1.0.
 
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import type { Workarea } from "../../api/workareas";
 import { listRepositories } from "../../api/repositories";
 import { useUiStore } from "../../state/useUiStore";
+import { useWorkarea } from "../../hooks/useWorkareas";
 import { DiffViewer } from "./DiffViewer";
-import { Tabs } from "../ui/tabs";
+
+/// The three Code & PRs views, keyed to the matching right-rail tab ids.
+export type CodePrSubTab = "diff" | "checks" | "pr";
 
 export type CodePrRegionProps = {
-  workarea: Workarea | null | undefined;
+  subTab: CodePrSubTab;
 };
 
-type SubTab = "diff" | "checks" | "pr";
-
-const SUB_TABS: readonly { id: SubTab; label: string }[] = [
-  { id: "diff", label: "Diff" },
-  { id: "checks", label: "Checks" },
-  { id: "pr", label: "PR" },
-];
-
-export function CodePrRegion({ workarea }: CodePrRegionProps): JSX.Element {
-  const [activeSubTab, setActiveSubTab] = useState<SubTab>("diff");
+export function CodePrRegion({ subTab }: CodePrRegionProps): JSX.Element {
+  const workareaId = useUiStore((s) => s.selectedWorkareaId);
   const projectId = useUiStore((s) => s.selectedProjectId);
+  const workareaQuery = useWorkarea(workareaId);
+  const workarea = workareaQuery.data ?? null;
 
   // V0.1: workspaces pin a single repo, so the first repo under the
   // active project is the workarea's repo. The dropdown will become
@@ -53,9 +53,7 @@ export function CodePrRegion({ workarea }: CodePrRegionProps): JSX.Element {
   return (
     <section className="h-full flex flex-col min-h-0 p-2 gap-2">
       <div className="shrink-0 flex items-center gap-2">
-        <span className="text-xs uppercase tracking-wide text-faint">
-          Code & PRs:
-        </span>
+        <span className="text-xs uppercase tracking-wide text-faint">Repo:</span>
         <button
           type="button"
           className="px-2 py-0.5 text-xs rounded-md bg-surface-2 text-foreground font-mono"
@@ -64,11 +62,8 @@ export function CodePrRegion({ workarea }: CodePrRegionProps): JSX.Element {
           {repoLabel}
         </button>
       </div>
-      <div className="shrink-0">
-        <Tabs items={SUB_TABS} active={activeSubTab} onSelect={setActiveSubTab} />
-      </div>
       <div className="flex-1 min-h-0 rounded border border-border overflow-hidden">
-        {activeSubTab === "diff" ? (
+        {subTab === "diff" ? (
           workarea ? (
             <DiffViewer
               workareaId={workarea.id}
@@ -79,7 +74,7 @@ export function CodePrRegion({ workarea }: CodePrRegionProps): JSX.Element {
           )
         ) : (
           <Placeholder>
-            {activeSubTab === "checks" ? (
+            {subTab === "checks" ? (
               <span>CI checks panel arrives in V1.0.</span>
             ) : (
               <span>Pull-request panel arrives with the GitHub surface.</span>
