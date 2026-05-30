@@ -34,16 +34,19 @@ async fn embedded_boot_serves_and_shuts_down() {
     // same asynchronous bind the daemon has always done. Poll until the
     // socket appears (the test-harness `wait_for_socket` uses the same
     // pattern against the spawned daemon).
-    let bound = tokio::time::timeout(Duration::from_secs(5), async {
+    let stream = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if sock.exists() {
-                break;
+            if let Ok(s) = tokio::net::UnixStream::connect(&sock).await {
+                break s;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
-    assert!(bound.is_ok(), "socket should be bound shortly after boot");
+    // Connecting (not just `sock.exists()`) proves the server is actually
+    // accepting on the UDS — the "serves" half of this test's name.
+    assert!(stream.is_ok(), "gRPC server should accept on the UDS shortly after boot");
+    drop(stream);
 
     let token = core.shutdown_token();
     let join = tokio::spawn(async move { core.run_until_shutdown().await });

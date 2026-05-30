@@ -71,8 +71,12 @@ impl RunningCore {
     }
 }
 
-/// Boot Core to readiness. Returns once the gRPC server is accepting on
-/// the UDS. Errors propagate; `AlreadyRunning` is a non-error outcome.
+/// Boot Core: resolve config, start the runtime, and spawn every
+/// supervised actor including the gRPC server. Returns once all actors
+/// are spawned; the gRPC server binds its UDS asynchronously inside its
+/// own actor shortly after this returns, so the socket is not guaranteed
+/// dialable the instant `start` resolves. Errors propagate;
+/// `AlreadyRunning` is a non-error outcome.
 pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     tracing::info!("concerto-core starting");
 
