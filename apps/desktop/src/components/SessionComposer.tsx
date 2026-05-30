@@ -2,7 +2,11 @@
 //
 // Cmd+Enter (or Ctrl+Enter on non-Mac) submits. Plain Enter inserts a
 // newline. On submit, the text is encoded as UTF-8 with a trailing
-// `\n` and forwarded to `Sessions.SendMessage`.
+// carriage return `\r` and forwarded to `Sessions.SendMessage`. The `\r`
+// (not `\n`) is the "Enter" keypress: interactive agent TUIs (Claude
+// Code, Codex) run the PTY in raw mode and submit a turn on CR, whereas a
+// bare LF is treated as a newline *inside* the prompt editor — so sending
+// `\n` types the message but never submits it.
 //
 // Task 26 pre-decision (5): hand-rolled `<textarea>` with Tailwind
 // classes — no shadcn `Textarea` primitive in V0.1.
@@ -33,7 +37,7 @@ export function SessionComposer({
     setSending(true);
     setError(null);
     try {
-      const bytes = new TextEncoder().encode(`${text}\n`);
+      const bytes = new TextEncoder().encode(`${text}\r`);
       await sendMessage(sessionId, bytes);
       setValue("");
     } catch (e) {

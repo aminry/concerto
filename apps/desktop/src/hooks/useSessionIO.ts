@@ -47,8 +47,16 @@ export function useSessionIO(
           if (!chunk) return;
           callbackRef.current(chunkToBytes(chunk.data), chunk.stream);
         });
+        // StrictMode runs the cleanup synchronously before these awaits
+        // resolve, so it can't see `unlisten` yet — unlisten here if we
+        // were already torn down, otherwise the JS listener leaks.
+        if (cancelled) {
+          unlisten?.();
+          return;
+        }
         const id = await subscribe(subject);
         if (cancelled) {
+          unlisten?.();
           await unsubscribe(id);
           return;
         }

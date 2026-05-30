@@ -82,8 +82,15 @@ export function useSessionEvents(
             }
           }
         });
+        // StrictMode runs cleanup before these awaits resolve and can't
+        // see `unlisten` yet — unlisten here if already torn down.
+        if (cancelled) {
+          unlisten?.();
+          return;
+        }
         const id = await subscribe(subject);
         if (cancelled) {
+          unlisten?.();
           await unsubscribe(id);
           return;
         }
