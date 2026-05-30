@@ -176,8 +176,10 @@ pub async fn concerto_subscribe(
 
     let event_name = format!("concerto/{subject}");
     let id_for_task = id.clone();
+    tracing::info!(subject = %subject, subscription = %id, "subscription opened");
     let join = tokio::spawn(async move {
         tokio::pin!(stream);
+        let mut emitted: u64 = 0;
         while let Some(item) = stream.next().await {
             match item {
                 Ok(event) => {
@@ -186,6 +188,14 @@ pub async fn concerto_subscribe(
                     // serde so we can hand the `Event` straight to
                     // the bus. Renderer-side typing lives in
                     // `apps/desktop/src/api/`.
+                    emitted += 1;
+                    if emitted == 1 || emitted % 100 == 0 {
+                        tracing::info!(
+                            subscription = %id_for_task,
+                            emitted,
+                            "forwarded subscription event(s) to renderer"
+                        );
+                    }
                     if let Err(e) = app.emit(&event_name, &event) {
                         tracing::warn!(
                             subscription = %id_for_task,
