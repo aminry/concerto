@@ -158,7 +158,7 @@ the separate daemon.
 | `apps/desktop/` | The Tauri 2 desktop client (React + Vite + Tailwind + Rust shell). |
 | `design/` | The 18 sub-system design docs + PRD + tech-stack evaluation. The source of truth for what V0.1 and V1.0 look like. |
 | `tasks/` | The V0.1 task breakdown. Every task ships as one PR; see [`tasks/README.md`](tasks/README.md) for the methodology. |
-| `scripts/` | `install-macos.sh`, `uninstall-macos.sh`, `smoke.sh`, `regen-interfaces.sh`. |
+| `scripts/` | `install-macos.sh`, `uninstall-macos.sh`, `stop-core.sh`, `dev-embedded.sh`, `smoke.sh`, `smoke-embedded.sh`, `regen-interfaces.sh`. |
 | `dist/macos/` | Packaging assets (the LaunchAgent plist template). |
 | `docs/` | Generated interface summaries + `getting-started.md`. |
 

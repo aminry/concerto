@@ -18,7 +18,7 @@ help:
 	@echo "  make dev-embedded         Run desktop + embedded Core (real ~/concerto data)"
 	@echo "  make dev-embedded-scratch Same, but against an isolated scratch data root"
 	@echo "  make stop-core            Stop the standalone Core daemon (macOS)"
-	@echo "  make smoke-embedded  Headless smoke gate for embedded-core mode"
+	@echo "  make smoke-embedded       Headless smoke gate for embedded-core mode"
 	@echo "  make build-embedded       Build the standalone 'Concerto Embedded' app bundle"
 	@echo ""
 	@echo "Linux systemd / Windows Service Manager support lands in V1.0."
