@@ -311,22 +311,30 @@ mod unix {
         };
         let master = pair.master;
 
-        // Reader thread: blocking reads from the PTY master, pushes into
-        // the ring buffer via a tokio runtime handle.
-        let state_for_reader = state.clone();
-        let rt_for_reader = rt.clone();
+        // PTY output path. The blocking reader thread must NOT drive the
+        // async runtime per chunk: a chatty agent (e.g. Claude's TUI)
+        // floods stdout, and calling `rt.block_on(record_chunk)` for every
+        // chunk from a blocking thread starves the runtime — delaying the
+        // host's own socket bind and the Core handshake past the Core's
+        // 10s socket-wait budget, so every session was marked crashed.
+        // Instead the reader just forwards raw chunks over a channel; a
+        // dedicated async task records them onto the ring buffer.
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let state_for_record = state.clone();
+        rt.spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                record_chunk(&state_for_record, chunk).await;
+            }
+        });
         let reader_handle = std::thread::spawn(move || {
-            let rt = rt_for_reader;
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let chunk = buf[..n].to_vec();
-                        let s = state_for_reader.clone();
-                        rt.block_on(async move {
-                            record_chunk(&s, chunk).await;
-                        });
+                        if chunk_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
@@ -590,15 +598,16 @@ mod unix {
         let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
 
-        // Start the PTY before binding the socket: if the agent fails to
-        // spawn we want to surface the error in the host's exit code,
-        // not silently sit on an empty UDS.
-        let agent_kind = agent_kind_from_bin(&cli.agent_bin);
-        let pty_handle = spawn_pty_task(&cli, state.clone(), stdin_rx, resize_rx);
-
-        // Bind the UDS at 0600.
+        // Bind the UDS BEFORE spawning the PTY so the Core's socket-wait
+        // (10s budget) succeeds immediately, independent of how the agent
+        // behaves on startup. Spawn failures are still surfaced via the
+        // emitted error line in `run_pty` + the synthetic `AgentExited`
+        // frame, so binding first loses nothing.
         let listener = bind_socket(&cli.socket).await?;
         info!(socket = ?cli.socket, "host bridge listening");
+
+        let agent_kind = agent_kind_from_bin(&cli.agent_bin);
+        let pty_handle = spawn_pty_task(&cli, state.clone(), stdin_rx, resize_rx);
 
         // Accept loop. Runs concurrently with the PTY supervisor and
         // exits once the child is gone AND no Core is connected.
