@@ -24,6 +24,8 @@
 
 mod commands;
 mod core_client;
+#[cfg(feature = "embedded-core")]
+mod embedded;
 mod tray;
 
 fn main() {
@@ -38,6 +40,22 @@ fn main() {
         // `@tauri-apps/plugin-updater` (see `src/hooks/useAutoUpdate.ts`).
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            #[cfg(feature = "embedded-core")]
+            {
+                use tauri::Manager;
+                let args: Vec<String> = std::env::args().collect();
+                let mode = embedded::resolve_mode(
+                    &args,
+                    std::env::var("CONCERTO_EMBEDDED").ok().as_deref(),
+                    std::env::var("CONCERTO_HOME").ok().as_deref(),
+                );
+                // Block setup until Core is booting so the renderer's first
+                // RPC never races the socket override being installed.
+                let handle = tauri::async_runtime::block_on(embedded::start(mode));
+                if let Some(h) = handle {
+                    app.manage(h);
+                }
+            }
             commands::manage_subscriptions(app);
             // Task 48: install the menu-bar tray. The call also wires
             // close-to-hide on macOS and spawns the 5s status poll.

@@ -103,6 +103,43 @@ existing PTYs reconnect and ring-buffered output replays.
 
 ---
 
+## Embedded mode (testing & standalone)
+
+By default the Desktop dials a separately-installed Core daemon. An
+optional **embedded mode** links Core into the Desktop binary and boots
+it in-process — one process, no separate daemon install, and a fast
+hot-reload dev loop.
+
+Enable it with the `embedded-core` Cargo feature. The launch mode is
+chosen at runtime:
+
+| Launch | Behavior |
+|---|---|
+| default / `CONCERTO_EMBEDDED=1` | Boot Core in-process against your real `~/concerto` data. If a daemon is already running it is detected via the PID lock and the app dials it instead. |
+| `CONCERTO_HOME=/path` | Boot Core in-process against an isolated scratch root — runs alongside an installed daemon with no conflict. Use this for testing. |
+| `CONCERTO_EMBEDDED=0` / `--external` | Skip embedding; dial an existing daemon (default production behavior). |
+
+Fast dev loop (scratch data; frontend hot-reloads, desktop crate rebuilds
+on change):
+
+```sh
+make dev-embedded
+```
+
+Tauri's dev watcher watches the `src-tauri` crate; to also hot-reload
+edits to `crates/core`, run under `cargo watch` (see the `dev-embedded`
+recipe comment in the `Makefile`).
+
+In embedded mode, **closing the window quits the app and stops all
+agents** — the "agents survive window close" guarantee holds only with
+the separate daemon.
+
+A headless smoke check for this path (builds the feature, boots Core
+in-process, tears it down) lives at `scripts/smoke-embedded.sh`, also
+runnable as `make smoke-embedded`.
+
+---
+
 ## Repository layout
 
 | Path | What it holds |

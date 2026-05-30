@@ -707,6 +707,7 @@ dependencies = [
 name = "concerto-desktop"
 version = "0.0.1"
 dependencies = [
+ "concerto-core",
  "concerto-error",
  "concerto-proto",
  "home",
@@ -721,6 +722,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tonic",
  "tower 0.5.3",
  "tracing",

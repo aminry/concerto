@@ -130,6 +130,21 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
         let window_for_handler = window.clone();
         window.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Embedded: close means quit. Signal Core to stop (releases
+                // PID lock, flushes audit, stops agents) and let the window
+                // close — do NOT prevent_close, so the process exits.
+                #[cfg(feature = "embedded-core")]
+                {
+                    if let Some(h) = window_for_handler
+                        .app_handle()
+                        .try_state::<crate::embedded::EmbeddedHandle>()
+                    {
+                        h.shutdown.cancel();
+                        return;
+                    }
+                }
+                // Reached when Core is external (no embedded handle in state)
+                // or the lean build: keep the standard macOS close-to-hide.
                 api.prevent_close();
                 let _ = window_for_handler.hide();
             }
