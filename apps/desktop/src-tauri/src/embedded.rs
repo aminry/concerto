@@ -6,15 +6,11 @@
 //! coexistence guard: if a daemon already holds it, `boot::start` returns
 //! `AlreadyRunning` and we fall back to dialing the live daemon.
 
-// Mode, resolve_mode, and scratch_config are all consumed by Task 4's
-// start() function; suppress dead_code until that wiring lands.
-// TODO(task-4): remove this allow once start() references these symbols.
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 use std::time::Duration;
 
 use concerto_core::runtime::RuntimeConfig;
+use tokio_util::sync::CancellationToken;
 
 /// How this launch should obtain its Core.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +59,70 @@ pub fn scratch_config(home: &std::path::Path) -> RuntimeConfig {
     }
 }
 
+/// Handle stored in Tauri state so the window-close path can shut Core
+/// down. Present only when Core was booted in-process.
+pub struct EmbeddedHandle {
+    // Read by the window-close teardown path (a later task). For now the
+    // handle is only stored in Tauri state, so the field is unread in the
+    // bin build; the multi-thread inline test does exercise it via cancel().
+    #[allow(dead_code)]
+    pub shutdown: CancellationToken,
+}
+
+/// Boot Core for the resolved mode. On success installs the client
+/// socket override and spawns Core's run-until-shutdown loop on the
+/// current Tokio runtime, returning a handle whose token triggers
+/// teardown. Returns `None` for External mode, for the
+/// `AlreadyRunning` fallback (a daemon already holds the PID lock — we
+/// dial it instead), or on boot error.
+pub async fn start(mode: Mode) -> Option<EmbeddedHandle> {
+    use concerto_core::boot::{self, BootOutcome};
+
+    let config = match &mode {
+        Mode::External => return None,
+        Mode::EmbeddedScratch { home } => scratch_config(home),
+        Mode::EmbeddedReal => match RuntimeConfig::default_for_user() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "embedded: failed to resolve runtime config");
+                return None;
+            }
+        },
+    };
+
+    // Core's persistence + PID lock require these dirs to exist.
+    if let Err(e) = std::fs::create_dir_all(&config.data_dir) {
+        tracing::error!(error = %e, dir = %config.data_dir.display(), "embedded: cannot create data dir");
+        return None;
+    }
+    if let Err(e) = std::fs::create_dir_all(&config.config_dir) {
+        tracing::error!(error = %e, dir = %config.config_dir.display(), "embedded: cannot create config dir");
+        return None;
+    }
+
+    match boot::start(config).await {
+        Ok(BootOutcome::Started(core)) => {
+            crate::core_client::set_socket_override(core.socket_path().to_path_buf());
+            let token = core.shutdown_token();
+            tokio::spawn(async move {
+                if let Err(e) = core.run_until_shutdown().await {
+                    tracing::error!(error = %e, "embedded core shutdown error");
+                }
+            });
+            tracing::info!("embedded core ready");
+            Some(EmbeddedHandle { shutdown: token })
+        }
+        Ok(BootOutcome::AlreadyRunning { pid }) => {
+            tracing::warn!(daemon_pid = pid, "daemon already running; dialing it instead of embedding");
+            None
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "embedded core failed to boot; falling back to external");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +158,27 @@ mod tests {
         let c = scratch_config(std::path::Path::new("/tmp/s"));
         assert_eq!(c.data_dir, std::path::PathBuf::from("/tmp/s"));
         assert_eq!(c.config_dir, std::path::PathBuf::from("/tmp/s/.concerto"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_scratch_boots_and_shuts_down() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let mode = Mode::EmbeddedScratch { home: home.clone() };
+
+        let handle = super::start(mode).await.expect("embedded scratch should boot");
+
+        // We intentionally do NOT assert `default_socket_path()` equals the
+        // scratch socket here. `set_socket_override` writes a process-global
+        // `OnceLock` (set-once), and the Task 2 test in `core_client.rs`
+        // (`default_socket_path_defaults_then_honors_override`) also writes
+        // it. Under libtest's parallel runner, whichever test sets the cell
+        // first wins, so asserting the exact override value would race and
+        // flake. The real proof here is that `start` returned `Some` — Core
+        // booted, the override was installed, and the run loop spawned.
+
+        // Cancelling the handle's token tears Core down; give it a moment.
+        handle.shutdown.cancel();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
 }
