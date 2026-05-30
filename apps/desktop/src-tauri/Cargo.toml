@@ -24,6 +24,10 @@ tauri-build = { version = "2", default-features = false , features = [] }
 # via `tauri::image::Image::from_path`. `updater` / `notification` come
 # online in Phase 4.
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# Optional: linked only when the `embedded-core` feature is on, so the
+# lean daemon-client build carries no Core code or transitive deps.
+concerto-core = { path = "../../../crates/core", optional = true }
+tokio-util = { workspace = true }
 # Task 53: auto-update plumbing. The plugin checks an endpoint manifest,
 # verifies the ed25519 signature against the `updater.pubkey` baked into
 # `tauri.conf.json`, and exposes a JS API (`@tauri-apps/plugin-updater`)
@@ -50,6 +54,12 @@ tracing = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 # `home` resolves `$HOME` for the default `~/.concerto/core.sock` path.
 home = { workspace = true }
+
+[features]
+# Links concerto-core into the desktop binary so Core can boot
+# in-process. Dev + standalone builds enable it; the production
+# daemon-client build leaves it off.
+embedded-core = ["dep:concerto-core"]
 
 [dev-dependencies]
 tempfile = "3"
