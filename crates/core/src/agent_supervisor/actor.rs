@@ -985,6 +985,88 @@ impl AgentSupervisorHandle {
         Ok(())
     }
 
+    /// Hard-delete a session and all of its dependents, tearing down the
+    /// live host process first if one is still running.
+    ///
+    /// Unlike [`Self::stop_session`] this does **not** call `mark_ended`
+    /// (the row is about to be removed). It tolerates a session that has
+    /// no live in-memory entry (e.g. an already-`finished` session): the
+    /// teardown is skipped and the persist delete still runs.
+    ///
+    /// The persist delete (`concerto_persist::sessions::delete`) opens its
+    /// own top-level transaction; it is therefore called with the bare
+    /// writer connection (no surrounding `begin()`), exactly like
+    /// `mark_ended` in `stop_session`. Only a failure of that delete is
+    /// surfaced as an error.
+    pub async fn delete_session(
+        &self,
+        session_id: &SessionId,
+        _reason: Option<String>,
+    ) -> Result<()> {
+        // 1. Tear down the live host process if present. Mirrors the
+        //    teardown half of `stop_session` (minus `mark_ended`).
+        let entry = {
+            let mut map = self.sessions.lock().await;
+            map.remove(session_id)
+        };
+        if let Some(entry) = entry {
+            {
+                let mut child_guard = entry.child.lock().await;
+                if let Some(mut child) = child_guard.take() {
+                    if let Err(e) = child.kill().await {
+                        tracing::warn!(
+                            session = %session_id,
+                            error = %e,
+                            "delete_session: failed to kill host child (best-effort)"
+                        );
+                    }
+                }
+            }
+            // Best-effort socket cleanup.
+            let _ = tokio::fs::remove_file(&entry.socket_path).await;
+            entry
+                .finished
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let exited = AgentEvent::Exited {
+                session_id: session_id.clone(),
+                exit_code: None,
+                signal: None,
+            };
+            push_replay(&entry.events_replay, exited.clone()).await;
+            let _ = entry.events.send(exited);
+        }
+
+        // 2. Best-effort removal of the on-disk log dir for this session
+        //    (`<data>/agents/<sid>/`, see `start_session`). Ignore
+        //    NotFound; surface nothing else (cleanup is non-fatal).
+        let log_dir = self.data_dir.join("agents").join(&session_id.0);
+        if let Err(e) = tokio::fs::remove_dir_all(&log_dir).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    session = %session_id,
+                    path = %log_dir.display(),
+                    error = %e,
+                    "delete_session: failed to remove log dir (best-effort)"
+                );
+            }
+        }
+
+        // 3. Hard-delete the row + dependents in one top-level transaction.
+        //    `delete` opens its own tx, so pass the bare writer connection
+        //    (do NOT wrap in `writer.begin()`). A failure here is fatal.
+        let mut writer = self.persistence.writer().await;
+        concerto_persist::sessions::delete(&mut writer, session_id).await?;
+        drop(writer);
+
+        tracing::info!(
+            audit.kind = "session_deleted",
+            audit.scope = "session",
+            audit.session_id = %session_id,
+            "session hard-deleted"
+        );
+        Ok(())
+    }
+
     /// Task 32: change `sessions.permission_mode` for a live session.
     ///
     /// `mode` must be one of `strict|normal|auto|yolo`. The

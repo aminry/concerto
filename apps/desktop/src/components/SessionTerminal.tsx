@@ -23,6 +23,8 @@ import { WebglAddon } from "@xterm/addon-webgl";
 
 import { sendMessage, resizeSession } from "../api/sessions";
 import { useSessionIO } from "../hooks/useSessionIO";
+import { useTheme } from "../hooks/useTheme";
+import { THEME_COLORS, TERMINAL_ANSI } from "../theme/tokens";
 
 export type SessionTerminalProps = {
   sessionId: string;
@@ -42,16 +44,29 @@ const XTERM_OPTIONS = {
     "'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace",
   fontSize: 13,
   convertEol: true,
-  theme: {
-    background: "#0f172a", // slate-900 → matches the panel
-    foreground: "#e2e8f0", // slate-200
-  },
 } as const;
+
+/// Build an xterm ITheme from the app's effective theme. The viewport
+/// background is rendered transparent via CSS (see `.xterm-viewport`),
+/// so the panel's `bg-surface` shows through; we still set `background`
+/// here so xterm's own fills (e.g. cell backgrounds) match.
+function xtermTheme(effective: "light" | "dark") {
+  const c = THEME_COLORS[effective];
+  return {
+    background: c.surface,
+    foreground: c.foreground,
+    cursor: c.accent,
+    cursorAccent: c.surface,
+    selectionBackground: effective === "dark" ? "#33415580" : "#c7d2fe80",
+    ...TERMINAL_ANSI[effective],
+  };
+}
 
 export function SessionTerminal({
   sessionId,
   disabled = false,
 }: SessionTerminalProps): JSX.Element {
+  const { effective } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -59,13 +74,21 @@ export function SessionTerminal({
   const sendingRef = useRef(false);
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
+  // Latest effective theme, read at construction time without adding
+  // `effective` to the mount effect's deps (that would tear down and
+  // recreate the terminal on every theme toggle — losing scrollback).
+  const effectiveRef = useRef(effective);
+  effectiveRef.current = effective;
 
   // Mount the xterm instance once on session change.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const terminal = new Terminal(XTERM_OPTIONS);
+    const terminal = new Terminal({
+      ...XTERM_OPTIONS,
+      theme: xtermTheme(effectiveRef.current),
+    });
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
     terminal.loadAddon(fitAddon);
@@ -159,6 +182,13 @@ export function SessionTerminal({
     };
   }, [sessionId]);
 
+  // Re-apply the theme live when `effective` changes — without
+  // recreating the terminal, so scrollback and the PTY stay intact.
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (term) term.options.theme = xtermTheme(effective);
+  }, [effective]);
+
   // Inbound: write every chunk to the terminal. xterm.js accepts
   // either a string or a Uint8Array; the latter avoids the JS-side
   // UTF-8 decode and keeps control sequences intact.
@@ -171,7 +201,7 @@ export function SessionTerminal({
   return (
     <div
       ref={containerRef}
-      className="flex-1 min-h-0 bg-slate-900 rounded border border-slate-800"
+      className="flex-1 min-h-0 bg-surface rounded border border-border"
       // The data attribute keeps debug overlays cheap.
       data-session-id={sessionId}
       data-disabled={disabled ? "true" : "false"}

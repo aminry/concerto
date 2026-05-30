@@ -6,7 +6,8 @@
 # Default behavior:
 #   - launchctl bootout gui/<uid>/com.concerto.core (best-effort).
 #   - Remove ~/Library/LaunchAgents/com.concerto.core.plist.
-#   - Remove the installed binary at ~/Applications/concerto/concerto-core.
+#   - Remove the installed binaries (concerto-core + concerto-agent-host)
+#     from ~/Applications/concerto/.
 #
 # With --purge:
 #   - Additionally removes ~/concerto/ (data + logs) and ~/.concerto/

@@ -4,14 +4,18 @@
 // the React Query gate (`enabled: !!workspaceId`) handles the "don't
 // fetch until needed" rule from `tasks/25 §Implementation notes`.
 //
-// Status dot colors mirror `design/15 §3.4`:
+// Status dot colors mirror `design/15 §3.4` — see the shared mapper in
+// `lib/workareaStatus.ts`:
 //   - active   → green
-//   - awaiting → amber
 //   - running  → blue
-//   - everything else (created, paused, archived, crashed) → grey
+//   - awaiting → amber
+//   - crashed  → red
+//   - created | paused | archived → grey
 
 import { useWorkareas } from "../hooks/useWorkareas";
 import { useUiStore } from "../state/useUiStore";
+import { StatusDot } from "./ui/status-dot";
+import { workareaStatusToDot } from "../lib/workareaStatus";
 
 export type WorkareaListProps = {
   workspaceId: string;
@@ -23,17 +27,17 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
   const setSelectedWorkarea = useUiStore((s) => s.setSelectedWorkarea);
 
   if (query.isLoading) {
-    return <p className="text-xs text-slate-500">Loading workareas…</p>;
+    return <p className="text-xs text-faint">Loading workareas…</p>;
   }
   if (query.isError) {
     return (
-      <p className="text-xs text-rose-400">
+      <p className="text-xs text-err">
         Failed: {String(query.error)}
       </p>
     );
   }
   if (!query.data || query.data.workareas.length === 0) {
-    return <p className="text-xs text-slate-500">No workareas yet.</p>;
+    return <p className="text-xs text-faint">No workareas yet.</p>;
   }
 
   return (
@@ -41,8 +45,8 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
       {query.data.workareas.map((wa) => {
         const active = wa.id === selectedWorkareaId;
         const buttonClass = active
-          ? "w-full text-left px-2 py-1 rounded text-xs bg-slate-800 text-slate-100"
-          : "w-full text-left px-2 py-1 rounded text-xs text-slate-300 hover:bg-slate-900";
+          ? "w-full text-left px-2 py-1 rounded-md text-xs bg-accent/10 text-foreground"
+          : "w-full text-left px-2 py-1 rounded-md text-xs text-muted hover:bg-surface-2";
         return (
           <li key={wa.id}>
             <button
@@ -51,9 +55,9 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
               onClick={() => setSelectedWorkarea(wa.id)}
             >
               <span className="flex items-center gap-2">
-                <StatusDot status={wa.status} />
+                <StatusDot status={workareaStatusToDot(wa.status)} />
                 <span className="truncate">{wa.composer_name}</span>
-                <span className="ml-auto text-slate-500 truncate">
+                <span className="ml-auto text-faint truncate font-mono">
                   {wa.branch_name}
                 </span>
               </span>
@@ -63,27 +67,4 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
       })}
     </ul>
   );
-}
-
-function StatusDot({ status }: { status: string }): JSX.Element {
-  const color = statusColor(status);
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full ${color}`}
-      aria-label={`status: ${status}`}
-    />
-  );
-}
-
-function statusColor(status: string): string {
-  switch (status) {
-    case "active":
-      return "bg-green-500";
-    case "awaiting":
-      return "bg-amber-500";
-    case "running":
-      return "bg-blue-500";
-    default:
-      return "bg-gray-400";
-  }
 }

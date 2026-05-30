@@ -520,6 +520,10 @@ service Sessions {
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc SendMessage(SendMessageRequest) returns (google.protobuf.Empty);
   rpc StopSession(StopSessionRequest) returns (google.protobuf.Empty);
+  // Destructive: stops the session if running, then permanently deletes
+  // it and its dependent rows (chat thread, tool approvals, checkpoints;
+  // schedule_runs are unlinked). Unlike StopSession this removes the row.
+  rpc DeleteSession(SessionId) returns (google.protobuf.Empty);
   rpc ResizeSession(ResizeSessionRequest) returns (google.protobuf.Empty);
   // Task 32: change `sessions.permission_mode` with entry-ceremony +
   // managed.json cap enforcement. Returns the updated `Session` row.

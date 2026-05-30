@@ -12,9 +12,61 @@
 @tailwind utilities;
 
 /* The xterm viewport defaults its background to inherit; the panel
-   inside SessionTerminal already sets slate-900 so we just need to
+   inside SessionTerminal already sets bg-surface so we just need to
    keep the cursor visible in our theme. */
 .xterm-viewport {
   background-color: transparent !important;
+}
+
+/* --- Design tokens (UI redesign). Channels are space-separated RGB so
+   Tailwind's `rgb(var(--x) / <alpha-value>)` opacity modifiers work
+   (e.g. bg-accent/15). Light is the :root default; dark overrides under
+   [data-theme="dark"]. The .dark class mirror keeps Tailwind's
+   class-based darkMode working. */
+:root,
+:root[data-theme="light"] {
+  --background: 247 248 250;
+  --surface: 255 255 255;
+  --surface-2: 246 247 249;
+  --raised: 236 238 242;
+  --border: 229 231 235;
+  --border-strong: 211 215 222;
+  --foreground: 31 35 40;
+  --muted: 101 109 118;
+  --faint: 140 149 159;
+  --accent: 91 94 240;
+  --accent-hover: 75 78 230;
+  --accent-fg: 255 255 255;
+  --ok: 26 127 55;
+  --warn: 154 103 0;
+  --err: 207 34 46;
+  --run: 9 105 218;
+}
+
+:root[data-theme="dark"],
+.dark {
+  --background: 13 17 23;
+  --surface: 22 27 34;
+  --surface-2: 28 33 40;
+  --raised: 33 38 45;
+  --border: 42 47 55;
+  --border-strong: 55 62 71;
+  --foreground: 230 237 243;
+  --muted: 139 148 158;
+  --faint: 110 118 129;
+  --accent: 99 102 241;
+  --accent-hover: 124 127 244;
+  --accent-fg: 255 255 255;
+  --ok: 63 185 80;
+  --warn: 210 153 34;
+  --err: 248 81 73;
+  --run: 88 166 255;
+}
+
+html, body, #root { height: 100%; }
+body {
+  background-color: rgb(var(--background));
+  color: rgb(var(--foreground));
+  -webkit-font-smoothing: antialiased;
 }
 

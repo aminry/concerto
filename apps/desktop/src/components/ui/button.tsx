@@ -1,33 +1,39 @@
-// Minimal button primitive. We deliberately skip the full shadcn/ui
-// install in V0.1 (Task 24 drift note): `pnpm dlx shadcn@latest init`
-// requires interactive input and would scaffold dialog/input/sidebar
-// components the V0.1 UI does not exercise. The two components we
-// actually need (button, card) are inlined here with hardcoded
-// Tailwind class strings. Phase 3 polish promotes this to the full
-// shadcn set.
+// Button primitive. Token-driven; variants cover the app's needs.
+// `primary` is the indigo accent CTA; `icon` size is for icon-only buttons.
 
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 
-export type ButtonVariant = "default" | "ghost" | "outline";
+export type ButtonVariant =
+  | "default" | "primary" | "ghost" | "outline" | "danger";
+export type ButtonSize = "sm" | "md" | "icon";
 
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: ButtonVariant;
+  size?: ButtonSize;
 };
 
 const VARIANTS: Record<ButtonVariant, string> = {
-  default:
-    "bg-slate-700 hover:bg-slate-600 text-slate-100 disabled:opacity-50",
-  ghost: "bg-transparent hover:bg-slate-800 text-slate-200",
+  default: "bg-surface-2 hover:bg-raised text-foreground disabled:opacity-50",
+  primary: "bg-accent hover:bg-accent-hover text-accent-fg disabled:opacity-50",
+  ghost: "bg-transparent hover:bg-surface-2 text-muted hover:text-foreground",
   outline:
-    "border border-slate-700 hover:bg-slate-800 text-slate-200 disabled:opacity-50",
+    "border border-border-strong hover:bg-surface-2 text-foreground disabled:opacity-50",
+  danger: "bg-err/10 hover:bg-err/20 text-err disabled:opacity-50",
+};
+
+const SIZES: Record<ButtonSize, string> = {
+  sm: "px-2 py-1 text-xs",
+  md: "px-3 py-1.5 text-sm",
+  icon: "h-8 w-8 p-0",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ variant = "default", className, ...props }, ref) => {
+  ({ variant = "default", size = "md", className, ...props }, ref) => {
     const base =
-      "inline-flex items-center justify-center rounded px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-slate-500";
-    const variantClass = VARIANTS[variant];
-    const combined = [base, variantClass, className ?? ""].join(" ").trim();
+      "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+    const combined = [base, VARIANTS[variant], SIZES[size], className ?? ""]
+      .join(" ")
+      .trim();
     return <button ref={ref} className={combined} {...props} />;
   },
 );

@@ -27,6 +27,7 @@ export type RpcMethod =
   | "Sessions.CreateSession"
   | "Sessions.SendMessage"
   | "Sessions.StopSession"
+  | "Sessions.DeleteSession"
   | "Sessions.ResizeSession"
   | "Sessions.ListMcpServers"
   | "Schedules.ListSchedules"
@@ -37,6 +38,30 @@ export async function callRpc<TRequest, TResponse>(
   payload: TRequest,
 ): Promise<TResponse> {
   return invoke<TResponse>("concerto_rpc", { method, payload });
+}
+
+/// Render an error from `callRpc`/`invoke` as a human-readable string.
+/// The Tauri shell's `CoreClientError` derives `serde::Serialize`, so a
+/// rejected `invoke` surfaces a tagged object (e.g. `{ Rpc: "rpc: …" }`,
+/// `{ Transport: "…" }`, `{ NotImplemented: "…" }`) rather than a string —
+/// `String(e)` on that yields the useless "[object Object]". Pull the
+/// inner message out; fall back to JSON, then String.
+export function errorMessage(e: unknown): string {
+  if (e == null) return "Unknown error";
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  if (typeof e === "object") {
+    const firstString = Object.values(e as Record<string, unknown>).find(
+      (v) => typeof v === "string",
+    );
+    if (typeof firstString === "string") return firstString;
+    try {
+      return JSON.stringify(e);
+    } catch {
+      // fall through to String()
+    }
+  }
+  return String(e);
 }
 
 export async function subscribe(

@@ -10,7 +10,7 @@ export type ProgressProps = {
 export function Progress({ value, className }: ProgressProps) {
   const clamped = Math.max(0, Math.min(100, value));
   const outer = [
-    "h-2 w-full overflow-hidden rounded bg-slate-800",
+    "h-2 w-full overflow-hidden rounded bg-surface-2",
     className ?? "",
   ]
     .join(" ")
@@ -18,7 +18,7 @@ export function Progress({ value, className }: ProgressProps) {
   return (
     <div className={outer}>
       <div
-        className="h-full bg-emerald-500 transition-[width]"
+        className="h-full bg-accent transition-[width]"
         style={{ width: `${clamped}%` }}
       />
     </div>

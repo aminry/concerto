@@ -116,6 +116,14 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         timeout: u64,
     },
+    /// Call `Sessions.SendMessage`. The payload is `--text` plus a
+    /// trailing newline, sent as raw UTF-8 bytes to the agent's stdin.
+    SendMessage {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        text: String,
+    },
     /// Call `Sessions.StopSession`.
     StopSession {
         #[arg(long)]
@@ -256,6 +264,10 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
         } => {
             let socket = require_socket(cli.socket)?;
             cmd::stream_session_io::run(&socket, &session_id, timeout).await
+        }
+        Command::SendMessage { session_id, text } => {
+            let socket = require_socket(cli.socket)?;
+            cmd::send_message::run(&socket, &session_id, &text).await
         }
         Command::StopSession { session_id } => {
             let socket = require_socket(cli.socket)?;

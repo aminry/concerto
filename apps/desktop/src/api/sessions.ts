@@ -94,6 +94,16 @@ export async function stopSession(
   );
 }
 
+/// Destructive: stops the session if running, then permanently deletes
+/// it server-side (chat thread, approvals, checkpoints). The Core's
+/// `DeleteSession` takes a `SessionId { value }`; the shell maps the
+/// `{ id }` payload to it (same convention as GetSession).
+export async function deleteSession(sessionId: string): Promise<void> {
+  await callRpc<{ id: string }, null>("Sessions.DeleteSession", {
+    id: sessionId,
+  });
+}
+
 /// Relay the xterm pane geometry to the agent's PTY so full-screen TUIs
 /// render at the size the user sees. Sent on mount and on every resize.
 export async function resizeSession(
@@ -152,6 +162,25 @@ export type SessionEventPayload = {
 
 export type WorkareaEventPayload = { workarea_id: string; kind: string };
 export type WorkspaceEventPayload = { workspace_id: string; kind: string };
+
+/// Read the active variant of a proto `oneof` from its JSON form.
+///
+/// prost's serde derive serializes a oneof variant under a key named
+/// after the Rust enum variant — i.e. PascalCase (`SessionIo`, `Exited`)
+/// — NOT the snake_case proto field name. The renderer was written
+/// against snake_case, which silently dropped every live event (no agent
+/// output in the terminal, no live status). Accept both spellings so we
+/// match the actual wire and stay resilient if the proto serde config is
+/// ever changed to rename. Returns the first present key's value.
+export function oneofVariant<T>(obj: unknown, ...keys: string[]): T | undefined {
+  if (obj && typeof obj === "object") {
+    const rec = obj as Record<string, unknown>;
+    for (const k of keys) {
+      if (k in rec) return rec[k] as T;
+    }
+  }
+  return undefined;
+}
 
 /// Convert a `number[]` (or `Uint8Array`) carried in a stream payload
 /// into a `Uint8Array` so xterm.js can write the raw bytes.

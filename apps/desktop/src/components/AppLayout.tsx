@@ -15,6 +15,7 @@ import { Sidebar } from "./Sidebar";
 import { CenterPanel } from "./CenterPanel";
 import { WorkspaceDetail } from "./WorkspaceDetail";
 import { RightRail } from "./RightRail";
+import { StatusBar } from "./StatusBar";
 import { useUiStore } from "../state/useUiStore";
 
 const RIGHT_RAIL_WIDTH = 22;
@@ -26,29 +27,33 @@ export function AppLayout(): JSX.Element {
   const rightRailCollapsed = useUiStore((s) => s.rightRailCollapsed);
 
   return (
-    <PanelGroup
-      direction="horizontal"
-      onLayout={(sizes) => {
-        if (sizes[0] !== undefined) setSidebarWidth(sizes[0]);
-      }}
-    >
-      <Panel defaultSize={sidebarWidth} minSize={12} maxSize={40}>
-        <Sidebar />
-      </Panel>
-      <PanelResizeHandle className="w-1 bg-slate-800 hover:bg-slate-700 transition-colors" />
-      <Panel minSize={30}>
-        {selectedWorkareaId ? <CenterPanel /> : <WorkspaceDetail />}
-      </Panel>
-      {!rightRailCollapsed && (
-        <PanelResizeHandle className="w-1 bg-slate-800 hover:bg-slate-700 transition-colors" />
-      )}
-      <Panel
-        defaultSize={rightRailCollapsed ? 3 : RIGHT_RAIL_WIDTH}
-        minSize={rightRailCollapsed ? 3 : 12}
-        maxSize={rightRailCollapsed ? 3 : 40}
+    <div className="flex h-full flex-col">
+      <PanelGroup
+        direction="horizontal"
+        className="min-h-0 flex-1"
+        onLayout={(sizes) => {
+          if (sizes[0] !== undefined) setSidebarWidth(sizes[0]);
+        }}
       >
-        <RightRail />
-      </Panel>
-    </PanelGroup>
+        <Panel defaultSize={sidebarWidth} minSize={12} maxSize={40}>
+          <Sidebar />
+        </Panel>
+        <PanelResizeHandle className="w-px bg-border transition-colors hover:bg-accent/40" />
+        <Panel minSize={30}>
+          {selectedWorkareaId ? <CenterPanel /> : <WorkspaceDetail />}
+        </Panel>
+        {!rightRailCollapsed && (
+          <PanelResizeHandle className="w-px bg-border transition-colors hover:bg-accent/40" />
+        )}
+        <Panel
+          defaultSize={rightRailCollapsed ? 3 : RIGHT_RAIL_WIDTH}
+          minSize={rightRailCollapsed ? 3 : 12}
+          maxSize={rightRailCollapsed ? 3 : 40}
+        >
+          <RightRail />
+        </Panel>
+      </PanelGroup>
+      <StatusBar />
+    </div>
   );
 }

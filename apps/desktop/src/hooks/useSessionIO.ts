@@ -12,7 +12,12 @@ import {
   subscribe,
   unsubscribe,
 } from "../api/client";
-import { chunkToBytes, type StreamEvent } from "../api/sessions";
+import {
+  chunkToBytes,
+  oneofVariant,
+  type SessionIoChunkPayload,
+  type StreamEvent,
+} from "../api/sessions";
 
 export function useSessionIO(
   sessionId: string | null | undefined,
@@ -32,13 +37,26 @@ export function useSessionIO(
     void (async () => {
       try {
         unlisten = await onConcertoEvent<StreamEvent>(subject, (event) => {
-          const body = event.body;
-          if (!body || !("session_io" in body)) return;
-          const chunk = body.session_io;
+          // The `body` oneof variant serializes as PascalCase `SessionIo`
+          // (prost serde default), not snake_case — accept both.
+          const chunk = oneofVariant<SessionIoChunkPayload>(
+            event.body,
+            "SessionIo",
+            "session_io",
+          );
+          if (!chunk) return;
           callbackRef.current(chunkToBytes(chunk.data), chunk.stream);
         });
+        // StrictMode runs the cleanup synchronously before these awaits
+        // resolve, so it can't see `unlisten` yet — unlisten here if we
+        // were already torn down, otherwise the JS listener leaks.
+        if (cancelled) {
+          unlisten?.();
+          return;
+        }
         const id = await subscribe(subject);
         if (cancelled) {
+          unlisten?.();
           await unsubscribe(id);
           return;
         }

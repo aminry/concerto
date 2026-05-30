@@ -29,9 +29,15 @@ import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { RefreshCw } from "lucide-react";
+
 import type { DiffHunk, DiffPayload, FileDiff } from "../../api/diff";
 import { diffQueryKey, useDiff } from "../../hooks/useDiff";
 import { useUiStore, type DiffViewMode } from "../../state/useUiStore";
+import { useTheme } from "../../hooks/useTheme";
+import { THEME_COLORS } from "../../theme/tokens";
+import { Segmented } from "../ui/segmented";
+import { Button } from "../ui/button";
 import { FileListSidebar } from "./FileListSidebar";
 
 // Wire Monaco's worker loader into Vite's worker pipeline. V0.1 only
@@ -50,6 +56,24 @@ import { FileListSidebar } from "./FileListSidebar";
 // across mounts; `loader.config` only takes effect once per session.
 loader.config({ monaco });
 
+// Register custom Monaco themes whose editor background matches the app
+// surface, so the diff viewer doesn't punch a contrasting panel into the
+// themed chrome. Runs once per editor mount via `beforeMount`.
+function handleEditorWillMount(m: typeof monaco): void {
+  m.editor.defineTheme("concerto-light", {
+    base: "vs",
+    inherit: true,
+    rules: [],
+    colors: { "editor.background": THEME_COLORS.light.surface },
+  });
+  m.editor.defineTheme("concerto-dark", {
+    base: "vs-dark",
+    inherit: true,
+    rules: [],
+    colors: { "editor.background": THEME_COLORS.dark.surface },
+  });
+}
+
 export type DiffViewerProps = {
   workareaId: string;
   repositoryId: string | null;
@@ -61,6 +85,7 @@ export function DiffViewer(props: DiffViewerProps): JSX.Element {
   const queryClient = useQueryClient();
   const diffViewMode = useUiStore((s) => s.diffViewMode);
   const setDiffViewMode = useUiStore((s) => s.setDiffViewMode);
+  const { effective } = useTheme();
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const files: FileDiff[] = diffQuery.data?.files ?? [];
@@ -94,7 +119,7 @@ export function DiffViewer(props: DiffViewerProps): JSX.Element {
 
   if (!repositoryId) {
     return (
-      <div className="h-full flex items-center justify-center text-xs text-slate-500 p-3">
+      <div className="h-full flex items-center justify-center text-xs text-faint p-3">
         No repository linked to this workarea yet.
       </div>
     );
@@ -109,8 +134,8 @@ export function DiffViewer(props: DiffViewerProps): JSX.Element {
         loading={diffQuery.isFetching}
         fileCount={files.length}
       />
-      <div className="flex-1 min-h-0 grid grid-cols-[minmax(160px,_220px)_1fr] border-t border-slate-800">
-        <div className="border-r border-slate-800 overflow-hidden">
+      <div className="flex-1 min-h-0 grid grid-cols-[minmax(160px,_220px)_1fr] border-t border-border">
+        <div className="border-r border-border overflow-hidden">
           <FileListSidebar
             files={files}
             selectedIndex={selectedIndex}
@@ -126,7 +151,8 @@ export function DiffViewer(props: DiffViewerProps): JSX.Element {
               original={original}
               modified={modified}
               language={language}
-              theme="vs-dark"
+              beforeMount={handleEditorWillMount}
+              theme={effective === "dark" ? "concerto-dark" : "concerto-light"}
               options={{
                 renderSideBySide: diffViewMode === "split",
                 readOnly: true,
@@ -155,55 +181,30 @@ function DiffToolbar(props: {
 }): JSX.Element {
   const { viewMode, onViewModeChange, onRefresh, loading, fileCount } = props;
   return (
-    <div className="shrink-0 flex items-center gap-2 px-2 py-1 text-xs text-slate-400">
+    <div className="shrink-0 flex items-center gap-2 px-2 py-1 text-xs text-faint">
       <span className="font-mono">{fileCount} file{fileCount === 1 ? "" : "s"}</span>
-      <div className="flex items-center rounded border border-slate-800 overflow-hidden">
-        <ToggleButton
-          active={viewMode === "split"}
-          onClick={() => onViewModeChange("split")}
-          label="Split"
-        />
-        <ToggleButton
-          active={viewMode === "unified"}
-          onClick={() => onViewModeChange("unified")}
-          label="Unified"
-        />
-      </div>
-      <button
-        type="button"
-        className="ml-auto px-2 py-0.5 rounded bg-slate-800 text-slate-100 hover:bg-slate-700 disabled:opacity-60"
+      <Segmented<DiffViewMode>
+        items={[{ id: "split", label: "Split" }, { id: "unified", label: "Unified" }]}
+        active={viewMode}
+        onSelect={onViewModeChange}
+      />
+      <Button
+        variant="outline"
+        size="sm"
+        className="ml-auto"
         onClick={onRefresh}
         disabled={loading}
       >
+        <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
         {loading ? "Refreshing…" : "Refresh"}
-      </button>
+      </Button>
     </div>
-  );
-}
-
-function ToggleButton(props: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}): JSX.Element {
-  const cls = props.active
-    ? "px-2 py-0.5 bg-slate-800 text-slate-100"
-    : "px-2 py-0.5 text-slate-400 hover:bg-slate-900";
-  return (
-    <button
-      type="button"
-      className={cls}
-      onClick={props.onClick}
-      aria-pressed={props.active}
-    >
-      {props.label}
-    </button>
   );
 }
 
 function EmptyState({ loading }: { loading: boolean }): JSX.Element {
   return (
-    <div className="h-full flex items-center justify-center text-xs text-slate-500 p-3">
+    <div className="h-full flex items-center justify-center text-xs text-faint p-3">
       {loading ? "Loading diff…" : "No changes."}
     </div>
   );
@@ -211,7 +212,7 @@ function EmptyState({ loading }: { loading: boolean }): JSX.Element {
 
 function ErrorBanner({ message }: { message: string }): JSX.Element {
   return (
-    <div className="h-full flex items-center justify-center text-xs text-rose-400 p-3 font-mono">
+    <div className="h-full flex items-center justify-center text-xs text-err p-3 font-mono">
       Diff failed: {message}
     </div>
   );

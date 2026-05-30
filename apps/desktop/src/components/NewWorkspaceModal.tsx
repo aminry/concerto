@@ -89,7 +89,7 @@ export function NewWorkspaceModal(): JSX.Element {
     <Dialog open={open} onClose={() => setOpen(false)} title="New Workspace">
       <form className="space-y-3" onSubmit={onSubmit}>
         <div>
-          <label className="block text-xs uppercase tracking-wider text-slate-500 mb-1">
+          <label className="block text-xs uppercase tracking-wider text-faint mb-1">
             Name
           </label>
           <Input
@@ -100,25 +100,25 @@ export function NewWorkspaceModal(): JSX.Element {
           />
         </div>
         <div>
-          <label className="block text-xs uppercase tracking-wider text-slate-500 mb-1">
+          <label className="block text-xs uppercase tracking-wider text-faint mb-1">
             Repository
           </label>
           {reposQuery.isLoading && (
-            <p className="text-xs text-slate-500">Loading repositories…</p>
+            <p className="text-xs text-faint">Loading repositories…</p>
           )}
           {reposQuery.isError && (
-            <p className="text-xs text-rose-400">
+            <p className="text-xs text-err">
               Failed to load: {String(reposQuery.error)}
             </p>
           )}
           {reposQuery.data && reposQuery.data.repositories.length === 0 && (
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-faint">
               No repositories yet. Add one from Settings first.
             </p>
           )}
           {reposQuery.data && reposQuery.data.repositories.length > 0 && (
             <select
-              className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500"
+              className="w-full rounded-md border border-border-strong bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               value={repositoryId}
               onChange={(e) => setRepositoryId(e.target.value)}
             >
@@ -132,8 +132,8 @@ export function NewWorkspaceModal(): JSX.Element {
           )}
         </div>
         <div>
-          <label className="block text-xs uppercase tracking-wider text-slate-500 mb-1">
-            Description <span className="text-slate-600">(optional)</span>
+          <label className="block text-xs uppercase tracking-wider text-faint mb-1">
+            Description <span className="text-faint">(optional)</span>
           </label>
           <Input
             value={description}
@@ -141,12 +141,12 @@ export function NewWorkspaceModal(): JSX.Element {
             placeholder=""
           />
         </div>
-        {errorMsg && <p className="text-xs text-rose-400">{errorMsg}</p>}
+        {errorMsg && <p className="text-xs text-err">{errorMsg}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button type="submit" disabled={!canSubmit}>
+          <Button type="submit" variant="primary" disabled={!canSubmit}>
             {mutation.isPending ? "Creating…" : "Create"}
           </Button>
         </div>

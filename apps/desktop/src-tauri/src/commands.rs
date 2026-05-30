@@ -89,7 +89,21 @@ pub async fn concerto_rpc(method: String, payload: Value) -> Result<Value, CoreC
     let socket_path = default_socket_path().ok_or_else(|| {
         CoreClientError::Transport("HOME not set — cannot resolve ~/.concerto/core.sock".into())
     })?;
-    dispatch(socket_path, &method, payload).await
+    // Retry transport failures. The Core daemon is a separate process that
+    // may be mid-restart (new socket inode) when a call lands — or the
+    // cached channel may have gone stale across a restart. `dispatch`
+    // resets the channel on error, so a short wait + re-dial recovers
+    // transparently instead of surfacing a spurious "Transport" error to
+    // the user. Only Transport (dial) failures retry; real RPC errors
+    // (NotFound, InvalidArgument, …) are returned immediately.
+    let mut result = dispatch(socket_path.clone(), &method, payload.clone()).await;
+    let mut attempts = 0;
+    while attempts < 3 && matches!(result, Err(CoreClientError::Transport(_))) {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        result = dispatch(socket_path.clone(), &method, payload.clone()).await;
+        attempts += 1;
+    }
+    result
 }
 
 /// Renderer → shell server-streaming bridge. Opens
@@ -106,38 +120,58 @@ pub async fn concerto_subscribe(
     let socket_path = default_socket_path().ok_or_else(|| {
         CoreClientError::Transport("HOME not set — cannot resolve ~/.concerto/core.sock".into())
     })?;
-    let channel = match get_or_connect(&socket_path).await {
-        Ok(ch) => ch,
-        Err(e) => {
-            reset_channel();
-            return Err(e);
+    // Retry transport/dial failures, mirroring `concerto_rpc`. The Core is
+    // a separate process; after it restarts the cached channel is stale,
+    // and the FIRST subscribe lands on the dead connection. Without a retry
+    // the renderer's subscription hook just logs and never re-runs (its
+    // effect is keyed on the session id), leaving a permanently blank
+    // terminal. Re-dial + retry so a Core restart is transparent.
+    let mut attempts = 0;
+    let stream = loop {
+        let channel = match get_or_connect(&socket_path).await {
+            Ok(ch) => ch,
+            Err(e) => {
+                reset_channel();
+                if attempts >= 3 {
+                    return Err(e);
+                }
+                attempts += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                continue;
+            }
+        };
+        match StreamsClient::new(channel)
+            .subscribe(SubscribeRequest {
+                subject: subject.clone(),
+                filter: filter.clone(),
+                since_offset: None,
+            })
+            .await
+        {
+            Ok(s) => break s.into_inner(),
+            Err(status) => {
+                reset_channel();
+                if attempts >= 3 {
+                    return Err(CoreClientError::Rpc(format!(
+                        "{}: {}",
+                        status.code(),
+                        status.message()
+                    )));
+                }
+                attempts += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            }
         }
     };
-    let mut client = StreamsClient::new(channel);
-    let stream = client
-        .subscribe(SubscribeRequest {
-            subject: subject.clone(),
-            filter,
-            since_offset: None,
-        })
-        .await
-        .map_err(|s| {
-            reset_channel();
-            CoreClientError::Rpc(format!("{}: {}", s.code(), s.message()))
-        })?
-        .into_inner();
 
-    // Stable per-subscription id — uuid-shaped string is overkill;
-    // a monotonic counter is enough for V0.1 since the renderer is
-    // the only producer of ids. Use the subject + a millisecond
-    // timestamp so duplicates are unlikely under hand testing.
+    // Per-subscription id. A process-wide atomic counter guarantees
+    // uniqueness — a millisecond timestamp collides when React StrictMode
+    // double-mounts a hook in the same instant, which silently overwrote
+    // (and leaked) the first forwarder task, double-rendering every byte.
+    static SUB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = format!(
-        "{}-{}",
-        subject,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or_default()
+        "{subject}-{}",
+        SUB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
 
     // Tauri 2 rejects event names containing '.', so the gRPC subject
@@ -716,6 +750,16 @@ pub(crate) async fn dispatch(
                     session_id: req.session_id,
                     reason: req.reason,
                 })
+                .await
+                .map(|_| Value::Null)
+        }
+        "Sessions.DeleteSession" => {
+            let req: IdPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for DeleteSession: {e}"))
+            })?;
+            let mut client = SessionsClient::new(channel);
+            client
+                .delete_session(ProtoSessionId { value: req.id })
                 .await
                 .map(|_| Value::Null)
         }

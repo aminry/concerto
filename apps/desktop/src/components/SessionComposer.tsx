@@ -2,7 +2,11 @@
 //
 // Cmd+Enter (or Ctrl+Enter on non-Mac) submits. Plain Enter inserts a
 // newline. On submit, the text is encoded as UTF-8 with a trailing
-// `\n` and forwarded to `Sessions.SendMessage`.
+// carriage return `\r` and forwarded to `Sessions.SendMessage`. The `\r`
+// (not `\n`) is the "Enter" keypress: interactive agent TUIs (Claude
+// Code, Codex) run the PTY in raw mode and submit a turn on CR, whereas a
+// bare LF is treated as a newline *inside* the prompt editor — so sending
+// `\n` types the message but never submits it.
 //
 // Task 26 pre-decision (5): hand-rolled `<textarea>` with Tailwind
 // classes — no shadcn `Textarea` primitive in V0.1.
@@ -12,6 +16,7 @@ import { useCallback, useState } from "react";
 import { sendMessage } from "../api/sessions";
 import { formatError } from "../api/errors";
 import { Button } from "./ui/button";
+import { Send } from "lucide-react";
 
 export type SessionComposerProps = {
   sessionId: string;
@@ -60,7 +65,7 @@ export function SessionComposer({
   );
 
   return (
-    <div className="border-t border-slate-800 pt-2 pb-1 px-1 flex gap-2 items-end">
+    <div className="border-t border-border pt-2 pb-1 px-1 flex gap-2 items-end">
       <textarea
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -72,18 +77,20 @@ export function SessionComposer({
             : "Type a message… Cmd+Enter to send"
         }
         disabled={disabled || sending}
-        className="flex-1 resize-none bg-slate-900 border border-slate-800 rounded px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500 disabled:opacity-50 font-mono"
+        className="flex-1 resize-none bg-surface border border-border rounded-md px-2 py-1 text-sm text-foreground placeholder:text-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 font-mono"
       />
       <div className="flex flex-col items-end gap-1">
         <Button
-          variant="default"
+          variant="primary"
           onClick={() => void submit()}
           disabled={disabled || sending || value.length === 0}
         >
+          <Send size={14} />
           {sending ? "Sending…" : "Send"}
         </Button>
+        <span className="text-xs text-faint">⌘+Enter</span>
         {error && (
-          <p className="text-xs text-rose-400 max-w-[16rem] truncate">
+          <p className="text-xs text-err max-w-[20rem] whitespace-normal break-words text-right">
             {error}
           </p>
         )}

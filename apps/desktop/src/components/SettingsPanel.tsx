@@ -22,11 +22,11 @@ export function SettingsPanel(): JSX.Element | null {
       role="presentation"
     >
       <aside
-        className="w-[24rem] max-w-[90vw] h-full overflow-y-auto border-l border-slate-800 bg-slate-950 p-4"
+        className="w-[24rem] max-w-[90vw] h-full overflow-y-auto border-l border-border bg-background p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted">
             Settings
           </h2>
           <Button variant="ghost" onClick={() => setOpen(false)}>

@@ -14,7 +14,11 @@ import {
   subscribe,
   unsubscribe,
 } from "../api/client";
-import type { StreamEvent } from "../api/sessions";
+import {
+  oneofVariant,
+  type SessionEventPayload,
+  type StreamEvent,
+} from "../api/sessions";
 
 export type SessionStatusBadge =
   | "starting"
@@ -52,22 +56,41 @@ export function useSessionEvents(
     void (async () => {
       try {
         unlisten = await onConcertoEvent<StreamEvent>(subject, (event) => {
-          const body = event.body;
-          if (!body || !("session" in body)) return;
-          const kind = body.session.kind;
+          // Oneof variants serialize PascalCase (`Session`, `Started`,
+          // `Exited`) by prost's serde default — accept both spellings.
+          const session = oneofVariant<SessionEventPayload>(
+            event.body,
+            "Session",
+            "session",
+          );
+          const kind = session?.kind;
           if (!kind) return;
-          if ("started" in kind) {
+          if (oneofVariant(kind, "Started", "started")) {
             setState({ status: "running", exitCode: null });
-          } else if ("exited" in kind) {
-            const code = kind.exited.exit_code ?? null;
-            setState({
-              status: code === 0 || code === null ? "finished" : "crashed",
-              exitCode: code,
-            });
+          } else {
+            const exited = oneofVariant<{ exit_code?: number | null }>(
+              kind,
+              "Exited",
+              "exited",
+            );
+            if (exited) {
+              const code = exited.exit_code ?? null;
+              setState({
+                status: code === 0 || code === null ? "finished" : "crashed",
+                exitCode: code,
+              });
+            }
           }
         });
+        // StrictMode runs cleanup before these awaits resolve and can't
+        // see `unlisten` yet — unlisten here if already torn down.
+        if (cancelled) {
+          unlisten?.();
+          return;
+        }
         const id = await subscribe(subject);
         if (cancelled) {
+          unlisten?.();
           await unsubscribe(id);
           return;
         }

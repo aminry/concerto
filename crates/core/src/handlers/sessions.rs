@@ -260,6 +260,24 @@ impl SessionsService for SessionsHandler {
         Ok(Response::new(()))
     }
 
+    #[tracing::instrument(skip_all, name = "Sessions::DeleteSession")]
+    async fn delete_session(
+        &self,
+        request: Request<ProtoSessionId>,
+    ) -> Result<Response<()>, Status> {
+        let id = request.into_inner().value;
+        if id.is_empty() {
+            return Err(Status::invalid_argument(
+                "session_id (value) must not be empty",
+            ));
+        }
+        self.supervisor
+            .delete_session(&PersistSessionId(id), None)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+
     #[tracing::instrument(skip_all, name = "Sessions::ResizeSession")]
     async fn resize_session(
         &self,

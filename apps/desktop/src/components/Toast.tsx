@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 
 import { checkCommand } from "../api/client";
 import { useAutoUpdate } from "../hooks/useAutoUpdate";
+import { Button } from "./ui/button";
 
 export function FirstRunClaudeToast(): JSX.Element | null {
   const [visible, setVisible] = useState(false);
@@ -37,11 +38,11 @@ export function FirstRunClaudeToast(): JSX.Element | null {
   if (!visible) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 max-w-xs rounded-md border border-amber-700 bg-amber-950/90 px-3 py-2 text-xs text-amber-200 shadow-lg">
+    <div className="fixed bottom-4 right-4 z-50 max-w-xs rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-foreground shadow-lg">
       Install Claude Code to use sessions.
       <button
         type="button"
-        className="ml-2 text-amber-300 hover:text-amber-100"
+        className="ml-2 text-faint hover:text-foreground"
         onClick={() => setVisible(false)}
         aria-label="Dismiss"
       >
@@ -61,29 +62,29 @@ export function AutoUpdateToast(): JSX.Element | null {
   if (!update || dismissed) return null;
 
   return (
-    <div className="fixed bottom-16 right-4 z-50 max-w-xs rounded-md border border-emerald-700 bg-emerald-950/90 px-3 py-2 text-xs text-emerald-200 shadow-lg">
+    <div className="fixed bottom-16 right-4 z-50 max-w-xs rounded-md border border-border bg-surface px-3 py-2 text-xs text-foreground shadow-lg">
       <div className="mb-1 font-semibold">
-        Update available: {update.version}
+        Update available: <span className="font-mono">{update.version}</span>
       </div>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className="rounded bg-emerald-700 px-2 py-0.5 text-emerald-50 hover:bg-emerald-600 disabled:opacity-50"
+        <Button
+          size="sm"
+          variant="primary"
           onClick={() => {
             void installAndRestart();
           }}
           disabled={installing}
         >
           {installing ? "Installing…" : "Restart to update"}
-        </button>
-        <button
-          type="button"
-          className="text-emerald-300 hover:text-emerald-100"
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
           onClick={() => setDismissed(true)}
           aria-label="Dismiss"
         >
           Later
-        </button>
+        </Button>
       </div>
     </div>
   );

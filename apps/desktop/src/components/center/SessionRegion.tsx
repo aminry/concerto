@@ -7,16 +7,20 @@
 // terminal mounts, the composer below sends bytes via
 // `Sessions.SendMessage`.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useUiStore } from "../../state/useUiStore";
 import { useSessions } from "../../hooks/useSessions";
-import { stopSession } from "../../api/sessions";
+import { createSession, deleteSession, type Session } from "../../api/sessions";
+import { errorMessage } from "../../api/client";
 import { SessionTab } from "../SessionTab";
 import { SessionTerminal } from "../SessionTerminal";
 import { SessionComposer } from "../SessionComposer";
+import { Menu } from "../ui/menu";
+import { Dialog } from "../ui/dialog";
 import { Button } from "../ui/button";
+import { Plus, TerminalSquare } from "lucide-react";
 
 export type SessionRegionProps = {
   workareaId: string;
@@ -25,13 +29,18 @@ export type SessionRegionProps = {
 export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
   const activeSessionId = useUiStore((s) => s.activeSessionId);
   const setActiveSession = useUiStore((s) => s.setActiveSession);
-  const setStartSessionPickerOpen = useUiStore(
-    (s) => s.setStartSessionPickerOpen,
-  );
   const queryClient = useQueryClient();
 
   const sessionsQuery = useSessions(workareaId);
-  const sessions = sessionsQuery.data?.sessions ?? [];
+  // Core returns sessions newest-first (`ORDER BY started_at DESC`); the
+  // tab strip reads left-to-right, so sort ascending here to put the
+  // oldest tab on the left and a freshly created session on the right.
+  const sessions = [...(sessionsQuery.data?.sessions ?? [])].sort(
+    (a, b) => startedAtMillis(a) - startedAtMillis(b),
+  );
+
+  const [confirmSession, setConfirmSession] = useState<Session | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeSessionId && sessions.length > 0) {
@@ -45,56 +54,85 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
     activeSession === null ||
     !["starting", "running", "awaiting"].includes(activeSession.status);
 
-  const stopMutation = useMutation({
-    mutationFn: async (sessionId: string) => stopSession(sessionId),
-    onSuccess: () =>
+  const createMutation = useMutation({
+    mutationFn: async (agentKind: string) =>
+      createSession({ workareaId, agentKind }),
+    onSuccess: (session) => {
+      setActionError(null);
+      setActiveSession(session.id);
       void queryClient.invalidateQueries({
         queryKey: ["sessions", workareaId],
-      }),
+      });
+    },
+    onError: (e) => setActionError(`Couldn't start session: ${errorMessage(e)}`),
   });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (sessionId: string) => deleteSession(sessionId),
+    onSuccess: (_, id) => {
+      setActionError(null);
+      void queryClient.invalidateQueries({
+        queryKey: ["sessions", workareaId],
+      });
+      // Reselect from the pre-invalidation `sessions` snapshot. This
+      // assumes serial closes (one ✕ click at a time) — the expected
+      // interaction; rapid concurrent deletes could momentarily pick a
+      // just-closed id before the refetch lands.
+      if (id === activeSessionId) {
+        setActiveSession(nextActiveSessionId(sessions, id));
+      }
+    },
+    onError: (e) => setActionError(`Couldn't delete session: ${errorMessage(e)}`),
+  });
+
+  function handleClose(s: Session): void {
+    const running = ["starting", "running", "awaiting"].includes(s.status);
+    if (running) {
+      setConfirmSession(s);
+      return;
+    }
+    deleteMutation.mutate(s.id);
+  }
 
   return (
     <section className="h-full flex flex-col min-h-0 p-2 gap-2">
-      <div className="shrink-0 flex items-center gap-2 flex-wrap">
-        <span className="text-xs uppercase tracking-wider text-slate-500">
-          Sessions:
-        </span>
-        {sessionsQuery.isLoading && (
-          <span className="text-xs text-slate-500">Loading…</span>
-        )}
-        {sessionsQuery.isError && (
-          <span className="text-xs text-rose-400">
-            {String(sessionsQuery.error)}
-          </span>
-        )}
-        {sessions.map((s) => (
-          <SessionTab
-            key={s.id}
-            session={s}
-            active={s.id === activeSessionId}
-            onClick={() => setActiveSession(s.id)}
-          />
-        ))}
-        <Button
-          variant="outline"
-          onClick={() => setStartSessionPickerOpen(true)}
-        >
-          + Start Session
-        </Button>
-        {activeSession && !sessionDisabled && (
-          <Button
-            variant="ghost"
-            onClick={() => stopMutation.mutate(activeSession.id)}
-            disabled={stopMutation.isPending}
-          >
-            {stopMutation.isPending ? "Stopping…" : "Stop Session"}
-          </Button>
-        )}
+      <div className="shrink-0 flex items-stretch bg-surface border-b border-border">
+        <div className="flex items-stretch overflow-x-auto min-w-0">
+          {sessions.map((s) => (
+            <SessionTab
+              key={s.id}
+              session={s}
+              active={s.id === activeSessionId}
+              onClick={() => setActiveSession(s.id)}
+              onClose={() => handleClose(s)}
+            />
+          ))}
+          {sessionsQuery.isLoading && (
+            <span className="self-center px-3 text-xs text-faint">Loading…</span>
+          )}
+          {sessionsQuery.isError && (
+            <span className="self-center px-3 text-xs text-err">
+              {String(sessionsQuery.error)}
+            </span>
+          )}
+        </div>
+        <NewSessionMenu onPick={(agentKind) => createMutation.mutate(agentKind)} />
       </div>
+      {actionError && (
+        <div className="shrink-0 flex items-center justify-between gap-2 rounded-md border border-err/40 bg-err/10 px-3 py-1.5 text-xs text-err">
+          <span className="truncate">{actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-err/80 hover:text-err shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="flex-1 min-h-0 flex flex-col gap-2">
         {activeSession ? (
           <>
-            <SubTabHeader />
             <SessionTerminal
               key={activeSession.id}
               sessionId={activeSession.id}
@@ -106,37 +144,111 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
             />
           </>
         ) : (
-          <div className="flex-1 min-h-0 flex items-center justify-center text-slate-500 text-sm border border-dashed border-slate-800 rounded">
-            No sessions yet. Click “+ Start Session”.
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 text-faint text-sm border border-dashed border-border rounded-lg">
+            <TerminalSquare size={28} />
+            No sessions yet.
+            <NewSessionMenu
+              onPick={(k) => createMutation.mutate(k)}
+              primary
+            />
           </div>
         )}
       </div>
+      <Dialog
+        open={confirmSession !== null}
+        onClose={() => setConfirmSession(null)}
+        title="Delete running session?"
+      >
+        <p className="text-sm text-muted">
+          This session is still running. Stop the agent and permanently delete
+          the session — including its transcript, approvals, and checkpoints?
+          This can’t be undone.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setConfirmSession(null)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => {
+              const id = confirmSession?.id;
+              setConfirmSession(null);
+              if (id) deleteMutation.mutate(id);
+            }}
+          >
+            Stop &amp; delete
+          </Button>
+        </div>
+      </Dialog>
     </section>
   );
 }
 
-/// Session-level sub-tabs: V0.1 ships Terminal only; Chat is a stub
-/// placeholder ("Chat view comes in V1.0") per the task spec. The strip
-/// renders even though there is only one live tab so the structure
-/// matches the design diagram.
-function SubTabHeader(): JSX.Element {
+/// Sort key for a session's start time. `started_at` is a
+/// `[seconds, nanos]` tuple; a session still being created may not have
+/// one yet — sort those last so the newest tab lands on the right.
+function startedAtMillis(s: Session): number {
+  if (!s.started_at) return Number.MAX_SAFE_INTEGER;
+  const [secs, nanos] = s.started_at;
+  return secs * 1000 + nanos / 1e6;
+}
+
+/// Pick the next active session after `closedId` is removed: prefer the
+/// tab immediately before it, else the first remaining session, else
+/// null (no sessions left).
+function nextActiveSessionId(
+  sessions: Session[],
+  closedId: string,
+): string | null {
+  const idx = sessions.findIndex((s) => s.id === closedId);
+  const remaining = sessions.filter((s) => s.id !== closedId);
+  if (remaining.length === 0) return null;
+  if (idx > 0) {
+    const prev = sessions[idx - 1];
+    if (prev.id !== closedId) return prev.id;
+  }
+  return remaining[0].id;
+}
+
+/// The end-of-strip "new session" affordance. Default form is a `+`
+/// cell that matches the tab height; `primary` swaps it for a primary
+/// CTA used in the empty state.
+function NewSessionMenu({
+  onPick,
+  primary = false,
+}: {
+  onPick: (agentKind: string) => void;
+  primary?: boolean;
+}): JSX.Element {
   return (
-    <div className="shrink-0 flex items-center gap-1 border-b border-slate-800 pb-1">
-      <button
-        type="button"
-        className="px-2 py-0.5 text-xs rounded bg-slate-800 text-slate-100"
-        aria-pressed="true"
-      >
-        Terminal
-      </button>
-      <button
-        type="button"
-        className="px-2 py-0.5 text-xs rounded text-slate-500 cursor-not-allowed"
-        title="Chat view comes in V1.0"
-        disabled
-      >
-        Chat
-      </button>
-    </div>
+    <Menu
+      align="right"
+      label="New session"
+      trigger={() =>
+        primary ? (
+          <span className="inline-flex items-center gap-1.5 rounded-md bg-accent hover:bg-accent-hover text-accent-fg px-2 py-1 text-xs font-medium">
+            <Plus size={14} />
+            New session
+          </span>
+        ) : (
+          <span
+            className="grid h-9 w-9 place-items-center text-muted hover:text-accent hover:bg-surface-2"
+            title="New session"
+          >
+            <Plus size={16} />
+          </span>
+        )
+      }
+      items={[
+        { id: "claude", label: "claude", description: "Claude Code" },
+        { id: "echo", label: "echo", description: "smoke test" },
+      ]}
+      onSelect={onPick}
+    />
   );
 }

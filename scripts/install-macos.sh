@@ -4,9 +4,11 @@
 # install-macos.sh — install concerto-core as a per-user macOS LaunchAgent.
 #
 # What this does:
-#   1. Builds concerto-core in release mode.
-#   2. Installs the binary to ~/Applications/concerto/concerto-core
-#      (per-user, no sudo required).
+#   1. Builds concerto-core AND concerto-agent-host in release mode.
+#   2. Installs both binaries to ~/Applications/concerto/ (per-user, no
+#      sudo required). The Core resolves the agent-host binary relative to
+#      its own path (`<dir>/concerto-agent-host`), so they MUST live side
+#      by side — otherwise agent sessions fail with "spawn agent-host".
 #   3. Templates dist/macos/com.concerto.core.plist with the absolute
 #      binary path and the user's $HOME, writing the rendered plist to
 #      ~/Library/LaunchAgents/com.concerto.core.plist.
@@ -82,6 +84,12 @@ if [ ! -x "$BUILT_HOST_BIN" ]; then
     exit 1
 fi
 
+BUILT_HOST_BIN="$REPO_ROOT/target/release/concerto-agent-host"
+if [ ! -x "$BUILT_HOST_BIN" ]; then
+    echo "install-macos.sh: build did not produce $BUILT_HOST_BIN" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # 2. Install binaries + log dir
 # ---------------------------------------------------------------------------
@@ -90,6 +98,8 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
 cp -f "$BUILT_BIN" "$BIN_PATH"
 chmod +x "$BIN_PATH"
+# The Core spawns the agent-host from <dir>/concerto-agent-host, so it
+# must sit next to the Core binary and be kept in lock-step with it.
 cp -f "$BUILT_HOST_BIN" "$HOST_BIN_PATH"
 chmod +x "$HOST_BIN_PATH"
 
@@ -128,10 +138,25 @@ echo "==> Reloading LaunchAgent ($SERVICE_TARGET)"
 # clean machine. Suppress the error to keep the script idempotent.
 launchctl bootout "$SERVICE_TARGET" 2>/dev/null || true
 
-launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENT_PATH"
+# bootout is ASYNCHRONOUS: it signals the job to stop but returns before
+# the process exits and the label is released. Bootstrapping immediately
+# races that teardown and fails with "Bootstrap failed: 5: Input/output
+# error". Poll (up to ~5s) until the service is fully gone first.
+for _ in $(seq 1 50); do
+    launchctl print "$SERVICE_TARGET" >/dev/null 2>&1 || break
+    sleep 0.1
+done
+
+# Bootstrap, with one retry — launchd can still briefly return EIO right
+# after a teardown on a busy system.
+if ! launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENT_PATH" 2>/dev/null; then
+    echo "    bootstrap returned an error; retrying once after a short wait…" >&2
+    sleep 1
+    launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENT_PATH"
+fi
 
 echo "==> Installed."
-echo "    Binary:       $BIN_PATH"
+echo "    Core binary:  $BIN_PATH"
 echo "    Agent host:   $HOST_BIN_PATH"
 echo "    LaunchAgent:  $LAUNCH_AGENT_PATH"
 echo "    Logs:         $LOG_DIR/launchd-{out,err}.log"

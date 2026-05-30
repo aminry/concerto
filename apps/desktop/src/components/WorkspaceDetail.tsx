@@ -35,7 +35,7 @@ export function WorkspaceDetail(): JSX.Element {
 
   if (!selectedWorkspaceId) {
     return (
-      <main className="h-full p-6 text-slate-400 overflow-auto">
+      <main className="h-full p-6 text-muted overflow-auto">
         <p>Select a workspace on the left to inspect it.</p>
       </main>
     );
@@ -52,7 +52,7 @@ export function WorkspaceDetail(): JSX.Element {
         </Button>
       </div>
       {mutation.isError && (
-        <p className="text-xs text-rose-400">
+        <p className="text-xs text-err">
           Failed to create workarea: {String(mutation.error)}
         </p>
       )}
@@ -63,12 +63,12 @@ export function WorkspaceDetail(): JSX.Element {
         <CardContent>
           {workspaceQuery.isLoading && <p>Loading…</p>}
           {workspaceQuery.isError && (
-            <p className="text-rose-400">
+            <p className="text-err">
               Failed to load: {String(workspaceQuery.error)}
             </p>
           )}
           {workspaceQuery.data && (
-            <pre className="text-xs whitespace-pre-wrap text-emerald-300">
+            <pre className="text-xs whitespace-pre-wrap text-accent font-mono">
               {JSON.stringify(workspaceQuery.data, null, 2)}
             </pre>
           )}
