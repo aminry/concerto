@@ -89,7 +89,21 @@ pub async fn concerto_rpc(method: String, payload: Value) -> Result<Value, CoreC
     let socket_path = default_socket_path().ok_or_else(|| {
         CoreClientError::Transport("HOME not set — cannot resolve ~/.concerto/core.sock".into())
     })?;
-    dispatch(socket_path, &method, payload).await
+    // Retry transport failures. The Core daemon is a separate process that
+    // may be mid-restart (new socket inode) when a call lands — or the
+    // cached channel may have gone stale across a restart. `dispatch`
+    // resets the channel on error, so a short wait + re-dial recovers
+    // transparently instead of surfacing a spurious "Transport" error to
+    // the user. Only Transport (dial) failures retry; real RPC errors
+    // (NotFound, InvalidArgument, …) are returned immediately.
+    let mut result = dispatch(socket_path.clone(), &method, payload.clone()).await;
+    let mut attempts = 0;
+    while attempts < 3 && matches!(result, Err(CoreClientError::Transport(_))) {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        result = dispatch(socket_path.clone(), &method, payload.clone()).await;
+        attempts += 1;
+    }
+    result
 }
 
 /// Renderer → shell server-streaming bridge. Opens
