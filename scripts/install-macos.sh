@@ -130,7 +130,22 @@ echo "==> Reloading LaunchAgent ($SERVICE_TARGET)"
 # clean machine. Suppress the error to keep the script idempotent.
 launchctl bootout "$SERVICE_TARGET" 2>/dev/null || true
 
-launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENT_PATH"
+# bootout is ASYNCHRONOUS: it signals the job to stop but returns before
+# the process exits and the label is released. Bootstrapping immediately
+# races that teardown and fails with "Bootstrap failed: 5: Input/output
+# error". Poll (up to ~5s) until the service is fully gone first.
+for _ in $(seq 1 50); do
+    launchctl print "$SERVICE_TARGET" >/dev/null 2>&1 || break
+    sleep 0.1
+done
+
+# Bootstrap, with one retry — launchd can still briefly return EIO right
+# after a teardown on a busy system.
+if ! launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENT_PATH" 2>/dev/null; then
+    echo "    bootstrap returned an error; retrying once after a short wait…" >&2
+    sleep 1
+    launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENT_PATH"
+fi
 
 echo "==> Installed."
 echo "    Core binary:  $BIN_PATH"
