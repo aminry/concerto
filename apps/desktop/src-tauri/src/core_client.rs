@@ -26,8 +26,11 @@ use tonic::transport::{Channel, Endpoint, Uri};
 /// falls back to `<HOME>/.concerto/core.sock`.
 static SOCKET_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
-/// Install the socket path embedded Core bound. Idempotent — the first
-/// call wins (we boot Core exactly once per process).
+/// Set the socket path that embedded Core binds to. Idempotent — the
+/// first call wins (Core is booted exactly once per process). Called by
+/// `embedded::start` (Task 4); unused in the lean non-embedded build,
+/// hence the `dead_code` allowance.
+#[allow(dead_code)]
 pub fn set_socket_override(path: PathBuf) {
     let _ = SOCKET_OVERRIDE.set(path);
 }
