@@ -26,8 +26,14 @@ if [ -z "${CONCERTO_HOME:-}" ]; then
     fi
 fi
 
-cd "$(dirname "$0")/../apps/desktop"
+# Resolve the repo root from this script's own location so the paths below
+# are absolute and don't depend on the caller's working directory.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+cd "$REPO_ROOT/apps/desktop"
 # cargo watch watches ONLY crates/core; Vite HMR + src-tauri rebuilds are
 # handled by `tauri dev` itself. A crates/core edit restarts the whole
-# dev session (full Core rebuild + relaunch).
-exec cargo watch -w ../../crates/core -s 'pnpm tauri dev -f embedded-core'
+# dev session (full Core rebuild + relaunch). The watch path is absolute
+# so it canonicalizes regardless of where the script was invoked from.
+exec cargo watch -w "$REPO_ROOT/crates/core" -s 'pnpm tauri dev -f embedded-core'
