@@ -68,10 +68,6 @@ pub fn scratch_config(home: &std::path::Path) -> RuntimeConfig {
 /// Handle stored in Tauri state so the window-close path can shut Core
 /// down. Present only when Core was booted in-process.
 pub struct EmbeddedHandle {
-    // Read by the window-close teardown path (a later task). For now the
-    // handle is only stored in Tauri state, so the field is unread in the
-    // bin build; the multi-thread inline test does exercise it via cancel().
-    #[allow(dead_code)]
     pub shutdown: CancellationToken,
 }
 
