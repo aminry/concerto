@@ -135,7 +135,6 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
                 // close — do NOT prevent_close, so the process exits.
                 #[cfg(feature = "embedded-core")]
                 {
-                    use tauri::Manager;
                     if let Some(h) = window_for_handler
                         .app_handle()
                         .try_state::<crate::embedded::EmbeddedHandle>()
