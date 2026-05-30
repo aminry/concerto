@@ -2,9 +2,15 @@
 //!
 //! Compiled only under the `embedded-core` feature. Picks a launch mode
 //! from the environment, resolves a [`RuntimeConfig`], and boots Core on
-//! a dedicated tokio runtime. Core's PID single-instance lock is the
-//! coexistence guard: if a daemon already holds it, `boot::start` returns
-//! `AlreadyRunning` and we fall back to dialing the live daemon.
+//! the host (Tauri) Tokio runtime via `tokio::spawn`. Core's PID
+//! single-instance lock is the coexistence guard: if a daemon already
+//! holds it, `boot::start` returns `AlreadyRunning` and we fall back to
+//! dialing the live daemon.
+//!
+//! V0.1 tradeoff: Core's run loop + supervised actors share Tauri's
+//! global runtime with the IPC/command machinery rather than running on
+//! an isolated runtime. Fine for a single in-process Core; if Core's
+//! workload grows, a dedicated runtime may be warranted.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -177,8 +183,20 @@ mod tests {
         // flake. The real proof here is that `start` returned `Some` — Core
         // booted, the override was installed, and the run loop spawned.
 
-        // Cancelling the handle's token tears Core down; give it a moment.
+        // Cancelling the token must actually tear Core down. Core's PID lock
+        // (`<config_dir>/core.pid`) is removed when `Runtime::stop` drops the
+        // `PidFile`, so its disappearance is a concrete teardown signal —
+        // tighter than a blind sleep, which would pass even if the run loop
+        // hung. The lock should exist while Core runs, then vanish.
+        let pid_lock = home.join(".concerto").join("core.pid");
+        assert!(pid_lock.exists(), "PID lock should exist while embedded Core runs");
         handle.shutdown.cancel();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let torn_down = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while pid_lock.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(torn_down.is_ok(), "embedded Core should release its PID lock after cancel");
     }
 }
