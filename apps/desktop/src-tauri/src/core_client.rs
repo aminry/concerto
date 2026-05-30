@@ -202,8 +202,16 @@ mod tests {
         }
     }
 
+    // Both the default-path and override behaviors live in one test
+    // because `SOCKET_OVERRIDE` is a process-global `OnceLock`: once set
+    // it stays set for the rest of the process. Splitting these into two
+    // tests would race under libtest's parallel runner (whichever set the
+    // override first would break the other). A single ordered test owns
+    // the global — assert the default first, then install the override.
     #[test]
-    fn default_socket_path_is_under_dot_concerto() {
+    fn default_socket_path_defaults_then_honors_override() {
+        // Before any override: falls back to ~/.concerto/core.sock (only
+        // asserted when $HOME resolves — None is acceptable on bare envs).
         if let Some(p) = default_socket_path() {
             let s = p.to_string_lossy();
             assert!(
@@ -211,10 +219,8 @@ mod tests {
                 "default socket path should live under ~/.concerto/, got {s}"
             );
         }
-    }
 
-    #[test]
-    fn socket_override_takes_precedence_over_default() {
+        // After installing an override it takes precedence everywhere.
         let overridden = std::path::PathBuf::from("/tmp/concerto-test/core.sock");
         set_socket_override(overridden.clone());
         assert_eq!(default_socket_path(), Some(overridden));
