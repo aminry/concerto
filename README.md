@@ -119,24 +119,34 @@ chosen at runtime:
 | `CONCERTO_HOME=/path` | Boot Core in-process against an isolated scratch root — runs alongside an installed daemon with no conflict. Use this for testing. |
 | `CONCERTO_EMBEDDED=0` / `--external` | Skip embedding; dial an existing daemon (default production behavior). |
 
-Fast dev loop (scratch data; frontend hot-reloads, desktop crate rebuilds
-on change):
+Fast dev loop — hot-reloads the frontend (Vite HMR), the `src-tauri` crate,
+and `crates/core` (via `cargo watch`), running against your **real**
+`~/concerto` data (the same folder the standalone daemon uses):
 
 ```sh
-make dev-embedded
+make stop-core      # stop the standalone daemon so embedded mode can boot
+make dev-embedded   # requires: cargo install cargo-watch
 ```
 
-Tauri's dev watcher watches the `src-tauri` crate; to also hot-reload
-edits to `crates/core`, run under `cargo watch` (see the `dev-embedded`
-recipe comment in the `Makefile`).
+`make dev-embedded-scratch` runs the same loop against an isolated scratch
+data root instead. `make stop-core` stops the launchd daemon and releases its
+PID lock (macOS).
+
+To build a self-contained **Concerto Embedded** app (Desktop + Core in one
+binary, installable alongside a normal Concerto) for people who don't want to
+install Core separately:
+
+```sh
+make build-embedded
+```
+
+Tagged releases (`v*`) also publish signed `Concerto Embedded` artifacts
+automatically. A headless smoke check for the embedded boot path lives at
+`scripts/smoke-embedded.sh` (also `make smoke-embedded`).
 
 In embedded mode, **closing the window quits the app and stops all
 agents** — the "agents survive window close" guarantee holds only with
 the separate daemon.
-
-A headless smoke check for this path (builds the feature, boots Core
-in-process, tears it down) lives at `scripts/smoke-embedded.sh`, also
-runnable as `make smoke-embedded`.
 
 ---
 
