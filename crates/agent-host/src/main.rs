@@ -174,8 +174,16 @@ mod unix {
         Ok(out)
     }
 
-    /// Bind the UDS and `chmod 0600` it. The bind path is removed first
-    /// so a stale socket from a prior crash doesn't fail us.
+    /// Bind the UDS at mode `0600`. A stale socket at either the final or
+    /// the temporary bind path is removed first so a prior crash doesn't
+    /// fail us.
+    ///
+    /// `bind` honours the process umask (commonly `0755`), so chmodding the
+    /// final path *after* bind leaves a window where the socket is
+    /// connectable by other local users — and a Core (or test) racing the
+    /// bind can observe those loose perms. We instead bind on a sibling
+    /// temp path, lock it to `0600`, then atomically `rename` it into
+    /// place, so the final path only ever appears already-`0600`.
     async fn bind_socket(path: &std::path::Path) -> std::io::Result<UnixListener> {
         if path.exists() {
             fs::remove_file(path).await.ok();
@@ -185,10 +193,20 @@ mod unix {
                 fs::create_dir_all(parent).await.ok();
             }
         }
-        let listener = UnixListener::bind(path)?;
-        let mut perms = fs::metadata(path).await?.permissions();
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".binding");
+        let tmp = std::path::PathBuf::from(tmp);
+        if tmp.exists() {
+            fs::remove_file(&tmp).await.ok();
+        }
+        let listener = UnixListener::bind(&tmp)?;
+        let mut perms = fs::metadata(&tmp).await?.permissions();
         perms.set_mode(0o600);
-        fs::set_permissions(path, perms).await?;
+        fs::set_permissions(&tmp, perms).await?;
+        if let Err(e) = fs::rename(&tmp, path).await {
+            fs::remove_file(&tmp).await.ok();
+            return Err(e);
+        }
         Ok(listener)
     }
 

@@ -366,6 +366,23 @@ async fn try_adopt_one(handle: &AgentSupervisorHandle, socket: &std::path::Path)
         }
     }
 
+    // Establish `running` as the adoption baseline BEFORE re-attaching
+    // the bridge. start_session already sets it on first connect; on
+    // adoption the row may say `running` (clean restart) or `starting`
+    // (we died mid-handshake last boot). Either way push it to running
+    // explicitly — but do it first, because the read pump spawned by
+    // `adopt_resume_session` immediately replays the host's buffered
+    // frames and may hit an `AgentExited` (the agent can have exited
+    // while the Core was down), transitioning the row to `finished`.
+    // Setting `running` first lets that live-stream update win; setting
+    // it afterwards would race the pump and could clobber a legitimate
+    // `finished` back to `running`.
+    {
+        let persistence = handle.persistence();
+        let mut w = persistence.writer().await;
+        let _ = concerto_persist::sessions::update_status(&mut w, &session_id, "running").await;
+    }
+
     // Re-register the session in the supervisor's in-memory map and
     // spawn a fresh read pump. The helper lives in `actor.rs` so it
     // can construct `SessionEntry` without exposing its private
@@ -381,15 +398,6 @@ async fn try_adopt_one(handle: &AgentSupervisorHandle, socket: &std::path::Path)
         mark_crashed(handle, &session_id).await;
         return Ok(false);
     }
-
-    // Best-effort: bump status back to running. start_session already
-    // sets it on first connect; on adoption the row may say `running`
-    // (clean restart) or `starting` (we died mid-handshake last
-    // boot). Either way push it to running explicitly.
-    let persistence = handle.persistence();
-    let mut w = persistence.writer().await;
-    let _ = concerto_persist::sessions::update_status(&mut w, &session_id, "running").await;
-    drop(w);
 
     tracing::info!(
         session = %session_id,
