@@ -6,7 +6,7 @@
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: install uninstall install-macos uninstall-macos help dev-embedded smoke-embedded
+.PHONY: install uninstall install-macos uninstall-macos help dev-embedded smoke-embedded stop-core
 
 help:
 	@echo "Concerto install targets:"
@@ -59,3 +59,8 @@ dev-embedded:
 ## run this locally to exercise the one-process path.
 smoke-embedded:
 	@./scripts/smoke-embedded.sh
+
+## Stop the standalone Core daemon (launchd) and release its PID lock so
+## embedded-real mode can boot in-process. macOS-only.
+stop-core:
+	@./scripts/stop-core.sh
