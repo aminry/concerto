@@ -24,6 +24,7 @@ import { useWorkspaces } from "../hooks/useWorkspaces";
 import { useEventSubscription } from "../hooks/useEventSubscription";
 import { useUiStore } from "../state/useUiStore";
 import { IconButton } from "./ui/icon-button";
+import { Button } from "./ui/button";
 import { WorkareaList } from "./WorkareaList";
 import type { Workspace } from "../api/workspaces";
 
@@ -37,6 +38,9 @@ export function Sidebar(): JSX.Element {
   const toggleExpanded = useUiStore((s) => s.toggleWorkspaceExpanded);
   const setNewWorkspaceModalOpen = useUiStore(
     (s) => s.setNewWorkspaceModalOpen,
+  );
+  const setNewProjectModalOpen = useUiStore(
+    (s) => s.setNewProjectModalOpen,
   );
   const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
 
@@ -100,16 +104,27 @@ export function Sidebar(): JSX.Element {
           </p>
         )}
         {projectsQuery.data && projectsQuery.data.projects.length === 0 && (
-          <p className="px-2 text-xs text-faint">
-            No projects yet. Seed one via SQL — V0.1 has no creation UI.
-          </p>
+          <div className="px-2 space-y-2">
+            <p className="text-xs text-faint">No projects yet.</p>
+            <Button size="sm" onClick={() => setNewProjectModalOpen(true)}>
+              + New Project
+            </Button>
+          </div>
         )}
 
         {project && (
           <section>
-            <p className="px-2 text-xs uppercase tracking-wide text-faint mb-1">
-              Project
-            </p>
+            <div className="flex items-center justify-between px-2 mb-1">
+              <p className="text-xs uppercase tracking-wide text-faint">
+                Project
+              </p>
+              <IconButton
+                label="New project"
+                onClick={() => setNewProjectModalOpen(true)}
+              >
+                <Plus size={14} />
+              </IconButton>
+            </div>
             <p className="px-2 text-sm text-foreground mb-2">{project.name}</p>
 
             <div className="flex items-center justify-between px-2 mb-1">

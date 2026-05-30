@@ -21,7 +21,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 
-import { sendMessage } from "../api/sessions";
+import { sendMessage, resizeSession } from "../api/sessions";
 import { useSessionIO } from "../hooks/useSessionIO";
 import { useTheme } from "../hooks/useTheme";
 import { THEME_COLORS, TERMINAL_ANSI } from "../theme/tokens";
@@ -103,8 +103,39 @@ export function SessionTerminal({
       console.warn("WebGL addon unavailable, using canvas renderer", e);
     }
     terminal.open(container);
+
+    // Forward the terminal geometry to the agent's PTY whenever xterm's
+    // cell dimensions change (FitAddon.fit() triggers this). Without it
+    // the PTY stays at its 24×120 spawn default and Claude Code's
+    // full-screen TUI renders garbled. Debounced so a drag-resize doesn't
+    // spam the RPC; the trailing call carries the final size.
+    let resizeTimer: number | null = null;
+    let lastSent = "";
+    const pushSize = (cols: number, rows: number) => {
+      const key = `${cols}x${rows}`;
+      if (key === lastSent || cols <= 0 || rows <= 0) return;
+      lastSent = key;
+      void resizeSession(sessionId, rows, cols).catch((e) => {
+        // Non-fatal: the session may not be in the supervisor's map yet
+        // on the very first frame. The next resize (or the post-fit call
+        // below) will land it.
+        console.warn("resizeSession failed", e);
+      });
+    };
+    const onResizeDisposable = terminal.onResize(({ cols, rows }) => {
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        resizeTimer = null;
+        pushSize(cols, rows);
+      }, 150);
+    });
+
     try {
       fitAddon.fit();
+      // fit() above fires onResize synchronously only if the size
+      // actually changed from the XTERM_OPTIONS defaults; push the
+      // current size unconditionally so the PTY matches on first paint.
+      pushSize(terminal.cols, terminal.rows);
     } catch (e) {
       // FitAddon throws if the container has zero size at mount.
       // The ResizeObserver below catches the first real layout pass.
@@ -127,9 +158,8 @@ export function SessionTerminal({
 
     // ResizeObserver re-fits the terminal on container resize.
     // Tauri's window resize and React layout changes both flow through
-    // here. We do NOT propagate dimensions to the agent in V0.1 —
-    // the PTY size is fixed by the host. Phase 3 may add resize
-    // forwarding.
+    // here. fit() recomputes xterm's cell grid; the `onResize` handler
+    // above then forwards the new geometry to the agent's PTY.
     const resizeObserver = new ResizeObserver(() => {
       try {
         fitAddon.fit();
@@ -141,6 +171,8 @@ export function SessionTerminal({
 
     return () => {
       onDataDisposable.dispose();
+      onResizeDisposable.dispose();
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       resizeObserver.disconnect();
       terminal.dispose();
       terminalRef.current = null;

@@ -76,25 +76,34 @@ pub async fn get_or_connect(socket_path: &Path) -> Result<Channel, CoreClientErr
         return Ok(ch);
     }
 
-    // Slow path: dial, install. The OnceCell.get_or_try_init ensures
-    // only one concurrent caller pays the dial cost on cold start.
+    // Cold-start path: dial under the OnceCell so concurrent callers
+    // share one dial. After the first successful dial the OnceCell stays
+    // initialised forever (stable Rust has no `OnceCell::take`), which
+    // means subsequent `reset_channel` callers can leave the Mutex empty
+    // even though the cell is "initialised". The cell-already-set branch
+    // below dials directly to keep RPCs working after a reset.
     let path = socket_path.to_path_buf();
-    CHANNEL_INIT
-        .get_or_try_init(|| async {
-            let ch = dial_uds(&path).await?;
+    let dial_path = path.clone();
+    let init_result = CHANNEL_INIT
+        .get_or_try_init(|| async move {
+            let ch = dial_uds(&dial_path).await?;
             *CHANNEL.lock().expect("channel mutex poisoned") = Some(ch);
             Ok::<_, CoreClientError>(())
         })
-        .await?;
+        .await;
+    init_result?;
 
-    // The cell is now populated unless we hit a race where reset_channel
-    // wiped it between init and read; in that case treat the read as a
-    // miss and surface a transport error so the caller retries.
-    CHANNEL
-        .lock()
-        .expect("channel mutex poisoned")
-        .clone()
-        .ok_or_else(|| CoreClientError::Transport("channel reset during initialisation".into()))
+    if let Some(ch) = CHANNEL.lock().expect("channel mutex poisoned").clone() {
+        return Ok(ch);
+    }
+
+    // OnceCell was already set (so the closure above was skipped) but
+    // the Mutex is empty because a prior `reset_channel` cleared it.
+    // Re-dial and install. Multiple concurrent callers may race here;
+    // last-write-wins is fine — tonic Channels are cheap clones.
+    let ch = dial_uds(&path).await?;
+    *CHANNEL.lock().expect("channel mutex poisoned") = Some(ch.clone());
+    Ok(ch)
 }
 
 /// Drop the cached channel so the next [`get_or_connect`] dials fresh.

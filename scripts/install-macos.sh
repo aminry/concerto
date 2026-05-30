@@ -71,8 +71,16 @@ echo "==> Building concerto-core + concerto-agent-host (release)"
 (cd "$REPO_ROOT" && cargo build --release -p concerto-core -p concerto-agent-host)
 
 BUILT_BIN="$REPO_ROOT/target/release/concerto-core"
+BUILT_HOST_BIN="$REPO_ROOT/target/release/concerto-agent-host"
 if [ ! -x "$BUILT_BIN" ]; then
     echo "install-macos.sh: build did not produce $BUILT_BIN" >&2
+    exit 1
+fi
+if [ ! -x "$BUILT_HOST_BIN" ]; then
+    # concerto-agent-host is a sibling binary the supervisor spawns per
+    # session. Without it, every CreateSession fails with `spawn
+    # agent-host: io: No such file or directory`.
+    echo "install-macos.sh: build did not produce $BUILT_HOST_BIN" >&2
     exit 1
 fi
 

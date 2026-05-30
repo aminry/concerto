@@ -14,7 +14,7 @@
 import { useCallback, useState } from "react";
 
 import { sendMessage } from "../api/sessions";
-import { errorMessage } from "../api/client";
+import { formatError } from "../api/errors";
 import { Button } from "./ui/button";
 import { Send } from "lucide-react";
 
@@ -37,11 +37,17 @@ export function SessionComposer({
     setSending(true);
     setError(null);
     try {
-      const bytes = new TextEncoder().encode(`${text}\r`);
+      // Terminals transmit CR (\r, 0x0D) on Enter, not LF (\n). Claude's
+      // raw-mode TUI only treats CR as "submit", so a trailing \n leaves
+      // the text sitting unsubmitted in the input box. Convert every
+      // newline (including the terminating one) to CR to mirror what a
+      // real terminal sends.
+      const wire = `${text}\n`.replace(/\n/g, "\r");
+      const bytes = new TextEncoder().encode(wire);
       await sendMessage(sessionId, bytes);
       setValue("");
     } catch (e) {
-      setError(errorMessage(e));
+      setError(formatError(e));
     } finally {
       setSending(false);
     }

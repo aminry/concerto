@@ -33,9 +33,9 @@ use concerto_proto::v1::sessions_server::Sessions as SessionsService;
 use concerto_proto::v1::{
     ApprovalDecision, CreateSessionRequest, ListMcpResponse, ListSessionsRequest,
     ListSessionsResponse, McpScopeRequest, McpServer as ProtoMcpServer, PermissionMode,
-    ResolveApprovalRequest, RevertRequest, SendMessageRequest, Session as ProtoSession,
-    SessionId as ProtoSessionId, StopSessionRequest, UpdateSessionPermissionModeRequest,
-    UpsertProjectMcpRequest,
+    ResizeSessionRequest, ResolveApprovalRequest, RevertRequest, SendMessageRequest,
+    Session as ProtoSession, SessionId as ProtoSessionId, StopSessionRequest,
+    UpdateSessionPermissionModeRequest, UpsertProjectMcpRequest,
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -273,6 +273,26 @@ impl SessionsService for SessionsHandler {
         }
         self.supervisor
             .delete_session(&PersistSessionId(id), None)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "Sessions::ResizeSession")]
+    async fn resize_session(
+        &self,
+        request: Request<ResizeSessionRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.session_id.is_empty() {
+            return Err(Status::invalid_argument("session_id is required"));
+        }
+        // Clamp to u16 + sane minimums; a 0-sized PTY makes TUIs misbehave.
+        let rows = req.rows.clamp(1, u16::MAX as u32) as u16;
+        let cols = req.cols.clamp(1, u16::MAX as u32) as u16;
+        let id = PersistSessionId(req.session_id);
+        self.supervisor
+            .resize_session(&id, rows, cols)
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(()))

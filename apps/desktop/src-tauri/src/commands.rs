@@ -35,12 +35,12 @@ use concerto_proto::v1::streams_client::StreamsClient;
 use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
-    AddRepoRequest, CloneRequest, CreateSessionRequest, CreateWorkareaRequest,
-    CreateWorkspaceRequest, GetDiffRequest, ListProjectsRequest, ListRepositoriesRequest,
-    ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListWorkareasRequest,
-    ListWorkspacesRequest, McpScopeRequest, PermissionMode, SendMessageRequest,
-    SessionId as ProtoSessionId, StopSessionRequest, SubscribeRequest,
-    WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
+    AddRepoRequest, CloneRequest, CreateProjectRequest, CreateSessionRequest,
+    CreateWorkareaRequest, CreateWorkspaceRequest, GetDiffRequest, ListProjectsRequest,
+    ListRepositoriesRequest, ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest,
+    ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest, PermissionMode,
+    ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, StopSessionRequest,
+    SubscribeRequest, WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -174,15 +174,12 @@ pub async fn concerto_subscribe(
         SUB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
 
-    // Tauri v2 forbids '.' in event names — only alphanumerics and
-    // `-`, `/`, `:`, `_` are permitted (see tauri::event::EventName).
-    // Core subjects are dotted (`session.io.<id>`); the subject keeps
-    // its dots for the gRPC stream filter (sent verbatim in the
-    // SubscribeRequest above), but the Tauri channel name must not
-    // contain them or `app.emit` rejects every frame. Map '.' -> ':';
-    // the renderer's `onConcertoEvent` applies the identical mapping so
-    // listen and emit agree on the channel name.
-    let event_name = format!("concerto/{}", subject.replace('.', ":"));
+    // Tauri 2 rejects event names containing '.', so the gRPC subject
+    // (e.g. `session.io.<sid>`) is mapped to a slash-delimited Tauri
+    // event name (`concerto/session/io/<sid>`). The gRPC subject sent to
+    // Core above keeps its dots. MUST stay in sync with the renderer in
+    // `apps/desktop/src/api/client.ts` (`eventNameForSubject`).
+    let event_name = format!("concerto/{}", subject.replace('.', "/"));
     let id_for_task = id.clone();
     let join = tokio::spawn(async move {
         tokio::pin!(stream);
@@ -361,6 +358,15 @@ struct ListWorkspacesPayload {
     project_id: String,
 }
 
+/// Payload wrapper for `Projects.CreateProject`. `icon` is optional and
+/// carries an emoji / short string the renderer chose.
+#[derive(Debug, Deserialize)]
+struct CreateProjectPayload {
+    name: String,
+    #[serde(default)]
+    icon: Option<String>,
+}
+
 /// Payload wrapper for any RPC whose request is `{"id": "..."}`.
 #[derive(Debug, Deserialize)]
 struct IdPayload {
@@ -405,6 +411,14 @@ struct StopSessionPayload {
 
 fn default_stop_reason() -> String {
     "user_request".to_string()
+}
+
+/// Payload wrapper for `Sessions.ResizeSession`.
+#[derive(Debug, Deserialize)]
+struct ResizeSessionPayload {
+    session_id: String,
+    rows: u32,
+    cols: u32,
 }
 
 /// Payload wrapper for `Workspaces.CreateWorkspace`. Mirrors
@@ -546,6 +560,19 @@ pub(crate) async fn dispatch(
             let mut client = ProjectsClient::new(channel);
             client
                 .list_projects(ListProjectsRequest {})
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Projects.CreateProject" => {
+            let req: CreateProjectPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for CreateProject: {e}"))
+            })?;
+            let mut client = ProjectsClient::new(channel);
+            client
+                .create_project(CreateProjectRequest {
+                    name: req.name,
+                    icon: req.icon,
+                })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }
@@ -733,6 +760,20 @@ pub(crate) async fn dispatch(
             let mut client = SessionsClient::new(channel);
             client
                 .delete_session(ProtoSessionId { value: req.id })
+                .await
+                .map(|_| Value::Null)
+        }
+        "Sessions.ResizeSession" => {
+            let req: ResizeSessionPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ResizeSession: {e}"))
+            })?;
+            let mut client = SessionsClient::new(channel);
+            client
+                .resize_session(ResizeSessionRequest {
+                    session_id: req.session_id,
+                    rows: req.rows,
+                    cols: req.cols,
+                })
                 .await
                 .map(|_| Value::Null)
         }

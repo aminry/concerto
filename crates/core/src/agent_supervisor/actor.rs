@@ -484,6 +484,23 @@ impl AgentSupervisorHandle {
 
         // 3. Spawn the host process.
         let (agent_bin, agent_args) = resolve_agent_bin(&req)?;
+        // Claude Code shows an interactive "trust this folder?" dialog on
+        // first run in a directory and blocks the session until it's
+        // answered. There is no CLI flag to skip it in interactive (PTY)
+        // mode — `--dangerously-skip-permissions` only bypasses *tool*
+        // permission gates, not folder trust. Pre-seed the same trust
+        // record Claude writes when the user clicks "Yes, I trust" so the
+        // dialog never appears. The workarea is a git worktree of the
+        // user's own repo, trusted by construction.
+        if matches!(req.agent_kind, AgentKind::Claude) {
+            if let Err(e) = ensure_claude_trusts_dir(&req.cwd) {
+                tracing::warn!(
+                    error = %e,
+                    cwd = %req.cwd.display(),
+                    "could not pre-seed Claude folder-trust; the session may block on the trust dialog"
+                );
+            }
+        }
         let cookie_hex = hex::encode(cookie);
         let mut child = spawn_host(
             &self.host_bin,
@@ -895,6 +912,25 @@ impl AgentSupervisorHandle {
         write_frame(&mut *w, &HostFrame::StdinBytes { data })
             .await
             .map_err(|e| Error::Internal(format!("write StdinBytes: {e}")))
+    }
+
+    /// Relay a terminal resize to the agent's PTY (via the host's
+    /// `Resize` frame). `rows`/`cols` are character cells. Keeps the
+    /// agent's full-screen TUI rendering at the same geometry the user's
+    /// xterm pane displays — without this the PTY stays at its 24×120
+    /// spawn default and cursor-addressed layouts render garbled.
+    pub async fn resize_session(&self, session_id: &SessionId, rows: u16, cols: u16) -> Result<()> {
+        let writer_arc = {
+            let map = self.sessions.lock().await;
+            let entry = map
+                .get(session_id)
+                .ok_or_else(|| Error::NotFound(format!("session {} not running", session_id)))?;
+            entry.writer.clone()
+        };
+        let mut w = writer_arc.lock().await;
+        write_frame(&mut *w, &HostFrame::Resize { rows, cols })
+            .await
+            .map_err(|e| Error::Internal(format!("write Resize: {e}")))
     }
 
     /// Stop a running session. Kills the host process, marks the DB row
@@ -1740,7 +1776,14 @@ async fn run_ack_persist_ticker(
 ///
 /// - [`AgentKind::Echo`] → spawn `/bin/echo`, with the configured
 ///   `echo_text` (default `"hello"`) as the agent argument.
-/// - [`AgentKind::Claude`] → spawn `claude`; relies on `$PATH`.
+/// - [`AgentKind::Claude`] → spawn `claude --dangerously-skip-permissions`;
+///   relies on `$PATH`. The flag suppresses Claude Code's interactive
+///   first-run "trust this folder?" dialog (which otherwise blocks the
+///   session on a TUI prompt the user can't easily answer through the
+///   scraped terminal) and its per-action permission gates. This is
+///   appropriate for V0.1: the user explicitly starts a session in a
+///   workarea that is a git worktree of their own repo, so the workspace
+///   is already trusted by construction.
 fn resolve_agent_bin(req: &StartSessionRequest) -> Result<(String, Vec<String>)> {
     match req.agent_kind {
         AgentKind::Echo => {
@@ -1760,11 +1803,96 @@ fn resolve_agent_bin(req: &StartSessionRequest) -> Result<(String, Vec<String>)>
             let script = format!("echo {}; sleep 1", shell_escape_single_quoted(&payload));
             Ok(("/bin/sh".to_string(), vec!["-c".to_string(), script]))
         }
-        AgentKind::Claude => Ok(("claude".to_string(), Vec::new())),
+        AgentKind::Claude => Ok((
+            "claude".to_string(),
+            vec!["--dangerously-skip-permissions".to_string()],
+        )),
         AgentKind::Codex | AgentKind::Gemini => Err(Error::Validation(
             "agent.not_implemented: codex/gemini deferred to Phase 3".to_string(),
         )),
     }
+}
+
+/// Pre-seed Claude Code's per-directory trust record so its interactive
+/// "trust this folder?" dialog never appears for `cwd`.
+///
+/// Claude stores trust state in `~/.claude.json` under
+/// `projects.<abs-dir>.hasTrustDialogAccepted`. We read-merge-write that
+/// file (preserving all other state) and set the flag for `cwd`, which is
+/// exactly what Claude itself records when the user clicks "Yes, I trust
+/// this folder". The write is atomic (temp file + rename) so a crash mid
+/// write can't corrupt the user's config.
+fn ensure_claude_trusts_dir(cwd: &Path) -> Result<()> {
+    let home = home::home_dir()
+        .ok_or_else(|| Error::Internal("cannot resolve home dir for ~/.claude.json".into()))?;
+    let config_path = home.join(".claude.json");
+
+    // Canonical absolute path is the project key Claude uses (it keys on
+    // the launch cwd). Fall back to the raw path if canonicalize fails
+    // (e.g. the dir was just created and not yet flushed — unlikely).
+    let key = std::fs::canonicalize(cwd)
+        .unwrap_or_else(|_| cwd.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+
+    let mut root: serde_json::Value = match std::fs::read(&config_path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| Error::Internal(format!("parse ~/.claude.json: {e}")))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            serde_json::Value::Object(serde_json::Map::new())
+        }
+        Err(e) => return Err(Error::Io(e)),
+    };
+
+    if !root.is_object() {
+        return Err(Error::Internal(
+            "~/.claude.json is not a JSON object; refusing to overwrite".into(),
+        ));
+    }
+
+    // Navigate/create `projects.<key>` and set the trust flag. If the
+    // flag is already true, skip the write entirely to avoid churning the
+    // file (and racing Claude's own writes) on every session start.
+    let projects = root
+        .as_object_mut()
+        .unwrap()
+        .entry("projects")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !projects.is_object() {
+        return Err(Error::Internal(
+            "~/.claude.json `projects` is not an object; refusing to overwrite".into(),
+        ));
+    }
+    let entry = projects
+        .as_object_mut()
+        .unwrap()
+        .entry(key)
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(obj) = entry.as_object_mut() {
+        if obj.get("hasTrustDialogAccepted") == Some(&serde_json::Value::Bool(true)) {
+            return Ok(());
+        }
+        obj.insert(
+            "hasTrustDialogAccepted".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    } else {
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "hasTrustDialogAccepted".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        *entry = serde_json::Value::Object(obj);
+    }
+
+    let serialized = serde_json::to_vec(&root)
+        .map_err(|e| Error::Internal(format!("serialize claude.json: {e}")))?;
+    // Atomic replace: write to a sibling temp file then rename over the
+    // original so a partial write never leaves a corrupt config.
+    let tmp = config_path.with_extension("json.concerto-tmp");
+    std::fs::write(&tmp, &serialized).map_err(Error::Io)?;
+    std::fs::rename(&tmp, &config_path).map_err(Error::Io)?;
+    Ok(())
 }
 
 /// Wrap `s` in single quotes for `/bin/sh -c`, escaping any embedded

@@ -104,6 +104,19 @@ export async function deleteSession(sessionId: string): Promise<void> {
   });
 }
 
+/// Relay the xterm pane geometry to the agent's PTY so full-screen TUIs
+/// render at the size the user sees. Sent on mount and on every resize.
+export async function resizeSession(
+  sessionId: string,
+  rows: number,
+  cols: number,
+): Promise<void> {
+  await callRpc<
+    { session_id: string; rows: number; cols: number },
+    null
+  >("Sessions.ResizeSession", { session_id: sessionId, rows, cols });
+}
+
 /// Shape of an `Event` frame emitted under `concerto/session.io.<sid>`.
 /// Prost-serde's oneof representation puts the variant under `body`
 /// keyed by the proto field name. `session_io` carries

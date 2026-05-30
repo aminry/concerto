@@ -70,6 +70,9 @@ export type UiStore = {
   /// True while the New Workspace modal is open. The renderer-only
   /// flag keeps the modal state inspectable in dev tools.
   newWorkspaceModalOpen: boolean;
+  /// True while the New Project modal is open. Surfaced by the sidebar
+  /// when the user clicks the "+ Project" affordance.
+  newProjectModalOpen: boolean;
   /// True when Settings (currently just Add Repository) is on screen.
   settingsOpen: boolean;
   /// Task 46 — three-panel layout state. Persisted to `localStorage`
@@ -90,6 +93,7 @@ export type UiStore = {
   toggleWorkspaceExpanded: (workspaceId: string) => void;
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void;
   setNewWorkspaceModalOpen: (open: boolean) => void;
+  setNewProjectModalOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setSessionRegionHeight: (height: number) => void;
@@ -165,6 +169,7 @@ export const useUiStore = create<UiStore>((set) => ({
   sidebarCollapsed: false,
   expandedWorkspaces: new Set<string>(),
   newWorkspaceModalOpen: false,
+  newProjectModalOpen: false,
   settingsOpen: false,
   sidebarWidth: initialLayout.sidebarWidth,
   sessionRegionHeight: initialLayout.sessionRegionHeight,
@@ -203,6 +208,7 @@ export const useUiStore = create<UiStore>((set) => ({
       return { expandedWorkspaces: next };
     }),
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
+  setNewProjectModalOpen: (open) => set({ newProjectModalOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setSidebarWidth: (width) => set({ sidebarWidth: clampPercent(width) }),
   setSessionRegionHeight: (height) =>
