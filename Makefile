@@ -6,7 +6,7 @@
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: install uninstall install-macos uninstall-macos help dev-embedded dev-embedded-scratch smoke-embedded stop-core
+.PHONY: install uninstall install-macos uninstall-macos help dev-embedded dev-embedded-scratch smoke-embedded stop-core build-embedded
 
 help:
 	@echo "Concerto install targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  make dev-embedded-scratch Same, but against an isolated scratch data root"
 	@echo "  make stop-core            Stop the standalone Core daemon (macOS)"
 	@echo "  make smoke-embedded  Headless smoke gate for embedded-core mode"
+	@echo "  make build-embedded       Build the standalone 'Concerto Embedded' app bundle"
 	@echo ""
 	@echo "Linux systemd / Windows Service Manager support lands in V1.0."
 
@@ -68,3 +69,10 @@ smoke-embedded:
 ## embedded-real mode can boot in-process. macOS-only.
 stop-core:
 	@./scripts/stop-core.sh
+
+## Build a self-contained "Concerto Embedded" .app/.dmg (Desktop + Core in
+## one binary) for local distribution. Unsigned. The config overlay gives it
+## a distinct product name + identifier so it installs alongside the normal app.
+build-embedded:
+	cd apps/desktop && pnpm tauri build -f embedded-core \
+		--config src-tauri/tauri.embedded.conf.json
