@@ -24,11 +24,19 @@ on:
 
 jobs:
   bundle:
-    name: bundle / ${{ matrix.target }}
+    name: bundle / ${{ matrix.target }} (${{ matrix.edition.key }})
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+        edition:
+          - key: normal
+            build_args: ""
+            app: "Concerto.app"
+          - key: embedded
+            build_args: "-f embedded-core --config src-tauri/tauri.embedded.conf.json"
+            app: "Concerto Embedded.app"
         include:
           - target: aarch64-apple-darwin
             arch: arm64
@@ -70,7 +78,7 @@ jobs:
           # the auto-updater fetches at runtime.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --target ${{ matrix.target }}
+        run: pnpm tauri build --target ${{ matrix.target }} ${{ matrix.edition.build_args }}
 
       - name: Import signing certificate
         env:
@@ -96,7 +104,7 @@ jobs:
       - name: Codesign
         env:
           IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APP_PATH: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Concerto.app
+          APP_PATH: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/${{ matrix.edition.app }}
         run: ./scripts/sign-macos.sh
 
       - name: Store notarytool credentials
@@ -115,7 +123,7 @@ jobs:
       - name: Notarize
         env:
           KEYCHAIN_PROFILE: concerto-notarytool
-          APP_PATH: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Concerto.app
+          APP_PATH: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/${{ matrix.edition.app }}
         run: ./scripts/notarize-macos.sh
 
       - name: Upload to release
@@ -132,13 +140,17 @@ jobs:
                    "$BUNDLE_DIR/dmg"/*.dmg; do
               [ -e "$f" ] && ASSETS+=("$f")
           done
-          # Create the release on first matrix leg; subsequent legs
-          # upload into it. `gh release create --notes-file` is
-          # idempotent w.r.t. the create call when used with `|| true`.
-          gh release view "${GITHUB_REF_NAME}" \
+          # Ensure the release exists, then upload into it. Four matrix
+          # legs (2 arch x 2 editions) race here, so creation is
+          # race-tolerant: if `view` misses and `create` loses the race
+          # (another leg already created it), a final `view` confirms the
+          # release now exists rather than failing the leg. A genuine
+          # failure (still no release after all three) exits non-zero.
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
             || gh release create "${GITHUB_REF_NAME}" \
                   --title "${GITHUB_REF_NAME}" \
-                  --notes "Concerto ${GITHUB_REF_NAME} — see CHANGELOG.md."
+                  --notes "Concerto ${GITHUB_REF_NAME} — see CHANGELOG.md." \
+            || gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1
           gh release upload "${GITHUB_REF_NAME}" "${ASSETS[@]}" --clobber
 
       - name: Cleanup keychain
