@@ -13,13 +13,24 @@
 //!   (see `crates/core/tests/grpc_runtime.rs::connect_client`).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
 use tokio::sync::OnceCell;
 use tonic::transport::{Channel, Endpoint, Uri};
+
+/// Process-wide override for the socket path. Set once at startup by
+/// embedded mode (`embedded::start`). When unset, `default_socket_path`
+/// falls back to `<HOME>/.concerto/core.sock`.
+static SOCKET_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Install the socket path embedded Core bound. Idempotent — the first
+/// call wins (we boot Core exactly once per process).
+pub fn set_socket_override(path: PathBuf) {
+    let _ = SOCKET_OVERRIDE.set(path);
+}
 
 /// Errors surfaced from the Tauri-command dispatcher.
 ///
@@ -46,6 +57,9 @@ pub enum CoreClientError {
 /// Returns `None` if `$HOME` is unset — only realistic on the most
 /// stripped-down test environments.
 pub fn default_socket_path() -> Option<PathBuf> {
+    if let Some(p) = SOCKET_OVERRIDE.get() {
+        return Some(p.clone());
+    }
     let home = home::home_dir()?;
     Some(home.join(".concerto").join("core.sock"))
 }
@@ -197,5 +211,12 @@ mod tests {
                 "default socket path should live under ~/.concerto/, got {s}"
             );
         }
+    }
+
+    #[test]
+    fn socket_override_takes_precedence_over_default() {
+        let overridden = std::path::PathBuf::from("/tmp/concerto-test/core.sock");
+        set_socket_override(overridden.clone());
+        assert_eq!(default_socket_path(), Some(overridden));
     }
 }
