@@ -6,7 +6,7 @@
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: install uninstall install-macos uninstall-macos help dev-embedded
+.PHONY: install uninstall install-macos uninstall-macos help dev-embedded smoke-embedded
 
 help:
 	@echo "Concerto install targets:"
@@ -16,6 +16,7 @@ help:
 	@echo "  make uninstall-macos Force the macOS LaunchAgent uninstall"
 	@echo ""
 	@echo "  make dev-embedded    Run the desktop app with Core embedded (scratch data)"
+	@echo "  make smoke-embedded  Headless smoke gate for embedded-core mode"
 	@echo ""
 	@echo "Linux systemd / Windows Service Manager support lands in V1.0."
 
@@ -51,3 +52,10 @@ uninstall-macos:
 dev-embedded:
 	cd apps/desktop && CONCERTO_HOME=$${CONCERTO_HOME:-$$(mktemp -d -t concerto-dev.XXXXXX)} \
 		pnpm tauri dev -f embedded-core
+
+## Headless smoke gate for embedded-core mode: builds the desktop binary
+## with the feature and runs the in-process boot tests (no GUI). The main
+## CI smoke gate (scripts/smoke.sh) deliberately avoids the Tauri toolchain;
+## run this locally to exercise the one-process path.
+smoke-embedded:
+	@./scripts/smoke-embedded.sh

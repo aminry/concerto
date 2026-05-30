@@ -134,6 +134,10 @@ In embedded mode, **closing the window quits the app and stops all
 agents** — the "agents survive window close" guarantee holds only with
 the separate daemon.
 
+A headless smoke check for this path (builds the feature, boots Core
+in-process, tears it down) lives at `scripts/smoke-embedded.sh`, also
+runnable as `make smoke-embedded`.
+
 ---
 
 ## Repository layout
