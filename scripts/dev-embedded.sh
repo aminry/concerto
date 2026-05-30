@@ -32,9 +32,20 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT/apps/desktop"
-# cargo watch watches ONLY crates/core; Vite HMR + src-tauri rebuilds are
-# handled by `tauri dev` itself. A crates/core edit restarts the whole
-# dev session (full Core rebuild + relaunch).
+# cargo watch watches crates/core AND crates/agent-host; Vite HMR +
+# src-tauri rebuilds are handled by `tauri dev` itself. An edit to either
+# watched crate restarts the whole dev session (rebuild + relaunch).
+#
+# Why build concerto-agent-host here: the embedded Core spawns the
+# agent-host binary from the directory of the running executable
+# (`current_exe().parent()/concerto-agent-host`, see
+# crates/core/src/agent_supervisor/spawn.rs). In dev that directory is the
+# workspace `target/debug/`, but `tauri dev` only compiles
+# `concerto-desktop` — the agent-host binary is never produced. Without it,
+# every session-create fails at spawn with "spawn agent-host: io: No such
+# file or directory", which the renderer surfaces as a bare "Rpc". Build it
+# into the same target/debug so it sits beside the desktop binary, exactly
+# as install-macos.sh does for the release install.
 #
 # Paths are absolute so they resolve regardless of the caller's CWD. `-C`
 # sets the command's working directory to apps/desktop — cargo watch
@@ -44,4 +55,5 @@ cd "$REPO_ROOT/apps/desktop"
 exec cargo watch \
     -C "$REPO_ROOT/apps/desktop" \
     -w "$REPO_ROOT/crates/core" \
-    -s 'pnpm tauri dev -f embedded-core'
+    -w "$REPO_ROOT/crates/agent-host" \
+    -s 'cargo build -p concerto-agent-host && pnpm tauri dev -f embedded-core'

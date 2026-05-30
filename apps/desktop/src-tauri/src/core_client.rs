@@ -169,6 +169,21 @@ mod tests {
     use tempfile::TempDir;
     use tokio::net::UnixListener;
 
+    #[test]
+    fn rpc_error_serializes_with_kind_and_message_fields() {
+        // The renderer's `errorMessage` (apps/desktop/src/api/client.ts)
+        // reads the `message` field of this serialized error to show the
+        // real failure text. The adjacent tag (`kind`/`message`) is a wire
+        // contract between the shell and the renderer: if it regresses to a
+        // flat `{ Rpc: "..." }` map, the renderer surfaces a bare,
+        // undebuggable "Rpc" again (the original "Couldn't start session:
+        // Rpc" bug). Lock the shape here.
+        let err = CoreClientError::Rpc("Internal: spawn agent-host: io".into());
+        let v = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(v["kind"], "Rpc");
+        assert_eq!(v["message"], "Internal: spawn agent-host: io");
+    }
+
     #[tokio::test]
     async fn connect_uds_succeeds_against_a_live_listener() {
         // Spawn a bare `UnixListener` (no gRPC server behind it) and

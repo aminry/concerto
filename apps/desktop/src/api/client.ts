@@ -41,16 +41,25 @@ export async function callRpc<TRequest, TResponse>(
 }
 
 /// Render an error from `callRpc`/`invoke` as a human-readable string.
-/// The Tauri shell's `CoreClientError` derives `serde::Serialize`, so a
-/// rejected `invoke` surfaces a tagged object (e.g. `{ Rpc: "rpc: …" }`,
-/// `{ Transport: "…" }`, `{ NotImplemented: "…" }`) rather than a string —
-/// `String(e)` on that yields the useless "[object Object]". Pull the
-/// inner message out; fall back to JSON, then String.
+/// The Tauri shell's `CoreClientError` derives `serde::Serialize` with
+/// `#[serde(tag = "kind", content = "message")]`, so a rejected `invoke`
+/// surfaces an adjacently-tagged object: `{ kind: "Rpc", message: "rpc: …" }`
+/// (likewise `Transport` / `NotImplemented`). `String(e)` on that yields the
+/// useless "[object Object]".
+///
+/// Read the `message` field directly. The previous implementation grabbed
+/// the FIRST string value via `Object.values().find()`, which is `kind`
+/// ("Rpc") — discarding the actual error text and surfacing a bare,
+/// undebuggable "Rpc" to the user. Fall back to JSON, then String.
 export function errorMessage(e: unknown): string {
   if (e == null) return "Unknown error";
   if (typeof e === "string") return e;
   if (e instanceof Error) return e.message;
   if (typeof e === "object") {
+    const obj = e as { message?: unknown };
+    if (typeof obj.message === "string") return obj.message;
+    // Pre-tagging fallback: some errors may still be a flat
+    // `{ Variant: "msg" }` map — return the first string value.
     const firstString = Object.values(e as Record<string, unknown>).find(
       (v) => typeof v === "string",
     );
