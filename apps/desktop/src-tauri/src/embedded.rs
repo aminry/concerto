@@ -8,6 +8,7 @@
 
 // Mode, resolve_mode, and scratch_config are all consumed by Task 4's
 // start() function; suppress dead_code until that wiring lands.
+// TODO(task-4): remove this allow once start() references these symbols.
 #![allow(dead_code)]
 
 use std::path::PathBuf;
@@ -31,6 +32,10 @@ pub enum Mode {
 /// Precedence: `CONCERTO_EMBEDDED=0` (or `--external`) → External; an
 /// explicit `CONCERTO_HOME` → EmbeddedScratch; otherwise (or
 /// `CONCERTO_EMBEDDED=1`) → EmbeddedReal.
+///
+/// Note: `--embedded-scratch` without a `CONCERTO_HOME` falls through to
+/// `EmbeddedReal` rather than inventing a temp location — the caller is
+/// expected to set the var. No error is raised.
 pub fn resolve_mode(args: &[String], env_embedded: Option<&str>, env_home: Option<&str>) -> Mode {
     if args.iter().any(|a| a == "--external") || env_embedded == Some("0") {
         return Mode::External;
@@ -78,6 +83,14 @@ mod tests {
     fn real_by_default() {
         assert_eq!(resolve_mode(&[], None, None), Mode::EmbeddedReal);
         assert_eq!(resolve_mode(&[], Some("1"), None), Mode::EmbeddedReal);
+    }
+
+    #[test]
+    fn scratch_flag_without_home_falls_through_to_real() {
+        assert_eq!(
+            resolve_mode(&["--embedded-scratch".into()], None, None),
+            Mode::EmbeddedReal
+        );
     }
 
     #[test]

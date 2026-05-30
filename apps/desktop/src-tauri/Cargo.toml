@@ -27,7 +27,9 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 # Optional: linked only when the `embedded-core` feature is on, so the
 # lean daemon-client build carries no Core code or transitive deps.
 concerto-core = { path = "../../../crates/core", optional = true }
-tokio-util = { workspace = true }
+# Only the embedded path holds a CancellationToken (Task 4's
+# EmbeddedHandle); keep it out of the lean build.
+tokio-util = { workspace = true, optional = true }
 # Task 53: auto-update plumbing. The plugin checks an endpoint manifest,
 # verifies the ed25519 signature against the `updater.pubkey` baked into
 # `tauri.conf.json`, and exposes a JS API (`@tauri-apps/plugin-updater`)
@@ -59,7 +61,7 @@ home = { workspace = true }
 # Links concerto-core into the desktop binary so Core can boot
 # in-process. Dev + standalone builds enable it; the production
 # daemon-client build leaves it off.
-embedded-core = ["dep:concerto-core"]
+embedded-core = ["dep:concerto-core", "dep:tokio-util"]
 
 [dev-dependencies]
 tempfile = "3"
