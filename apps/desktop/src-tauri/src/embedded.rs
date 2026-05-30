@@ -115,7 +115,10 @@ pub async fn start(mode: Mode) -> Option<EmbeddedHandle> {
             Some(EmbeddedHandle { shutdown: token })
         }
         Ok(BootOutcome::AlreadyRunning { pid }) => {
-            tracing::warn!(daemon_pid = pid, "daemon already running; dialing it instead of embedding");
+            tracing::warn!(
+                daemon_pid = pid,
+                "daemon already running; dialing it instead of embedding"
+            );
             None
         }
         Err(e) => {
@@ -131,14 +134,22 @@ mod tests {
 
     #[test]
     fn external_when_flag_or_env_zero() {
-        assert_eq!(resolve_mode(&["--external".into()], None, None), Mode::External);
+        assert_eq!(
+            resolve_mode(&["--external".into()], None, None),
+            Mode::External
+        );
         assert_eq!(resolve_mode(&[], Some("0"), None), Mode::External);
     }
 
     #[test]
     fn scratch_when_home_set() {
         let m = resolve_mode(&[], None, Some("/tmp/scratch"));
-        assert_eq!(m, Mode::EmbeddedScratch { home: "/tmp/scratch".into() });
+        assert_eq!(
+            m,
+            Mode::EmbeddedScratch {
+                home: "/tmp/scratch".into()
+            }
+        );
     }
 
     #[test]
@@ -168,7 +179,9 @@ mod tests {
         let home = tmp.path().join("home");
         let mode = Mode::EmbeddedScratch { home: home.clone() };
 
-        let handle = super::start(mode).await.expect("embedded scratch should boot");
+        let handle = super::start(mode)
+            .await
+            .expect("embedded scratch should boot");
 
         // We intentionally do NOT assert `default_socket_path()` equals the
         // scratch socket here. `set_socket_override` writes a process-global
@@ -185,7 +198,10 @@ mod tests {
         // tighter than a blind sleep, which would pass even if the run loop
         // hung. The lock should exist while Core runs, then vanish.
         let pid_lock = home.join(".concerto").join("core.pid");
-        assert!(pid_lock.exists(), "PID lock should exist while embedded Core runs");
+        assert!(
+            pid_lock.exists(),
+            "PID lock should exist while embedded Core runs"
+        );
         handle.shutdown.cancel();
         let torn_down = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while pid_lock.exists() {
@@ -193,6 +209,9 @@ mod tests {
             }
         })
         .await;
-        assert!(torn_down.is_ok(), "embedded Core should release its PID lock after cancel");
+        assert!(
+            torn_down.is_ok(),
+            "embedded Core should release its PID lock after cancel"
+        );
     }
 }

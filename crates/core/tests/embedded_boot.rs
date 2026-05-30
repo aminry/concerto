@@ -1,6 +1,12 @@
 //! Proves `boot::start` produces a Core that serves gRPC over its UDS
 //! and shuts down cleanly when its token is cancelled — the contract
 //! the embedded desktop path depends on.
+//!
+//! Unix-only: the locked transport surface is a Unix domain socket
+//! (Windows named-pipe support is V1.0), so the whole test is gated the
+//! same way as the other UDS-bound core integration tests.
+
+#![cfg(unix)]
 
 use std::time::Duration;
 
@@ -45,7 +51,10 @@ async fn embedded_boot_serves_and_shuts_down() {
     .await;
     // Connecting (not just `sock.exists()`) proves the server is actually
     // accepting on the UDS — the "serves" half of this test's name.
-    assert!(stream.is_ok(), "gRPC server should accept on the UDS shortly after boot");
+    assert!(
+        stream.is_ok(),
+        "gRPC server should accept on the UDS shortly after boot"
+    );
     drop(stream);
 
     let token = core.shutdown_token();

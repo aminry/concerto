@@ -24,9 +24,9 @@
 
 mod commands;
 mod core_client;
-mod tray;
 #[cfg(feature = "embedded-core")]
 mod embedded;
+mod tray;
 
 fn main() {
     // Tauri 2's `tauri::Builder` runs the event loop on the calling
