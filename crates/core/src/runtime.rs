@@ -176,7 +176,22 @@ impl Runtime {
     /// 4. Install signal handlers; they subscribe to a shared
     ///    [`CancellationToken`].
     pub async fn start(config: RuntimeConfig) -> Result<StartOutcome> {
-        // 1. Single-instance lock.
+        // 1. Signals FIRST — before the pid file is written.
+        //
+        // The pid file is the readiness signal external supervisors (and the
+        // `runtime_lifecycle` integration test) wait on. Arming the SIGTERM /
+        // SIGINT / SIGHUP handlers before it exists guarantees that any signal
+        // observed once the pid file is present triggers a graceful shutdown
+        // (token cancellation) rather than the kernel's default terminate
+        // disposition. Previously signals were installed several steps later
+        // (after `Persistence::open`), leaving a window where a SIGTERM landing
+        // between the pid-file write and signal install killed the process with
+        // status "signal 15" — a startup race that flaked under load.
+        let shutdown = CancellationToken::new();
+        let (signal_listener, reload_rx) = signals::install(shutdown.clone())?;
+        tracing::info!("signal handlers installed");
+
+        // 2. Single-instance lock.
         let pid_path = config.pid_file_path();
         let pid_file = match PidFile::acquire(&pid_path)? {
             AcquireOutcome::Acquired(g) => g,
@@ -196,10 +211,10 @@ impl Runtime {
             "acquired single-instance lock"
         );
 
-        // 2. Ensure data_dir exists for downstream subsystems.
+        // 3. Ensure data_dir exists for downstream subsystems.
         tokio::fs::create_dir_all(&config.data_dir).await?;
 
-        // 3. Persistence.
+        // 4. Persistence.
         let persist_config = PersistenceConfig {
             db_path: config.db_path(),
             max_readers: 8,
@@ -211,11 +226,6 @@ impl Runtime {
         );
         let persistence = Arc::new(Persistence::open(persist_config).await?);
         tracing::info!("persistence ready");
-
-        // 4. Signals.
-        let shutdown = CancellationToken::new();
-        let (signal_listener, reload_rx) = signals::install(shutdown.clone())?;
-        tracing::info!("signal handlers installed");
 
         // 5. Task 12 supervision tree. No actors yet — they are
         // registered by later tasks via `Runtime::supervisor_mut`.
