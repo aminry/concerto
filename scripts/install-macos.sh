@@ -4,9 +4,11 @@
 # install-macos.sh — install concerto-core as a per-user macOS LaunchAgent.
 #
 # What this does:
-#   1. Builds concerto-core in release mode.
-#   2. Installs the binary to ~/Applications/concerto/concerto-core
-#      (per-user, no sudo required).
+#   1. Builds concerto-core AND concerto-agent-host in release mode.
+#   2. Installs both binaries to ~/Applications/concerto/ (per-user, no
+#      sudo required). The Core resolves the agent-host binary relative to
+#      its own path (`<dir>/concerto-agent-host`), so they MUST live side
+#      by side — otherwise agent sessions fail with "spawn agent-host".
 #   3. Templates dist/macos/com.concerto.core.plist with the absolute
 #      binary path and the user's $HOME, writing the rendered plist to
 #      ~/Library/LaunchAgents/com.concerto.core.plist.
@@ -39,6 +41,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLIST_TEMPLATE="$REPO_ROOT/dist/macos/com.concerto.core.plist"
 INSTALL_DIR="$HOME/Applications/concerto"
 BIN_PATH="$INSTALL_DIR/concerto-core"
+HOST_BIN_PATH="$INSTALL_DIR/concerto-agent-host"
 LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
 LAUNCH_AGENT_PATH="$LAUNCH_AGENT_DIR/com.concerto.core.plist"
 LOG_DIR="$HOME/concerto/logs"
@@ -64,8 +67,8 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
-echo "==> Building concerto-core (release)"
-(cd "$REPO_ROOT" && cargo build --release -p concerto-core)
+echo "==> Building concerto-core + concerto-agent-host (release)"
+(cd "$REPO_ROOT" && cargo build --release -p concerto-core -p concerto-agent-host)
 
 BUILT_BIN="$REPO_ROOT/target/release/concerto-core"
 if [ ! -x "$BUILT_BIN" ]; then
@@ -73,14 +76,24 @@ if [ ! -x "$BUILT_BIN" ]; then
     exit 1
 fi
 
+BUILT_HOST_BIN="$REPO_ROOT/target/release/concerto-agent-host"
+if [ ! -x "$BUILT_HOST_BIN" ]; then
+    echo "install-macos.sh: build did not produce $BUILT_HOST_BIN" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
-# 2. Install binary + log dir
+# 2. Install binaries + log dir
 # ---------------------------------------------------------------------------
-echo "==> Installing binary to $BIN_PATH"
+echo "==> Installing binaries to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
 cp -f "$BUILT_BIN" "$BIN_PATH"
 chmod +x "$BIN_PATH"
+# The Core spawns the agent-host from <dir>/concerto-agent-host, so it
+# must sit next to the Core binary and be kept in lock-step with it.
+cp -f "$BUILT_HOST_BIN" "$HOST_BIN_PATH"
+chmod +x "$HOST_BIN_PATH"
 
 # ---------------------------------------------------------------------------
 # 3. Render plist
@@ -120,7 +133,8 @@ launchctl bootout "$SERVICE_TARGET" 2>/dev/null || true
 launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENT_PATH"
 
 echo "==> Installed."
-echo "    Binary:       $BIN_PATH"
+echo "    Core binary:  $BIN_PATH"
+echo "    Agent host:   $HOST_BIN_PATH"
 echo "    LaunchAgent:  $LAUNCH_AGENT_PATH"
 echo "    Logs:         $LOG_DIR/launchd-{out,err}.log"
 echo ""
