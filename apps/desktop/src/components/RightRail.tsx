@@ -7,7 +7,17 @@
 // (Scheduler / Skills / Todos / MCP / Files); each tab's body renders
 // from the matching component under `right-rail/`.
 
-import { Clock, Sparkles, ListChecks, Blocks, Folder, type LucideIcon } from "lucide-react";
+import {
+  Clock,
+  Sparkles,
+  ListChecks,
+  Blocks,
+  Folder,
+  GitCompare,
+  CircleCheck,
+  GitPullRequest,
+  type LucideIcon,
+} from "lucide-react";
 import { useUiStore, type RightRailTab } from "../state/useUiStore";
 import { Tooltip } from "./ui/tooltip";
 import { SchedulerTab } from "./right-rail/SchedulerTab";
@@ -15,6 +25,7 @@ import { SkillsTab } from "./right-rail/SkillsTab";
 import { TodosTab } from "./right-rail/TodosTab";
 import { McpTab } from "./right-rail/McpTab";
 import { FilesTab } from "./right-rail/FilesTab";
+import { CodePrRegion } from "./center/CodePrRegion";
 
 type TabSpec = { id: RightRailTab; label: string; Icon: LucideIcon };
 
@@ -24,6 +35,11 @@ const TABS: readonly TabSpec[] = [
   { id: "todos", label: "Todos", Icon: ListChecks },
   { id: "mcp", label: "MCP", Icon: Blocks },
   { id: "files", label: "Files", Icon: Folder },
+  // Code & PRs — moved here from the center panel's bottom region so the
+  // session terminal occupies the full center height.
+  { id: "diff", label: "Diff", Icon: GitCompare },
+  { id: "checks", label: "Checks", Icon: CircleCheck },
+  { id: "pr", label: "PR", Icon: GitPullRequest },
 ];
 
 export function RightRail(): JSX.Element {
@@ -44,13 +60,17 @@ export function RightRail(): JSX.Element {
   return (
     <aside className="h-full flex flex-row border-l border-border bg-surface min-h-0">
       {!collapsed && (
-        <div className="flex-1 min-w-0 overflow-y-auto">
-          <header className="px-3 py-2 border-b border-border flex items-center justify-between">
+        <div className="flex-1 min-w-0 flex flex-col min-h-0">
+          <header className="shrink-0 px-3 py-2 border-b border-border flex items-center justify-between">
             <h3 className="text-xs uppercase tracking-wide text-muted">
               {TABS.find((t) => t.id === activeTab)?.label ?? "Panel"}
             </h3>
           </header>
-          <RightRailBody tab={activeTab} />
+          {/* Body fills the remaining height (the Diff view's Monaco editor
+              needs a definite height) and scrolls for the list-style tabs. */}
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <RightRailBody tab={activeTab} />
+          </div>
         </div>
       )}
       <nav
@@ -96,5 +116,9 @@ function RightRailBody({ tab }: { tab: RightRailTab }): JSX.Element {
       return <McpTab />;
     case "files":
       return <FilesTab />;
+    case "diff":
+    case "checks":
+    case "pr":
+      return <CodePrRegion subTab={tab} />;
   }
 }
