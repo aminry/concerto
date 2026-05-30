@@ -34,6 +34,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT/apps/desktop"
 # cargo watch watches ONLY crates/core; Vite HMR + src-tauri rebuilds are
 # handled by `tauri dev` itself. A crates/core edit restarts the whole
-# dev session (full Core rebuild + relaunch). The watch path is absolute
-# so it canonicalizes regardless of where the script was invoked from.
-exec cargo watch -w "$REPO_ROOT/crates/core" -s 'pnpm tauri dev -f embedded-core'
+# dev session (full Core rebuild + relaunch).
+#
+# Paths are absolute so they resolve regardless of the caller's CWD. `-C`
+# sets the command's working directory to apps/desktop — cargo watch
+# otherwise runs `-s` commands from the Cargo crate root (the repo root),
+# where there's no package.json for pnpm. `-w` is absolute for the same
+# canonicalization-independence.
+exec cargo watch \
+    -C "$REPO_ROOT/apps/desktop" \
+    -w "$REPO_ROOT/crates/core" \
+    -s 'pnpm tauri dev -f embedded-core'
