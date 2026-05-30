@@ -15,7 +15,7 @@ name = "concerto-desktop"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2", default-features = false }
+tauri-build = { version = "2", default-features = false , features = [] }
 
 [dependencies]
 # Tauri 2 — minimum feature set that compiles a window-bearing app.
