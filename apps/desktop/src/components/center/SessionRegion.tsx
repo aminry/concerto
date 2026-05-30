@@ -32,7 +32,12 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
   const queryClient = useQueryClient();
 
   const sessionsQuery = useSessions(workareaId);
-  const sessions = sessionsQuery.data?.sessions ?? [];
+  // Core returns sessions newest-first (`ORDER BY started_at DESC`); the
+  // tab strip reads left-to-right, so sort ascending here to put the
+  // oldest tab on the left and a freshly created session on the right.
+  const sessions = [...(sessionsQuery.data?.sessions ?? [])].sort(
+    (a, b) => startedAtMillis(a) - startedAtMillis(b),
+  );
 
   const [confirmSession, setConfirmSession] = useState<Session | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -182,6 +187,15 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
       </Dialog>
     </section>
   );
+}
+
+/// Sort key for a session's start time. `started_at` is a
+/// `[seconds, nanos]` tuple; a session still being created may not have
+/// one yet — sort those last so the newest tab lands on the right.
+function startedAtMillis(s: Session): number {
+  if (!s.started_at) return Number.MAX_SAFE_INTEGER;
+  const [secs, nanos] = s.started_at;
+  return secs * 1000 + nanos / 1e6;
 }
 
 /// Pick the next active session after `closedId` is removed: prefer the

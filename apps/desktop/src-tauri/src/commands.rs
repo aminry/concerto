@@ -174,12 +174,18 @@ pub async fn concerto_subscribe(
         SUB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
 
-    let event_name = format!("concerto/{subject}");
+    // Tauri v2 forbids '.' in event names — only alphanumerics and
+    // `-`, `/`, `:`, `_` are permitted (see tauri::event::EventName).
+    // Core subjects are dotted (`session.io.<id>`); the subject keeps
+    // its dots for the gRPC stream filter (sent verbatim in the
+    // SubscribeRequest above), but the Tauri channel name must not
+    // contain them or `app.emit` rejects every frame. Map '.' -> ':';
+    // the renderer's `onConcertoEvent` applies the identical mapping so
+    // listen and emit agree on the channel name.
+    let event_name = format!("concerto/{}", subject.replace('.', ":"));
     let id_for_task = id.clone();
-    tracing::info!(subject = %subject, subscription = %id, "subscription opened");
     let join = tokio::spawn(async move {
         tokio::pin!(stream);
-        let mut emitted: u64 = 0;
         while let Some(item) = stream.next().await {
             match item {
                 Ok(event) => {
@@ -188,14 +194,6 @@ pub async fn concerto_subscribe(
                     // serde so we can hand the `Event` straight to
                     // the bus. Renderer-side typing lives in
                     // `apps/desktop/src/api/`.
-                    emitted += 1;
-                    if emitted == 1 || emitted % 100 == 0 {
-                        tracing::info!(
-                            subscription = %id_for_task,
-                            emitted,
-                            "forwarded subscription event(s) to renderer"
-                        );
-                    }
                     if let Err(e) = app.emit(&event_name, &event) {
                         tracing::warn!(
                             subscription = %id_for_task,

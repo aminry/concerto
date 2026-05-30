@@ -73,11 +73,21 @@ export async function unsubscribe(id: string): Promise<void> {
   await invoke<void>("concerto_unsubscribe", { id });
 }
 
+/// Map a Core subject to its Tauri event-channel name. Tauri v2 rejects
+/// event names containing '.' (only alphanumerics and `-`, `/`, `:`, `_`
+/// are permitted), but Core subjects are dotted (`session.io.<id>`). The
+/// subject keeps its dots for the gRPC stream filter; only the Tauri
+/// channel name is sanitized. The shell's `concerto_subscribe` forwarder
+/// applies the identical '.' -> ':' mapping so `listen` and `emit` agree.
+function eventChannel(subject: string): string {
+  return `concerto/${subject.replace(/\./g, ":")}`;
+}
+
 export async function onConcertoEvent<T>(
   subject: string,
   callback: (payload: T) => void,
 ): Promise<UnlistenFn> {
-  return listen<T>(`concerto/${subject}`, (event) => callback(event.payload));
+  return listen<T>(eventChannel(subject), (event) => callback(event.payload));
 }
 
 /// Probe `PATH` for `name`. Returns the absolute path string when the
