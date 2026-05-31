@@ -8,15 +8,11 @@ members = [
     "crates/transport",
     "crates/gix-wrap",
     "crates/keychain",
-    "crates/pty-sup",
-    "crates/desktop-shell",
     "crates/persist",
     "crates/agent-host",
     "crates/error",
     # Task 14: Tauri 2 shell. Lives under `apps/desktop/src-tauri/`
-    # because Tauri's scaffolding expects that layout; the existing
-    # `crates/desktop-shell` is reserved for shared Rust helpers that
-    # the Tauri app will depend on in a later task.
+    # because Tauri's scaffolding expects that layout.
     "apps/desktop/src-tauri",
     # Task 15: smoke-test client binary. Lives under `tools/` because
     # it is dev-tooling, not a shipped product. `scripts/smoke.sh`
