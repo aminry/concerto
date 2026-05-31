@@ -1,0 +1,67 @@
+# Throwaway spike harness for Task 102 (Tonic-over-Iroh latency & throughput).
+#
+# STANDALONE Cargo workspace on purpose: it carries an empty `[workspace]`
+# table so it does NOT join the repo-root workspace. If it did, its Iroh
+# dependency would be dragged into every other task's `cargo check --workspace`
+# / `cargo deny check` before Iroh is properly vetted for the product in Task
+# 212/214 — the same reasoning as the Task 101 spike. Build & lint from this
+# manifest:
+#
+#   cargo run    --manifest-path spikes/tonic-iroh/Cargo.toml
+#   cargo clippy --manifest-path spikes/tonic-iroh/Cargo.toml -- -D warnings
+#
+# Version pins are deliberate and reflect the PRODUCTION stack so the
+# measurement reflects real codegen / transport overhead:
+#   * tonic 0.12 / prost 0.13  — the workspace pins (root Cargo.toml, Task 06).
+#   * iroh   0.98.2            — the version Task 101 pinned for V1.0.
+#   * iroh-relay 0.98.0        — the companion relay (Task 101 handoff).
+#
+# We deliberately do NOT pull `tonic-iroh-transport` (it forces tonic 0.14.6,
+# which conflicts with the production tonic 0.12 pin). Instead we hand-roll the
+# Tonic-over-Iroh adapter by wrapping an Iroh bidi stream as a tokio duplex —
+# see src/iroh_adapter.rs and the findings doc. The friction of doing so is a
+# first-class finding for Task 212.
+[workspace]
+
+[package]
+name = "tonic-iroh-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
+# Production gRPC stack pins (root Cargo.toml). `transport` pulls the
+# hyper/tower server + channel; `codegen`/`prost` give us the generated
+# service. Default features stay off elsewhere in the workspace, but the
+# spike needs the transport + codegen surface explicitly.
+tonic = { version = "=0.12.3", default-features = false, features = ["transport", "codegen", "prost"] }
+prost = "=0.13.5"
+
+# Pinned Iroh (Task 101). `iroh-relay` with the `server` feature lets us stand
+# up an in-process dev relay so the relayed path is real and hermetic.
+iroh = "=0.98.2"
+iroh-relay = { version = "=0.98.0", features = ["server"] }
+
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "time", "net", "sync"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+# `TokioIo` adapts a tokio AsyncRead+AsyncWrite into hyper's rt::Read/Write,
+# which is what tonic's client connector (`connect_with_connector`) requires.
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = { version = "0.5", features = ["util"] }
+http = "1"
+bytes = "1"
+futures = "0.3"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+hdrhistogram = "7"
+rustls = { version = "0.23", features = ["ring"] }
+
+[build-dependencies]
+tonic-build = "=0.12.3"

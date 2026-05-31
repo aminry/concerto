@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+// Trivial benchmark service for the Tonic-over-Iroh spike (Task 102).
+//
+// Two RPCs mirror the two shapes the V1.0 performance envelope cares about:
+//   * Echo            — a unary round-trip (the <100ms split-host chat path,
+//                       design/00 §7.7; we measure p50/p95 round-trip).
+//   * Firehose        — a server-streaming byte stream (the `session.io`
+//                       >1 MB/s path, design/10 §5.2 / design/11 §10; we
+//                       measure steady-state MB/s).
+//
+// This proto is throwaway and intentionally NOT the product schema — the
+// spike's point is the transport, not the schema. It is, however, compiled
+// with the SAME tonic 0.12 / prost 0.13 codegen the product uses, so the
+// generated framing overhead is representative.
+package bench.v1;
+
+message EchoRequest {
+  bytes payload = 1;
+}
+
+message EchoReply {
+  bytes payload = 1;
+}
+
+message FirehoseRequest {
+  // Total bytes the server should stream back.
+  uint64 total_bytes = 1;
+  // Size of each streamed chunk.
+  uint32 chunk_bytes = 2;
+}
+
+message FirehoseChunk {
+  bytes data = 1;
+}
+
+service Bench {
+  // Unary echo — returns the request payload verbatim.
+  rpc Echo(EchoRequest) returns (EchoReply);
+  // Server-streaming firehose — emits `total_bytes` worth of `chunk_bytes`
+  // chunks as fast as the transport allows.
+  rpc Firehose(FirehoseRequest) returns (stream FirehoseChunk);
+}
