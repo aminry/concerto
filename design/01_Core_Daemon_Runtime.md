@@ -17,6 +17,8 @@ The Core Daemon Runtime is **the host process** for every server-side sub-system
 
 It explicitly does **not** own: any business logic (workspaces, agents, git, persistence). Those live in 02–14 and are hosted as supervised children.
 
+> **V1.0 amendment (2026-05-30):** in *embedded-Core* mode the Core is **not** a separate OS process — it boots in-process inside `concerto-desktop` behind the `embedded-core` Cargo feature, reusing the same supervision tree, runtime config, and PID single-instance guard (§3.3) described here. See `19_Embedded_Core_Mode.md` for the launch modes, the PID-lock coexistence guard, and the shared-runtime tradeoff.
+
 **Non-negotiables locked in `00 §6.11`** that this sub-system enforces by absence:
 
 - **No license check.** The Core has no code path that contacts a license server, validates an entitlement, or refuses to start based on a paid status. The MIT binary always runs.
