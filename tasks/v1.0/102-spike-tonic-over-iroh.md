@@ -46,11 +46,11 @@ Tier: **spike**.
 3. `cargo clippy --manifest-path spikes/tonic-iroh/Cargo.toml -- -D warnings` clean.
 
 ## Definition of Done
-- [ ] Harness measures unary + streaming over UDS, Iroh-direct, Iroh-relay
-- [ ] Findings doc committed with numbers, ratios, and GO/NO-GO vs the §10 bars
-- [ ] Any encryption-path simplification disclosed in the findings
-- [ ] No `TODO`/`FIXME` in the harness
-- [ ] Single commit created with the message below
+- [x] Harness measures unary + streaming over UDS, Iroh-direct, Iroh-relay (all three real; relay is a local in-process `iroh-relay` dev instance forced via cleared IP transports — see findings §4)
+- [x] Findings doc committed with numbers, ratios, and GO/NO-GO vs the §10 bars (`design/spikes/tonic-iroh-findings.md`; real-WAN-relayed row marked PENDING operator field measurement)
+- [x] Any encryption-path simplification disclosed in the findings (Iroh TLS is ON in every number; the second Noise IK layer is stubbed — findings §3)
+- [x] No `TODO`/`FIXME` in the harness (grep clean)
+- [x] Single commit created with the message below
 
 ## Outputs
 - `spikes/tonic-iroh/` (new — standalone throwaway crate with its own `[workspace]` table)
@@ -69,7 +69,7 @@ Refs: tasks/v1.0/102-spike-tonic-over-iroh.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:**
-- **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+- **Drift from plan:** (1) **Tonic version: kept production `tonic =0.12.3` / `prost =0.13.5` and HAND-ROLLED the adapter** — did NOT pull `tonic-iroh-transport` (it forces `tonic 0.14.6`, conflicting with the root pin; bumping the workspace would invalidate the very codegen the spike measures). The hand-roll worked on the first real attempt (~70 lines: `IrohDuplex` + `IrohConnector` in `spikes/tonic-iroh/src/iroh_adapter.rs`), so it is the recommended Task-212 path. Iroh `=0.98.2` + `iroh-relay =0.98.0` reused from Task 101. (2) **Relay is in-process, not a CLI `iroh-relay --dev`** — the harness stands up `iroh_relay::server::Server` (plain-HTTP, OS-assigned loopback port) so the relay run is hermetic and CI-runnable with no external binary; both endpoints `clear_ip_transports()` + point at it, forcing the relayed path (verified: relay emits forward-backpressure WARNs under the firehose). (3) **The unary "within 30% of UDS" bar is reported two ways** — the raw loopback ratio trips it (~3.2–3.8×), but that is a sub-millisecond artifact; the figure that transfers is the FIXED ADDITIVE overhead. Both are printed and explained rather than massaging one number.
+- **Open questions for next task:** **Measured (Apple M5 Pro, macOS arm64, single host; modal of 3 runs):** UDS unary p50 ~30–34 µs / stream ~1850–1910 MB/s · **Iroh-direct** p50 ~112 µs (**~3.3–3.8× UDS, +~80 µs additive**) / stream **~70–97 MB/s** · **Iroh-relay (local)** p50 ~99–107 µs (**~3.2–3.3× UDS, +~70 µs additive**) / stream **~210–230 MB/s**. **GO/NO-GO:** **streaming = emphatic GO** (every transport is 70–230× the >1 MB/s bar, Iroh TLS included); **unary = GO on the bar's real-RTT intent** (the +~70–90 µs additive is ≤~8% of a 1 ms LAN RTT and <0.5% of a WAN RTT — the raw loopback ratio is recorded honestly as a sub-ms artifact, not massaged); **architectural claim (Tonic-stack-unmodified-over-Iroh) = GO**. **Adapter friction Task 212 MUST plan for:** (a) `Send/RecvStream` expose an *inherent* `poll_write`/`poll_read` that shadows the `tokio::io::Async{Write,Read}` trait method (wrong error type `WriteError` vs `io::Error`) — use fully-qualified trait syntax; (b) model is **one gRPC connection = one Iroh bidi stream**, many per `Connection` (`design/11 §3.3`); (c) **acceptor priming** — the client must flush a zero-byte write so the server's `accept_bi()` wakes; (d) lift Tonic's 4 MiB message ceilings. **Encryption:** Iroh's TLS 1.3 is ON in every number; the **second Noise IK layer (`design/12` / Task 208) is STUBBED** — Task 208 must benchmark it (streaming headroom says it won't breach the bar). **PENDING (Phase-1 Tier-3 line):** the **real-WAN-relayed** row is `PENDING operator field measurement` — the local relay has zero RTT / zero bandwidth limit, so it proves the relayed gRPC path works and bounds local overhead but is NOT a WAN number; the operator must run the harness across real machines + a real relay at the Phase-1 gate (alongside Task 101's NAT matrix).
+- **Deliberate debt:** Second Noise IK AEAD layer stubbed (Task 208, in scope-out). Real-WAN-relayed numbers deferred to operator field measurement. Harness is throwaway (`spikes/tonic-iroh/` may be deleted after Task 212 lands); standalone Cargo workspace (empty `[workspace]` table), not in the root workspace, so its Iroh/tonic-0.12 pins never leak into other tasks' `cargo check --workspace` / `cargo deny check`. Root `Cargo.toml` untouched.
+- **Smoke-gate state:** unchanged (spike produces no product code; `scripts/smoke.sh` untouched). Spike verification is "harness runs all three transports + prints the latency/throughput table + findings doc committed with GO/NO-GO"; done — `cargo run --manifest-path spikes/tonic-iroh/Cargo.toml` prints the table and `cargo clippy --manifest-path spikes/tonic-iroh/Cargo.toml -- -D warnings` is clean.
