@@ -319,6 +319,16 @@ Storage: the registry metadata lives in `~/Library/.../concerto-desktop/cores.js
 
 On Desktop launch the shell runs this decision tree:
 
+> **V1.0 amendment (2026-05-30) — embedded-Core branch.** When the Desktop is built with the `embedded-core` Cargo feature (the zero-daemon single-user packaging — full design in `19_Embedded_Core_Mode.md`), a **step 0** runs *before* the registry tree below:
+>
+> 0. **Resolve the embedded launch mode** from env/flags (`resolve_mode`: `CONCERTO_EMBEDDED`, `CONCERTO_HOME`, `--external` / `--embedded-scratch` — see `19 §3.2`):
+>    - **`External`** (`CONCERTO_EMBEDDED=0` or `--external`): skip embedding entirely and fall through to step 1 — behaves exactly like the lean daemon-client build.
+>    - **`EmbeddedReal` / `EmbeddedScratch`**: try to boot Core in-process against the real (`~/concerto`) or a scratch data root. Core's **PID single-instance lock** (`01 §3.3`) is the coexistence guard:
+>      - If boot succeeds, the shell installs the in-process socket override and proceeds to step 1, where the just-booted local UDS is promoted exactly like any co-located Core (step 2 below) — **no auto-spawn (step 3) is ever needed**.
+>      - If a standalone daemon already holds the PID lock, boot returns `AlreadyRunning` and the shell **does not embed**; it falls through to step 1 and dials the live daemon instead. A boot error has the same effect (fall through to the normal tree). This makes embedded mode strictly additive: it never fights an existing daemon and never blocks the picker.
+>
+> Lean (non-`embedded-core`) builds skip step 0 and start at step 1 unchanged.
+
 1. **If there is an `ActiveCore` recorded**, attempt to connect using its `transport`:
    - `Uds`: open the socket; if connect succeeds, done.
    - `Iroh`: open Iroh endpoint, present device cert; if handshake succeeds, done.

@@ -48,11 +48,11 @@ Tier 3 (human-read gate).
 4. Operator (Phase-1 checklist): read doc 19 against `make dev-embedded` / `make dev-embedded-scratch` / `--external` behavior and confirm it matches.
 
 ## Definition of Done
-- [ ] `design/19_Embedded_Core_Mode.md` written, peer-structured with 01–18
-- [ ] `design/15` launch decision tree amended with the embedded branch
-- [ ] `design/00 §10` + `design/01 §1` cross-references added
-- [ ] No code changes; only `design/` files touched
-- [ ] Single commit created with the message below
+- [x] `design/19_Embedded_Core_Mode.md` written, peer-structured with 01–18
+- [x] `design/15` launch decision tree amended with the embedded branch
+- [x] `design/00 §10` + `design/01 §1` cross-references added
+- [x] No code changes; only `design/` files touched
+- [x] Single commit created with the message below
 
 ## Outputs
 - `design/19_Embedded_Core_Mode.md` (new)
@@ -73,7 +73,7 @@ Refs: tasks/v1.0/107-retrofit-embedded-core-design.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:**
-- **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+- **Drift from plan:** Two places where doc 19 follows `embedded.rs` over the task's phrasing. (1) The task lists the flags as `--external`/`--embedded-scratch`; the code's `resolve_mode` precedence is `--external`/`CONCERTO_EMBEDDED=0` → External, then a non-empty `CONCERTO_HOME` → EmbeddedScratch, and `--embedded-scratch` *without* `CONCERTO_HOME` deliberately falls through to `EmbeddedReal` (no temp root invented, no error). Doc 19 §3.2 documents this asymmetry exactly — `CONCERTO_HOME` (not the flag) is what actually selects scratch. (2) The `embedded.rs` header labels the shared-Tokio-runtime tradeoff "V0.1"; the task/README treat embedded as a V1.0 mode. Doc 19 §3.4 presents it as a known V1.0 decision-with-upgrade-path (honoring the task) while still citing the source header. Also note: the in-process boot path does NOT auto-spawn — once embedded boots, the launch tree promotes the in-process UDS like a co-located Core (15 §3.10.2 step 2), so step 3 (auto-spawn) is never reached; doc 19 §6.1 and the 15 amendment state this.
+- **Open questions for next task:** The Tier-3 operator read-through (doc 19 vs actual `make dev-embedded` / `dev-embedded-scratch` / `--external` behavior on a Mac) is a Phase-1 checklist line and has not been performed here — it requires running the GUI, which this task cannot do. Minor: doc 00 §12.1 "Index" still lists only 01–18; adding a doc-19 row was out of this task's named-section scope (§5.3 + §10 only) so it was left untouched — a future doc-hygiene pass may add it.
+- **Deliberate debt:** Shared Tokio runtime for embedded Core (doc 19 §3.4, Q-1) — accepted for V1.0, upgrade path documented. `--embedded-scratch` is a no-op without `CONCERTO_HOME` (doc 19 §3.2, Q-2) — deliberate, dev target supplies the var.
+- **Smoke-gate state:** unchanged (doc-only task; no code touched). `make smoke-embedded` remains the headless gate for the mode (documented in doc 19 §10).

@@ -333,8 +333,8 @@ In split-host mode the Desktop's Rust shell binds to the same gRPC schema, but t
 
 **Six process types** in the V1.0 deployment (same in both topologies; only their location differs):
 
-1. **`concerto-core`** — one per user per Core machine. Long-lived. Restarted by launchd / systemd / Service Manager on crash. Owns all sub-systems 01–14. Single binary, no installer for runtime deps. In split-host mode this is the only Concerto process on the Core machine; agents and worktrees stay with it.
-2. **`concerto-desktop`** — one per logged-in user when the UI is open. Tauri 2 process. In co-located mode, spawns the Core if it's not running. In split-host mode, never spawns Core (it's on another machine); instead reaches it over Iroh. Closing this does not stop the Core in either mode.
+1. **`concerto-core`** — one per user per Core machine. Long-lived. Restarted by launchd / systemd / Service Manager on crash. Owns all sub-systems 01–14. Single binary, no installer for runtime deps. In split-host mode this is the only Concerto process on the Core machine; agents and worktrees stay with it. *(V1.0 amendment, 2026-05-30: in the **embedded-Core** packaging the Core runs in-process inside `concerto-desktop` rather than as its own process — same sub-systems, no separate daemon. See `19_Embedded_Core_Mode.md`.)*
+2. **`concerto-desktop`** — one per logged-in user when the UI is open. Tauri 2 process. In co-located mode, spawns the Core if it's not running. In split-host mode, never spawns Core (it's on another machine); instead reaches it over Iroh. Closing this does not stop the Core in either mode. *(In embedded-Core mode the Desktop hosts Core itself; closing the window tears Core down — see `19`.)*
 3. **`concerto-agent-host`** — one tiny helper process per active agent session. Spawned by the Core, then **detached** (`setsid` on Unix / `DETACHED_PROCESS` on Windows) so it survives Core restart. Owns the PTY master; the agent CLI is its child. Exposes a Unix domain socket / named pipe the Core connects to for I/O. Buffers a 1 MB ring of recent output for fast reconnect replay. The reason agents survive Core restarts (see §7.5 and `01 §6.3`).
 4. **Agent CLIs (`claude` / `codex` / `gemini`)** — one process per active agent session, child of its `concerto-agent-host`. Inherits a sandboxed environment (see §7.2). The agent's own conversation state on disk (`~/.claude/projects/<id>/*.jsonl` etc.) is the cold-resume floor.
 5. **Mobile apps** — one per device. Stateless. Re-pair only on revoke.
@@ -783,7 +783,7 @@ A compact map of which sub-systems exist (and at what fidelity) in each release.
 
 | Sub-system | V0.1 (alpha, Mac) | V1.0 (beta, full) | V2.0 (enterprise + cloud) |
 |---|---|---|---|
-| 01 Core Daemon Runtime | Mac launchd only | + Windows Service + systemd + **split-host single-user mode** (one Core, one user, multiple paired Desktops/devices) + deployment recipe for cloud VM Cores | + multi-tenant remote-host mode (single Core, many engineers) |
+| 01 Core Daemon Runtime | Mac launchd only | + Windows Service + systemd + **split-host single-user mode** (one Core, one user, multiple paired Desktops/devices) + deployment recipe for cloud VM Cores + **embedded-Core mode** (Core in-process inside the Desktop, zero daemon — see `19`) | + multi-tenant remote-host mode (single Core, many engineers) |
 | 02 Repository Manager | Full clone only | + blobless + sparse + sparse index | + learning-mode cone suggestions |
 | 03 Workspace, Workarea & Session Manager | Single-repo workspaces, single workarea, single session | + multi-repo workspaces + parallel workareas + multi-session per workarea + per-workarea PR sets | + workspace export/import + per-repo branch override |
 | 04 Agent Supervisor | Claude + Codex subprocess | + Gemini + MCP surfacing + multi-agent tabs | + Claude Agent SDK opt-in mode |
@@ -797,7 +797,7 @@ A compact map of which sub-systems exist (and at what fidelity) in each release.
 | 12 Security & Identity | Local-only auth | + QR pairing + device certs + audit | + org-managed CA + device-management policy hooks |
 | 13 VCS Provider Integration | gh CLI shell-out | + GitHub API + webhooks + PR sets | + GitLab + Bitbucket |
 | 14 Notifications & Push | (not in V0.1) | Expo Push + multi-device fan-out | + direct APNs/FCM swap + Apple Watch |
-| 15 Desktop Client | macOS Tauri | + Windows + auto-update + **first-class split-host mode (transport picker, multi-Core pairings, switch active Core)**. No Linux desktop build — Linux users use the Web client (17). | + plugin surface for org extensions |
+| 15 Desktop Client | macOS Tauri | + Windows + auto-update + **first-class split-host mode (transport picker, multi-Core pairings, switch active Core)** + **embedded-Core mode** (feature-flagged build that boots Core in-process for a zero-daemon single-user install — see `19` and §3.10.2). No Linux desktop build — Linux users use the Web client (17). | + plugin surface for org extensions |
 | 16 Mobile Clients | (not in V0.1) | iOS + Android via RN/Expo | + native (SwiftUI + Compose) opt-in; Apple Watch |
 | 17 Web Client | (not in V0.1) | React SPA via WSS bridge | + Iroh-in-browser direct transport |
 
