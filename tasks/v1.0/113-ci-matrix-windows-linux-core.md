@@ -51,12 +51,12 @@ Tier 2 (CI is the runner; "real Windows/Linux hardware" beyond GHA is the Tier-3
 5. `scripts/smoke.sh` (macOS) → still exits 0.
 
 ## Definition of Done
-- [ ] CI runs Core + portable crates' check/test on macOS, Linux, Windows
-- [ ] Windows lane compiles via `#[cfg(unix)]`/stub gating of agent-host PTY (Task 702 marker left)
-- [ ] clippy `-D warnings` on all three lanes; no test faked or silently skipped beyond documented Unix-only gates
-- [ ] Linux + Windows lanes green on a pushed branch
-- [ ] Workflow lints clean
-- [ ] Single commit created with the message below
+- [x] CI runs Core + portable crates' check/test on macOS, Linux, Windows
+- [x] Windows lane compiles via `#[cfg(unix)]`/stub gating of agent-host PTY (Task 702 marker left)
+- [x] clippy `-D warnings` on all three lanes; no test faked or silently skipped beyond documented Unix-only gates
+- [ ] Linux + Windows lanes green on a pushed branch (pending CI — orchestrator pushes; macOS proven locally, Windows reasoned via cfg-gate audit below)
+- [x] Workflow lints clean
+- [x] Single commit created with the message below
 
 ## Outputs
 - `.github/workflows/ci.yml` (modified — OS matrix)
@@ -76,7 +76,7 @@ Refs: tasks/v1.0/113-ci-matrix-windows-linux-core.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:**
-- **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+- **Drift from plan:** Minimal. The agent-host Rust gating that the plan anticipated was already in place from Task 21: the entire PTY/UDS supervisor lives in `crates/agent-host/src/main.rs`'s `#[cfg(unix)] mod unix`, `main()` has a `#[cfg(not(unix))]` stub (exit 2), `libc` is already `[target.'cfg(unix)'.dependencies]`, and `tests/echo_round_trip.rs` is already `#![cfg(unix)]`. The lib surface (`api.rs`, `bridge.rs`, `ring.rs`, `exit.rs`) was already fully cross-platform. So no *new* cfg-gates were required to compile on Windows — I only refreshed the marker comments (main.rs module doc + `#[cfg(not(unix))]` branch, lib.rs doc, Cargo.toml comment, echo_round_trip.rs doc) to say "ConPTY pending (Task 702)" instead of the vaguer "V1.0", and clarified the lib is the portable surface. The real change is in `ci.yml`: `concerto-agent-host` was REMOVED from the Windows `--exclude` list on all three commands (check/clippy/test), so Windows now builds + lints + tests it (its tests cfg-gate to empty there). `concerto-desktop`, `concerto-smoke-client`, and `concerto-test-harness` STAY excluded on Windows (out of scope: desktop-on-Windows is a later task with no shipped Windows icons; smoke-client/test-harness are UDS dev/test tooling). `crates/core/src/agent_supervisor/*` needed NO changes — `mod.rs` is already `#![cfg(unix)]` and Task 106's resolver already handles the `.exe` suffix. `docs/interfaces/rust-api.md` unchanged (only `api.rs` is summarized; it was untouched).
+- **Open questions for next task:** arm64 runners were NOT added — GHA-hosted arm64 Linux/Windows runners aren't a cheap default, so x64 is the cross-platform floor here and arm64 is deferred to Task 706 (release/signing matrix). If V1.0 wants arm64 *test* coverage (not just release builds) before 706, that needs its own decision.
+- **Deliberate debt:** Windows `concerto-agent-host` is a ConPTY *stub* — it compiles and links (so the Core's portable crates build on the Windows lane) but the binary just prints "ConPTY support pending (Task 702)" and exits 2. The Unix-only `echo_round_trip` integration test does NOT run on Windows (it cfg-gates to empty); Task 702 owns the Windows agent-host round-trip coverage. Real Windows *hardware* validation beyond GHA-hosted runners remains a Tier-3 phase-checklist item.
+- **Smoke-gate state:** Unchanged. `scripts/smoke.sh --ci-mode` still exits 0 (verified on macOS); this task touched only CI matrix config + agent-host cfg-marker comments, not the smoke path.

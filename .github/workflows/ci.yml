@@ -47,18 +47,29 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - uses: Swatinem/rust-cache@v2
-      # Per tasks/README.md §2, V0.1 desktop is macOS-only and the V0.1
-      # smoke gate runs on Linux/macOS only. `concerto-desktop` (Tauri 2;
-      # needs icons/icon.ico we don't ship), `concerto-smoke-client`,
-      # `concerto-test-harness` (both use `tokio::net::UnixStream` — UDS),
-      # and `concerto-agent-host` (Task 21 — Unix-only PTY bridge; Windows
-      # ConPTY support is V1.0 per design/04 §3.9) fail to compile on
-      # Windows. Exclude them from Windows; macOS + Linux build the full
-      # workspace.
+      # Cross-platform Core lanes (design/18 §3.3, design/00 §10):
+      #   * macOS + Linux build/lint/test the FULL workspace, agent-host
+      #     PTY/UDS bridge included (Linux Core is fully supported).
+      #   * Windows builds/lints/tests the Core + portable crates,
+      #     INCLUDING `concerto-agent-host`: its lib (CBOR wire format,
+      #     ring buffer, frame codec, final-info) is cross-platform, and
+      #     its Unix-only PTY/UDS supervisor is `#[cfg(unix)]`-gated to a
+      #     ConPTY stub (Task 702 owns the real Windows backend). Its
+      #     integration test cfg-gates to empty on Windows. So the Windows
+      #     lane is honestly green, not green-by-skipping.
+      #   * Windows STILL excludes three crates that are out of scope here:
+      #     `concerto-desktop` (Tauri 2; Mac+Windows is a later desktop
+      #     task — no Windows icons shipped yet), `concerto-smoke-client`
+      #     and `concerto-test-harness` (both use `tokio::net::UnixStream`
+      #     — UDS dev/test tooling). Per design/00 §10 Desktop is Mac+
+      #     Windows only (no Linux desktop); the Linux lane builds it via
+      #     the Tauri deps installed above.
+      # arm64 runners are a Task 706 (release/signing matrix) concern; x64
+      # is the cross-platform floor here.
       - name: cargo check
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo check --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-agent-host
+            cargo check --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness
           else
             cargo check --workspace --all-targets
           fi
@@ -66,7 +77,7 @@ jobs:
       - name: cargo clippy
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo clippy --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-agent-host -- -D warnings
+            cargo clippy --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness -- -D warnings
           else
             cargo clippy --workspace --all-targets -- -D warnings
           fi
@@ -74,7 +85,7 @@ jobs:
       - name: cargo test
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo test --workspace --no-fail-fast --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-agent-host
+            cargo test --workspace --no-fail-fast --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness
           else
             cargo test --workspace --no-fail-fast
           fi

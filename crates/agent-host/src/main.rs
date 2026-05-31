@@ -17,8 +17,15 @@
 //! * Exit: writes `--final-info` JSON, broadcasts `AgentExited`, unbinds
 //!   the socket.
 //!
-//! Windows is intentionally a hard-fail: the binary prints a
-//! "Windows ConPTY support is V1.0" message and exits with status 2.
+//! Windows is intentionally a stub: the cross-platform wire format, ring
+//! buffer, frame codec, and final-info writer (the `lib` surface) compile
+//! everywhere, but the PTY/UDS supervisor lives entirely in the
+//! `#[cfg(unix)] mod unix` below. On Windows the binary prints a
+//! "ConPTY pending (Task 702)" message and exits with status 2. Task 702
+//! owns the real Windows ConPTY backend; until then the Windows CI lane
+//! builds + lints this crate (its integration test cfg-gates to empty)
+//! to keep the cross-platform Core honestly green rather than green by
+//! exclusion.
 
 #[cfg(unix)]
 mod unix {
@@ -753,7 +760,10 @@ mod unix {
 fn main() {
     #[cfg(not(unix))]
     {
-        eprintln!("concerto-agent-host: Windows ConPTY support is V1.0");
+        // Windows ConPTY backend is pending (Task 702). The crate still
+        // compiles + links here so the Windows CI lane builds the Core's
+        // portable surface; only the PTY/UDS supervisor is gated off.
+        eprintln!("concerto-agent-host: Windows ConPTY support pending (Task 702)");
         std::process::exit(2);
     }
     #[cfg(unix)]
