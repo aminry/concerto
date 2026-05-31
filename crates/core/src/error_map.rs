@@ -74,6 +74,14 @@ pub fn error_to_status(err: Error) -> Status {
         // FailedPrecondition so the UI can guide the user through
         // `gh auth login` without treating it as a hard bug.
         "vcs.not_authenticated" => Code::FailedPrecondition,
+        // Startup DB integrity failure (Task 110 — `PRAGMA quick_check`
+        // non-OK). Boot has already aborted; surface as `Internal` since
+        // the client cannot recover by retrying.
+        "database.corrupt" => Code::Internal,
+        // Startup downgrade refusal (Task 110 — on-disk schema newer than
+        // the binary). FailedPrecondition so the operator is steered to
+        // install a newer Core rather than treating it as a transient bug.
+        "schema.downgrade" => Code::FailedPrecondition,
         // Catch-all for invariants the type system can't capture.
         "internal" => Code::Internal,
         // Future variants get logged so we notice an unmapped code in

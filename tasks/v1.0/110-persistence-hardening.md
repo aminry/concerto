@@ -48,12 +48,12 @@ Tier 1.
 6. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit regen if the error enum changed the rust-api summary.
 
 ## Definition of Done
-- [ ] Startup `PRAGMA quick_check`; corrupt DB fails boot with a clear, path-naming error
-- [ ] Binary-downgrade refusal when `db_schema_version > binary_max`; both versions named
-- [ ] `binary_max` derived from embedded migrations, not hardcoded
-- [ ] Tests cover corrupt / downgrade / normal paths
-- [ ] Verification commands pass; smoke gate green
-- [ ] Single commit created with the message below
+- [x] Startup `PRAGMA quick_check`; corrupt DB fails boot with a clear, path-naming error
+- [x] Binary-downgrade refusal when `db_schema_version > binary_max`; both versions named
+- [x] `binary_max` derived from embedded migrations, not hardcoded
+- [x] Tests cover corrupt / downgrade / normal paths
+- [x] Verification commands pass; smoke gate green
+- [x] Single commit created with the message below
 
 ## Outputs
 - `crates/persist/src/lib.rs` and/or `src/migration_runner.rs` (modified)
@@ -74,7 +74,7 @@ Refs: tasks/v1.0/110-persistence-hardening.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:**
-- **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+- **Drift from plan:** Input paths in this task file are stale; adapted to the real layout. The persistence open path is `crates/persist/src/api.rs::Persistence::open` (there is NO `crates/persist/src/migration_runner.rs` — only a `crates/persist/tests/migration_runner.rs` integration test). Both the daemon (`crates/core/src/runtime.rs`) and embedded Core reach `Persistence::open`, so the two guards landed there and need no `boot.rs` change. The error enum lives in `crates/error/src/api.rs` (not `lib.rs`); the new variants are **`DatabaseCorrupt`** and **`SchemaDowngrade`** (FROZEN names), with kebab wire codes `database.corrupt` / `schema.downgrade` added in `crates/error/src/error.rs::wire_code` and mapped in `crates/core/src/error_map.rs` (`database.corrupt` → `Code::Internal`, `schema.downgrade` → `Code::FailedPrecondition`). `binary_max` is derived at runtime from the embedded migrator: `sqlx::migrate!("./migrations").iter().map(|m| m.version).max()` — never hardcoded (currently 8 / migration `0008`). Applied DB version = `MAX(version)` from `_sqlx_migrations`, probed defensively (the table is absent on a fresh DB → treated as "no applied version"). Guard order is open → on-open `quick_check` → downgrade compare → forward-only `sqlx::migrate!`; the pre-existing post-migration `quick_check` (design/09 §6.3) is retained and now also returns `DatabaseCorrupt`. Smoke check `scripts/smoke.d/05-persistence-integrity.sh` greps `CORE_LOG` for a new single success line `"persistence integrity ok (quick_check passed, schema not downgraded)"` emitted by `Persistence::open` on the happy path; inserted as `persistence-integrity` in `scripts/smoke.manifest` right after `core-boot`.
+- **Open questions for next task:** Task 111 (`concerto backup`) references the corrupt-DB recovery path — the corrupt-DB error now surfaces as `Error::DatabaseCorrupt` from `Persistence::open` (boot abort), wire code `database.corrupt`, and its message already suggests `concerto backup`/restore. 111 should make that suggestion real (the restore is the reverse of `VACUUM INTO`, Core stopped). The on-open `quick_check` is the natural pre-restore integrity probe to reuse.
+- **Deliberate debt:** The downgrade guard reads the applied version from `_sqlx_migrations` (sqlx-internal); if sqlx ever renames that table the probe silently returns `None` (degrades to "no guard"), not a panic — acceptable for a forward-compat guard but worth a note. The design's `concerto db migrate-down --to N` / `concerto db recover` tools are V1.5+ and only referenced in error text, not implemented (per Scope — out).
+- **Smoke-gate state:** `extends:persistence-integrity` — new check live and green. `scripts/smoke.sh --list` shows it after `core-boot`; full `scripts/smoke.sh --ci-mode` exits 0 with `PASS persistence-integrity`. `shellcheck` clean on the new file. Driver `scripts/smoke.sh` untouched.

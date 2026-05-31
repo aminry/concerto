@@ -24,6 +24,8 @@ impl Error {
             Error::PolicyLocked(_) => "policy.locked",
             Error::Vcs(_) => "vcs",
             Error::VcsNotAuthenticated(_) => "vcs.not_authenticated",
+            Error::DatabaseCorrupt(_) => "database.corrupt",
+            Error::SchemaDowngrade(_) => "schema.downgrade",
             Error::Internal(_) => "internal",
         }
     }

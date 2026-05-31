@@ -96,6 +96,28 @@ fn vcs_not_authenticated_wire_code_and_display() {
 }
 
 #[test]
+fn database_corrupt_wire_code_and_display() {
+    let err = Error::DatabaseCorrupt("db at /tmp/x.db appears corrupt".to_string());
+    assert_eq!(err.wire_code(), "database.corrupt");
+    assert_eq!(
+        err.to_string(),
+        "database.corrupt: db at /tmp/x.db appears corrupt"
+    );
+    assert!(format!("{err:?}").contains("DatabaseCorrupt"));
+}
+
+#[test]
+fn schema_downgrade_wire_code_and_display() {
+    let err = Error::SchemaDowngrade("db at version 9, binary understands up to 8".to_string());
+    assert_eq!(err.wire_code(), "schema.downgrade");
+    assert_eq!(
+        err.to_string(),
+        "schema.downgrade: db at version 9, binary understands up to 8"
+    );
+    assert!(format!("{err:?}").contains("SchemaDowngrade"));
+}
+
+#[test]
 fn from_std_io_error() {
     let io_err = std::io::Error::other("oops");
     let err: Error = io_err.into();

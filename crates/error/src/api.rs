@@ -90,6 +90,22 @@ pub enum Error {
     #[error("vcs.not_authenticated: {0}")]
     VcsNotAuthenticated(String),
 
+    /// Startup integrity failure: `PRAGMA quick_check` did not return `"ok"`
+    /// on the SQLite database. Added in Task 110. The message names the DB
+    /// path and points the operator at restore. Surfaces as `Code::Internal`
+    /// over gRPC — boot has already aborted, so this is a server-state
+    /// failure the client cannot recover from by retrying.
+    #[error("database.corrupt: {0}")]
+    DatabaseCorrupt(String),
+
+    /// Startup downgrade refusal: the on-disk schema version is newer than
+    /// the running binary understands (a binary downgrade). Added in Task
+    /// 110. The message names both versions. Surfaces as
+    /// `Code::FailedPrecondition` over gRPC — the operator must install a
+    /// newer Core (the precondition the binary failed to satisfy).
+    #[error("schema.downgrade: {0}")]
+    SchemaDowngrade(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
