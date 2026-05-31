@@ -46,7 +46,10 @@ impl MemorySubscriber {
 
 #[async_trait]
 impl AuditLogSubscriber for MemorySubscriber {
-    async fn emit(&self, event: &AuditEvent) {
+    fn id(&self) -> &str {
+        "memory"
+    }
+    async fn on_event(&self, event: &AuditEvent) {
         self.events.lock().await.push(event.clone());
     }
     async fn flush(&self) {}
@@ -138,7 +141,7 @@ async fn daily_rotation_opens_new_file_when_clock_crosses_midnight() {
 
     // Day 1: one event.
     subscriber
-        .emit(&AuditEvent::new(
+        .on_event(&AuditEvent::new(
             AuditKind::WorkspaceCreated,
             AuditActor::System,
         ))
@@ -147,7 +150,7 @@ async fn daily_rotation_opens_new_file_when_clock_crosses_midnight() {
     // Advance the clock by 24h → 2024-03-16 12:00:00 UTC.
     clock_secs.fetch_add(86_400, Ordering::SeqCst);
     subscriber
-        .emit(&AuditEvent::new(
+        .on_event(&AuditEvent::new(
             AuditKind::WorkspaceArchived,
             AuditActor::System,
         ))
@@ -188,7 +191,10 @@ async fn drop_on_full_does_not_block_producers() {
     struct SlowSubscriber;
     #[async_trait]
     impl AuditLogSubscriber for SlowSubscriber {
-        async fn emit(&self, _event: &AuditEvent) {
+        fn id(&self) -> &str {
+            "slow"
+        }
+        async fn on_event(&self, _event: &AuditEvent) {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         async fn flush(&self) {}

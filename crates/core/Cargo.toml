@@ -98,6 +98,10 @@ notify = { workspace = true }
 # backticks don't need shell escaping. `tempfile` is already vetted
 # (dev-dep historically); promoted here to a production dep.
 tempfile = "3"
+# Task 112: `HttpsForwarderSubscriber` (audit pipeline) POSTs NDJSON
+# events to a configured endpoint. rustls-tls backend (workspace pin) so
+# it builds on the Windows CI lane and stays cargo-deny clean.
+reqwest = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via

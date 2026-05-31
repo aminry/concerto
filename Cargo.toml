@@ -175,3 +175,14 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 # streams each file rather than buffering whole worktrees in memory.
 # MIT/Apache-2.0; cargo-deny clean.
 tar = { version = "0.4", default-features = false }
+# Task 112: `HttpsForwarderSubscriber` POSTs audit events (NDJSON) to a
+# configured endpoint. `reqwest` is the async HTTP client; we pin the
+# rustls-tls backend (NOT openssl/native-tls) so it builds on the Windows
+# CI lane and stays cargo-deny clean — `apps/desktop` already pulls
+# reqwest with rustls transitively (via tauri-plugin-updater), so the
+# license posture (rustls/ring/webpki-root-certs) is already ratified in
+# deny.toml. `default-features = false` drops the default native-tls;
+# reqwest 0.13 names the rustls backend feature `rustls` (the 0.12-era
+# name was `rustls-tls`). `http2` keeps the HTTP/2 POST path. No
+# native-tls / openssl anywhere. MIT/Apache-2.0.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
