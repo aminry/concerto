@@ -11,6 +11,7 @@
 //! is a thin switch: every `run` takes an [`OutputFormat`] and dispatches to
 //! either a human table renderer or `serde_json` on the same view struct.
 
+pub mod backup;
 pub mod session;
 pub mod status;
 pub mod workspace;
@@ -70,6 +71,10 @@ pub enum CommandError {
     /// our plain structs, surfaced for completeness rather than a panic.
     #[error("serializing JSON output: {0}")]
     Json(#[from] serde_json::Error),
+    /// `concerto backup` failed. Unlike the RPC variants this never touches
+    /// the Core socket — backup operates on the local DB file directly.
+    #[error(transparent)]
+    Backup(#[from] backup::BackupError),
 }
 
 /// Await a unary RPC future with the shared timeout, mapping both the

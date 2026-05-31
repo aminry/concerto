@@ -51,12 +51,12 @@ Tier 1.
 5. `scripts/smoke.sh` → add a `backup` check (`extends:`): boot Core, `concerto backup --out <tmp>`, assert `<tmp>/concerto.db` exists and opens. Exits 0.
 
 ## Definition of Done
-- [ ] `VACUUM INTO` snapshot + optional worktree tar + audit-range export + manifest
-- [ ] Backup runs against the local DB path; concurrent-write behavior documented
-- [ ] Integration test verifies snapshot integrity + manifest
-- [ ] `backup` smoke check passes
-- [ ] Verification commands pass; smoke gate green
-- [ ] Single commit created with the message below
+- [x] `VACUUM INTO` snapshot + optional worktree tar + audit-range export + manifest
+- [x] Backup runs against the local DB path; concurrent-write behavior documented
+- [x] Integration test verifies snapshot integrity + manifest
+- [x] `backup` smoke check passes
+- [x] Verification commands pass; smoke gate green
+- [x] Single commit created with the message below
 
 ## Outputs
 - `crates/cli/src/commands/backup.rs` (new)
@@ -78,6 +78,59 @@ Refs: tasks/v1.0/111-concerto-backup-cli.md
 
 ## Handoff Notes (fill in when finishing)
 - **Drift from plan:**
-- **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+  - **tar crate:** `tar = "0.4"` (rust-lang org, pure-Rust, MIT/Apache-2.0,
+    `cargo deny` clean) added as a workspace dep + a `crates/cli` dep, with
+    `default-features = false`. `Builder::append_dir_all("workspaces", …)`
+    streams each file (no whole-worktree buffering); the tar runs on a
+    `spawn_blocking` thread. Fully cross-platform — no `#[cfg(unix)]` anywhere
+    in the backup path (verified: `rg 'cfg\(unix\)|UnixStream|std::os::unix'
+    crates/cli/src/commands/backup.rs` → no matches). `backup` is dispatched in
+    `main.rs` BEFORE socket resolution, so it never pulls in the Unix-only
+    `client::connect`.
+  - **Cross-platform test (no Core / no test-harness):** `tests/backup.rs`
+    seeds a migrated DB by calling `concerto-persist` (`Persistence::open` on a
+    temp path), plants an audit JSONL, and drives the shipped `concerto backup`
+    via `assert_cmd` with `CONCERTO_DATA_DIR` set on the child process (no
+    process-global env mutation → no libtest race). It re-opens the snapshot
+    read-only and asserts `PRAGMA quick_check == "ok"`, checks the manifest, and
+    verifies the audit range filtered to exactly the in-range record. NOT under
+    `#![cfg(unix)]`; `concerto-persist` is a normal (cross-platform) dep,
+    `tempfile`/`sqlx` are added under the normal `[dev-dependencies]` (NOT the
+    `cfg(unix)` block). It does NOT use `concerto-test-harness`.
+  - **Concurrent-write behavior chosen:** backup does NOT refuse/warn when a
+    Core is live. It opens the source DB **read-only** (`?mode=ro`, so it can
+    never mutate the live DB) and `VACUUM INTO` takes a SQLite read lock that,
+    under WAL, lets writers continue while producing a single consistent
+    point-in-time snapshot. Documented in the module header.
+  - **DB-path resolution:** mirrors the Core (`crates/core/src/runtime.rs`):
+    `$CONCERTO_DB_PATH` → `<data_dir>/concerto.db`, where `data_dir` =
+    `$CONCERTO_DATA_DIR` → `$CONCERTO_HOME/concerto` → the `<home>/concerto`
+    default sourced from `concerto_persist::PersistenceConfig::default_for_user`
+    (no second hardcoded home-relative path). `$CONCERTO_HOME` is honored as the
+    smoke-gate scratch-home convention. Worktrees = `<data_dir>/workspaces/`,
+    audit = `<data_dir>/audit/`.
+  - **Manifest timestamps:** generated with an inline `civil_from_unix` (same
+    Howard-Hinnant algorithm as `crates/core/src/audit/jsonl.rs`) to emit UTC
+    ISO-8601 `YYYY-MM-DDTHH:MM:SS.mmmZ` — no `chrono`/`time` direct dep added.
+    Audit range filtering is a lexicographic string compare on the fixed-width
+    `at` field (sorts chronologically), so `--audit-from`/`--audit-to` accept
+    any ISO-8601 prefix (e.g. `2026-05-30`).
+- **Open questions for next task:** restore (future task) reads the FROZEN
+  `<out>/` layout: `concerto.db`, `worktrees.tar` (top-level `workspaces/`
+  entry inside the archive), `audit.jsonl`, `manifest.json` (`manifest_version:
+  1`; `included.{db_snapshot,worktrees_tar,audit_jsonl,audit_from,audit_to,
+  audit_records}`). Restore requires Core stopped (design/09 §6.4) and is the
+  reverse of these four artifacts.
+- **Deliberate debt:** `concerto restore` is deferred to a follow-on task
+  (backup-only here, per Scope — out). Backup encryption (V2.0) and
+  remote/cloud targets are out of scope. No `--audit-from`/`--audit-to`
+  timestamp *validation* beyond the lexicographic compare (intentional: any
+  ISO-8601 prefix works; a malformed bound simply matches lexically).
+- **Smoke-gate state:** `extends:backup` — added `scripts/smoke.d/96-backup.sh`
+  (`check_backup`) and appended `backup` to `scripts/smoke.manifest` after
+  `cli`. Runs `concerto backup --out <tmp>` against the Core's scratch DB
+  (resolved via the `CONCERTO_DATA_DIR` that `00-core-boot` exports), asserts
+  `<tmp>/concerto.db` + `manifest.json` exist, and `PRAGMA quick_check`s the
+  snapshot via `sqlite3` (falls back to a re-open-via-`concerto backup` smoke if
+  `sqlite3` isn't on PATH). `scripts/smoke.sh --ci-mode` exits 0 with
+  `PASS backup`; `--list` shows it; `shellcheck` clean.
