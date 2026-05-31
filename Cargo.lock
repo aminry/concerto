@@ -656,6 +656,20 @@ dependencies = [
 [[package]]
 name = "concerto-cli"
 version = "0.0.1"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "concerto-proto",
+ "concerto-test-harness",
+ "home",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tonic",
+ "tower 0.5.3",
+]
 
 [[package]]
 name = "concerto-core"

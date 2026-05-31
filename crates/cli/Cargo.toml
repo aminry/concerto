@@ -5,7 +5,46 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+description = "The `concerto` CLI — wraps the Core's gRPC API over UDS (status / workspace ls / session ls)."
 
 [[bin]]
 name = "concerto"
 path = "src/main.rs"
+
+[dependencies]
+# Generated gRPC client stubs (Runtime / Projects / Workspaces / Sessions).
+concerto-proto = { path = "../proto" }
+# UDS gRPC dial — the same Tonic + tower + hyper-util pattern locked in
+# tasks/13 and reused by `tools/smoke-client` and the desktop's
+# `core_client.rs`. The CLI's `client` module is self-contained (it does
+# NOT depend on smoke-client) so Tasks 111/713 can reuse it within this
+# crate.
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+tower = { workspace = true }
+hyper-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+# clap derive for the `concerto` subcommand surface (status / workspace ls /
+# session ls) + the global `--socket` / `--json` flags. Workspace pin.
+clap = { workspace = true }
+# `--json` machine-readable output rendering.
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# Default-socket derivation: `~/.concerto/core.sock` (same source of truth
+# as the desktop's `core_client::default_socket_path`).
+home = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Cross-platform dev-deps. `assert_cmd` + `tokio` drive the integration test on
+# Unix; they compile fine everywhere, so they stay here. The Unix-only harness
+# below is what gates `--all-targets` on non-Unix lanes.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+assert_cmd = "2"
+
+# Integration test spawns a real Core via the shared harness and runs the
+# built `concerto` binary against it. The harness is Unix-only (it binds a
+# UDS), so it must not be pulled on non-Unix targets — otherwise the Windows
+# CI lane's `--all-targets` build would fail. The `tests/status.rs` target is
+# itself `#![cfg(unix)]`, so this dep is only ever exercised on Unix.
+[target.'cfg(unix)'.dev-dependencies]
+concerto-test-harness = { path = "../test-harness" }

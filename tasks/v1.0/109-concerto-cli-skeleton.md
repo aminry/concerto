@@ -58,12 +58,12 @@ Tier 1.
 7. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit any regen.
 
 ## Definition of Done
-- [ ] `concerto status` / `workspace ls` / `session ls` work against a live Core over UDS
-- [ ] `--socket`/`CONCERTO_SOCKET`/`--json` honored; Core-down error names the socket
-- [ ] Reusable `client` module factored for Tasks 111/713
-- [ ] Integration test + `cli` smoke check pass
-- [ ] Verification commands pass; smoke gate green
-- [ ] Single commit created with the message below
+- [x] `concerto status` / `workspace ls` / `session ls` work against a live Core over UDS
+- [x] `--socket`/`CONCERTO_SOCKET`/`--json` honored; Core-down error names the socket
+- [x] Reusable `client` module factored for Tasks 111/713
+- [x] Integration test + `cli` smoke check pass
+- [x] Verification commands pass; smoke gate green
+- [x] Single commit created with the message below
 
 ## Outputs
 - `crates/cli/src/main.rs` (rewritten)
@@ -86,6 +86,64 @@ Refs: tasks/v1.0/109-concerto-cli-skeleton.md
 
 ## Handoff Notes (fill in when finishing)
 - **Drift from plan:**
+  - **Reusable `client` connect-fn signature (LOCKED — Tasks 111/713 reuse this):**
+    ```rust
+    // crates/cli/src/client.rs
+    pub async fn connect(socket: &std::path::Path)
+        -> Result<tonic::transport::Channel, crate::client::ClientError>;
+    ```
+    Build typed service clients on the returned channel, e.g.
+    `RuntimeClient::new(client::connect(&socket).await?)`. Supporting helpers also
+    LOCKED in the same module: `pub fn default_socket_path() -> Result<PathBuf, ClientError>`,
+    `pub fn resolve_socket_path(flag: Option<PathBuf>) -> Result<PathBuf, ClientError>`,
+    `pub const SOCKET_ENV: &str = "CONCERTO_SOCKET"`, `pub const CONNECT_TIMEOUT: Duration`.
+    `ClientError` variants: `NoHome`, `EndpointInit`, `ConnectTimeout{socket}`,
+    `Connect{socket, source}` — the Core-down message names the socket and the env var.
+  - **Windows CI cfg-gating (post-impl fix):** the UDS dial in `client.rs` (the `UnixStream`
+    import + the `Endpoint`/`connect_with_connector` body) is `#[cfg(unix)]`-gated, with a
+    `#[cfg(not(unix))]` `connect` of the *identical* signature that returns a new
+    `ClientError::Unsupported` variant ("the `concerto` CLI uses a local Unix-domain socket,
+    which is not available on this platform; remote transport support arrives in a later
+    phase"). The `concerto-test-harness` dev-dep moved to `[target.'cfg(unix)'.dev-dependencies]`
+    and `tests/status.rs` is `#![cfg(unix)]`, so `concerto-cli` builds clean on the Windows
+    `--all-targets` lane without touching the CI exclude list. All Unix behavior is byte-for-byte
+    unchanged.
+  - **Default-socket derivation:** single source of truth in `client::default_socket_path`,
+    matching `apps/desktop/src-tauri/src/core_client.rs::default_socket_path`. Precedence:
+    `--socket` flag > `$CONCERTO_SOCKET` (when set & non-empty) > `<HOME>/.concerto/core.sock`.
+    No second hardcoded path. (The desktop uses an in-process `set_socket_override`; the CLI
+    uses the `$CONCERTO_SOCKET` env var as the equivalent override channel — same resolved
+    default.)
+  - **`actors` not exposed over the wire:** the task prose asked `status` to print `actors`,
+    but the frozen `runtime.proto` (`ServerCapabilities` / `RuntimeStatus`) has **no** actors
+    field — the supervision-tree roster is not on the wire in V0.1. `concerto status` prints
+    version / uptime / transport_kind plus `ServerCapabilities.optional_services` (rendered as
+    `services:`), the closest advertised facet. If a future task wants a real actor roster in
+    `status`, it needs a proto addition to `Runtime` (new task; re-lock at a new version).
+  - **`Workspaces.List` / `Sessions` list take an id argument:** the frozen RPCs are
+    `Workspaces.ListWorkspaces(project_id)` and `Sessions.ListSessions(workarea_id)` — there is
+    no global list RPC. So `workspace ls` grew an optional `--project <id>`; with no flag it
+    enumerates `Projects.ListProjects` and unions each project's workspaces. `session ls`
+    keeps the spec'd `--workarea <id>`; with no flag it walks
+    projects→workspaces→workareas→sessions and unions. No new RPCs were added.
+  - **smoke.d file added:** `scripts/smoke.d/95-cli.sh` (capability `cli`, read-only, runs
+    last) + `cli` appended to `scripts/smoke.manifest`. Driver `scripts/smoke.sh` untouched.
 - **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+  - Task 111 (`concerto backup`) / 713 (`concerto pair`) add their subcommands under
+    `crates/cli/src/commands/<name>.rs`, register them in `src/commands/mod.rs` + the clap
+    `Command` enum in `main.rs`, and dial via `client::connect(&socket)` exactly as above
+    (signature spelled out under Drift). They get `--socket`/`--json` for free (global flags).
+    `backup` will need the `--json` view structs + a non-read RPC surface (its own concern);
+    `pair` (Phase 7) needs the pairing RPCs that don't exist until Phase 2 (`Devices`).
+  - If `status` should ever surface a live actor/health roster, that's a `Runtime` proto
+    change (see Drift) — flag it when Task 709 (diagnostics RPCs) lands.
+- **Deliberate debt:** none. No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code. The
+  global `session ls` / `workspace ls` fan-out issues one RPC per project/workspace/workarea
+  (N+1 walk); fine for the read-only skeleton at V1.0 scale, and `--project`/`--workarea`
+  scope it down. A dedicated cross-tree list RPC, if ever wanted, is a separate task.
+- **Smoke-gate state:** `extends:cli`. Added `scripts/smoke.d/95-cli.sh` (defines `check_cli`:
+  builds + runs the `concerto` binary's `status` against `--socket "$SOCKET"` from
+  `00-core-boot`, asserts exit 0 and a `version:` line, echoes `PASS cli`/`FAIL cli`) and
+  appended `cli` to `scripts/smoke.manifest` after `mcp` (read-only, last). `scripts/smoke.sh
+  --list` shows `cli`; `scripts/smoke.sh --ci-mode` exits 0 with `PASS cli`; `shellcheck
+  scripts/smoke.d/95-cli.sh` is clean.
