@@ -51,12 +51,12 @@ Tier 1.
 7. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → no unintended drift (or commit regen if the pub signature changed).
 
 ## Definition of Done
-- [ ] `CONCERTO_AGENT_HOST_BIN` override honored first; co-located path second; target-sibling search third
-- [ ] Resolution failure produces an actionable error listing tried paths + the env override
-- [ ] Unit tests cover all three resolution branches + the error
-- [ ] `dev-embedded.sh` sets the override explicitly
-- [ ] Verification commands pass; smoke gate green
-- [ ] Single commit created with the message below
+- [x] `CONCERTO_AGENT_HOST_BIN` override honored first; co-located path second; target-sibling search third
+- [x] Resolution failure produces an actionable error listing tried paths + the env override
+- [x] Unit tests cover all three resolution branches + the error
+- [x] `dev-embedded.sh` sets the override explicitly
+- [x] Verification commands pass; smoke gate green
+- [x] Single commit created with the message below
 
 ## Outputs
 - `crates/core/src/agent_supervisor/spawn.rs` (modified)
@@ -77,7 +77,7 @@ Refs: tasks/v1.0/106-agent-host-binary-resolution.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:**
-- **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+- **Drift from plan:** Final resolution fn is `resolve_host_binary() -> Result<PathBuf>` (public) in `crates/core/src/agent_supervisor/spawn.rs`. Renamed from `default_host_binary`, but the old name is preserved as a thin public wrapper (`pub fn default_host_binary() -> Result<PathBuf> { resolve_host_binary() }`), so the prior call path is intact and `boot.rs` was left untouched (it still calls `default_host_binary`). The pure, testable core is `fn resolve_host_binary_in(override: Option<&str>, base: &Path, bin_filename: &str)`. Env override constant exported as `pub const HOST_BIN_ENV = "CONCERTO_AGENT_HOST_BIN"`. One refinement vs. the literal spec: the step-3 "walk up to target/<profile>" search probes, at each bounded ancestor (≤3 levels), BOTH the ancestor dir directly AND a `target/<profile>/` sibling. The direct-ancestor probe was needed because cargo runs test/bench binaries from `target/<profile>/deps/`, where the helper sits one level up at `target/<profile>/` — without it the existing `embedded_boot` test (which now boots through validated resolution) would have regressed. `docs/interfaces/rust-api.md` is unchanged: its generator only scans `crates/*/src/api.rs` for `pub trait/struct/enum`, so renaming a free fn in `spawn.rs` produces no drift (regen run, no diff).
+- **Open questions for next task:** Behavioural change worth noting downstream: resolution now validates existence eagerly. `boot::start` (via `default_host_binary`) therefore FAILS at boot if the helper can't be resolved, whereas Task 22's version returned an unchecked co-located path and deferred the failure to spawn time. This is the intended "fail with an actionable error" behaviour, but Task 702 (Windows ConPTY) and any packaging task should ensure the helper is co-located or `CONCERTO_AGENT_HOST_BIN` is set before Core boots.
+- **Deliberate debt:** `.exe` suffix handling is `cfg!(windows)`-gated in the search only (`host_bin_filename()`); the host itself remains Unix-only per Scope — out (Task 702 owns ConPTY). No filesystem scan — the dev-layout walk is bounded to 3 ancestor levels.
+- **Smoke-gate state:** unchanged. The existing session-spawn smoke check (`scripts/smoke.sh`, "spawning echo session") still exercises agent-host resolution end-to-end and passes (exit 0). Tier-3 operator step from the task's Verification §6 (`make dev-embedded` + manual session-create with no co-location pre-build accident) is a Phase-1 Tier-3 operator-checklist line; not runnable here without the desktop GUI, code is correct by the unit-test + smoke evidence.
