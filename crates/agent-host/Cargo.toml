@@ -15,12 +15,15 @@ path = "src/main.rs"
 name = "concerto_agent_host"
 path = "src/lib.rs"
 
-# Task 21: agent-host is Unix-only in V0.1 (Windows ConPTY support deferred
-# to V1.0 per design/04 §3.9). Direct dependency surface is intentionally
-# small: portable-pty for the PTY, ciborium for the CBOR HostFrame wire
-# format, clap for CLI parsing, hex for cookie decoding, subtle for
-# constant-time comparison, libc for `setsid()`, tokio for async I/O, the
-# tracing crates for diagnostics, and the workspace error/serde stack.
+# agent-host: portable lib surface, Unix-only PTY/UDS runtime. The Windows
+# ConPTY backend is pending (Task 702); until then the binary is a stub on
+# Windows but the crate still builds there, so every dep below must be
+# cross-platform (only `libc` is Unix-gated, in the target block further
+# down). Direct dependency surface is intentionally small: portable-pty
+# (PTY; cross-platform), ciborium for the CBOR HostFrame wire format, clap
+# for CLI parsing, hex for cookie decoding, subtle for constant-time
+# comparison, tokio for async I/O, the tracing crates for diagnostics, and
+# the workspace error/serde stack.
 [dependencies]
 concerto-error = { path = "../error" }
 serde = { workspace = true, features = ["derive"] }

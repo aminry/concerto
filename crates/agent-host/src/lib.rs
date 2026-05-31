@@ -6,10 +6,14 @@
 //! test in `tests/` can link against them directly without re-driving
 //! the binary for unit-style assertions.
 //!
-//! **Unix-only.** V0.1 ships the host on macOS (and Linux for CI); a
-//! Windows ConPTY backend is V1.0 (see Task 21 Handoff Notes). The
-//! `#[cfg(unix)]` gate at the binary level keeps the Windows CI matrix
-//! green by failing closed with an informative error.
+//! **Portable surface, Unix-only runtime.** The types and helpers in this
+//! library (`api`, `bridge`, `ring`, `exit`) are platform-independent and
+//! compile + test on macOS, Linux, and Windows. The PTY/UDS supervisor
+//! that drives them lives in `src/main.rs`'s `#[cfg(unix)] mod unix`; the
+//! Windows ConPTY backend is pending (Task 702), so the binary is a stub
+//! there. Keeping this library portable lets the Windows CI lane build and
+//! lint the whole crate (the integration test cfg-gates to empty on
+//! Windows) instead of excluding agent-host wholesale.
 
 pub mod api;
 pub mod bridge;

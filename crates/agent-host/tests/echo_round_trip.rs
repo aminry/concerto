@@ -6,7 +6,11 @@
 //! `hello`, expect `AgentExited`. Also verifies cookie-mismatch handling
 //! in a separate test.
 //!
-//! Unix-only — the binary itself only compiles on Unix in V0.1.
+//! Unix-only: this test spawns the agent-host over a UDS and drives the
+//! PTY supervisor, both of which only exist on Unix today. On Windows the
+//! binary is a ConPTY stub (Task 702), so this whole test file cfg-gates
+//! to empty there rather than being deleted — Task 702 owns the Windows
+//! agent-host round-trip coverage.
 
 #![cfg(unix)]
 
