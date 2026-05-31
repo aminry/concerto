@@ -1,0 +1,37 @@
+# Throwaway spike harness for Task 101 (Iroh NAT-diversity traversal).
+#
+# This is a STANDALONE Cargo workspace on purpose: it carries an empty
+# `[workspace]` table so it does NOT join the repo-root workspace. If it
+# did, its Iroh dependency would be dragged into every other task's
+# `cargo check --workspace` / `cargo deny check` before Iroh is properly
+# vetted for the product in Task 212/214. Build & lint it from this manifest:
+#
+#   cargo run   --manifest-path spikes/iroh-nat/Cargo.toml --bin core
+#   cargo run   --manifest-path spikes/iroh-nat/Cargo.toml --bin client -- <ticket>
+#   cargo clippy --manifest-path spikes/iroh-nat/Cargo.toml -- -D warnings
+#
+# Iroh is PINNED to the exact version V1.0 intends to vendor (see
+# design/spikes/iroh-nat-findings.md "Pinned Iroh version"). The GO/NO-GO
+# verdict is only valid for this version.
+[workspace]
+
+[package]
+name = "iroh-nat-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[dependencies]
+# PINNED — current stable Iroh release as of 2026-05-30. V1.0 vendors THIS
+# version; Task 102 (Tonic-over-Iroh) and Task 212/214 reuse it. Chosen
+# because `tonic-iroh-transport 0.9.2` (the crate Task 102 needs) resolves
+# against iroh 0.98.x, so pinning here keeps the transport stack coherent.
+# 1.0.0-rc.1 exists but is a pre-release; the bet is on the stable line.
+iroh = "=0.98.2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "time", "net"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+futures-lite = "2"
