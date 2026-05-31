@@ -729,10 +729,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "concerto-desktop-shell"
-version = "0.0.1"
-
-[[package]]
 name = "concerto-error"
 version = "0.0.1"
 dependencies = [
@@ -790,10 +786,6 @@ dependencies = [
  "tonic",
  "tonic-build",
 ]
-
-[[package]]
-name = "concerto-pty-sup"
-version = "0.0.1"
 
 [[package]]
 name = "concerto-relay"

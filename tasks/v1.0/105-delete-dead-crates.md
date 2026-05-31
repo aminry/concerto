@@ -43,11 +43,11 @@ Tier 1.
 6. `scripts/smoke.sh` → still exits 0 (smoke gate unchanged).
 
 ## Definition of Done
-- [ ] Both crates deleted and removed from workspace members
-- [ ] No dangling references anywhere in the repo
-- [ ] `docs/interfaces/rust-api.md` regenerated and committed
-- [ ] Verification commands pass
-- [ ] Single commit created with the message below
+- [x] Both crates deleted and removed from workspace members
+- [x] No dangling references anywhere in the repo
+- [x] `docs/interfaces/rust-api.md` regenerated and committed
+- [x] Verification commands pass
+- [x] Single commit created with the message below
 
 ## Outputs
 - `crates/pty-sup/` (deleted)
@@ -67,7 +67,7 @@ Refs: tasks/v1.0/105-delete-dead-crates.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:**
-- **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+- **Drift from plan:** None to the build. Prose mentions of `pty-sup`/`desktop-shell` were intentionally left untouched in `design/00`, `design/15`, `design/Concerto_TechStack_Evaluation.md`, `CHANGELOG.md:52`, `docs/superpowers/plans/*`, the frozen V0.1 task files (`tasks/01`, `tasks/14`, `tasks/README.md`), and unrelated same-string comments (`apps/desktop/src/App.tsx` UI comment, `crates/agent-host/src/main.rs:694` agent-host's own "pty supervisor" log line, `crates/core/src/security/managed.rs:94` prose). These are not code dependents — editing `design/` is forbidden for a non-doc task and the rest is history/prose. A future doc task (e.g. 107/712) can sweep them. The `docs/interfaces/rust-api.md` regen produced NO diff because both stubs had no public API to summarize; `git diff --exit-code docs/interfaces/` is clean.
+- **Open questions for next task:** None. Task 113 (CI matrix) depends on 105 only for the smaller member set — unaffected.
+- **Deliberate debt:** None. Pure deletion; no TODO/FIXME/todo!() introduced.
+- **Smoke-gate state:** unchanged — `scripts/smoke.sh` still exits 0 ("V0.1 alpha — all checks PASSED"), no capability added or removed.
