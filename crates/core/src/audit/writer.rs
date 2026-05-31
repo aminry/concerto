@@ -1,4 +1,5 @@
-//! The fan-out audit writer + subscriber trait (Task 44).
+//! The fan-out audit writer + subscriber trait (Task 44; generalized in
+//! Task 112).
 //!
 //! `AuditWriter` is a cheap-cloneable handle around an
 //! `mpsc::Sender<AuditEvent>` (capacity 1000). Callers invoke
@@ -8,9 +9,16 @@
 //! actor.
 //!
 //! [`AuditWriterTask`] is the singleton Tokio task that drains the
-//! channel and fans out events to every registered subscriber in
-//! parallel via `futures::future::join_all`. The task gates shutdown on
-//! every subscriber's `flush` completing.
+//! channel and fans out events to every registered subscriber. The
+//! always-on [`crate::audit::jsonl::JsonlFileSubscriber`] is registered
+//! first and is the durable floor — it is never reordered behind a
+//! network subscriber. Network subscribers
+//! ([`crate::audit::syslog::SyslogSubscriber`],
+//! [`crate::audit::https::HttpsForwarderSubscriber`]) isolate their own
+//! slow/failing I/O behind an internal bounded channel + background task
+//! so a down endpoint can never stall the drain loop, the JSONL default,
+//! or the producing actor. The task gates shutdown on every subscriber's
+//! `flush` completing.
 
 use std::sync::Arc;
 
@@ -78,16 +86,41 @@ impl AuditWriter {
     }
 }
 
-/// Trait implemented by every audit-log subscriber. Per `design/09 §3.5`
-/// the V0.1 subscriber set is just [`crate::audit::jsonl::JsonlFileSubscriber`]
-/// (canonical on-disk writer) and the in-memory test subscriber. Syslog
-/// + HttpsForwarder ship in V1.0.
+/// Trait implemented by every audit-log subscriber.
+///
+/// This is a published extension seam — one of the
+/// `design/18 §3.7` trait surfaces — and its signature is FROZEN as of
+/// Task 112. The V1.0 OSS impl set is:
+///
+/// - [`crate::audit::jsonl::JsonlFileSubscriber`] — the canonical
+///   on-disk writer; always present (the durable floor).
+/// - [`crate::audit::stdout::StdoutSubscriber`] — debug echo to stdout.
+/// - [`crate::audit::syslog::SyslogSubscriber`] — RFC 5424 over UDP/TCP.
+/// - [`crate::audit::https::HttpsForwarderSubscriber`] — POSTs NDJSON
+///   events to a configured endpoint (poor-man's SIEM hook).
+///
+/// V2.0+ BSL impls live in their own crates and are RESERVED (not
+/// implemented here) per `design/18 §3.7` so Task 707's trait-seam
+/// completeness check can verify the names without a Core refork:
+///
+/// - `SiemForwarderSubscriber` — `crates/enterprise-siem` (BSL):
+///   multi-tenant SIEM integration (Splunk HEC / Elastic / Datadog),
+///   retry-with-replay buffer, field mapping, compliance attestations.
+/// - `EncryptedAtRestSubscriber` — `crates/enterprise-encrypted-audit`
+///   (BSL): AES-256-GCM at-rest writer with a keychain-derived key.
 #[async_trait]
 pub trait AuditLogSubscriber: Send + Sync {
-    /// Called for every event, in arrival order. Implementations must
-    /// not block longer than ~10ms — the writer task fans out to every
-    /// subscriber in sequence.
-    async fn emit(&self, event: &AuditEvent);
+    /// Stable identifier for this subscriber (e.g. `"jsonl"`, `"syslog"`).
+    /// Used in diagnostics and the trait-seam registry.
+    fn id(&self) -> &str;
+
+    /// Called for every event, in arrival order. The always-on JSONL
+    /// subscriber runs first and synchronously (the durable floor);
+    /// network subscribers must NOT block here — they isolate their own
+    /// slow/failing I/O behind an internal channel + background task and
+    /// return promptly so a down endpoint never stalls the drain loop,
+    /// the JSONL default, or the producing actor.
+    async fn on_event(&self, event: &AuditEvent);
 
     /// Flush any buffered state. Called by the writer task on shutdown.
     async fn flush(&self);
@@ -95,6 +128,11 @@ pub trait AuditLogSubscriber: Send + Sync {
 
 /// The background task that drains the audit channel and fans out
 /// events to every registered subscriber.
+///
+/// Subscribers are invoked in registration order; `boot::spawn_runtime`
+/// registers the always-on [`crate::audit::jsonl::JsonlFileSubscriber`]
+/// first so the durable on-disk write is never gated behind a network
+/// subscriber.
 pub struct AuditWriterTask {
     rx: mpsc::Receiver<AuditEvent>,
     subscribers: Vec<Arc<dyn AuditLogSubscriber>>,
@@ -154,7 +192,7 @@ impl AuditWriterTask {
                     // before they observed the shutdown.
                     while let Ok(event) = self.rx.try_recv() {
                         for sub in &self.subscribers {
-                            sub.emit(&event).await;
+                            sub.on_event(&event).await;
                         }
                     }
                     break;
@@ -163,7 +201,7 @@ impl AuditWriterTask {
                     match maybe_event {
                         Some(event) => {
                             for sub in &self.subscribers {
-                                sub.emit(&event).await;
+                                sub.on_event(&event).await;
                             }
                         }
                         None => break,

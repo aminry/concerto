@@ -19,6 +19,7 @@ echo-session
 streams-subscribe
 permission-flip
 audit-log
+audit-rotation
 loop
 skills
 mcp
