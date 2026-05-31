@@ -44,11 +44,21 @@ Tier: **spike**.
 3. `pnpm -C spikes/rn-diff typecheck` clean (if TS configured) and `pnpm -C spikes/rn-diff lint` clean.
 
 ## Definition of Done
-- [ ] Throwaway Expo diff renderer runs on at least one real device
-- [ ] 1000-line and large-diff fixtures measured (time-to-render + scroll fps)
-- [ ] Findings doc committed with numbers and GO/NO-GO vs the §10 bar
-- [ ] Unmeasured platform (if any) explicitly marked, not extrapolated
-- [ ] Single commit created with the message below
+- [~] Throwaway Expo diff renderer runs on at least one real device
+      — Option A: runs on the **iOS Simulator** (clean native build, installs,
+      launches, idle 60 fps HUD); real-device run is the operator's Phase-1-gate
+      step (`spikes/rn-diff/README.md`). No real iPhone/Pixel in this env.
+- [~] 1000-line and large-diff fixtures measured (time-to-render + scroll fps)
+      — both fixtures built; JS build-cost measured off-device (~1.2 ms / ~4 ms);
+      on-device render-ms + scroll-fps are **PENDING operator field measurement**
+      (cannot be synthesized without device input here).
+- [x] Findings doc committed with numbers and GO/NO-GO vs the §10 bar
+      — `design/spikes/rn-diff-findings.md`; verdict is the labelled **PENDING
+      OPERATOR DEVICE MEASUREMENT** per Option A (60 fps is device-only).
+- [x] Unmeasured platform (if any) explicitly marked, not extrapolated
+      — both real-device rows marked `PENDING`; simulator row labelled
+      "indicative only, runnable confirmation, not a perf measurement".
+- [x] Single commit created with the message below
 
 ## Outputs
 - `spikes/rn-diff/` (new — throwaway Expo app)
@@ -66,7 +76,36 @@ Refs: tasks/v1.0/103-spike-rn-diff-viewer-perf.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- **Drift from plan:**
-- **Open questions for next task:**
-- **Deliberate debt:**
-- **Smoke-gate state:**
+- **Drift from plan:** Executed under operator **Option A** (device-gated spike):
+  built a genuinely runnable harness now, deferred the real-device 60 fps verdict
+  to the operator at the Phase-1 gate. **Rendering approach chosen:** parse →
+  flatten to a single flat `Row[]` (one fixed-height row per file/hunk/line) →
+  virtualize with **`@shopify/flash-list` v2** (New Architecture), with
+  **per-line-text-memoized** syntax-ish tokenization; expand/collapse is just
+  which line rows are in the flat array. Pinned **Expo SDK 54.0.35 / RN 0.81.5 /
+  React 19.1.0 / FlashList 2.0.2**. Indicative simulator result (clearly
+  caveated): `expo run:ios` builds clean, installs, and **runs live on an
+  iPhone 17 Pro Simulator with an idle 60 fps HUD** — a runnable confirmation,
+  **not** a perf measurement; fixture-loaded render-ms and under-scroll fps were
+  **not** captured because synthetic tap/scroll input isn't available in this
+  sandbox. Off-device JS build cost measured: parse+flatten+tokenize ≈ 1.2 ms
+  (1k) / 4 ms (10k) — negligible, so any cliff lives in the native render/scroll
+  layer, not the JS prep.
+- **Open questions for next task:** The **real-device 60 fps GO/NO-GO is PENDING
+  operator field measurement** — a **Phase-1 Tier-3 checklist line** (feeds Task
+  514). Operator runs Release builds on iPhone 13+ / Pixel 6+ and reads fps via
+  Xcode Instruments (Core Animation) / Android GPU profiler per
+  `spikes/rn-diff/README.md`, then sets the verdict. Open device questions:
+  per-row `<Text>`-child cost once real `react-native-syntax-highlighter` is in;
+  very-long-line layout; the 10k memory cliff feeding the `design/16 §8`
+  "too large → open on desktop" guard.
+- **Deliberate debt:** Throwaway harness — tokenizer is a placeholder (Task 514
+  uses `react-native-syntax-highlighter` + the `§3.7` whitelist and must
+  re-measure); only tap + expand/collapse wired (no pager / pinch-zoom /
+  long-press-comment); fixtures generated, not real `GetWorkareaRepoDiff` data.
+  All intentional and scoped out. Architectural carry-forward for Task 514 is in
+  findings §6.
+- **Smoke-gate state:** unchanged (spike; no product smoke gate). Automatable
+  gates green: `pnpm -C spikes/rn-diff install` / `typecheck` / `lint` all pass;
+  full Metro bundle (`expo export`, 1027 modules) succeeds; native iOS sim build
+  `Build Succeeded` (0 errors/0 warnings).

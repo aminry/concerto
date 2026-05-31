@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "rn-diff-spike",
+    "slug": "rn-diff-spike",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "scheme": "rndiffspike",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.concerto.rndiffspike"
+    },
+    "android": {
+      "package": "dev.concerto.rndiffspike",
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
