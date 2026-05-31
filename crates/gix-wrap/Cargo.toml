@@ -39,3 +39,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "status"
 harness = false
+
+# Task 104 (Phase 1 spike): sparse-cone status latency harness
+# (shell-out vs gix-native, fsmonitor warm + cold). Throwaway spike, not
+# a CI gate — CI only validates it compiles (`cargo bench --no-run`).
+[[bench]]
+name = "sparse_cone"
+harness = false
