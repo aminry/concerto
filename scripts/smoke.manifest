@@ -1,0 +1,23 @@
+# Concerto smoke-gate capability manifest.
+#
+# One capability per line, in run order. Each <cap> maps to a file
+# scripts/smoke.d/<NN>-<cap>.sh that the driver (scripts/smoke.sh) sources;
+# that file must define a `check_<cap>` function (dashes -> underscores).
+#
+# Blank lines and `#`-comments are ignored. To extend the gate, a V1.0 task
+# adds a scripts/smoke.d/<NN>-<newcap>.sh file and appends <newcap> here in
+# the position it should run. Order matters: later checks depend on the
+# PROJECT_ID -> REPO_ID -> WS_ID -> WA_ID -> SID chain built by earlier ones.
+#
+# Seeded with EXACTLY the V0.1 capabilities (net behavior unchanged).
+
+core-boot
+project-repo-clone
+workspace-workarea
+echo-session
+streams-subscribe
+permission-flip
+audit-log
+loop
+skills
+mcp

@@ -2,6 +2,14 @@
 # Smoke gate for embedded-core mode: builds the desktop binary with the
 # feature, then exercises the one-process boot path that scripts/smoke.sh
 # (separate daemon) does not. Headless — no GUI launch.
+#
+# Relationship to the composable gate (Task 108): the daemon gate's
+# capability checks under scripts/smoke.d/ all drive Core over its UDS
+# socket via the smoke-client. Embedded mode boots Core in-process with no
+# UDS surface, so those checks can't be sourced here as-is; the in-process
+# boot is instead proven by the cargo integration tests below. When a V1.0
+# task exposes an embedded loopback transport, this script can grow to
+# source the shared scripts/smoke.d/ checks against it.
 set -euo pipefail
 
 echo "smoke-embedded: building desktop with embedded-core feature"
