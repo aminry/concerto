@@ -12,6 +12,7 @@
 # Seeded with EXACTLY the V0.1 capabilities (net behavior unchanged).
 
 core-boot
+persistence-integrity
 project-repo-clone
 workspace-workarea
 echo-session

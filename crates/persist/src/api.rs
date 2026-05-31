@@ -101,12 +101,22 @@ impl<'a> std::ops::DerefMut for WriterGuard<'a> {
 impl Persistence {
     /// Open (creating if necessary) the SQLite database at `config.db_path`.
     ///
-    /// Steps, in order — failure of any step aborts the open:
+    /// Steps, in order — failure of any step aborts the open (Task 110 adds
+    /// the on-open integrity check + downgrade guard, both BEFORE the
+    /// migrator touches the DB so a corrupt or future-version file fails
+    /// loudly at boot rather than producing silent misbehaviour):
     /// 1. Create the DB file's parent directory.
     /// 2. Open the writer connection with WAL + busy_timeout + foreign_keys.
-    /// 3. Build the reader pool; each connection gets `PRAGMA query_only`.
-    /// 4. Run pending migrations via `sqlx::migrate!`.
-    /// 5. `PRAGMA quick_check;` — abort if the result is not `"ok"`.
+    /// 3. `PRAGMA quick_check;` on open — abort with [`Error::DatabaseCorrupt`]
+    ///    if the result is not `"ok"` (design/09 §6.3, §8). Runs first so the
+    ///    migrator never touches a corrupt file.
+    /// 4. Downgrade guard (design/09 §8): if the DB's applied schema version is
+    ///    newer than the highest migration this binary ships, abort with
+    ///    [`Error::SchemaDowngrade`] naming both versions.
+    /// 5. Run pending migrations via `sqlx::migrate!` (forward-only).
+    /// 6. Build the reader pool; each connection gets `PRAGMA query_only`.
+    /// 7. A second `PRAGMA quick_check;` after migrations (design/09 §6.3) —
+    ///    the existing post-migration integrity check, retained.
     pub async fn open(config: PersistenceConfig) -> Result<Self> {
         if let Some(parent) = config.db_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -119,9 +129,43 @@ impl Persistence {
             .await
             .map_err(|e| Error::Sqlx(Box::new(e)))?;
 
-        // Migrations must run on the writer connection so the implicit
+        // Integrity check ON OPEN, before the migrator touches anything
+        // (design/09 §6.3, §8). A corrupt file must fail here so the
+        // forward-only migrator never runs against bad pages.
+        let on_open_check: String = sqlx::query_scalar("PRAGMA quick_check")
+            .fetch_one(&mut writer_conn)
+            .await
+            .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        if on_open_check != "ok" {
+            return Err(Error::DatabaseCorrupt(format!(
+                "database at {} appears corrupt: PRAGMA quick_check returned {on_open_check:?}, \
+                 expected \"ok\". Restore from a backup (see `concerto backup`) or move the file \
+                 aside and let Concerto recreate it.",
+                config.db_path.display()
+            )));
+        }
+
+        // Downgrade guard (design/09 §8): refuse to start when the DB's
+        // applied schema version is newer than this binary understands. The
+        // forward-only migrator can migrate UP but never DOWN, so a DB written
+        // by a newer Core would otherwise be silently misinterpreted.
+        let binary_max = binary_max_schema_version();
+        if let Some(db_version) = applied_schema_version(&mut writer_conn).await? {
+            if let Some(max) = binary_max {
+                if db_version > max {
+                    return Err(Error::SchemaDowngrade(format!(
+                        "database at {} is at schema version {db_version}, but this binary only \
+                         understands up to {max}. This Core is older than your data; install a \
+                         newer Core to open it (downgrade is not supported).",
+                        config.db_path.display()
+                    )));
+                }
+            }
+        }
+
+        // Migrations run on the writer connection so the implicit
         // _sqlx_migrations table participates in the same journal as the
-        // schema it documents.
+        // schema it documents. Forward-only (design/09 §6.2).
         sqlx::migrate!("./migrations")
             .run(&mut writer_conn)
             .await
@@ -133,10 +177,20 @@ impl Persistence {
             .await
             .map_err(|e| Error::Sqlx(Box::new(e)))?;
         if quick_check != "ok" {
-            return Err(Error::Internal(format!(
-                "PRAGMA quick_check returned {quick_check:?}, expected \"ok\""
+            return Err(Error::DatabaseCorrupt(format!(
+                "database at {} failed PRAGMA quick_check after migrations: returned \
+                 {quick_check:?}, expected \"ok\"",
+                config.db_path.display()
             )));
         }
+
+        // Single deterministic success signal for the smoke gate + operators
+        // (Task 110): the integrity guards passed and the schema is current.
+        tracing::info!(
+            db_path = %config.db_path.display(),
+            schema_version = binary_max.unwrap_or(0),
+            "persistence integrity ok (quick_check passed, schema not downgraded)"
+        );
 
         let readers: SqlitePool = SqlitePoolOptions::new()
             .max_connections(config.max_readers)
@@ -917,6 +971,45 @@ pub struct PullRequest {
     pub head_sha: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// The highest migration version this binary ships, derived from the
+/// embedded `sqlx::migrate!` migrator rather than a hardcoded literal that
+/// would drift from `crates/persist/migrations/`. Returns `None` only if the
+/// binary ships zero migrations (which never happens in practice — there is
+/// always at least `0001_initial_schema.sql`).
+fn binary_max_schema_version() -> Option<i64> {
+    sqlx::migrate!("./migrations")
+        .iter()
+        .map(|m| m.version)
+        .max()
+}
+
+/// Read the DB's currently-applied schema version: the maximum `version` in
+/// sqlx's internal `_sqlx_migrations` table. Returns `None` for a fresh DB
+/// where the migrator has not yet created the table (no migrations applied).
+async fn applied_schema_version(conn: &mut SqliteConnection) -> Result<Option<i64>> {
+    // `_sqlx_migrations` does not exist until the migrator runs at least
+    // once. On a fresh DB the table is absent, so probe `sqlite_master`
+    // first and treat "no table" as "no applied version" rather than an
+    // error.
+    let table_exists: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?
+        != 0;
+
+    if !table_exists {
+        return Ok(None);
+    }
+
+    let version: Option<i64> = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(version)
 }
 
 /// Build the `SqliteConnectOptions` shared by writer + reader pools.
