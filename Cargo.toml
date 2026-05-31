@@ -168,3 +168,10 @@ path-clean = "1"
 # debounces events at 500ms and broadcasts the parsed
 # [`ManagedPolicy`] via a `tokio::sync::watch::Sender`.
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+# Task 111: `concerto backup` streams the worktree directory tree into
+# `<out>/worktrees.tar`. `tar` is the pure-Rust, fully cross-platform archive
+# writer from the rust-lang org — it compiles on the Windows CI lane (no
+# `#[cfg(unix)]` paths in the write path) and `Builder::append_dir_all`
+# streams each file rather than buffering whole worktrees in memory.
+# MIT/Apache-2.0; cargo-deny clean.
+tar = { version = "0.4", default-features = false }

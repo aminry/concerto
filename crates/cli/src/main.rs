@@ -63,6 +63,30 @@ enum Command {
     /// Session commands.
     #[command(subcommand)]
     Session(SessionCommand),
+    /// Capture a portable backup of the local Concerto state.
+    ///
+    /// Unlike the other subcommands, `backup` operates on the local DB file
+    /// directly (a hot-consistent `VACUUM INTO` snapshot) and does NOT dial
+    /// the Core, so it works even when no Core is running. It writes a frozen
+    /// `<out>/` layout: `concerto.db`, optional `worktrees.tar`, optional
+    /// `audit.jsonl`, and a `manifest.json`.
+    Backup {
+        /// Output directory for the backup artifacts. Created if missing.
+        /// Defaults to `./concerto-backup`.
+        #[arg(long, value_name = "DIR", default_value = "concerto-backup")]
+        out: PathBuf,
+        /// Also tar the worktree directory tree into `<out>/worktrees.tar`.
+        #[arg(long)]
+        with_worktrees: bool,
+        /// Inclusive lower bound (ISO-8601, e.g. `2026-05-01`) on audit
+        /// records to export into `<out>/audit.jsonl`. Setting either
+        /// `--audit-from` or `--audit-to` enables the audit export.
+        #[arg(long, value_name = "TS")]
+        audit_from: Option<String>,
+        /// Inclusive upper bound (ISO-8601) on audit records to export.
+        #[arg(long, value_name = "TS")]
+        audit_to: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -110,14 +134,36 @@ fn main() -> ExitCode {
 
 async fn dispatch(cli: Cli) -> Result<(), CommandError> {
     let format = OutputFormat::from_json_flag(cli.json);
-    let socket = client::resolve_socket_path(cli.socket)?;
 
     match cli.command {
-        Command::Status => commands::status::run(&socket, format).await,
+        // `backup` is file-level (local DB + worktrees + audit JSONL) and
+        // never dials the Core, so it must NOT resolve/require the UDS socket
+        // — that would force a running Core and pull in the Unix-only client
+        // path. It resolves its own paths from the environment.
+        Command::Backup {
+            out,
+            with_worktrees,
+            audit_from,
+            audit_to,
+        } => {
+            let args = commands::backup::BackupArgs {
+                out,
+                with_worktrees,
+                audit_from,
+                audit_to,
+            };
+            commands::backup::run(args, format).await
+        }
+        Command::Status => {
+            let socket = client::resolve_socket_path(cli.socket)?;
+            commands::status::run(&socket, format).await
+        }
         Command::Workspace(WorkspaceCommand::Ls { project }) => {
+            let socket = client::resolve_socket_path(cli.socket)?;
             commands::workspace::run(&socket, project, format).await
         }
         Command::Session(SessionCommand::Ls { workarea }) => {
+            let socket = client::resolve_socket_path(cli.socket)?;
             commands::session::run(&socket, workarea, format).await
         }
     }

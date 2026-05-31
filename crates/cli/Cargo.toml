@@ -33,6 +33,16 @@ serde_json = { workspace = true }
 # as the desktop's `core_client::default_socket_path`).
 home = { workspace = true }
 thiserror = { workspace = true }
+# `concerto backup` (Task 111). All cross-platform — the backup path is
+# file/SQLite/tar based and never dials the Core, so it builds on the Windows
+# CI lane with no `#[cfg(unix)]` code.
+#   - concerto-persist: reused to resolve the canonical `<home>/concerto/
+#     concerto.db` default (single source of truth for the DB path layout).
+#   - sqlx (sqlite): opens the source DB read-only and runs `VACUUM INTO`.
+#   - tar: streams the worktree tree into `<out>/worktrees.tar`.
+concerto-persist = { path = "../persist" }
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tar = { workspace = true }
 
 [dev-dependencies]
 # Cross-platform dev-deps. `assert_cmd` + `tokio` drive the integration test on
@@ -40,6 +50,15 @@ thiserror = { workspace = true }
 # below is what gates `--all-targets` on non-Unix lanes.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
 assert_cmd = "2"
+# `tests/backup.rs` is fully cross-platform: it seeds a temp DB by calling
+# `concerto-persist` directly (NOT the Unix-only `concerto-test-harness`) and
+# runs the backup against it, so it builds + runs on the Windows CI lane.
+#   - tempfile: scratch dirs for the seeded DB + backup output.
+#   - sqlx (sqlite): re-open the snapshot and `PRAGMA quick_check` it.
+# `concerto-persist` is a normal (cross-platform) dependency above, so the
+# test reuses it without a second dev-dep entry.
+tempfile = "3"
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 
 # Integration test spawns a real Core via the shared harness and runs the
 # built `concerto` binary against it. The harness is Unix-only (it binds a
