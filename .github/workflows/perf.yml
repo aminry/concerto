@@ -60,6 +60,14 @@ jobs:
           version: "25.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
+      # The bench boots a real Core. Since Task 106, Core resolves the
+      # `concerto-agent-host` helper at boot and refuses to start if it is
+      # absent, so the helper must be co-located under `target/release/`
+      # (where the resolver's target-sibling search looks) before the bench
+      # spawns Core — otherwise the spawn times out (`SocketTimeout`). A
+      # shipped Core always ships agent-host alongside it; build it for parity.
+      - name: build agent-host (Core needs it co-located at boot)
+        run: cargo build -p concerto-agent-host --release
       - name: cargo bench (runtime_memory)
         id: bench
         run: |
