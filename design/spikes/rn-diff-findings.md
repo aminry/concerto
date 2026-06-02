@@ -8,8 +8,8 @@
 | Platform pin | **Expo SDK 54.0.35** · React Native 0.81.5 · React 19.1.0 · `@shopify/flash-list` 2.0.2 (New Architecture) |
 | The bar | **1000-line diff render < 1.5 s · sustained 60 fps scroll on iPhone 13+ / Pixel 6+** (PRD §22.3, `design/16 §3.7`) |
 | GO threshold | render ≤ 1.5 s **and** sustained ≥ 60 fps (≥ 58 fps tolerated for dips) → **GO** · marginal → re-tune then re-measure · clear miss → **NO-GO** (R-1/R-7 native escape hatch) |
-| Verdict | **PENDING OPERATOR DEVICE MEASUREMENT** (see §2, §5) |
-| Date | 2026-05-30 |
+| Verdict | **GO** (iOS) — device-measured 2026-06-02 on **iPhone 16 Pro** (Release): render **79 ms** (1k) / **106 ms** (10k) ≪ 1.5 s; **sustained 60 fps**, worst-case min 52–55 under deliberately hard scroll. iOS clears the bar; Android (Pixel) still unmeasured (see §4d, §5). |
+| Date | authored 2026-05-30; iOS device-measured 2026-06-02 |
 
 ---
 
@@ -139,15 +139,25 @@ confirmation, **not** a perf measurement.
 |---|---|---|---|---|---|
 | **iOS Simulator (iPhone 17 Pro, SDK 54)** | runs (idle) | 60 idle | runs (idle) | not captured | **Indicative only — runnable confirmation, not a perf measurement.** Simulator fps is not a device fps; loaded/scroll numbers need device + Instruments. |
 
-### 4d. Real devices — PENDING operator field measurement
+### 4d. Real devices — iOS measured 2026-06-02; Android pending
+
+Measured live by the operator on **2026-06-02**, **Release** build via
+`expo run:ios --device --configuration Release`, HUD read on-device after a
+hard flick-scroll of each fixture:
 
 | Device | render (~1k) | scroll fps (~1k) | render (~10k) | scroll fps (~10k) | Verdict |
 |---|---|---|---|---|---|
-| **iPhone 13+ (Release build)** | `PENDING` | `PENDING` | `PENDING` | `PENDING` | `PENDING` |
-| **Pixel 6+ (release variant)** | `PENDING` | `PENDING` | `PENDING` | `PENDING` | `PENDING` |
+| **iPhone 16 Pro (Release)** — exceeds the iPhone 13+ bar | **79 ms** (build 7 + draw 72) | **60 sustained, min 55** | **106 ms** (build 47 + draw 59) | **60 sustained, min 52** | **GO** |
+| **Pixel 6+ (release variant)** | `PENDING` | `PENDING` | `PENDING` | `PENDING` | `PENDING` (Android still unmeasured) |
 
-**What's needed to fill these:** a real iPhone 13+ and Pixel 6+, cabled, in a
-**Release** build (Debug understates fps):
+**iOS reading:** both fixtures render **≪ 1.5 s** (79 / 106 ms — ~14–19× under
+budget) and **sustain 60 fps**, with worst-case dips to only **52–55** under
+*deliberately* hard flinging. Crucially, **10k ≈ 1k** (min 52 vs 55; render 106
+vs 79 ms) — the FlashList virtualization holds with no cliff at scale. iOS is a
+clear **GO**.
+
+**What's still needed:** the **Android / Pixel 6+** row, cabled, in a **Release**
+variant (Debug understates fps):
 `expo run:ios --device --configuration Release` /
 `expo run:android --device --variant release`; tap `~1k`, read **render**;
 flick-scroll hard and read sustained fps with **Xcode Instruments → Core
@@ -155,20 +165,29 @@ Animation FPS** (iOS) and **Android Studio Profiler / Perfetto /
 `dumpsys gfxinfo`** (Android); repeat with `~10k`. Record above and set the
 GO/NO-GO. Full steps: `spikes/rn-diff/README.md`.
 
-## 5. Provisional verdict — **PENDING OPERATOR DEVICE MEASUREMENT**
+## 5. Verdict — **GO** (iOS device-measured 2026-06-02; Android pending)
 
-The 60 fps GO/NO-GO **can only be decided on real iPhone 13+ / Pixel 6+
-hardware** and is therefore a **Phase-1 Tier-3 checklist line** for the
-operator (feeding Task 514). What this spike *can* assert:
+> **GO (iOS).** On a real **iPhone 16 Pro** (Release build), the custom RN diff
+> renderer clears the bar: **render 79 ms (1k) / 106 ms (10k)** — ~14–19× under
+> the 1.5 s budget — and **sustained 60 fps** scroll with worst-case dips to only
+> **52–55** under deliberately hard flinging. **10k ≈ 1k** confirms the
+> virtualization scales with no cliff. The `design/16 §3.7` plan (custom RN diff,
+> *not* Monaco-in-WebView) is validated; **Task 514 proceeds in RN** and the
+> **R-1/R-7 native escape hatch is not triggered.** Remaining: confirm the
+> **Android / Pixel 6+** row (expected to pass on the same architecture) — a
+> residual Tier-3 line, not a blocker for the RN decision.
 
-- **The architecture is sound and runnable.** Virtualized flat-row rendering
-  with FlashList + memoized tokenization keeps the mounted view count tiny and
-  the JS prep cost negligible (§4a). This is the right approach to ship and the
-  one most likely to clear the bar.
-- **The likely outcome is GO or near-GO**, on the strength of: negligible JS
-  build cost, a virtualized list that mounts ~tens of rows regardless of diff
-  size, and FlashList v2's New-Architecture scroll performance. But *likely* is
-  not *measured* — the spike does not pre-empt the device run.
+What this spike also establishes (held true by the measurement):
+
+- **The architecture is sound — and the iOS device run confirmed it clears the
+  bar.** Virtualized flat-row rendering with FlashList + memoized tokenization
+  keeps the mounted view count tiny and the JS prep cost negligible (§4a); on
+  iPhone 16 Pro that translated to sustained 60 fps and sub-110 ms renders (§4d).
+- **iOS outcome: GO (measured).** Negligible JS build cost + a virtualized list
+  that mounts ~tens of rows regardless of diff size + FlashList v2's
+  New-Architecture scroll performance held 60 fps under hard scroll. Android
+  (Pixel) is expected to pass on the same architecture but is **not yet
+  measured** — the one residual device row.
 - **The cliff to watch** is not row count (virtualization makes 1k vs 10k
   near-identical in mounted-view terms) but: (a) **per-row complexity** — many
   syntax tokens per line means many `<Text>` children, the usual RN scroll
