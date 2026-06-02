@@ -351,15 +351,52 @@ async fn run_gh<S: AsRef<OsStr>>(gh: &std::path::Path, args: &[S]) -> Result<std
         argc = args.len(),
         "spawning gh"
     );
-    let output = Command::new(gh)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| Error::Vcs(format!("spawn gh: {e}")))?;
-    Ok(output)
+    // Spawn with a bounded retry on ETXTBSY ("Text file busy", os error
+    // 26). In a multithreaded process, another thread's fork() (any
+    // `Command::spawn`) can land between a freshly-written executable's
+    // open-for-write and its close; the forked child inherits that write
+    // FD and keeps the file busy-for-write across the window until its own
+    // execve, so a concurrent exec of that binary fails with ETXTBSY. It
+    // is transient — a short retry clears it. (This is the same mitigation
+    // Cargo applies in `retry_etxtbsy`.) In production `gh` is a stable
+    // installed binary so this almost never fires, but it hardens the
+    // shell-out against a `gh` self-update racing a spawn, and it removes
+    // the flake from the freshly-written mock `gh` in the integration
+    // tests under `--test-threads` parallelism.
+    const MAX_ETXTBSY_RETRIES: u32 = 10;
+    let mut attempt: u32 = 0;
+    loop {
+        match Command::new(gh)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+        {
+            Ok(output) => return Ok(output),
+            Err(e) if is_etxtbsy(&e) && attempt < MAX_ETXTBSY_RETRIES => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => return Err(Error::Vcs(format!("spawn gh: {e}"))),
+        }
+    }
+}
+
+/// True when `e` is `ETXTBSY` ("Text file busy"). The raw errno is `26`
+/// on both Linux and macOS; on non-Unix the condition can't arise, so
+/// this is always `false` (the retry loop then degrades to a single try).
+fn is_etxtbsy(e: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        e.raw_os_error() == Some(26)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = e;
+        false
+    }
 }
 
 /// Map a non-zero exit into [`Error::Vcs`] / [`Error::VcsNotAuthenticated`].

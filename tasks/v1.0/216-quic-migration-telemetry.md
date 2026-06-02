@@ -1,0 +1,114 @@
+# Task 216 — QUIC Connection Migration (Wi-Fi↔LTE) + NAT-Success Telemetry by Client Kind
+
+| Field | Value |
+|---|---|
+| Phase | 2 |
+| Task type | rust |
+| Verification tier | 2 |
+| Size | medium (1–3d) |
+| Depends on | 212 |
+| Touches subsystem(s) | 11 (Remote Transport & Relay), 10 (Client API Protocol) |
+| Smoke gate | unchanged |
+
+## Goal
+Make the Core's Iroh transport **survive a client's network change** (Wi-Fi→LTE) without dropping gRPC subscribers, and **measure NAT-traversal success per client kind**, surfacing both as observable events. Task 212 produced the Iroh endpoint, the `ConnectionPath` (`Direct | Relayed | Lan`), and the `NatStats` groundwork (`design/11 §4`); this task consumes and extends it. Two coupled deliverables: **(1) connection migration** — when a client's IP changes, QUIC's connection-id survives the path change with a ~1–3 s blip and gRPC subscribers (`10 §3.3`) see no interruption; for a longer outage the client reconnects and replays missed events from offset (the 202 ring buffer); **(2) NAT telemetry** — per-connection direct-vs-relayed outcome, aggregated per day / network / region, **broken out by client kind** (split-host desktop vs mobile — `design/11 §2` V1.0 note: residential↔residential / residential↔cloud-VM desktops may get worse rates than mobile, and we must be able to *see* that). The three transport lifecycle events (`session_opened` / `relay_switched` / `nat_success_changed`, `§5.3`) become a new **`TransportEvent`** arm on the `Event` oneof in `streams.proto` (Decision **D1** — NO `transport.proto`), and `nat_stats` surfaces via the Runtime/Devices RPCs, not a new service. After this task the Core emits structured migration + NAT-success telemetry that the Desktop direct/via-relay badge and the Settings→Diagnostics percentage (`§3.6`) key off, and a forced/simulated path change is proven not to tear down a subscriber.
+
+## Inputs to read before starting
+- `design/11_Remote_Transport_Relay.md` §3.6 — **NAT telemetry**: per-connection direct-vs-relayed; aggregated per day / network / region; surfaced as a small `direct`/`via relay` badge in the device list + a `Settings → Diagnostics` percentage ("Direct connections this week: 82%"); PRD §22.3 target **>70% direct**. The `NatStats.by_network_class` map in §4 is where the per-class counters live.
+- `design/11_Remote_Transport_Relay.md` §3.7 — **connection migration**: Iroh+QUIC migrates natively — when the client IP changes (Wi-Fi→LTE) the **connection id stays the same** and traffic continues; gRPC subscribers see **~1–3 s** latency, no interruption. Longer outages (subway, plane mode) → the device reconnects from scratch (re-Iroh, re-Noise IK, **replay missed events from offset** — the Task 202 ring buffer).
+- `design/11_Remote_Transport_Relay.md` §5.3 — the **four emitted events**: `transport.session_opened` (with path: direct/relayed/lan), `transport.session_closed`, `transport.relay_switched`, `transport.nat_success_changed`. The three lifecycle events (`session_opened` / `relay_switched` / `nat_success_changed`) are the payloads of the new `TransportEvent` oneof arm per D1; decide whether `session_closed` joins them (it is broadcast too — fold it in).
+- `design/11_Remote_Transport_Relay.md` §4 — `NatStats { direct_today, relayed_today, by_network_class: HashMap<String, NetworkStats> }` and `ConnectionPath { Direct | Relayed | Lan }`, `ActiveSession { path, last_seen, .. }`. Extend `NatStats` to break out **by client kind**; keep the §4 field names as the canonical Rust shape.
+- `design/11_Remote_Transport_Relay.md` §2 — the V1.0 phase-scope note: NAT-success telemetry is **broken out by client kind** so we can see whether split-host desktops (mostly residential↔residential or residential↔cloud-VM) get worse direct rates than mobile. This is *why* the by-kind split exists — bake the kinds in.
+- `design/11_Remote_Transport_Relay.md` §7.4 — the Wi-Fi→LTE migration sequence (`PATH_CHALLENGE` from the new addr → `PATH_RESPONSE` → migrate connection id → stream resumes, same connection_id; ~1–3 s blip, gRPC streams uninterrupted). This is the path your migration handling realizes and your double simulates.
+- `crates/transport/src/` (filled by **Task 212**) + `tasks/v1.0/212-transport-iroh-endpoint.md` → "Handoff Notes" — the live `iroh::Endpoint` construction, the `ConnectionPath` enum + `NatStats` groundwork 212 left (extend, do not redefine), the `ActiveSession`/`sessions` map, and **how 212 observes path state** — Iroh surfaces per-connection paths via `Connection::paths()` (each a direct IP/UDP path or a relay path; see `design/spikes/iroh-nat-findings.md §3`). Migration detection and direct-vs-relayed classification both read off this.
+- `crates/proto/proto/concerto/v1/streams.proto` — the **live** proto. The `Event.body` oneof currently uses **field numbers `10..14`** (`session = 10`, `session_io = 11`, `workspace = 12`, `workarea = 13`, `suggestion = 14`) — **the last arm is `Chip suggestion = 14`, NOT `RuntimeEvent = 20`** (the planning note was stale; trust the file). The header says field numbers are FROZEN as of Task 23 and new variants go at **higher** numbers only. **Task 202 also edits this oneof** — it adds a `GapDetected` variant at the next number above 14. **Coordinate the field number** (see Implementation notes): pick the next free number above whatever 202 took.
+- `crates/core/src/handlers/runtime.rs` + `crates/core/src/handlers/devices.rs` — where `nat_stats` surfaces per D1 (Runtime/Devices, no new service). Study how these handlers reach transport/runtime state and the `ServerCapabilities`/`CoreInfo` shapes Tasks 201/209 produced; `nat_stats` rides one of these read paths.
+- `tasks/v1.0/202-streams-reconnect-ring-buffer.md` (full + Handoff) — the ring-buffer/offset-replay this task's "longer outage → reconnect + replay from offset" path relies on, **and the field number 202 assigned its `GapDetected` variant** (you take the next one above it).
+- `tasks/v1.0/212-transport-iroh-endpoint.md` (full + Handoff) — the dependency; the endpoint + `ConnectionPath` + `NatStats` groundwork you extend.
+- `design/spikes/iroh-nat-findings.md` §3–§5 + §"Residual Tier-3" — `Connection::paths()` as the direct/relay classification surface; the field-measured **GO (80% direct)**; and the **residual Tier-3 rows** (symmetric↔symmetric, two residential ISPs, UDP-blocking ISP, and **real LTE↔Wi-Fi migration is physical**) that this task's double explicitly does NOT cover.
+- `tasks/v1.0/README.md` §5.3 (`rust`) + §5.1 Tier-2 + §6 row 216.
+
+## Scope — in
+- **Proto** (`streams.proto`, additive only): a new **`TransportEvent`** message + a new `Event.body` oneof arm `TransportEvent transport = <N>;` at the **next free field number above the one Task 202 assigned** (see Implementation notes — coordinate, do not collide). `TransportEvent` carries a `oneof kind` of the three lifecycle payloads — `SessionOpened { ... path, client_kind ... }`, `RelaySwitched { ... }`, `NatSuccessChanged { ... }` (and `SessionClosed` if folded in per §5.3). Import nothing new beyond what's already there. Do **not** touch existing field numbers or the V0.1 oneof variants. There is **NO `transport.proto`** (D1).
+- **`NatStats` by client kind** (extend the `design/11 §4` Rust shape in `crates/transport`): keep `direct_today` / `relayed_today` / `by_network_class`, and **add a per-client-kind breakdown** (e.g. a `by_client_kind: HashMap<ClientKind, NetworkStats>` or split counters) where `ClientKind` ∈ { split-host desktop, mobile, web } — the kinds `design/11 §2` calls out. Increment the right bucket on each session-open by reading the connection's `ConnectionPath` + the connecting client's kind.
+- **Migration handling** (`crates/transport`): on a client path change, the QUIC connection-id is preserved by Iroh/QUIC natively — the work here is to **not tear down the `ActiveSession`** on the IP change, update `ActiveSession.path`/`last_seen`, re-classify direct-vs-relayed via `Connection::paths()`, and keep the gRPC subscriber stream attached across the blip. On a *true* disconnect (connection actually closed), the session is removed and the client reconnects + replays from offset via the 202 ring buffer (this task does **not** re-implement replay — it ensures the seam: a migration is NOT a disconnect, a real drop IS).
+- **Event emission**: emit `TransportEvent` on session open (with path + client kind), relay switch, and a materially-changed NAT-success rate over the last hour (`§5.3`), through the same in-process broadcast the Streams handler fans out. `nat_success_changed` fires on a meaningful delta, not per-connection (debounced/hysteresis — define the threshold and note it).
+- **`nat_stats` surface** (D1): expose the by-kind `NatStats` through the **Runtime or Devices** read path (pick the one whose handler already carries the natural transport/runtime state — `runtime.rs` is the likely home alongside `ServerCapabilities`; confirm against 201/209). NO new gRPC service. The Desktop badge + Diagnostics percentage (`§3.6`) read this.
+- **Tests** (Tier 2): a **forced/simulated path change** on a loopback Iroh connection (two endpoints on one host, §5.1 double) does **not** drop the `ActiveSession` and the attached subscriber keeps receiving — the migration counter/path updates, NOT a session_closed; a **simulated relayed vs direct** outcome increments the correct `by_client_kind` + `by_network_class` bucket; `nat_success_changed` emits when the simulated direct-% crosses the threshold; a real connection close (not a path change) removes the session and the client's reconnect-with-offset replays via 202's buffer (assert the seam, using 202's surface). The `TransportEvent` proto arm round-trips through the broadcast.
+
+## Scope — out
+- **Real LTE↔Wi-Fi migration** and **real-NAT direct-%** — physical, NOT testable on loopback. These are the **Phase-2 Tier-3 checklist** lines ("pair from a real remote network and confirm `nat_stats` direct-% on real NATs"; the Wi-Fi→LTE migration on a real device) and map to the **residual Tier-3 rows** in `design/spikes/iroh-nat-findings.md` (symmetric↔symmetric, two residential ISPs, UDP-blocking ISP, real cellular handoff). State this honestly in Verification.
+- The **Iroh endpoint itself** + hole-punch/relay-fallback + `ConnectionPath` definition — **Task 212** (this task consumes/extends them).
+- The **ring buffer / offset replay** machinery — **Task 202** (this task relies on it for the reconnect path; it does not re-implement it).
+- The **Desktop badge / Settings→Diagnostics UI** that renders `nat_stats` and `TransportEvent` — **Tasks 218/219** (web-ts); this task ships the data + events only.
+- The **relay-side** view of NAT success (`§3.9` aggregated relay telemetry) — relay-side metrics are Task 214/215's Prometheus; this is the **Core-side** per-connection telemetry.
+- A `transport.proto` — explicitly **NOT** created (D1).
+- Multi-region relay selection / geographic routing — **V1.5** (R-6).
+
+## Public interface this task locks
+- **The `TransportEvent` proto arm**: the new `Event.body` oneof variant + the `TransportEvent` message and its `oneof kind` (`SessionOpened` / `RelaySwitched` / `NatSuccessChanged` [+ `SessionClosed` if folded]) — FROZEN. Field number is append-only above the existing `14` and above Task 202's `GapDetected`; once assigned it never moves. **NO `transport.proto`** (D1).
+- **The `NatStats` shape** — `direct_today`, `relayed_today`, `by_network_class`, and the **by-client-kind** breakdown + the `ClientKind` enum value set ({ desktop-split-host, mobile, web }) — FROZEN. This is the canonical telemetry shape the Desktop/Diagnostics + the Runtime/Devices read path consume.
+- **The migration contract**: a client path change does **not** close the `ActiveSession` or emit `session_closed`; only a true connection drop does. Subscribers survive a migration. FROZEN as the observable behavior the events promise.
+- **`nat_stats` surfaces via Runtime/Devices**, not a new service (D1) — the chosen RPC home is frozen for the Phase-5/Desktop consumers.
+
+## Implementation notes
+- **Field-number coordination with Task 202 is the one sharp edge.** The live `Event.body` oneof tops out at `14` (`suggestion`). Task 202 appends `GapDetected` at the next number (likely `15`). This task appends `TransportEvent` at the **next free number above that** (likely `16`). **Read 202's merged `streams.proto` (or its Handoff Notes recording the assigned number) and take the next integer** — do not assume `15`/`16`; if 216 lands before 202, leave a gap-safe choice and note it. Both tasks edit the same oneof; the orchestrator runs them in dependency order but the numbers must not collide. Record the assigned number in Handoff.
+- **Migration is mostly *not* tearing things down.** QUIC connection migration is native to Iroh/QUIC (`§3.7`); the connection-id is preserved by the stack. The Core-side work is to **avoid treating a path change as a disconnect**: distinguish "the connection's path set changed" (read `Connection::paths()` — spike `iroh-nat §3`) from "the connection closed." Update `ActiveSession.path` + `last_seen` and re-classify direct/relayed on a path change; remove the session only on actual close. The ~1–3 s blip is the QUIC layer's, not ours to manufacture.
+- **Direct vs relayed classification** comes from `Connection::paths()` — a direct IP/UDP path ⇒ `Direct` (or `Lan` if the peer is on-link), a relay path ⇒ `Relayed`. Mirror however Task 212 already classifies it; do not invent a second classifier.
+- **`ClientKind` source.** The connecting client's kind is known at session establishment — wire it from the same place 212/210 learn the transport/auth context (the device record / connect metadata). Web reaches the Core via the WSS bridge (Task 215) and counts as `web`; split-host Desktop and Mobile both arrive over Iroh but are distinguishable by their device/client metadata. Keep the enum small and closed.
+- **`nat_success_changed` debounce.** "Materially changed" (`§5.3`) needs a threshold so the event isn't chatty — e.g. emit only when the rolling 1-hour direct-% moves by ≥ some delta or crosses the 70% PRD line. Pick a simple rule, make it a named constant, and note it; don't gold-plate a statistics engine.
+- **`nat_stats` read path.** Surface the by-kind stats on the handler that already owns the natural transport/runtime view — check whether 201 put a transport-aware accessor on `runtime.rs`; if `GetServerCapabilities`/a Runtime read is the closest fit, hang `nat_stats` there rather than inventing a service (D1). If it fits `Devices`/`GetCoreInfo` (Task 209) better, that's acceptable — pick one and freeze it.
+- **Cross-platform.** No `std::os::unix`-only types in the telemetry/migration code; the transport crate builds on the Linux + Windows CI lanes (Task 113). `ClientKind`, `NatStats`, and the event types are portable.
+- **Regen.** The proto change updates `docs/interfaces/proto.md`; any new public type in `crates/transport/src/api.rs` (depth-3) updates `rust-api.md`. Commit both diffs.
+
+## Verification
+**Tier 2.** The test double is a **loopback Iroh transport** (two endpoints on one host, the §5.1 double) that **forces/simulates a path change** and a chosen direct/relayed outcome — real LTE↔Wi-Fi migration is **not** reproducible on loopback. It proves: a simulated path change **does not** drop the `ActiveSession` or emit `session_closed` (the subscriber survives the blip); the `NatStats` by-client-kind + by-network-class buckets increment correctly; `nat_success_changed` fires on a threshold crossing; a true close removes the session and the reconnect-with-offset replays through the Task 202 ring buffer (seam asserted); and the `TransportEvent` oneof arm round-trips. It does **NOT** cover: a **real device migrating Wi-Fi→LTE** across a real network, or the **real-NAT direct-%** across diverse real NATs — those are the **Phase-2 Tier-3 checklist** lines and the **residual Tier-3 rows** of `design/spikes/iroh-nat-findings.md` (symmetric↔symmetric, two residential ISPs, UDP-blocking ISP, real cellular handoff), which are physical.
+1. `cargo check --workspace` clean.
+2. `cargo clippy --workspace --all-targets -- -D warnings` clean.
+3. `cargo test -p concerto-transport` (migration/telemetry) + `cargo test -p concerto-core` (the `nat_stats` read path + `TransportEvent` broadcast) → all new tests pass.
+4. `cargo test --workspace --no-fail-fast` → all pass.
+5. `cargo deny check` → green (no new external deps expected beyond 212's; confirm).
+6. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit the regen (`proto.md` gains the `TransportEvent` arm; `rust-api.md` gains any new `crates/transport/src/api.rs` type).
+7. `scripts/smoke.sh` → unchanged (the smoke Core is co-located/UDS; Iroh telemetry/migration is the remote path). Exits 0.
+
+## Definition of Done
+- [ ] `streams.proto` gains the `TransportEvent` message + `Event.body` oneof arm at the next free field number above Task 202's `GapDetected` (coordinated, no collision); NO `transport.proto`
+- [ ] `TransportEvent.kind` carries `SessionOpened`/`RelaySwitched`/`NatSuccessChanged` (+`SessionClosed` if folded) per §5.3
+- [ ] `NatStats` extended with a by-client-kind breakdown ({ desktop-split-host, mobile, web }); §4 field names preserved
+- [ ] Path-change handling: a migration updates `path`/`last_seen` + re-classifies, does **not** drop the session or emit `session_closed`; only a true close removes it
+- [ ] Reconnect-after-true-drop replays from offset via Task 202's ring buffer (seam, not re-implemented)
+- [ ] `nat_success_changed` debounced/threshold-gated; threshold a named constant
+- [ ] `nat_stats` surfaced via Runtime/Devices (D1); no new service
+- [ ] Tier-2 tests (forced path-change survives, bucket increments, threshold event, true-drop seam, proto round-trip) pass; the real-migration / real-NAT-% Tier-3 lines stated in Verification
+- [ ] Verification commands pass; smoke unchanged (exits 0); interfaces regenerated + committed
+- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [ ] Single commit with the message below
+
+## Outputs
+- `crates/proto/proto/concerto/v1/streams.proto` (modified — `TransportEvent` + oneof arm; coordinate field number with Task 202)
+- `crates/transport/src/` (modified — migration handling + by-kind `NatStats` + event emission; extends Task 212's groundwork) incl. `crates/transport/src/api.rs` if a public type is added
+- `crates/core/src/handlers/runtime.rs` *(or `devices.rs` — pick the `nat_stats` home)* (modified — surface `nat_stats`)
+- `crates/transport/tests/migration_telemetry.rs` (new — forced-path-change + bucket + threshold + true-drop-seam tests)
+- `crates/core/tests/transport_events.rs` (new — `TransportEvent` broadcast round-trip + `nat_stats` read) *(or extend an existing test module)*
+- `docs/interfaces/proto.md` + `docs/interfaces/rust-api.md` (regenerated)
+
+## Commit message
+```
+phase-2: QUIC migration + NAT telemetry by client kind
+
+Extends Task 212's Iroh transport: a client path change (Wi-Fi<->LTE)
+updates the session path without tearing it down (subscribers survive
+the ~1-3s blip); a true drop reconnects + replays from offset via the
+202 ring buffer. NatStats broken out by client kind (split-host desktop
+/ mobile / web) per design/11 §2. The three lifecycle events become a
+TransportEvent arm on the streams.proto Event oneof (D1: no
+transport.proto; field number coordinated with Task 202); nat_stats
+surfaces via Runtime/Devices. Loopback Tier-2 double forces the path
+change; real LTE migration + real-NAT direct-% are Tier-3.
+
+Refs: tasks/v1.0/216-quic-migration-telemetry.md
+```
+
+## Handoff Notes (fill in when finishing)
+- `TransportEvent` field number assigned (+ the Task 202 `GapDetected` number it sits above) / `ClientKind` value set + where the kind is sourced / `NatStats` by-kind shape as frozen / `nat_success_changed` threshold constant / `nat_stats` RPC home chosen (Runtime vs Devices) / migration-vs-disconnect classification approach / Tier-3 lines deferred (real migration, real-NAT %) / Open questions / Deliberate debt / Smoke-gate state (unchanged)
+```
