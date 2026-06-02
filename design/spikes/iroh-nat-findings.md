@@ -8,8 +8,8 @@
 | **Pinned Iroh version** | **`iroh = 0.98.2`** (exact; the verdict is only valid for this version) |
 | Companion crates at this pin | `iroh-relay 0.98.0`, `iroh-base 0.98.0`; `tonic-iroh-transport 0.9.2` (Task 102) resolves against this same `iroh 0.98.2` |
 | The bar | **>70% direct = GO** · 60–70% = MARGINAL · <60% = NO-GO (contingency: tsnet sidecar) |
-| Verdict | **PENDING OPERATOR FIELD MEASUREMENT** (see §5) |
-| Date | 2026-05-30 |
+| Verdict | **GO** — field-measured 2026-06-02: **80% direct (12/15 runs)** across VPN / public-cloud / home-NAT / same-LAN / **cellular-CGNAT** pairs (≥70% bar cleared); relay fallback verified on the one symmetric-NAT→public path (see §5) |
+| Date | authored 2026-05-30; field-measured 2026-06-02 |
 
 ---
 
@@ -70,19 +70,25 @@ Each row is one `core` ↔ `client` pair on the named networks. `direct=true`
 means Iroh selected a hole-punched IP path; `direct=false` means it stayed on
 the relay. Aggregate direct-% = (rows with direct=true) / (measured rows).
 
-| # | Pair (core ↔ client) | Path (DIRECT/RELAYED) | connect ms | Status |
-|---|---|---|---|---|
-| 0 | **loopback / same-host** (client→core, one machine) | **DIRECT** | **~235 ms** | **MEASURED (this env)** — see §4.1 |
-| 1 | home NAT ↔ home NAT (same router, two machines) | — | — | **PENDING — operator field measurement** (two machines behind one residential router) |
-| 2 | home NAT ↔ home NAT (two *different* residential ISPs) | — | — | **PENDING — operator field measurement** (two homes / two ISPs) |
-| 3 | home ↔ cellular (phone hotspot / CGNAT) | — | — | **PENDING — operator field measurement** (LTE/5G hotspot, carrier-grade NAT) |
-| 4 | home ↔ corporate / VPN | — | — | **PENDING — operator field measurement** (corporate Wi-Fi or VPN egress) |
-| 5 | behind **symmetric NAT** | — | — | **PENDING — operator field measurement** (a network whose NAT is symmetric; the hardest case for hole-punching) |
-| 6 | **UDP-blocking ISP** (relay-over-TCP fallback, R-8) | — | — | **PENDING — operator field measurement** (an ISP/network that blocks UDP; validates Iroh's relay-over-TCP / port-443 fallback) — **unmeasured-with-reason: this env has no UDP-blocking network** |
+Measured live on **2026-06-02** by the operator across diverse real networks
+(each pair run 3×). `core` and `client` are the two harness binaries; the pair
+is named *core-network ↔ client-network*.
 
-**Aggregate direct-% across diverse real NATs: PENDING** — not computable until
-rows 1–6 are measured. (Row 0 alone is not a NAT-diversity sample and must not
-be treated as the aggregate.)
+| # | Pair (core-net ↔ client-net) | Path | connect ms | Status |
+|---|---|---|---|---|
+| 0 | loopback / same-host (one machine) | DIRECT | ~235 ms | MEASURED (orig env) — see §4.1 |
+| 1 | home-LAN ↔ home-LAN (same residential router, two machines) | **DIRECT** (3/3) | 87–228 | MEASURED 2026-06-02 — Mac ↔ LAN box on one subnet (LAN-direct path) |
+| 2 | **home NAT ↔ cellular CGNAT** (mobile → home Core) | **DIRECT** (3/3) | 287–480 | MEASURED 2026-06-02 — Mac on LTE/5G hotspot → Core behind a residential NAT. **The hard case; hole-punched direct.** |
+| 3 | public-IP cloud ↔ VPN egress | **DIRECT** (3/3) | 345–488 | MEASURED 2026-06-02 — Mac via commercial VPN → Ubuntu cloud Core (public IP) |
+| 4 | **home NAT ↔ public-IP cloud** (inbound home-NAT hole-punch) | **DIRECT** (3/3) | 350–861 | MEASURED 2026-06-02 — cloud client → Core behind a residential NAT |
+| 5 | public-IP cloud ↔ cellular CGNAT | **RELAYED** (3/3) | 552–1059 | MEASURED 2026-06-02 — cellular side behaves **symmetric**; direct to the fixed public endpoint failed, so it correctly **fell back to relay** (which carried the connection) |
+| 6 | restrictive VPN exit (port-53 DNS blocked) ↔ cloud | **NO CONNECTION** | — | MEASURED 2026-06-02 — Iroh pkarr/DNS **discovery** blocked by the exit (HTTPS + relay reachable, but `EndpointId` unresolvable). A **discovery-layer** failure, *not* a NAT-traversal failure — see Note B in §5. |
+| — | symmetric↔symmetric (both ends) · two *different* residential ISPs · UDP-blocking ISP (relay-over-TCP, R-8) | — | — | STILL UNMEASURED — residual Tier-3 (need those specific networks). Row 5 is partial symmetric-NAT evidence; row 6's exit is the closest UDP/DNS-restricted datapoint. |
+
+**Aggregate direct-% across the measured diverse-NAT pairs (rows 1–5): 12 direct
+/ 15 successful runs = 80% direct → GO** (>70% bar). Row 6 is excluded from the
+NAT-traversal aggregate (it is a discovery failure, not a relay-vs-direct
+outcome). Row 0 (loopback) is also excluded as it is not a NAT sample.
 
 ### 4.1 Row 0 — the real local-pair measurement (this environment)
 
@@ -113,41 +119,53 @@ What this proves and does **not** prove:
   logging work; n0 discovery resolves a bare `EndpointId`; a real relay
   (n0's) registers as the fallback path so "relayed" is achievable.
 - **Does NOT prove:** anything about real NAT traversal. Same-host trivially
-  hole-punches. The >70% bar is about diverse real NATs (rows 1–6) and stays
-  **PENDING**.
+  hole-punches. The >70% bar is about diverse real NATs (rows 1–6); those were
+  field-measured on 2026-06-02 — see §4's matrix and the **GO** verdict in §5.
 
-## 5. Provisional verdict — **PENDING OPERATOR FIELD MEASUREMENT**
+## 5. Verdict — **GO** (field-measured 2026-06-02)
 
-> **This is NOT a final GO / NO-GO / MARGINAL.** The aggregate direct-%
-> bar — **>70% GO · 60–70% MARGINAL · <60% NO-GO** — **can only be decided
-> once the operator runs the harness across the real network matrix (rows 1–6
-> above).** From this single-machine / single-network environment the field
-> metric is not obtainable, and no field numbers were invented.
+> **GO.** Aggregate **80% direct (12/15 runs)** across the measured diverse-NAT
+> pairs (rows 1–5) — above the **>70% = GO** bar. Every pair that completed
+> discovery either hole-punched **direct** (4 of 5 pairs, including the
+> **cellular-CGNAT → home-NAT** mobile-to-home case) or **degraded gracefully to
+> the relay** (1 pair, symmetric-cellular → public cloud). Iroh `0.98.2` is the
+> pinned, validated version. **Phases 2 and 5 (transport spine, relay, mobile,
+> web) are unblocked.** The tsnet-sidecar contingency is **not** triggered.
 
-What is established now:
+How the bar was applied: **≥70% direct = GO** (this result) · 60–70% = MARGINAL ·
+<60% = NO-GO → tsnet Go sidecar contingency (`design/11 §3.8`, R-1) — not needed.
 
-- The harness is real and runnable by the operator across their networks
-  (see `spikes/iroh-nat/README.md` for per-row invocation).
-- On the one pair this environment can reach (loopback), Iroh selects a
-  **DIRECT** path and a real relay registers as fallback — i.e. the mechanism
-  the bar depends on (direct path preferred, relay available as fallback) is
-  functioning at the pinned version.
-- Iroh `0.98.2` is pinned; the verdict, once measured, is valid only for this
-  version.
+### Note A — the relay is load-bearing, not optional
+The one relayed pair (row 5) was a **cellular CGNAT → fixed public-IP** peer:
+the cellular side behaves like a **symmetric NAT**, so direct hole-punch to the
+public endpoint failed and Iroh fell back to the relay (which carried the
+connection fine). Implications:
+- The **self-hosted relay (`crates/relay`, Phase 2 Task 214) is required**, not a
+  nice-to-have — a meaningful fraction of real clients (cellular, symmetric-NAT,
+  corporate) will land on it. Provision/operate it accordingly.
+- This lab's 80% direct is an **optimistic** figure: 4 of 5 pairs had at least one
+  easy side (public IP or same-LAN). Expect the real-world direct rate to be
+  **lower** once more symmetric/CGNAT-both-ends clients are in the mix; the relay
+  picks up the remainder. The GO holds because relay fallback is proven and the
+  hardest measured case (CGNAT→home-NAT) still went direct.
 
-**Operator action at the Phase-1 gate:** run rows 1–6, fill the matrix, compute
-the aggregate direct-%, then record the final verdict here:
+### Note B — discovery can fail independently of NAT traversal
+Row 6: one restrictive VPN exit **blocked port-53 DNS**, breaking Iroh's
+pkarr/DNS-based discovery (resolving `EndpointId` → addresses) **even though
+HTTPS and the relay were reachable**. The peer was never found, so neither
+direct nor relay could be attempted — a **discovery-layer** failure, distinct
+from NAT traversal. Implication: on locked-down networks, Concerto must not rely
+solely on DNS discovery — lean on **relay-assisted / known-address discovery**
+(the relay + WSS-bridge paths in `design/11`). Phase 2 transport work should
+ensure a Core address/relay can be supplied directly when DNS discovery is
+unavailable.
 
-- **≥70% direct → GO.** Iroh is the sole non-browser transport; Phases 2 and 5
-  proceed as planned.
-- **60–70% → MARGINAL.** Proceed but ship the "relayed" indicator prominently
-  and keep the contingency on the table.
-- **<60% → NO-GO → contingency (operator decision).** Add a **tsnet Go sidecar**
-  the Rust Core supervises for stubborn networks (`design/11 §3.8`, R-1). This
-  costs a Go process + Tailscale/Headscale account friction (against the
-  "no accounts" principle, PRD §16.1) and is a follow-on the operator triggers,
-  **not** something to pre-build. Building the sidecar is explicitly out of
-  scope for this spike (`tasks/v1.0/101 §Scope — out`).
+### Residual Tier-3 (not blocking; nice-to-have for risk retirement)
+Not yet measured: **symmetric-NAT ↔ symmetric-NAT (both ends)**, **two different
+residential ISPs**, and a true **UDP-blocking ISP** (relay-over-TCP / port-443
+fallback, R-8). Row 5 is partial symmetric-NAT evidence; row 6 is the closest
+DNS/UDP-restricted datapoint. These would tighten the real-world direct-rate
+estimate but do not change the GO (relay fallback is already proven).
 
 ### UDP-blocking / relay-over-TCP fallback (row 6, R-8)
 
