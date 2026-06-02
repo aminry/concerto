@@ -129,6 +129,17 @@ enum Command {
         #[arg(long)]
         session_id: String,
     },
+    /// Task 202: probe the `Streams.Subscribe` reconnect path
+    /// (since_offset replay + AckOffset prune → GapDetected) over the
+    /// live UDS Core. Self-contained: subscribes to `workspace.events`,
+    /// creates two workspaces, reconnects with `since_offset`, then acks
+    /// and reconnects again to force a gap. Prints `OK` on success.
+    StreamsReplayProbe {
+        #[arg(long)]
+        project_id: String,
+        #[arg(long)]
+        repo_id: String,
+    },
     /// Call `Workareas.UpdateWorkareaPermissionMode`. Prints the
     /// resulting mode's proto-enum string name.
     SetPermMode {
@@ -272,6 +283,13 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
         Command::StopSession { session_id } => {
             let socket = require_socket(cli.socket)?;
             cmd::stop_session::run(&socket, &session_id).await
+        }
+        Command::StreamsReplayProbe {
+            project_id,
+            repo_id,
+        } => {
+            let socket = require_socket(cli.socket)?;
+            cmd::streams_replay_probe::run(&socket, &project_id, &repo_id).await
         }
         Command::SetPermMode {
             workarea,

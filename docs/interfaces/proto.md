@@ -686,8 +686,16 @@ message SubscribeRequest {
   // Optional client-side filter expression. V0.1 ignores; reserved for
   // future predicate-based subscription.
   optional string filter = 2;
-  // V0.1 ignores. Ring-buffer + resume semantics arrive in V1.0; the
-  // field is reserved so the wire shape is stable across that change.
+  // Resume cursor (design/10 §3.3). Task 202 makes this LIVE: when set,
+  // the Core replays every retained event with `offset > since_offset`
+  // from the per-subject ring buffer, then transitions to live. When the
+  // requested offset is older than the buffer's retained floor, the Core
+  // emits a single `Event { gap_detected }` as the FIRST frame and then
+  // continues live from the current head (the client re-bootstraps the
+  // subject via the list RPCs to fill the gap — see GapDetected). When
+  // unset, behavior is unchanged from V0.1 (live-only, plus whatever
+  // replay the supervisor already provides for session subjects).
+  // In-memory only (§12 R-1): offsets do NOT survive a Core restart.
   optional uint64 since_offset = 3;
 }
 ```
@@ -709,7 +717,29 @@ message Event {
     // Task 40: rule-engine chip emission. Carried on the
     // `suggestion.events` subject (filter on workarea_id when set).
     Chip suggestion = 14;
+    // Task 202 (design/10 §3.3, §8): the client's `since_offset` was
+    // older than this subject's retained ring-buffer floor, so the gap
+    // cannot be replayed. Emitted as the FIRST frame on such a Subscribe;
+    // the stream then CONTINUES live from the current head (it does not
+    // terminate). The client MUST re-bootstrap this subject via the list
+    // RPCs (per §7.2) to fill the gap, then trust the live tail. Field
+    // number 15 — additive above the FROZEN V0.1 range (10..14).
+    GapDetected gap_detected = 15;
   }
+}
+```
+
+### message `GapDetected`
+
+```proto
+message GapDetected {
+  // The subject whose history overflowed past the requested offset
+  // (echoes `SubscribeRequest.subject`).
+  string subject = 1;
+  // The lowest offset still retained in the ring buffer at the moment of
+  // detection. Events with `offset < buffer_floor` are gone; the client
+  // re-bootstraps and then trusts live frames (whose offset >= floor).
+  uint64 buffer_floor = 2;
 }
 ```
 
@@ -858,11 +888,21 @@ message WorkareaEvent {
 }
 ```
 
+### message `AckOffsetRequest`
+
+```proto
+message AckOffsetRequest {
+  string subject = 1;
+  uint64 offset = 2;
+}
+```
+
 ### service `Streams`
 
 ```proto
 service Streams {
   rpc Subscribe(SubscribeRequest) returns (stream Event);
+  rpc AckOffset(AckOffsetRequest) returns (google.protobuf.Empty);
 }
 ```
 
