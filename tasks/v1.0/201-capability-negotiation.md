@@ -54,17 +54,18 @@ Tier 1.
 6. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → clean (or commit the regen if the carrier is surfaced in an `api.rs`).
 
 ## Definition of Done
-- [ ] `ConnTransport` request-extension carrier defined + documented with the all-listeners-tag contract
-- [ ] UDS listener tags every request; handler reports the tagged kind (default `Uds`)
-- [ ] Existing UDS capability test green; new injected-`IROH` seam test passes
-- [ ] Proto unchanged; `core_host_os`/`core_hostname` behavior preserved
-- [ ] Verification commands pass; smoke green; interfaces clean (or regenerated)
-- [ ] Single commit with the message below
+- [x] `ConnTransport` request-extension carrier defined + documented with the all-listeners-tag contract
+- [x] UDS listener tags every request; handler reports the tagged kind (default `Uds`)
+- [x] Existing UDS capability test green; new injected-`IROH` seam test passes
+- [x] Proto unchanged; `core_host_os`/`core_hostname` behavior preserved
+- [x] Verification commands pass; smoke green; interfaces clean (or regenerated)
+- [x] Single commit with the message below
 
 ## Outputs
-- `crates/core/src/handlers/runtime.rs` (modified — read the tag)
-- `crates/core/src/api_server.rs` (modified — inject the tag on the UDS listener) + the carrier type (here or a small new module)
-- `crates/core/tests/capability_negotiation.rs` (new — the injected-kind seam test) *(or extend the handler's `#[cfg(test)]` module)*
+- `crates/core/src/handlers/runtime.rs` (modified — read the tag; injected-`IROH` seam test added to the existing `#[cfg(test)]` module, per the "or extend" option)
+- `crates/core/src/api_server.rs` (modified — inject the tag on the UDS listener via a tonic interceptor layer)
+- `crates/core/src/conn_transport.rs` (new — the `ConnTransport` carrier type + all-listeners-tag contract doc; the "small new module" option)
+- `crates/core/src/lib.rs` (modified — `pub mod conn_transport;` registration, the inseparable consequence of the new-module choice)
 
 ## Commit message
 ```
@@ -78,5 +79,8 @@ touching the handler.
 Refs: tasks/v1.0/201-capability-negotiation.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+- **Drift from plan:** — None functional. Two minor implementation choices worth flagging: (1) the seam is wired as a tonic **interceptor `Layer`** applied to the whole server (`Server::builder().layer(tonic::service::interceptor(tag_uds))`) rather than the `Connected`/connect-info path. This matches how `api_server.rs` already builds the server (`serve_with_incoming_shutdown` over a `UnixListenerStream`) and is cross-platform (no `std::os::unix` types in the carrier or handler signatures — Windows CI lane stays green; the named-pipe listener will apply the same interceptor with `Uds`). Applying the layer to the whole server (before `add_service`) means **every** service's requests carry the tag, not just `Runtime` — strictly more correct for 204/212 consumers and harmless to the others. (2) The interceptor function carries `#[allow(clippy::result_large_err)]`: the `Interceptor` trait fixes the `Err` type to `tonic::Status` (large), and we never return `Err`, so the lint is moot — the only `allow` added. (3) The injected-`IROH` seam test lives in `runtime.rs`'s `#[cfg(test)]` module (the task's explicit "or extend" option) rather than a new `tests/capability_negotiation.rs`; the handler-level test exercises the exact `request.extensions().get::<ConnTransport>()` read path. The Outputs list was updated to record `conn_transport.rs` (new module — the task's permitted "small new module" option) and the one-line `lib.rs` registration it requires.
+- **Open questions for next task (212 Iroh / 204 WSS):** Both must tag their **own** listener — `212` inserts `ConnTransport(TransportKind::Iroh)` and `204` inserts `ConnTransport(TransportKind::WssBridge)` in their listener setup (the same interceptor-layer pattern, or directly into request extensions if they build the server differently). **They must not edit `RuntimeHandler`** — it already reads whatever tag is present and defaults to `Uds`. `ConnTransport` (name + that it carries a single `TransportKind`) is **FROZEN** per this task's locked interface. Note: the live `runtime.proto` numbers `transport_kind = 5` (not `= 7` as `design/10 §4.2` shows) and omits `optional_streams`/`default_stream_buffer`; proto was unchanged per Scope — out (202 adds stream-buffer fields additively) — flagging the design-vs-proto field-number drift only, not a blocker.
+- **Deliberate debt:** — None. No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code.
+- **Smoke-gate state:** unchanged (no edit to `scripts/smoke.sh` or `smoke.d/`). Ran it anyway per Verification step 5: exits 0, and the `core-boot` check confirms the live UDS Core still reports `transport_kind = TRANSPORT_KIND_UDS` over the real wire (response logged: `"transport_kind":"TRANSPORT_KIND_UDS"`). `regen-interfaces.sh` produced **no diff** (carrier is internal to `crates/core`, not surfaced in a published `api.rs`) — as the task predicted.

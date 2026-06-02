@@ -3,7 +3,10 @@
 //! Locked surface — `RuntimeHandler`:
 //! - `GetServerCapabilities` returns static + environment-derived data
 //!   (server version, schema version, resource limits, transport kind,
-//!   host OS, hostname).
+//!   host OS, hostname). The `transport_kind` reflects the **live**
+//!   connection: it reads the [`crate::conn_transport::ConnTransport`]
+//!   extension each listener tags onto its requests, defaulting to
+//!   [`TransportKind::Uds`] when absent (Task 201).
 //! - `GetStatus` returns the per-process started-at timestamp and an
 //!   uptime in seconds.
 //!
@@ -25,6 +28,7 @@ use concerto_proto::v1::{ResourceLimits, RuntimeStatus, ServerCapabilities, Tran
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status};
 
+use crate::conn_transport::ConnTransport;
 use crate::supervisor::SupervisorView;
 
 /// Resource limits advertised by `GetServerCapabilities`.
@@ -89,8 +93,21 @@ impl RuntimeService for RuntimeHandler {
     #[tracing::instrument(skip_all, name = "Runtime::GetServerCapabilities")]
     async fn get_server_capabilities(
         &self,
-        _request: Request<()>,
+        request: Request<()>,
     ) -> Result<Response<ServerCapabilities>, Status> {
+        // Report the transport this request physically arrived on. Each
+        // listener tags its connections with a `ConnTransport` extension
+        // (UDS now, Iroh in 212, WSS bridge in 204 — see
+        // `crate::conn_transport`). The handler never infers transport
+        // from socket internals; it only reads the tag, defaulting to
+        // `Uds` when absent (direct in-process construction in tests, or
+        // any not-yet-tagged path).
+        let transport_kind = request
+            .extensions()
+            .get::<ConnTransport>()
+            .map(|t| t.kind())
+            .unwrap_or(TransportKind::Uds);
+
         let caps = ServerCapabilities {
             server_version: Self::server_version().to_string(),
             schema_version: SCHEMA_VERSION.to_string(),
@@ -99,9 +116,7 @@ impl RuntimeService for RuntimeHandler {
                 max_concurrent_streams: MAX_CONCURRENT_STREAMS,
                 max_payload_bytes: MAX_PAYLOAD_BYTES,
             }),
-            // We only ever serve UDS in V0.1. Iroh / wss-bridge variants
-            // arrive in later tasks and will branch on a stored mode.
-            transport_kind: TransportKind::Uds as i32,
+            transport_kind: transport_kind as i32,
             core_host_os: std::env::consts::OS.to_string(),
             core_hostname: Self::core_hostname(),
         };
@@ -167,6 +182,39 @@ mod tests {
         assert_eq!(limits.max_payload_bytes, MAX_PAYLOAD_BYTES);
         assert_eq!(caps.core_host_os, std::env::consts::OS);
         assert!(!caps.core_hostname.is_empty());
+    }
+
+    #[tokio::test]
+    async fn capabilities_report_injected_iroh_transport() {
+        // Proves the per-connection tagging seam end-to-end without a
+        // live Iroh listener: a request carrying an injected
+        // `ConnTransport(Iroh)` extension makes the handler report IROH.
+        // Task 212's Iroh listener tags this same extension; Task 204's
+        // WSS bridge tags WSS_BRIDGE — neither touches this handler.
+        let h = RuntimeHandler::new(Arc::new(SystemTime::now()), SupervisorView::default());
+        let mut request = Request::new(());
+        request
+            .extensions_mut()
+            .insert(ConnTransport(TransportKind::Iroh));
+        let caps = h
+            .get_server_capabilities(request)
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(caps.transport_kind, TransportKind::Iroh as i32);
+    }
+
+    #[tokio::test]
+    async fn capabilities_default_to_uds_when_untagged() {
+        // Back-compat: a request with no `ConnTransport` (direct
+        // in-process construction) defaults to UDS.
+        let h = RuntimeHandler::new(Arc::new(SystemTime::now()), SupervisorView::default());
+        let caps = h
+            .get_server_capabilities(Request::new(()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(caps.transport_kind, TransportKind::Uds as i32);
     }
 
     #[tokio::test]

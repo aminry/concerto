@@ -269,6 +269,9 @@ async fn run_uds(
     use tokio_stream::wrappers::UnixListenerStream;
     use tonic::transport::Server;
 
+    use concerto_proto::v1::TransportKind;
+
+    use crate::conn_transport::ConnTransport;
     use crate::handlers::projects::ProjectsHandler;
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
@@ -343,7 +346,31 @@ async fn run_uds(
     let handler = RuntimeHandler::new(started_at, supervisor_view);
     let runtime_service = RuntimeServer::new(handler);
 
-    let mut builder = Server::builder().add_service(runtime_service);
+    // Tag every request that arrives on this UDS listener with
+    // `ConnTransport(Uds)` so `RuntimeHandler::get_server_capabilities`
+    // reports the live transport kind (Task 201). This is the seam every
+    // listener writes: Task 212's Iroh listener and Task 204's WSS bridge
+    // apply the same interceptor with their own `TransportKind` in their
+    // own listener setup — they never edit the handler. The interceptor
+    // layer is applied to the whole server (before `add_service`) so the
+    // tag is present on every service, not just `Runtime`. On Windows the
+    // co-located named-pipe listener maps to `Uds` too (see
+    // `crate::conn_transport`).
+    // The `Err` variant is `tonic::Status`, which clippy flags as large;
+    // the `Interceptor` trait fixes the return type, so we never return
+    // `Err` here and the lint is moot.
+    #[allow(clippy::result_large_err)]
+    fn tag_uds(
+        mut req: tonic::Request<()>,
+    ) -> std::result::Result<tonic::Request<()>, tonic::Status> {
+        req.extensions_mut()
+            .insert(ConnTransport(TransportKind::Uds));
+        Ok(req)
+    }
+
+    let mut builder = Server::builder()
+        .layer(tonic::service::interceptor(tag_uds))
+        .add_service(runtime_service);
     if let Some(persistence) = persistence {
         let projects_service = ProjectsServer::new(ProjectsHandler::new(persistence));
         builder = builder.add_service(projects_service);
