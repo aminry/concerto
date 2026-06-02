@@ -11,11 +11,18 @@
 // `SessionEvent.kind` (ToolCall, ToolResult, AwaitingApproval,
 // CheckpointCreated, TurnComplete, ContextUsage, Error, Crashed) at
 // higher numbers; the V0.1 oneof variants are immutable.
+//
+// Task 202 (V1.0, design/10 §3.3) makes `SubscribeRequest.since_offset`
+// live and adds reconnect machinery additively (new field numbers ONLY,
+// all above the existing 14): the `GapDetected` event variant
+// (`Event.body.gap_detected = 15`) plus the `AckOffset` unary RPC and its
+// `AckOffsetRequest` message. No existing field number is touched.
 
 syntax = "proto3";
 
 package concerto.v1;
 
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "concerto/v1/suggestions.proto";
 
@@ -29,8 +36,16 @@ message SubscribeRequest {
   // Optional client-side filter expression. V0.1 ignores; reserved for
   // future predicate-based subscription.
   optional string filter = 2;
-  // V0.1 ignores. Ring-buffer + resume semantics arrive in V1.0; the
-  // field is reserved so the wire shape is stable across that change.
+  // Resume cursor (design/10 §3.3). Task 202 makes this LIVE: when set,
+  // the Core replays every retained event with `offset > since_offset`
+  // from the per-subject ring buffer, then transitions to live. When the
+  // requested offset is older than the buffer's retained floor, the Core
+  // emits a single `Event { gap_detected }` as the FIRST frame and then
+  // continues live from the current head (the client re-bootstraps the
+  // subject via the list RPCs to fill the gap — see GapDetected). When
+  // unset, behavior is unchanged from V0.1 (live-only, plus whatever
+  // replay the supervisor already provides for session subjects).
+  // In-memory only (§12 R-1): offsets do NOT survive a Core restart.
   optional uint64 since_offset = 3;
 }
 
@@ -48,7 +63,34 @@ message Event {
     // Task 40: rule-engine chip emission. Carried on the
     // `suggestion.events` subject (filter on workarea_id when set).
     Chip suggestion = 14;
+    // Task 202 (design/10 §3.3, §8): the client's `since_offset` was
+    // older than this subject's retained ring-buffer floor, so the gap
+    // cannot be replayed. Emitted as the FIRST frame on such a Subscribe;
+    // the stream then CONTINUES live from the current head (it does not
+    // terminate). The client MUST re-bootstrap this subject via the list
+    // RPCs (per §7.2) to fill the gap, then trust the live tail. Field
+    // number 15 — additive above the FROZEN V0.1 range (10..14).
+    GapDetected gap_detected = 15;
   }
+}
+
+// Task 202: emitted when a `Subscribe { since_offset = N }` cannot be
+// satisfied from the per-subject ring buffer because `N` is older than
+// `buffer_floor - 1` (the oldest still-retained offset). Carries the
+// subject and the current floor so the client knows exactly which
+// subject to re-bootstrap and where the live tail picks up. The stream
+// continues live from the head after this frame (continue-live-from-head
+// semantics — FROZEN by Task 202; the alternative, terminating the
+// stream, was rejected so a reconnecting client gets the live tail on
+// the same RPC without a second round-trip).
+message GapDetected {
+  // The subject whose history overflowed past the requested offset
+  // (echoes `SubscribeRequest.subject`).
+  string subject = 1;
+  // The lowest offset still retained in the ring buffer at the moment of
+  // detection. Events with `offset < buffer_floor` are gone; the client
+  // re-bootstraps and then trusts live frames (whose offset >= floor).
+  uint64 buffer_floor = 2;
 }
 
 message SessionEvent {
@@ -166,6 +208,21 @@ message WorkareaEvent {
   string kind = 2;
 }
 
+// Task 202: acknowledge that the calling subscriber has durably consumed
+// every event for `subject` up to and including `offset`. The Core
+// records this per-subscriber watermark in memory and prunes the
+// subject's ring buffer to `min(acked offset across all still-attached
+// subscribers)` — never dropping an event a live subscriber has not yet
+// acked. This is the Connect-Web fallback path (design/10 §3.2, R-2):
+// clients that can't ack in-stream poll this unary RPC. The bidi
+// in-stream `ClientFrame { ack }` path lands with the Connect-Web client
+// in Phase 5 (Task 520).
+message AckOffsetRequest {
+  string subject = 1;
+  uint64 offset = 2;
+}
+
 service Streams {
   rpc Subscribe(SubscribeRequest) returns (stream Event);
+  rpc AckOffset(AckOffsetRequest) returns (google.protobuf.Empty);
 }

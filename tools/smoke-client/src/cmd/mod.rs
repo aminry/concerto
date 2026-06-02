@@ -26,6 +26,7 @@ pub mod set_perm_mode;
 pub mod start_session;
 pub mod stop_session;
 pub mod stream_session_io;
+pub mod streams_replay_probe;
 
 use std::time::Duration;
 
