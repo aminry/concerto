@@ -99,7 +99,7 @@ trait CoreClient {
 }
 
 struct UdsCoreClient { /* tonic over UDS, peer-UID auth */ }
-struct IrohCoreClient { /* tonic-iroh-transport, device-cert in metadata */ }
+struct IrohCoreClient { /* hand-rolled tonic-0.12 Iroh-duplex adapter (11 §3.1.1), device-cert in metadata */ }
 ```
 
 At launch the shell resolves the active pairing (per §3.x below) and instantiates one of the two. The renderer never sees the difference; all UI code talks to the same Tauri command surface.
@@ -605,7 +605,14 @@ Events emitted to renderer (via Tauri's event bus):
 Single gRPC connection to the **active Core** using `tonic-rs` + the generated client from `10`. The shell maintains the streaming subscriptions and forwards events to the renderer. Two transport variants behind the same client trait (§3.2):
 
 - **Co-located**: `tonic` over UDS; the kernel attests to peer-UID; no cert metadata.
-- **Split-host**: `tonic-iroh-transport` over a long-lived Iroh QUIC connection to the Core's endpoint; every RPC carries the stored `SignedDeviceCert` in metadata; falls back to relayed QUIC if hole-punching fails.
+- **Split-host**: the hand-rolled tonic-0.12 Iroh-duplex adapter (`11 §3.1.1`) over a long-lived Iroh QUIC connection to the Core's endpoint; every RPC carries the stored `SignedDeviceCert` in metadata; falls back to relayed QUIC if hole-punching fails.
+
+> **V1.0 amendment (2026-06-02) — hand-rolled tonic-0.12 adapter, per spike 102.**
+> The split-host transport above originally named `tonic-iroh-transport`. Spike 102
+> (`design/spikes/tonic-iroh-findings.md` §2) retired that crate — it forces `tonic 0.14`,
+> conflicting with the workspace `tonic 0.12` pin — in favor of a **hand-rolled
+> tonic-0.12 ↔ Iroh-bidi-stream duplex adapter** (`11 §3.1.1`), which the `IrohCoreClient`
+> links and Task 212 builds. No schema/codegen change; `tonic-iroh-transport` is superseded.
 
 The shell auto-reconnects on transport failure (exponential backoff, surfaced as a status-bar indicator). Switching the active Core (via Settings → Connected Cores) tears down the current client and starts a new one from scratch; in-flight subscriptions are dropped and the renderer re-bootstraps.
 

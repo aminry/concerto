@@ -404,7 +404,18 @@ The Client API is **transport-agnostic**: one gRPC schema (10) carried over whic
 
 | Decision | Choice | Why |
 |---|---|---|
-| P2P transport | **Iroh** (Rust-native QUIC + hole-punching + relay fallback) | Solves NAT traversal; same gRPC schema via `tonic-iroh-transport`; public-key addressing. |
+| P2P transport | **Iroh** (Rust-native QUIC + hole-punching + relay fallback) | Solves NAT traversal; same gRPC schema via a **hand-rolled `tonic 0.12` ↔ Iroh-bidi-stream duplex adapter** (see amendment); public-key addressing. |
+
+> **V1.0 amendment (2026-06-02) — hand-rolled tonic-0.12 adapter, per spike 102.**
+> The row above originally named the off-the-shelf `tonic-iroh-transport` crate as
+> the Tonic-over-Iroh adapter. Spike 102 (`design/spikes/tonic-iroh-findings.md` §2)
+> ruled against it: `tonic-iroh-transport 0.9.2` forces **`tonic 0.14`**, colliding
+> head-on with the workspace's **`tonic 0.12`** pin. The spike hand-rolled a ~70-line
+> adapter (Iroh bidi stream → tokio duplex → Tonic) on the production stack with **no
+> schema or codegen change** and proved it clears the perf bars, so the canonical V1.0
+> adapter is the **hand-roll**, and `tonic-iroh-transport 0.9.2` is **superseded**.
+> Task 212 builds the hand-roll. Validated pinned trio: `iroh 0.98.2` /
+> `iroh-relay 0.98.0` / `tonic 0.12.3` + `prost 0.13.5`.
 | Crypto on top | **Noise IK via `snow`** (defense in depth atop Iroh's TLS) | Pairing key, not Iroh endpoint key, authenticates the session. |
 | LAN discovery | **mDNS via `mdns-sd`** (`_concerto._tcp.local`) | Skip relay when on the same Wi-Fi. |
 | Relay hosting | **Self-hosted Rust binary on Fly.io anycast**; Docker image for enterprise self-host | Avoids n0 dependency in production; small enough to operate. |

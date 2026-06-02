@@ -1,6 +1,6 @@
 # 11 — Remote Transport & Relay
 
-*Sub-system design doc. Inherits locked decisions from `00_Architecture_Overview.md` §6.6 (Iroh + `tonic-iroh-transport`, Noise IK from 12 atop Iroh's TLS, self-hosted relay on Fly.io anycast, WSS bridge for web V1.0, mDNS for LAN). The Iroh prototype spike (`00 §11`, item 2) gates this design — fallback strategy noted in §11.*
+*Sub-system design doc. Inherits locked decisions from `00_Architecture_Overview.md` §6.6 (Iroh + a **hand-rolled `tonic 0.12` ↔ Iroh-bidi-stream duplex adapter** — see the §6.6 amendment and §3.1.1 below; original wording said `tonic-iroh-transport`, superseded by spike 102 — Noise IK from 12 atop Iroh's TLS, self-hosted relay on Fly.io anycast, WSS bridge for web V1.0, mDNS for LAN). The Iroh prototype spike (`00 §11`, item 2) gates this design — fallback strategy noted in §11.*
 
 ---
 
@@ -9,7 +9,7 @@
 The Remote Transport & Relay sub-system makes the gRPC API from `10` reach **any paired device** the user has, anywhere on the internet. In V1.0 this covers Mobile (16), Web (17), **and Desktop in split-host mode (15)** — a Desktop running on a different machine from the Core is, transport-wise, just another paired device. It owns:
 
 - **Iroh endpoint** in the Core — accepts incoming QUIC connections, performs hole-punching, falls back to relay.
-- **Desktop transport library** integration — `tonic-iroh-transport` linked into the Tauri shell for split-host Desktops (15 §3.2).
+- **Desktop transport library** integration — the hand-rolled tonic-0.12 Iroh adapter (§3.1.1) linked into the Tauri shell for split-host Desktops (15 §3.2).
 - **Mobile transport library** integration — Iroh on iOS / Android (via React Native bridge in V1.0).
 - **mDNS responder + browser** — Core advertises itself on LAN; LAN clients find it. Useful for Desktop ↔ Core on the same Wi-Fi (skip relay entirely) as well as Mobile.
 - **Self-hosted relay binary** — small Rust daemon deployed on anycast, run by us in V1.0 and by enterprises in V2.0.
@@ -44,9 +44,48 @@ Sub-system internals:
 - The Core registers its endpoint with the configured relay (default: our hosted; override via managed settings).
 - The mapping `Iroh endpoint ↔ Core identity` is established at pairing: the QR contains both `core_pubkey` and `iroh_endpoint_id`. Same payload whether the device scanning the QR is a phone or a split-host Desktop.
 - Clients connect by Iroh endpoint ID; Iroh tries direct hole-punch, falls back to relayed QUIC.
-- `tonic-iroh-transport` wraps Iroh streams as Tonic transport so the same Tonic server (10) handles UDS and Iroh callers identically — no per-transport handler branching.
+- A **hand-rolled tonic-0.12 ↔ Iroh-bidi-stream duplex adapter** (§3.1.1) wraps each Iroh bidi stream as a Tonic transport so the same Tonic server (10) handles UDS and Iroh callers identically — no per-transport handler branching.
 
-**Why Desktop-over-Iroh isn't a special case:** the Tauri shell links the same `tonic-iroh-transport` crate the Mobile client uses; the only differences vs. mobile are (a) richer error UI in the shell when the relay path degrades, and (b) the Desktop adds a long-lived API channel even when idle so streaming subjects (e.g. `session.io`) flow without per-message setup latency. Both are local behaviors of 15, not new transport features.
+**Why Desktop-over-Iroh isn't a special case:** the Tauri shell links the same hand-rolled tonic-0.12 Iroh adapter (§3.1.1) the Mobile client uses; the only differences vs. mobile are (a) richer error UI in the shell when the relay path degrades, and (b) the Desktop adds a long-lived API channel even when idle so streaming subjects (e.g. `session.io`) flow without per-message setup latency. Both are local behaviors of 15, not new transport features.
+
+#### 3.1.1 The Tonic-over-Iroh adapter — hand-rolled on tonic 0.12 (Task 212 inherits)
+
+> **V1.0 amendment (2026-06-02) — hand-rolled tonic-0.12 adapter, per spike 102.**
+> Earlier text in this doc (and `00 §6.6`) named the off-the-shelf
+> `tonic-iroh-transport` crate as the Tonic-over-Iroh adapter. Spike 102
+> (`design/spikes/tonic-iroh-findings.md` §2) **ruled against it**: that crate forces
+> **`tonic 0.14`**, which collides head-on with the workspace's **`tonic 0.12`** pin.
+> The spike hand-rolled a ~70-line adapter (Iroh bidi stream → tokio `AsyncRead +
+> AsyncWrite` duplex → Tonic's `serve_with_incoming` / `connect_with_connector`) on the
+> production stack with **no schema or codegen change** and proved it clears both perf
+> bars (streaming 70–230× over bar; unary GO on the real-RTT intent). So the **canonical
+> V1.0 adapter is the hand-roll**, `tonic-iroh-transport 0.9.2` is **superseded**, and
+> the validated pinned trio is `iroh 0.98.2` / `iroh-relay 0.98.0` / `tonic 0.12.3` +
+> `prost 0.13.5`. **Task 212 builds this adapter.** It revisits `tonic-iroh-transport`
+> only if/when the workspace itself moves to tonic 0.14.
+
+**Four adapter gotchas Task 212 inherits** (from `spikes/tonic-iroh-findings.md §2`, §2.1–§2.4):
+
+1. **Inherent-vs-trait `poll_*` shadowing (§2.1).** `iroh::endpoint::SendStream` /
+   `RecvStream` each expose an **inherent** `poll_write` / `poll_read` *and* the
+   `tokio::io::Async{Write,Read}` trait method of the same name. A bare
+   `Pin::new(&mut s).poll_write(..)` silently binds to the **inherent** one (error type
+   `WriteError`, not `io::Error`) → confusing type error. Call with **fully-qualified
+   trait syntax** (`AsyncWrite::poll_write(Pin::new(&mut s), ..)`); the adapter won't
+   compile otherwise.
+2. **One gRPC connection == one Iroh bidi stream (§2.2).** Tonic speaks HTTP/2 and
+   multiplexes its own streams over the single byte duplex; QUIC then multiplexes many
+   such duplexes over one Iroh `Connection`. Map **each peer-opened bidi stream** to a
+   fresh `serve_with_incoming` with a single-element incoming stream — the "QUIC stream
+   pool for gRPC" shape (§3.3).
+3. **Acceptor priming (§2.3).** Iroh defers surfacing a peer-opened bidi stream to the
+   server's `accept_bi()` until the opener writes. The client connector sends a
+   **zero-byte `flush()`** immediately so the server task wakes promptly; without it the
+   first RPC stalls until the first HTTP/2 frame. Keep this.
+4. **Message-size ceilings (§2.4).** Lift Tonic's default **4 MiB** decode/encode ceiling
+   **explicitly** on both client and server (the spike used 64 MiB). The product's
+   `session.io` chunking (1 MiB, `10 §5.2`) stays under 4 MiB, but set explicit limits
+   regardless.
 
 ### 3.2 Self-hosted relay (Rust, single-binary)
 
@@ -257,7 +296,7 @@ impl TransportHandle {
 
 Three client surfaces consume the transport:
 
-- **Desktop client (15)** — uses local UDS when on the same machine; uses Iroh via `tonic-iroh-transport` when remote (rare for desktop but possible — e.g., a user's home + work machines).
+- **Desktop client (15)** — uses local UDS when on the same machine; uses Iroh via the hand-rolled tonic-0.12 Iroh adapter (§3.1.1) when remote (rare for desktop but possible — e.g., a user's home + work machines).
 - **Mobile clients (16)** — RN/Expo. The Iroh integration uses a native module (Rust → C → JSI on iOS, Rust → JNI on Android). V1.5 native rewrite uses Iroh's Swift/Kotlin FFI.
 - **Web client (17)** — Connect-Web targeting either `127.0.0.1:<port>` (LAN) or `wss://relay/.../<endpoint>` (remote).
 
@@ -283,7 +322,7 @@ flowchart TB
     subgraph Core["concerto-core"]
         Iroh["Iroh Endpoint<br/>(QUIC + hole-punch)"]
         Pairing["PairingListener<br/>(Noise XX)"]
-        TonicIroh["tonic-iroh-transport<br/>adapter"]
+        TonicIroh["hand-rolled tonic-0.12<br/>Iroh-duplex adapter (§3.1.1)"]
         WebSrv["Local HTTP<br/>(127.0.0.1)"]
         TonicSrv["Tonic Server (10)<br/>shared dispatch"]
         mDNS["mDNS Responder"]
