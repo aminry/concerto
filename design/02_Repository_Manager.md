@@ -45,13 +45,25 @@ The locked decision (00 §6.3) is a hybrid stack. Routing table:
 | `git sparse-checkout init/set/add/reapply` | **`git` shell-out** | Same — sparse-cone behavior is git's authoritative |
 | `git maintenance start` and the maintenance cron | **`git` shell-out** | This is literally configuring git's own maintenance daemon |
 | `git fetch` (incremental) | **`gix`** when available, **`git` shell-out** as fallback | gix has good fetch support; falls back if a code path isn't implemented |
-| `git status` | **`gix`** | Hottest path; sparse-aware; fast |
+| `git status` | **`git` shell-out** (V1.0 — see amendment) | Hottest path; sparse-aware. *V0.1/V1.5 target was `gix`-native; spike 104 measured shell-out faster at monorepo + sparse-cone scale* |
 | `git log` (range walks) | **`gix`** | Streaming, fast |
 | `git diff` (tree → tree, tree → index) | **`gix`** | Used by Workspace Mgr (03) and the Diff viewer |
 | `git rev-parse` and ref lookups | **`gix`** | Trivial, fast |
 | `git worktree add/remove/list` | **`git` shell-out** | Worktree subcommand has subtle behavior; just use git |
 | Merge, rebase, cherry-pick | **`git` shell-out** | Used rarely from Core; never on a hot path |
 | Blob fetch on demand (partial clone) | Implicit; **`git` shell-out** for `git cat-file --batch` and similar | Triggered automatically by git when a missing blob is read |
+
+> **V1.0 amendment (2026-06-02) — `git status` stays shell-out, per spike 104.**
+> The table originally routed `git status` to `gix`-native. The Phase-1 gix
+> sparse-cone latency spike (`tasks/v1.0/104`, `design/spikes/gix-sparse-cone-findings.md`)
+> measured **shell-out `git status --porcelain=v1 -z` faster than the reachable
+> `gix 0.77` status path at the 100k-cone scale** (≈17 ms vs ≈15–43 ms, and the
+> full `gix::status` is feature-gated behind `gix-status`/`gix-dir` not yet in
+> the tree), consistent with V0.1 Task 29's "gix::status churning" finding. So
+> **V1.0 keeps the shell-out** for `status` (Phase-3 Tasks 302/303 build on this,
+> plus a pre-packed CI fixture image). Revisit `gix`-native `status` when a
+> future `gix` ships a complete, faster sparse-cone status. `git log` / `git diff`
+> / `rev-parse` remain `gix` as above (unaffected by this spike).
 
 The `git_cmd::*` module wraps each tool with a uniform `Result<T, RepoError>` interface. Callers in other sub-systems pick a function name, not a tool.
 
@@ -281,6 +293,11 @@ sequenceDiagram
 ```
 
 ### 7.2 `git status` on hot path (sparse + sparse-index)
+
+> **V1.0 amendment (2026-06-02):** per spike 104 (see §3.1), the V1.0 `status`
+> hot path is the **`git` shell-out** (`git status --porcelain=v1 -z`), not
+> `gix`-native — the diagram's `gix` participant reflects the original target;
+> read it as "the status backend selected by §3.1," which for V1.0 is shell-out.
 
 ```mermaid
 sequenceDiagram

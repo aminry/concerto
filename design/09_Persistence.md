@@ -83,12 +83,23 @@ Each function uses `sqlx::query_as!` for compile-time-checked SQL.
 
 ```rust
 #[async_trait]
-pub trait AuditLogSubscriber: Send + Sync + 'static {
+pub trait AuditLogSubscriber: Send + Sync {
     fn id(&self) -> &str;
-    async fn on_event(&self, event: &AuditEvent) -> Result<()>;
-    async fn flush(&self) -> Result<()>;
+    async fn on_event(&self, event: &AuditEvent);
+    async fn flush(&self);
 }
 ```
+
+> **V1.0 amendment (2026-06-02) — as shipped in Task 112.** The trait methods
+> return **`()`**, not `Result<()>`: a subscriber **absorbs its own errors**
+> (logs via `tracing::warn!` and drops, with slow/failing network subscribers
+> isolated behind a bounded channel + worker task) so that a misbehaving
+> forwarder can never stall the fan-out or the foreground writer. `JsonlFileSubscriber`
+> is the **durable floor** and is never reordered behind the network subscribers.
+> The `+ 'static` bound was also dropped (not required by the implementation).
+> The four V1.0 OSS impl names and the reserved V2.0 BSL names below are
+> unchanged. (The original `-> Result<()>` signature above is superseded by this
+> note.)
 
 **V1.0 OSS impls** (all in the MIT Persistence crate):
 
