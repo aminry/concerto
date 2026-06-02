@@ -48,12 +48,12 @@ Tier 3 (human-read / doc gate).
 4. Operator spot-check: `git diff` reads as a faithful reconciliation, not a rewrite.
 
 ## Definition of Done
-- [ ] All normative `tonic-iroh-transport` references in `00`/`10`/`11`/`15` amended in place with a dated `V1.0 amendment (2026-06-02)` note + rationale
-- [ ] The four adapter gotchas captured in `design/11` as Task-212 inherited notes
-- [ ] TechStack eval carries one forward-pointer; its rationale prose left intact
-- [ ] Pinned trio (`iroh 0.98.2` / `iroh-relay 0.98.0` / `tonic 0.12.3` + `prost 0.13.5`) stated; `tonic-iroh-transport 0.9.2` marked superseded
-- [ ] `grep` verification clean; operator-readable diff
-- [ ] Single commit with the message below
+- [x] All normative `tonic-iroh-transport` references in `00`/`10`/`11`/`15` amended in place with a dated `V1.0 amendment (2026-06-02)` note + rationale
+- [x] The four adapter gotchas captured in `design/11` as Task-212 inherited notes
+- [x] TechStack eval carries one forward-pointer; its rationale prose left intact
+- [x] Pinned trio (`iroh 0.98.2` / `iroh-relay 0.98.0` / `tonic 0.12.3` + `prost 0.13.5`) stated; `tonic-iroh-transport 0.9.2` marked superseded
+- [x] `grep` verification clean; operator-readable diff
+- [x] Single commit with the message below
 
 ## Outputs
 - `design/00_Architecture_Overview.md` (modified)
@@ -75,5 +75,8 @@ adapter gotchas into design/11 as Task 212 inherited notes.
 Refs: tasks/v1.0/200-adapter-reconciliation.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / Any normative ref that resisted clean amendment / Smoke-gate state (unchanged)
+## Handoff Notes (filled in when finishing)
+- **Drift from plan:** — None. All normative spots the task enumerated (`00 §6.6` + the TechStack-decisions row are the same table; `10 §6.3`; `11` header/§1/§3.1/§5.2/mermaid; `15` `IrohCoreClient` comment + split-host bullet) were found and amended in place. Added a new subsection `11 §3.1.1` ("The Tonic-over-Iroh adapter — hand-rolled on tonic 0.12") to host both the amendment and the four gotchas, and added cross-references to it from the other `11` mentions.
+- **Open questions for next task (212):** The four gotchas now live in `11 §3.1.1` citing `spikes/tonic-iroh-findings.md §2`; Task 212 must implement against `11 §3.1.1`, not the superseded `tonic-iroh-transport`. The spike's **real-WAN-relayed throughput/latency row is still PENDING** operator field measurement (a Phase-1 Tier-3 line, unchanged by this doc task) — not a blocker for building the adapter, but the WAN perf number is unproven. `iroh-nat-findings.md §7` (lines 9, 199) still names `tonic-iroh-transport 0.9.2`; left untouched because it is a **frozen Phase-1 spike artifact** (explicit Scope — out) — it is superseded by `tonic-iroh-findings.md` which is the authoritative spike for the adapter decision. The TechStack eval keeps two further bare `tonic-iroh-transport` mentions in its rationale-of-record prose (lines 604, 835); per Scope — in these are left intact, governed by the single forward-pointer added at the Iroh-evaluation section head.
+- **Deliberate debt:** — None.
+- **Smoke-gate state:** unchanged (doc-only task; no code, no `scripts/smoke.sh` touch).

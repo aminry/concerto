@@ -537,6 +537,8 @@ A pure-Rust library for peer-to-peer QUIC connections with NAT traversal and rel
 - About 70% of consumer networks succeed at direct hole-punching; the rest fall back to relayed QUIC.
 - `tonic-iroh-transport` exists — you can run **gRPC over Iroh**. This is huge for us because it means the local API and the remote API are the same protocol, just different transports.
 
+> **V1.0 forward-pointer (2026-06-02):** Phase-1 spike 102 (`design/spikes/tonic-iroh-findings.md` §2) resolved the adapter to a **hand-rolled `tonic 0.12` ↔ Iroh-bidi-stream duplex adapter**, not the off-the-shelf `tonic-iroh-transport` crate (which forces `tonic 0.14`, conflicting with the workspace pin). The "gRPC over Iroh" thesis below holds exactly as written — only the adapter implementation differs. See `00 §6.6` / `11 §3.1.1` for the canonical decision.
+
 **Pros**
 - Solves NAT traversal completely. Hole-punch with relay fallback, all in one library.
 - Public-key addressing = device identity is the key, no DNS, no certificate authorities.

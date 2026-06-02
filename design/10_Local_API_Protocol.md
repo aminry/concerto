@@ -486,7 +486,16 @@ Subscribers are tracked in memory only; on Core restart, clients re-subscribe.
 The Tonic server doesn't know whether it's serving UDS or Iroh. Both transports plug into Tonic's `tower::Service` abstraction:
 
 - **UDS:** `LocalApiServer::serve_uds(path)` uses `tokio::net::UnixListener` + `tonic::transport::Server::builder().add_service(...).serve_with_incoming(...)`.
-- **Iroh:** `LocalApiServer::serve_iroh(endpoint)` uses `tonic-iroh-transport::IrohListener` (locked in `00 §6.6`). Same builder, same handlers.
+- **Iroh:** `LocalApiServer::serve_iroh(endpoint)` accepts Iroh bidi streams and feeds each, wrapped as a `tokio::io::AsyncRead + AsyncWrite` duplex, to the same `serve_with_incoming` (per the hand-rolled adapter — see amendment). Same builder, same handlers.
+
+> **V1.0 amendment (2026-06-02) — hand-rolled tonic-0.12 adapter, per spike 102.**
+> This section originally named `tonic-iroh-transport::IrohListener` as the Iroh
+> listener. Spike 102 (`design/spikes/tonic-iroh-findings.md` §2) retired that crate
+> (it forces `tonic 0.14`, conflicting with the workspace `tonic 0.12` pin) in favor
+> of a **hand-rolled `tonic 0.12` ↔ Iroh-bidi-stream duplex adapter** that runs the
+> production Tonic server unmodified over Iroh. The canonical V1.0 mapping is **one
+> gRPC connection per Iroh bidi stream**, fed to `serve_with_incoming`; Task 212 builds
+> it (details + gotchas in `design/11 §3.x`). `tonic-iroh-transport` is superseded.
 
 The auth middleware sees the difference: UDS connections have peer-uid; Iroh connections have device-cert metadata.
 
