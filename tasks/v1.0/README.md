@@ -161,6 +161,7 @@ The hardest phase and the dependency root for all remote features. Heavy Tier-2 
 
 | Task | Goal | Deps | Tier | Type |
 |---|---|---|---|---|
+| 200 | Reconcile the Tonic-over-Iroh adapter decision (spike 102 → design): amend `00`/`10`/`11`/`15` from `tonic-iroh-transport` to the hand-rolled tonic-0.12 adapter; runs first (added 2026-06-02 per the Phase-2 planning B1 decision) | — | 3 | doc |
 | 201 | Proto: `transport_kind`/`core_host_os`/`core_hostname` on `ServerCapabilities` + connect-time capability negotiation | — | 1 | rust |
 | 202 | `Streams.Subscribe` reconnect: offset ack + server-side per-stream ring buffer + gap detection | 201 | 1 | rust |
 | 203 | `Files` service: `Upload`/`Download` streaming, chunked, blake2b checksum, allow-list enforced | 201 | 1 | rust |
