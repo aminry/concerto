@@ -48,3 +48,7 @@ home = { workspace = true }
 # Task 27: futures::StreamExt for draining the Clone progress stream
 # and racing the session.io / session.events subscriptions.
 futures = { workspace = true }
+# Task 203: BLAKE2b-256 to compute the `Files.Upload` finalize digest and
+# verify the round-tripped download in `files-transfer-probe`. Workspace
+# pin (same `blake2` the Core handler uses).
+blake2 = { workspace = true }

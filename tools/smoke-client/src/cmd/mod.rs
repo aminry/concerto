@@ -15,6 +15,7 @@ pub mod add_repo;
 pub mod caps;
 pub mod clone;
 pub mod create_loop;
+pub mod files_transfer_probe;
 pub mod list_audit;
 pub mod list_loops;
 pub mod list_mcp;

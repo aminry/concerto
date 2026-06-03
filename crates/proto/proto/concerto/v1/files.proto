@@ -1,0 +1,109 @@
+// Files service — split-host file transfer between a client (typically
+// Desktop in remote mode, or mobile) and a Core it does NOT share a
+// filesystem with.
+//
+// Owned in design by `10_Local_API_Protocol.md` §5.1. Co-located clients
+// don't need this — they read/write the same disk (`design/10 §2`). The
+// V1.0 split-host configuration is what makes an explicit transfer path
+// necessary.
+//
+// Scope: every RPC is scoped to a `(workarea, repository)` pair, OR to a
+// workarea's `.context/` root when `repository_id` is unset. The Core
+// resolves the target path under that scope's allow-list root and
+// enforces the `design/12 §3.5`/`§3.7` filesystem allow-list + hard
+// deny-list (the `crates/core/src/security/path_policy.rs` machinery)
+// BEFORE any byte touches disk. Only `PathDecision::Allowed` proceeds —
+// `Outside` and `Denied` both reject. There is no interactive approval
+// ceremony on a streamed RPC; the strict policy floor is the contract.
+//
+// Auth / peer-uid gating / device-cert validation are NOT transport- or
+// service-special: they apply uniformly across all services via the
+// Task 210 auth middleware. This proto does not encode auth.
+//
+// Field numbers in this file are FROZEN as of Task 203. Adding new fields
+// is fine (higher numbers); renumbering or repurposing an existing field
+// is forbidden.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+service Files {
+  // Client → Core streaming upload. The first frame MUST be an
+  // `UploadChunk { header }`; subsequent frames carry `data` (≤ 256 KiB
+  // each); the final frame is `finalize` with the BLAKE2b-256 digest of
+  // the full uploaded byte stream, which the Core verifies before the
+  // atomic rename.
+  rpc Upload(stream UploadChunk) returns (UploadResult);
+  // Core → client streaming download with optional byte range.
+  rpc Download(DownloadRequest) returns (stream DownloadChunk);
+  // Stat a single path within scope (existence / size / is_dir).
+  rpc Stat(StatRequest) returns (StatResult);
+  // List the immediate entries of a directory within scope
+  // (non-recursive).
+  rpc List(ListFilesRequest) returns (ListFilesResponse);
+}
+
+message UploadChunk {
+  oneof body {
+    UploadHeader header = 1;      // first frame: target path + expected size
+    bytes data = 2;              // subsequent frames: ≤ 256 KiB each
+    UploadFinalize finalize = 3; // last frame: checksum
+  }
+}
+
+message UploadHeader {
+  string workarea_id = 1;
+  optional string repository_id = 2; // None ⇒ the workarea's .context/ root
+  string relative_path = 3;          // within the (workarea, repo) scope
+  uint64 expected_size = 4;
+  string content_type = 5;
+}
+
+// `blake2b` is the BLAKE2b digest, 256-bit output (32 bytes), computed
+// over the FULL uploaded byte stream. FROZEN: BLAKE2b-256.
+message UploadFinalize { bytes blake2b = 1; }
+message UploadResult   { string stored_path = 1; uint64 size = 2; }
+
+message DownloadRequest {
+  string workarea_id = 1;
+  optional string repository_id = 2; // None ⇒ the workarea's .context/ root
+  string relative_path = 3;
+  optional uint64 offset = 4;        // start byte; default 0
+  optional uint64 length = 5;        // byte count; default to EOF
+}
+
+message DownloadChunk { bytes data = 1; } // ≤ 256 KiB each
+
+// Stat / List are NOT spelled out in `design/10 §5.1`; they are designed
+// minimally here and FROZEN. They mirror the doc's optional-`repository_id`
+// convention.
+
+message StatRequest {
+  string workarea_id = 1;
+  optional string repository_id = 2; // None ⇒ the workarea's .context/ root
+  string relative_path = 3;
+}
+
+message StatResult {
+  bool exists = 1;
+  uint64 size = 2;
+  bool is_dir = 3;
+  string content_type = 4;
+}
+
+message ListFilesRequest {
+  string workarea_id = 1;
+  optional string repository_id = 2; // None ⇒ the workarea's .context/ root
+  string relative_path = 3;
+}
+
+message ListFilesResponse {
+  repeated FileEntry entries = 1;
+}
+
+message FileEntry {
+  string name = 1;
+  uint64 size = 2;
+  bool is_dir = 3;
+}

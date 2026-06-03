@@ -90,6 +90,11 @@ serde_yaml = { workspace = true }
 # policy. Workspace pin. Used as the fallback when
 # `std::fs::canonicalize` fails (e.g. paths that don't exist yet).
 path-clean = { workspace = true }
+# Task 203: BLAKE2b-256 checksum for the `Files` service. The handler
+# feeds the hasher incrementally as 256 KiB upload chunks arrive and
+# verifies the digest on finalize. Workspace pin (introduced by Task 203;
+# reused by Task 205).
+blake2 = { workspace = true }
 # Task 42: filesystem-watch crate driving the managed.json hot-reload
 # watcher in `crates/core/src/security/managed.rs`. Workspace pin.
 notify = { workspace = true }
