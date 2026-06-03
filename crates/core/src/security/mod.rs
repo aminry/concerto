@@ -32,7 +32,10 @@ pub use auth::{
     DEVICE_CERT_METADATA_KEY, LOCAL_UDS_DEVICE_ID, LOCAL_UDS_DEVICE_NAME,
 };
 pub use destructive::{is_destructive, DestructiveMatch};
-pub use managed::{load_managed_policy, ManagedPolicy, ManagedPolicySource};
+pub use managed::{
+    load_managed_policy, load_managed_policy_audited, ManagedPolicy, ManagedPolicyLoad,
+    ManagedPolicySource,
+};
 pub use path_policy::{classify as classify_path, AllowList, DenyList, PathDecision};
 pub use permission::{
     ack_for_bypass_destructive_guard, ack_for_yolo, parse_permission_mode, resolve_effective_mode,

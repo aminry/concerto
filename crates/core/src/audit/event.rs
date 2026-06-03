@@ -126,6 +126,16 @@ pub enum AuditKind {
     ScheduleFired,
     ScheduleSuppressed,
     DestructiveCommandIntercepted,
+    /// The `managed.json` org policy file was parsed cleanly on load or
+    /// hot-reload (Task 211, `design/12 §3.7`/§3.8). Emitted once per
+    /// successful audited load.
+    ManagedSettingsLoaded,
+    /// A `managed.json` field (or the whole file) failed validation; the
+    /// offending field was reverted to its default and the violation is
+    /// recorded here (Task 211, `design/12 §3.7`/§3.8 — "invalid fields
+    /// are flagged in the audit log (`ManagedSettingsViolation`) and the
+    /// field reverts to the default"). One event per violation.
+    ManagedSettingsViolation,
 }
 
 impl AuditKind {
@@ -160,6 +170,8 @@ impl AuditKind {
             AuditKind::ScheduleFired => "schedule_fired",
             AuditKind::ScheduleSuppressed => "schedule_suppressed",
             AuditKind::DestructiveCommandIntercepted => "destructive_command_intercepted",
+            AuditKind::ManagedSettingsLoaded => "managed_settings_loaded",
+            AuditKind::ManagedSettingsViolation => "managed_settings_violation",
         }
     }
 }

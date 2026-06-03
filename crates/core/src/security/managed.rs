@@ -21,12 +21,57 @@
 //! - `max_reasoning_level` — parsed but not enforced in V0.1
 //!   (deliberation controls land in V1.0).
 //!
+//! ## V1.0 security/pairing/remote fields (Task 211)
+//!
+//! Per `design/12 §3.8` (managed-settings schema) + `design/11 §6.4`
+//! (LAN-only mode) the parser is extended with the enforcement fields the
+//! Phase-2 spine consumes. These are *parsed + exposed as predicates here*;
+//! the enforcement *points* live in the consuming tasks (named below):
+//!
+//! - `disable_remote` (bool, snake_case per `design/11 §6.4`, default
+//!   `false`) → [`ManagedPolicy::remote_disabled`]. **Task 212/214** gate
+//!   relay registration + remote-accept off this; mDNS keeps publishing
+//!   (LAN-only ≠ discovery-off, see `design/11 §6.4`'s three behaviours).
+//! - `allowedPairingDevices` (`null`/absent = any may pair; an array of
+//!   device-pubkey fingerprints = the whitelist; `[]` = hard lockdown) →
+//!   [`ManagedPolicy::is_pairing_allowed`]. **Task 207** checks it before
+//!   minting a cert. The fingerprint format is the hex-encoded
+//!   `BLAKE2b-256(device_pubkey)` device id (`concerto_identity::device_id`)
+//!   — the same string stored in `devices.id` and used as the pairing
+//!   audit subject, so whitelist entries are directly comparable.
+//! - `maxPairedDevicesPerUser` (`null`/absent = unlimited) →
+//!   [`ManagedPolicy::max_paired_devices`]. **Task 207/209** compare it
+//!   against the live active (`revoked_at IS NULL`) `devices` count at
+//!   issuance.
+//! - `relayUrl` → [`ManagedPolicy::relay_url`]. **Task 214** relay config.
+//! - `auditForwardEndpoint` → [`ManagedPolicy::audit_forward_endpoint`].
+//!   Parsed + exposed here to resolve Task 112's "where does the
+//!   audit-forwarder config live?" question. **Registering** the
+//!   `SyslogSubscriber`/`HttpsForwarderSubscriber` from it (the `boot.rs`
+//!   subscriber-`vec!` extension) is **explicitly deferred** — 211 supplies
+//!   the config field, not the subscriber wiring.
+//! - `denyFilesystemPaths` (array, default `[]`) →
+//!   [`ManagedPolicy::deny_filesystem_paths`]. Strings stay opaque here;
+//!   the allow-list policy (`design/12 §3.5`) enforces them later.
+//!
+//! ### Validation + the `ManagedSettingsViolation` audit
+//!
+//! Validation runs on load (`design/12 §3.8`): an invalid field is
+//! reverted to its default AND flagged with a [`AuditKind::ManagedSettingsViolation`]
+//! audit event; a clean load emits [`AuditKind::ManagedSettingsLoaded`].
+//! The free `parse_*` functions (no audit handle in reach) *collect*
+//! violations into [`ManagedPolicyLoad`]; the boot/reload call site uses
+//! [`load_managed_policy_audited`] (which takes an [`AuditWriter`]) to
+//! actually emit them. `load_managed_policy` keeps its V0.1 signature +
+//! `tracing::warn!`-only behaviour for the existing permission-mode call
+//! sites that have no writer.
+//!
 //! Missing file → no managed policy ([`ManagedPolicy::default`]).
-//! Malformed JSON → warn + default; the Core does not refuse to boot
-//! when an org artifact is unparseable. **Unknown `version` field**, by
-//! contrast, IS a hard error — that's a deliberate forward-compatibility
-//! tripwire so a v2 policy file isn't silently mis-enforced by an older
-//! Core binary.
+//! Malformed JSON → warn + default (+ a `ManagedSettingsViolation` on the
+//! audited path); the Core does not refuse to boot when an org artifact is
+//! unparseable. **Unknown `version` field**, by contrast, IS a hard error
+//! — that's a deliberate forward-compatibility tripwire so a v2 policy file
+//! isn't silently mis-enforced by an older Core binary.
 //!
 //! ## Hot reload (Task 42)
 //!
@@ -48,6 +93,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use serde::Deserialize;
 use tokio::sync::watch;
 
+use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditWriter};
 use crate::security::permission::PermissionMode;
 
 /// Debounce window for the hot-reload watcher. A typical editor save
@@ -97,6 +143,38 @@ pub struct ManagedPolicy {
     /// Parsed in V0.1 but not yet enforced — the agent supervisor's
     /// deliberation controls land in V1.0.
     pub max_reasoning_level: Option<String>,
+
+    // ---- V1.0 security/pairing/remote fields (Task 211) ----
+    /// LAN-only toggle (`design/11 §6.4`). When `true` the Core does not
+    /// register with any relay and accepts only LAN connections (mDNS
+    /// keeps publishing). Read via [`Self::remote_disabled`]; the gate
+    /// lives in Task 212/214's relay path. Default `false`.
+    pub disable_remote: bool,
+    /// Pairing whitelist (`design/12 §3.8`). `None` (JSON `null` or absent)
+    /// = any device may pair; `Some(vec)` = only those device-pubkey
+    /// fingerprints may pair; `Some(vec![])` = a hard lockdown (no device
+    /// may pair). The fingerprint format is the hex-encoded
+    /// `BLAKE2b-256(device_pubkey)` device id. Read via
+    /// [`Self::is_pairing_allowed`].
+    pub allowed_pairing_devices: Option<Vec<String>>,
+    /// Cap on the number of paired devices (`design/12 §3.8`). `None` =
+    /// unlimited. Read via [`Self::max_paired_devices`]; Task 207/209
+    /// compares it against the live active `devices` count at issuance.
+    pub max_paired_devices_per_user: Option<u32>,
+    /// Self-hosted relay URL (`design/12 §3.8`). Read via
+    /// [`Self::relay_url`]; consumed by Task 214's relay config. `None`
+    /// = use the default/configured relay (or none under `disable_remote`).
+    pub relay_url: Option<String>,
+    /// Opt-in audit-forwarder endpoint (`design/12 §3.8`, e.g.
+    /// `syslog://…`). Parsed + exposed via [`Self::audit_forward_endpoint`]
+    /// to resolve Task 112's config-home question. Subscriber registration
+    /// is deferred (see the module doc). `None` = no forwarding.
+    pub audit_forward_endpoint: Option<String>,
+    /// Filesystem paths the agent allow-list must deny (`design/12 §3.8`,
+    /// §3.5). Opaque strings here — canonicalization + enforcement is the
+    /// later allow-list task. Read via [`Self::deny_filesystem_paths`].
+    /// Default `[]`.
+    pub deny_filesystem_paths: Vec<String>,
 }
 
 impl Default for ManagedPolicy {
@@ -108,7 +186,81 @@ impl Default for ManagedPolicy {
             allow_bypass_destructive_guard: true,
             preamble_template_path: None,
             max_reasoning_level: None,
+            disable_remote: false,
+            allowed_pairing_devices: None,
+            max_paired_devices_per_user: None,
+            relay_url: None,
+            audit_forward_endpoint: None,
+            deny_filesystem_paths: Vec::new(),
         }
+    }
+}
+
+impl ManagedPolicy {
+    /// Whether remote access is disabled (LAN-only mode, `design/11 §6.4`).
+    ///
+    /// **Consumer seam:** Task 212/214 gate relay registration + the
+    /// remote-accept path off this. When `true`, the Core (1) does not
+    /// register with any relay, (2) **continues to publish mDNS**, (3)
+    /// accepts only LAN connections. LAN-only ≠ discovery-off — the
+    /// consumer must NOT also suppress mDNS.
+    pub fn remote_disabled(&self) -> bool {
+        self.disable_remote
+    }
+
+    /// Whether a device with `fingerprint` is allowed to pair
+    /// (`design/12 §3.8`).
+    ///
+    /// `fingerprint` is the hex-encoded `BLAKE2b-256(device_pubkey)` device
+    /// id (`concerto_identity::device_id`) — the same string stored in
+    /// `devices.id`. Returns:
+    /// - `true` when no whitelist is configured (`allowed_pairing_devices`
+    ///   is `None` — JSON `null` or the key absent): any device may pair.
+    /// - membership in the whitelist otherwise. An empty whitelist
+    ///   (`Some(vec![])`) therefore denies every device (hard lockdown).
+    ///
+    /// **Consumer seam:** Task 207's pairing coordinator calls this before
+    /// minting a cert and rejects (with a pairing-denied audit) on `false`.
+    pub fn is_pairing_allowed(&self, fingerprint: &str) -> bool {
+        match &self.allowed_pairing_devices {
+            None => true,
+            Some(whitelist) => whitelist.iter().any(|f| f == fingerprint),
+        }
+    }
+
+    /// The cap on the number of paired devices, or `None` when unlimited
+    /// (`design/12 §3.8`).
+    ///
+    /// **Consumer seam:** Task 207/209 compares this against the live count
+    /// of active (`revoked_at IS NULL`) `devices` rows at issuance and
+    /// rejects when already at the cap.
+    pub fn max_paired_devices(&self) -> Option<u32> {
+        self.max_paired_devices_per_user
+    }
+
+    /// The configured self-hosted relay URL, if any (`design/12 §3.8`).
+    ///
+    /// **Consumer seam:** Task 214's relay config. `None` under
+    /// `disable_remote` is moot (no relay is contacted at all).
+    pub fn relay_url(&self) -> Option<&str> {
+        self.relay_url.as_deref()
+    }
+
+    /// The opt-in audit-forwarder endpoint, if any (`design/12 §3.8`).
+    ///
+    /// Provided here to resolve Task 112's "where does the forwarder config
+    /// live?" question. **Registering** the matching subscriber is deferred
+    /// (a `boot.rs` `vec!` extension owned by a later audit-pipeline/ops
+    /// task) — 211 supplies the field only.
+    pub fn audit_forward_endpoint(&self) -> Option<&str> {
+        self.audit_forward_endpoint.as_deref()
+    }
+
+    /// The filesystem paths the agent allow-list must deny (`design/12
+    /// §3.8`/§3.5). Opaque strings — canonicalization + enforcement is the
+    /// later allow-list task.
+    pub fn deny_filesystem_paths(&self) -> &[String] {
+        &self.deny_filesystem_paths
     }
 }
 
@@ -116,6 +268,14 @@ impl Default for ManagedPolicy {
 /// (e.g. only `max_permission_mode` set) parse cleanly. `version` is
 /// optional for forward compatibility with the pre-Task-42 schema; an
 /// explicit higher value is rejected by [`load_managed_policy`].
+///
+/// V1.0 security/pairing/remote fields use `#[serde(rename = "…")]` to
+/// pin the on-disk key spelling FROZEN per `design/12 §3.8`
+/// (camelCase) + `design/11 §6.4` (`disable_remote` is snake_case). The
+/// types are deliberately loose (`serde_json::Value` for the array/number
+/// fields that need per-field validation) so a single bad field reverts
+/// to its default + audits a `ManagedSettingsViolation` instead of
+/// failing the whole parse.
 #[derive(Debug, Default, Deserialize)]
 struct ManagedFile {
     #[serde(default)]
@@ -125,6 +285,41 @@ struct ManagedFile {
     allow_bypass_destructive_guard: Option<bool>,
     preamble_template_path: Option<PathBuf>,
     max_reasoning_level: Option<String>,
+
+    // ---- V1.0 security/pairing/remote fields (Task 211) ----
+    // `disable_remote` is snake_case (design/11 §6.4); the rest are
+    // camelCase (design/12 §3.8). FROZEN spellings.
+    #[serde(default)]
+    disable_remote: Option<serde_json::Value>,
+    #[serde(rename = "allowedPairingDevices", default)]
+    allowed_pairing_devices: Option<serde_json::Value>,
+    #[serde(rename = "maxPairedDevicesPerUser", default)]
+    max_paired_devices_per_user: Option<serde_json::Value>,
+    #[serde(rename = "relayUrl", default)]
+    relay_url: Option<serde_json::Value>,
+    #[serde(rename = "auditForwardEndpoint", default)]
+    audit_forward_endpoint: Option<serde_json::Value>,
+    #[serde(rename = "denyFilesystemPaths", default)]
+    deny_filesystem_paths: Option<serde_json::Value>,
+}
+
+/// The result of parsing `managed.json` with per-field validation
+/// (Task 211): the effective [`ManagedPolicy`] plus the list of
+/// [`ManagedSettingsViolation`] messages collected while reverting
+/// invalid fields to their defaults.
+///
+/// The free `parse_*` paths can't reach an [`AuditWriter`], so they
+/// surface violations *structurally* in this type;
+/// [`load_managed_policy_audited`] (which does hold a writer) translates
+/// each into an [`AuditKind::ManagedSettingsViolation`] event.
+#[derive(Debug, Clone)]
+pub struct ManagedPolicyLoad {
+    /// The effective policy after invalid fields reverted to default.
+    pub policy: ManagedPolicy,
+    /// Human-readable validation-violation messages (one per bad field,
+    /// or one for a whole-file malformed/unreadable artifact). Empty on a
+    /// clean load.
+    pub violations: Vec<String>,
 }
 
 /// Load the managed policy from `<config_dir>/managed.json`.
@@ -132,36 +327,107 @@ struct ManagedFile {
 /// Missing file: returns [`ManagedPolicy::default`] silently — most
 /// installs (personal users) ship without one.
 ///
-/// Malformed JSON or unknown `max_permission_mode` value: logs a
-/// `tracing::warn!` and returns [`ManagedPolicy::default`]. The Core
-/// stays running — an org artifact being broken should not lock the
-/// user out of their machine.
+/// Malformed JSON or an unknown/invalid field value: logs a
+/// `tracing::warn!` and returns a [`ManagedPolicy`] with that field
+/// reverted to its default (the whole file reverts to default when the
+/// JSON itself is unparseable). The Core stays running — an org artifact
+/// being broken should not lock the user out of their machine.
 ///
 /// **Unknown `version`** (anything other than missing/zero/1) returns
 /// [`Error::Internal`] so the operator notices the mismatch. A future
 /// `version: 2` Core binary will keep accepting `version: 1` files, but
 /// a v1 Core binary must NOT silently mis-enforce a v2 file.
 ///
-/// Synchronous I/O on purpose: the file is tiny (< 1 KB in practice).
+/// This V0.1 entry point drops the structured violation list (it has no
+/// audit writer); the boot/reload call site should use
+/// [`load_managed_policy_audited`] to also emit the
+/// [`AuditKind::ManagedSettingsViolation`] / [`AuditKind::ManagedSettingsLoaded`]
+/// events. Synchronous I/O on purpose: the file is tiny (< 1 KB in practice).
 pub fn load_managed_policy(config_dir: &Path) -> Result<ManagedPolicy> {
     let path = config_dir.join(MANAGED_FILE_NAME);
     parse_managed_policy_at(&path)
 }
 
-/// Parse a [`ManagedPolicy`] from a specific file path. Used by the
-/// hot-reload watcher (which has the path in hand) and by
-/// [`load_managed_policy`] (which derives the path from `<config_dir>`).
+/// Load the managed policy AND emit the load/violation audit events
+/// (Task 211, `design/12 §3.7`/§3.8). This is the boot + hot-reload entry
+/// point: it threads an [`AuditWriter`] in so the free parser's collected
+/// violations are recorded.
+///
+/// - A clean parse emits one [`AuditKind::ManagedSettingsLoaded`].
+/// - Each invalid field (reverted to default) emits one
+///   [`AuditKind::ManagedSettingsViolation`] with a `reason` detail.
+/// - A whole-file malformed/unreadable artifact emits a single
+///   `ManagedSettingsViolation` and returns the full default policy
+///   (never refuses to boot).
+/// - An unknown `version` still returns [`Error::Internal`] (forward-compat
+///   tripwire); no audit is emitted because the policy isn't applied.
+///
+/// A missing file is a silent default — no audit (there's nothing org
+/// policy to load).
+pub fn load_managed_policy_audited(
+    config_dir: &Path,
+    audit: &AuditWriter,
+) -> Result<ManagedPolicy> {
+    let path = config_dir.join(MANAGED_FILE_NAME);
+    // A missing file is the common personal-install case: no policy, no
+    // audit noise.
+    if !path.exists() {
+        return Ok(ManagedPolicy::default());
+    }
+    let loaded = parse_managed_policy_load_at(&path)?;
+    for reason in &loaded.violations {
+        audit.append(
+            AuditEvent::new(AuditKind::ManagedSettingsViolation, AuditActor::System).with_details(
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "reason": reason,
+                }),
+            ),
+        );
+    }
+    audit.append(
+        AuditEvent::new(AuditKind::ManagedSettingsLoaded, AuditActor::System).with_details(
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "violations": loaded.violations.len(),
+            }),
+        ),
+    );
+    Ok(loaded.policy)
+}
+
+/// Parse a [`ManagedPolicy`] from a specific file path, dropping the
+/// structured violation list. Used by the hot-reload watcher (which has
+/// the path in hand) and by [`load_managed_policy`].
 fn parse_managed_policy_at(path: &Path) -> Result<ManagedPolicy> {
+    Ok(parse_managed_policy_load_at(path)?.policy)
+}
+
+/// Parse a [`ManagedPolicyLoad`] from a specific file path, collecting
+/// per-field validation violations.
+///
+/// Returns `Err` only for the forward-compat `version` tripwire; every
+/// other failure mode (unreadable file, malformed JSON, invalid field)
+/// reverts to default + records a violation so the Core keeps booting.
+fn parse_managed_policy_load_at(path: &Path) -> Result<ManagedPolicyLoad> {
     let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ManagedPolicy::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ManagedPolicyLoad {
+                policy: ManagedPolicy::default(),
+                violations: Vec::new(),
+            });
+        }
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
                 "managed.json read failed; defaulting to permissive policy"
             );
-            return Ok(ManagedPolicy::default());
+            return Ok(ManagedPolicyLoad {
+                policy: ManagedPolicy::default(),
+                violations: vec![format!("managed.json read failed: {e}")],
+            });
         }
     };
     let parsed: ManagedFile = match serde_json::from_str(&raw) {
@@ -172,9 +438,14 @@ fn parse_managed_policy_at(path: &Path) -> Result<ManagedPolicy> {
                 error = %e,
                 "managed.json parse failed; defaulting to permissive policy"
             );
-            return Ok(ManagedPolicy::default());
+            return Ok(ManagedPolicyLoad {
+                policy: ManagedPolicy::default(),
+                violations: vec![format!("managed.json is not valid JSON: {e}")],
+            });
         }
     };
+
+    let mut violations = Vec::new();
 
     // Forward-compat tripwire: an explicit version higher than what this
     // Core binary understands is a hard error. Missing or zero defaults
@@ -202,19 +473,220 @@ fn parse_managed_policy_at(path: &Path) -> Result<ManagedPolicy> {
                     value = %s,
                     "managed.json max_permission_mode is not strict|normal|auto|yolo; ignoring"
                 );
+                violations.push(format!(
+                    "max_permission_mode '{s}' is not strict|normal|auto|yolo; reverted to default"
+                ));
                 None
             }
         },
     };
 
-    Ok(ManagedPolicy {
+    // ---- V1.0 security/pairing/remote fields (Task 211) ----
+    let disable_remote = validate_bool(
+        path,
+        "disable_remote",
+        parsed.disable_remote,
+        false,
+        &mut violations,
+    );
+    let allowed_pairing_devices = validate_string_array_or_null(
+        path,
+        "allowedPairingDevices",
+        parsed.allowed_pairing_devices,
+        &mut violations,
+    );
+    let max_paired_devices_per_user = validate_u32(
+        path,
+        "maxPairedDevicesPerUser",
+        parsed.max_paired_devices_per_user,
+        &mut violations,
+    );
+    let relay_url = validate_opt_string(path, "relayUrl", parsed.relay_url, &mut violations);
+    let audit_forward_endpoint = validate_opt_string(
+        path,
+        "auditForwardEndpoint",
+        parsed.audit_forward_endpoint,
+        &mut violations,
+    );
+    let deny_filesystem_paths = validate_string_array_or_null(
+        path,
+        "denyFilesystemPaths",
+        parsed.deny_filesystem_paths,
+        &mut violations,
+    )
+    .unwrap_or_default();
+
+    let policy = ManagedPolicy {
         version,
         max_permission_mode,
         allow_yolo: parsed.allow_yolo.unwrap_or(true),
         allow_bypass_destructive_guard: parsed.allow_bypass_destructive_guard.unwrap_or(true),
         preamble_template_path: parsed.preamble_template_path,
         max_reasoning_level: parsed.max_reasoning_level,
-    })
+        disable_remote,
+        allowed_pairing_devices,
+        max_paired_devices_per_user,
+        relay_url,
+        audit_forward_endpoint,
+        deny_filesystem_paths,
+    };
+    Ok(ManagedPolicyLoad { policy, violations })
+}
+
+/// Validate a JSON value expected to be a bool. Absent → `default`; a
+/// non-bool → `default` + a violation. (`serde_json::Value::Null` is
+/// treated as absent.)
+fn validate_bool(
+    path: &Path,
+    field: &str,
+    value: Option<serde_json::Value>,
+    default: bool,
+    violations: &mut Vec<String>,
+) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) => default,
+        Some(serde_json::Value::Bool(b)) => b,
+        Some(other) => {
+            tracing::warn!(
+                path = %path.display(),
+                field,
+                "managed.json field is not a boolean; reverting to default"
+            );
+            violations.push(format!(
+                "{field} must be a boolean, got {}; reverted to default",
+                json_type_name(&other)
+            ));
+            default
+        }
+    }
+}
+
+/// Validate a JSON value expected to be a non-negative integer in `u32`
+/// range. Absent/`null` → `None` (unlimited); a non-integer / out-of-range
+/// → `None` + a violation.
+fn validate_u32(
+    path: &Path,
+    field: &str,
+    value: Option<serde_json::Value>,
+    violations: &mut Vec<String>,
+) -> Option<u32> {
+    match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Number(n)) => match n.as_u64() {
+            Some(v) if v <= u64::from(u32::MAX) => Some(v as u32),
+            _ => {
+                tracing::warn!(
+                    path = %path.display(),
+                    field,
+                    "managed.json field is not a u32; reverting to default"
+                );
+                violations.push(format!(
+                    "{field} must be a non-negative integer ≤ {}, got {n}; reverted to default",
+                    u32::MAX
+                ));
+                None
+            }
+        },
+        Some(other) => {
+            tracing::warn!(
+                path = %path.display(),
+                field,
+                "managed.json field is not a number; reverting to default"
+            );
+            violations.push(format!(
+                "{field} must be a non-negative integer, got {}; reverted to default",
+                json_type_name(&other)
+            ));
+            None
+        }
+    }
+}
+
+/// Validate a JSON value expected to be a string (or `null`/absent →
+/// `None`). A non-string → `None` + a violation.
+fn validate_opt_string(
+    path: &Path,
+    field: &str,
+    value: Option<serde_json::Value>,
+    violations: &mut Vec<String>,
+) -> Option<String> {
+    match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(other) => {
+            tracing::warn!(
+                path = %path.display(),
+                field,
+                "managed.json field is not a string; reverting to default"
+            );
+            violations.push(format!(
+                "{field} must be a string, got {}; reverted to default",
+                json_type_name(&other)
+            ));
+            None
+        }
+    }
+}
+
+/// Validate a JSON value expected to be an array of strings (or
+/// `null`/absent → `None`). The `null`-vs-`[]` distinction is preserved:
+/// `null`/absent → `None` ("any"), `[]` → `Some(vec![])` ("none"). A
+/// non-array, or an array with a non-string element → `None` + a
+/// violation (the whole field reverts).
+fn validate_string_array_or_null(
+    path: &Path,
+    field: &str,
+    value: Option<serde_json::Value>,
+    violations: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    serde_json::Value::String(s) => out.push(s),
+                    other => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            field,
+                            "managed.json array element is not a string; reverting field to default"
+                        );
+                        violations.push(format!(
+                            "{field} must be an array of strings; element {} is not a string; reverted to default",
+                            json_type_name(&other)
+                        ));
+                        return None;
+                    }
+                }
+            }
+            Some(out)
+        }
+        Some(other) => {
+            tracing::warn!(
+                path = %path.display(),
+                field,
+                "managed.json field is not an array; reverting to default"
+            );
+            violations.push(format!(
+                "{field} must be null or an array of strings, got {}; reverted to default",
+                json_type_name(&other)
+            ));
+            None
+        }
+    }
+}
+
+/// Short type name for a `serde_json::Value`, used in violation messages.
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 /// Hot-reload broadcaster for the managed policy.
@@ -545,5 +1017,187 @@ mod tests {
             Some(PathBuf::from("/etc/preamble.md"))
         );
         assert_eq!(p.max_reasoning_level.as_deref(), Some("medium"));
+    }
+
+    // ---- Task 211: V1.0 security/pairing/remote field parsing ----
+
+    fn write_policy(json: &str) -> (TempDir, ManagedPolicyLoad) {
+        let d = TempDir::new().unwrap();
+        std::fs::write(d.path().join("managed.json"), json).unwrap();
+        let path = d.path().join("managed.json");
+        let load = parse_managed_policy_load_at(&path).unwrap();
+        (d, load)
+    }
+
+    #[test]
+    fn v1_security_defaults_when_absent() {
+        // No V1.0 keys present → all default, no violations.
+        let (_d, load) = write_policy(r#"{"version": 1}"#);
+        assert_eq!(load.violations, Vec::<String>::new());
+        let p = load.policy;
+        assert!(!p.remote_disabled());
+        assert!(p.is_pairing_allowed("anything")); // None → any
+        assert_eq!(p.max_paired_devices(), None);
+        assert_eq!(p.relay_url(), None);
+        assert_eq!(p.audit_forward_endpoint(), None);
+        assert!(p.deny_filesystem_paths().is_empty());
+    }
+
+    #[test]
+    fn frozen_keys_parse_full_policy() {
+        let (_d, load) = write_policy(
+            r#"{
+                "version": 1,
+                "disable_remote": true,
+                "allowedPairingDevices": ["aa", "bb"],
+                "maxPairedDevicesPerUser": 4,
+                "relayUrl": "https://relay.example/concerto",
+                "auditForwardEndpoint": "syslog://splunk.example:514",
+                "denyFilesystemPaths": ["~/.aws", "/opt/secrets"]
+            }"#,
+        );
+        assert_eq!(load.violations, Vec::<String>::new());
+        let p = load.policy;
+        assert!(p.remote_disabled());
+        assert!(p.is_pairing_allowed("aa"));
+        assert!(p.is_pairing_allowed("bb"));
+        assert!(!p.is_pairing_allowed("cc"));
+        assert_eq!(p.max_paired_devices(), Some(4));
+        assert_eq!(p.relay_url(), Some("https://relay.example/concerto"));
+        assert_eq!(
+            p.audit_forward_endpoint(),
+            Some("syslog://splunk.example:514")
+        );
+        assert_eq!(p.deny_filesystem_paths(), &["~/.aws", "/opt/secrets"]);
+    }
+
+    #[test]
+    fn disable_remote_false_and_absent_both_read_false() {
+        let (_d, load) = write_policy(r#"{"disable_remote": false}"#);
+        assert!(!load.policy.remote_disabled());
+        let (_d2, load2) = write_policy(r#"{}"#);
+        assert!(!load2.policy.remote_disabled());
+    }
+
+    #[test]
+    fn pairing_whitelist_allow_deny() {
+        let (_d, load) = write_policy(r#"{"allowedPairingDevices": ["fp-allowed"]}"#);
+        let p = load.policy;
+        assert!(p.is_pairing_allowed("fp-allowed"));
+        assert!(!p.is_pairing_allowed("fp-other"));
+    }
+
+    #[test]
+    fn pairing_null_means_any() {
+        let (_d, load) = write_policy(r#"{"allowedPairingDevices": null}"#);
+        assert_eq!(load.policy.allowed_pairing_devices, None);
+        assert!(load.policy.is_pairing_allowed("whoever"));
+    }
+
+    #[test]
+    fn pairing_empty_array_means_hard_lockdown() {
+        // `[]` is distinct from `null`: Some(empty) → deny everyone.
+        let (_d, load) = write_policy(r#"{"allowedPairingDevices": []}"#);
+        assert_eq!(load.policy.allowed_pairing_devices, Some(vec![]));
+        assert!(!load.policy.is_pairing_allowed("anyone"));
+    }
+
+    #[test]
+    fn max_paired_devices_cap_and_unset() {
+        let (_d, load) = write_policy(r#"{"maxPairedDevicesPerUser": 2}"#);
+        assert_eq!(load.policy.max_paired_devices(), Some(2));
+        let (_d2, load2) = write_policy(r#"{}"#);
+        assert_eq!(load2.policy.max_paired_devices(), None);
+    }
+
+    #[test]
+    fn invalid_max_paired_devices_reverts_and_violates() {
+        // A non-numeric value reverts the field + records exactly one
+        // violation; valid sibling fields still parse.
+        let (_d, load) =
+            write_policy(r#"{"maxPairedDevicesPerUser": "four", "disable_remote": true}"#);
+        assert_eq!(load.policy.max_paired_devices(), None);
+        assert!(load.policy.remote_disabled(), "sibling field still parsed");
+        assert_eq!(load.violations.len(), 1);
+        assert!(load.violations[0].contains("maxPairedDevicesPerUser"));
+    }
+
+    #[test]
+    fn invalid_allowed_pairing_devices_type_reverts_and_violates() {
+        // Not an array/null → revert to None (any) + a violation.
+        let (_d, load) = write_policy(r#"{"allowedPairingDevices": 42}"#);
+        assert_eq!(load.policy.allowed_pairing_devices, None);
+        assert_eq!(load.violations.len(), 1);
+        assert!(load.violations[0].contains("allowedPairingDevices"));
+    }
+
+    #[test]
+    fn invalid_pairing_array_element_reverts_whole_field() {
+        // An array with a non-string element reverts the whole field.
+        let (_d, load) = write_policy(r#"{"allowedPairingDevices": ["ok", 7]}"#);
+        assert_eq!(load.policy.allowed_pairing_devices, None);
+        assert_eq!(load.violations.len(), 1);
+    }
+
+    #[test]
+    fn invalid_disable_remote_type_reverts_to_false() {
+        let (_d, load) = write_policy(r#"{"disable_remote": "yes"}"#);
+        assert!(!load.policy.remote_disabled());
+        assert_eq!(load.violations.len(), 1);
+        assert!(load.violations[0].contains("disable_remote"));
+    }
+
+    #[test]
+    fn invalid_relay_url_type_reverts_to_none() {
+        let (_d, load) = write_policy(r#"{"relayUrl": 123}"#);
+        assert_eq!(load.policy.relay_url(), None);
+        assert_eq!(load.violations.len(), 1);
+        assert!(load.violations[0].contains("relayUrl"));
+    }
+
+    #[test]
+    fn malformed_json_full_default_with_violation() {
+        let d = TempDir::new().unwrap();
+        std::fs::write(d.path().join("managed.json"), "{ not json").unwrap();
+        let load = parse_managed_policy_load_at(&d.path().join("managed.json")).unwrap();
+        assert_eq!(load.policy, ManagedPolicy::default());
+        assert_eq!(load.violations.len(), 1);
+        assert!(load.violations[0].contains("not valid JSON"));
+    }
+
+    #[test]
+    fn unknown_version_still_hard_errors_on_collecting_path() {
+        let d = TempDir::new().unwrap();
+        std::fs::write(d.path().join("managed.json"), r#"{"version": 9}"#).unwrap();
+        let err = parse_managed_policy_load_at(&d.path().join("managed.json")).unwrap_err();
+        assert!(format!("{err}").contains("unsupported version"));
+    }
+
+    #[test]
+    fn v0_load_managed_policy_drops_violations_but_keeps_policy() {
+        // The V0.1 entry point still returns a usable (defaulted) policy
+        // for an invalid field, just without the structured violation list.
+        let d = TempDir::new().unwrap();
+        std::fs::write(
+            d.path().join("managed.json"),
+            r#"{"maxPairedDevicesPerUser": "bad", "disable_remote": true}"#,
+        )
+        .unwrap();
+        let p = load_managed_policy(d.path()).unwrap();
+        assert_eq!(p.max_paired_devices(), None);
+        assert!(p.remote_disabled());
+    }
+
+    #[test]
+    fn fingerprint_format_matches_hex_device_id() {
+        // The whitelist entry format is the hex-encoded BLAKE2b-256 device
+        // id (`concerto_identity::device_id`) — the same string stored in
+        // `devices.id`. Assert a real derived id matches against the list.
+        let pubkey = [7u8; 32];
+        let fingerprint = hex::encode(concerto_identity::device_id(&pubkey));
+        let json = format!(r#"{{"allowedPairingDevices": ["{fingerprint}"]}}"#);
+        let (_d, load) = write_policy(&json);
+        assert!(load.policy.is_pairing_allowed(&fingerprint));
+        assert!(!load.policy.is_pairing_allowed("deadbeef"));
     }
 }
