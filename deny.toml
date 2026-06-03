@@ -48,6 +48,16 @@ allow = [
     # the license text accompanies it (already in the crate's source tree).
     # Operator-ratified 2026-05-28.
     "CDLA-Permissive-2.0",
+    # Public-domain dedication (OSI-approved, FSF Free/Libre). Added in Task 212
+    # because `iroh-relay 0.98.0` pulls a WASM-only websocket subtree
+    # (`ws_stream_wasm` → `pharos` / `async_io_stream`) licensed `Unlicense`.
+    # Functionally equivalent to the already-allowed `CC0-1.0` / `0BSD`: a
+    # unilateral dedication of the work to the public domain — no copyleft, no
+    # patent-grant restrictions, redistribution unrestricted. The subtree is the
+    # browser (wasm32) relay-client path; it does not compile into the native
+    # Core/relay binaries, but cargo-deny evaluates the whole graph, so the
+    # expression is ratified here. Operator-ratified 2026-06-03.
+    "Unlicense",
 ]
 confidence-threshold = 0.93
 
@@ -56,6 +66,26 @@ confidence-threshold = 0.93
 [advisories]
 version = 2
 yanked = "deny"
+# Task 212: two RUSTSEC advisories on `hickory-proto` / `hickory-net`
+# 0.26.0-beta.4 — the DNS resolver `iroh = 0.98.2` pins EXACTLY
+# (`hickory-resolver = "=0.26.0-beta.4"`). The fixes (`>= 0.26.1`) live on the
+# stable 0.26 line; the beta line iroh pins has no patched release, so the only
+# way to clear them is to bump iroh — which the validated spike-102 trio
+# (iroh 0.98.2 / iroh-relay 0.98.0 / tonic 0.12.3) forbids without a re-spike
+# (see the root Cargo.toml Task-212 pin note). Both advisories are remote-DoS in
+# the **DNS-discovery** path (a malicious DNS response drives an unbounded loop /
+# O(n²) CPU during NSEC3 proof validation / message encoding) — NOT RCE, auth
+# bypass, or data disclosure. The transport deliberately allows a **directly
+# supplied Core address / relay** (spike Note B, `design/11 §8`), so DNS/pkarr
+# discovery is not load-bearing and can be bypassed entirely. Scoped to these
+# two IDs only — every other advisory still fails the gate. **Flagged in the
+# Task-212 Handoff as an operator stop-and-ask: revisit when iroh ships a 0.99
+# (or a 0.98.x that re-pins hickory >= 0.26.1) and re-validate the adapter.**
+# Operator-ratified 2026-06-03.
+ignore = [
+    "RUSTSEC-2026-0119", # hickory-proto 0.26.0-beta.4: O(n²) name-compression CPU exhaustion (DNS encode path; fixed in 0.26.1, unreachable under iroh's =beta.4 pin)
+    "RUSTSEC-2026-0120", # hickory-net   0.26.0-beta.4: NSEC3 closest-encloser unbounded loop (cross-zone DNS responses; fixed in 0.26.1, unreachable under iroh's =beta.4 pin)
+]
 # `unmaintained` advisories on transitive deps are demoted from error to
 # informational. Tauri 2's tree carries several: gtk-rs GTK3 bindings
 # (Linux-only; gtk-rs has moved to GTK4 and V0.1 desktop is macOS only),

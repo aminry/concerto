@@ -27,3 +27,4 @@ mcp
 cli
 backup
 connect-web-bridge
+transport-loopback

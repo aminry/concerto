@@ -1,0 +1,32 @@
+// Trivial gRPC service the Tier-2 loopback double (`tests/loopback.rs`) drives
+// over the hand-rolled adapter + Noise, to prove the full gRPC-over-Iroh path
+// end to end with NO network. NOT a product service — only the loopback test
+// compiles it (tonic 0.12 codegen, the production generator, so the test
+// exercises real framing). Mirrors the spike's bench.proto shape: one unary
+// echo (round-trip), one server-streaming firehose (the streaming subject +
+// the >4 MiB large-message gotcha).
+syntax = "proto3";
+
+package concerto.transport.loopback.v1;
+
+message EchoRequest {
+  bytes payload = 1;
+}
+
+message EchoReply {
+  bytes payload = 1;
+}
+
+message FirehoseRequest {
+  uint64 total_bytes = 1;
+  uint32 chunk_bytes = 2;
+}
+
+message FirehoseChunk {
+  bytes data = 1;
+}
+
+service Loopback {
+  rpc Echo(EchoRequest) returns (EchoReply);
+  rpc Firehose(FirehoseRequest) returns (stream FirehoseChunk);
+}

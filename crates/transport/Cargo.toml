@@ -9,3 +9,64 @@ rust-version.workspace = true
 [lib]
 name = "concerto_transport"
 path = "src/lib.rs"
+
+[features]
+# `dev-relay` pulls `iroh-relay`'s in-process dev server so the Tier-2 loopback
+# double (`tests/loopback.rs`) can force the relayed path through a hermetic,
+# OS-assigned-loopback `iroh-relay --dev` instance with NO external binary. The
+# production transport never needs the relay *server*: it only registers with /
+# falls back to a relay it dials by URL, which Iroh's client side handles. So
+# the relay-server dependency stays test-only behind this feature. Task 214's
+# relay *binary* is a separate crate that depends on `iroh-relay` directly.
+dev-relay = ["dep:iroh-relay"]
+
+[dependencies]
+concerto-error = { path = "../error" }
+# Task 212: the Noise IK session layer (Task 208) is run inside each accepted /
+# opened Iroh API stream — responder on accept (Core static), initiator on
+# connect. The transport owns deriving/storing the X25519 Noise statics and
+# carrying the responder's public half (the 208 handoff's open question).
+concerto-identity = { path = "../identity" }
+# Task 212: the connection-tag enum the channel-tag framing distinguishes
+# API / push-hint / pairing streams with is a plain proto-free Rust enum here,
+# but `ConnTransport(TransportKind::Iroh)` tagging in `serve_iroh` (the Core
+# api_server) reads the proto enum — the transport itself stays proto-free so it
+# is a thin leaf for Task 217.
+
+# The validated pinned trio (root Cargo.toml). `tonic`'s `transport` feature
+# gives `Server::serve_with_incoming` + `connect_with_connector`; `codegen` +
+# `prost` are needed so the Core's generated services compile against this
+# crate's re-exported tonic. Default-features-off at the workspace level; we
+# opt into exactly the subset the adapter needs.
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+prost = { workspace = true }
+iroh = { workspace = true }
+# Test-only (behind `dev-relay`); `server` feature stands up the in-process dev
+# relay. `optional` so a production `cargo build -p concerto-transport` never
+# pulls the relay-server tree.
+iroh-relay = { workspace = true, features = ["server"], optional = true }
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time", "net", "sync"] }
+tokio-stream = { workspace = true }
+tokio-util.workspace = true
+# `TokioIo` adapts a tokio AsyncRead+AsyncWrite into hyper's rt::Read/Write,
+# which is what tonic's client connector (`connect_with_connector`) requires.
+hyper-util = { workspace = true, features = ["tokio"] }
+tower = { workspace = true, features = ["util"] }
+http = "1"
+futures = { workspace = true }
+tracing.workspace = true
+
+[dev-dependencies]
+# The loopback double turns on the in-process relay.
+concerto-transport = { path = ".", features = ["dev-relay"] }
+# The loopback test serves a trivial tonic service over the adapter to prove the
+# full gRPC-over-Iroh round-trip + the four gotchas. tonic-build generates it.
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time", "net", "sync", "test-util"] }
+
+[build-dependencies]
+# Generates the trivial echo/firehose service the loopback test drives over the
+# adapter (the Tier-2 gRPC-over-Iroh round-trip + streaming subject). tonic 0.12
+# codegen — the production generator, so the test exercises real framing.
+tonic-build = "=0.12.3"

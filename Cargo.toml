@@ -246,3 +246,18 @@ ciborium = "0.2"
 # sha2/chacha20poly1305/curve25519-dalek features back the `_25519_AESGCM_SHA256`
 # cipher suite this task's protocol string names.
 snow = { version = "0.9", default-features = false, features = ["default-resolver"] }
+# Task 212: the production Iroh QUIC transport (`crates/transport`). EXACT pins
+# — this is the validated trio spike 102 (`design/spikes/tonic-iroh-findings.md`
+# §2) + spike 101 (`design/spikes/iroh-nat-findings.md` §5) measured against the
+# production `tonic = 0.12.3` / `prost = 0.13.5` stack: the hand-rolled
+# tonic-0.12 ↔ Iroh-bidi-stream adapter clears both perf bars with NO schema or
+# codegen change. Do NOT bump within V1.0 without a re-spike (a bump to e.g.
+# iroh 0.99 changes the QUIC/relay wire and would force re-validating the
+# adapter + the NAT matrix). `iroh-relay` is the companion relay protocol crate;
+# the transport pulls it only behind its `dev-relay` feature for the Tier-2
+# loopback double (an in-process `iroh-relay --dev` instance), and Task 214's
+# relay binary pulls it directly. Both are pure-Rust QUIC (quinn/rustls/ring),
+# cross-platform (Windows/Linux/macOS) — no `#[cfg(unix)]` on the transport
+# core. The license tree is ratified in `deny.toml` (see the Task-212 block).
+iroh = "=0.98.2"
+iroh-relay = "=0.98.0"

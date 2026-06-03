@@ -360,32 +360,6 @@ async fn run_uds(
     use concerto_proto::v1::TransportKind;
 
     use crate::conn_transport::ConnTransport;
-    use crate::handlers::devices::DevicesHandler;
-    use crate::handlers::files::FilesHandler;
-    use crate::handlers::projects::ProjectsHandler;
-    use crate::handlers::repositories::RepositoriesHandler;
-    use crate::handlers::runtime::RuntimeHandler;
-    use crate::handlers::schedules::SchedulesHandler;
-    use crate::handlers::sessions::SessionsHandler;
-    use crate::handlers::skills::SkillsHandler;
-    use crate::handlers::streams::StreamsHandler;
-    use crate::handlers::suggestions::SuggestionsHandler;
-    use crate::handlers::vcs::VcsHandler;
-    use crate::handlers::workareas::WorkareasHandler;
-    use crate::handlers::workspaces::WorkspacesHandler;
-    use concerto_proto::v1::devices_server::DevicesServer;
-    use concerto_proto::v1::files_server::FilesServer;
-    use concerto_proto::v1::projects_server::ProjectsServer;
-    use concerto_proto::v1::repositories_server::RepositoriesServer;
-    use concerto_proto::v1::runtime_server::RuntimeServer;
-    use concerto_proto::v1::schedules_server::SchedulesServer;
-    use concerto_proto::v1::sessions_server::SessionsServer;
-    use concerto_proto::v1::skills_server::SkillsServer;
-    use concerto_proto::v1::streams_server::StreamsServer;
-    use concerto_proto::v1::suggestions_server::SuggestionsServer;
-    use concerto_proto::v1::vcs_server::VcsServer;
-    use concerto_proto::v1::workareas_server::WorkareasServer;
-    use concerto_proto::v1::workspaces_server::WorkspacesServer;
 
     // Ensure the parent directory exists; the locked layout puts the
     // socket inside `<config_dir>`, which the runtime creates on boot,
@@ -435,28 +409,23 @@ async fn run_uds(
         path: socket_path.clone(),
     };
 
-    let handler = RuntimeHandler::new(started_at, supervisor_view);
-    let runtime_service = RuntimeServer::new(handler);
-
     // Tag every request that arrives on this UDS listener with
     // `ConnTransport(Uds)` so `RuntimeHandler::get_server_capabilities`
     // reports the live transport kind (Task 201), THEN run the Task-210 auth
     // middleware. This is the seam every listener writes: Task 212's Iroh
-    // listener and Task 204's WSS bridge apply the same interceptor with their
-    // own `TransportKind` in their own listener setup — they never edit the
-    // handler. The interceptor layer is applied to the whole server (before
-    // `add_service`) so the tag + auth are present on every service, not just
-    // `Runtime`. On Windows the co-located named-pipe listener maps to `Uds`
-    // too (see `crate::conn_transport`).
+    // listener (`serve_iroh` below) applies the same interceptor with
+    // `TransportKind::Iroh`, and Task 204's WSS bridge with `WssBridge` — none
+    // of them edit the handler. The interceptor layer is applied to the whole
+    // server (before `add_service`) so the tag + auth are present on every
+    // service, not just `Runtime`. On Windows the co-located named-pipe listener
+    // maps to `Uds` too (see `crate::conn_transport`).
     //
     // The Task-210 auth interceptor reads the tag (`Uds` → kernel-attested
     // peer-uid fast path producing the local-uds pseudo-cert `DeviceContext`;
     // `Iroh`/`WssBridge` → validate the `concerto-device-cert` header against
     // the boot issuer). Tagging happens FIRST so the auth step sees `Uds` and
-    // takes the peer-uid branch. The one interceptor covers both paths so the
-    // cert layer is mounted uniformly today (exercised by injected metadata in
-    // the Tier-1 tests until Task 212's Iroh listener lands).
-    let auth = crate::security::auth::AuthInterceptor::new(auth_issuer);
+    // takes the peer-uid branch.
+    let auth = crate::security::auth::AuthInterceptor::new(auth_issuer.clone());
     // The interceptor returns `Result<_, tonic::Status>` — `Status` is large, so
     // clippy's `result_large_err` fires; this is the fixed shape the tonic
     // `Interceptor` trait requires (the prior `tag_uds` carried the same allow).
@@ -468,107 +437,29 @@ async fn run_uds(
             auth.authenticate(req)
         };
 
-    let mut builder = Server::builder()
-        .layer(tonic::service::interceptor(auth_interceptor))
-        .add_service(runtime_service);
-    if let Some(persistence) = persistence {
-        // Task 203: the `Files` service shares the same `Persistence`
-        // handle (to resolve workarea → worktree_root → repo scope via
-        // `path_policy::for_workarea_from_db`). Register it from a clone
-        // of the Arc, then hand the original to `Projects`. `home` expands
-        // the hard deny-list; `home_dir()` is the canonical accessor used
-        // everywhere in the Core (boot/runtime/supervisor).
-        let home = home::home_dir().ok_or_else(|| {
-            Error::Internal("home::home_dir() returned None; cannot scope Files allow-list".into())
-        })?;
-        let files_service = FilesServer::new(FilesHandler::new(persistence.clone(), home));
-        builder = builder.add_service(files_service);
-        let projects_service = ProjectsServer::new(ProjectsHandler::new(persistence));
-        builder = builder.add_service(projects_service);
-    }
-    if let Some(repo_manager) = repo_manager {
-        let repositories_service = RepositoriesServer::new(RepositoriesHandler::new(repo_manager));
-        builder = builder.add_service(repositories_service);
-    }
-    // The Workspace + Workarea managers may also back `Streams` /
-    // `Sessions`, so register the existing services from clones and keep
-    // the originals available for the Task 23 services below.
-    if let Some(workspace_manager) = workspace_manager.clone() {
-        let workspaces_service = WorkspacesServer::new(WorkspacesHandler::new(workspace_manager));
-        builder = builder.add_service(workspaces_service);
-    }
-    if let Some(workarea_manager) = workarea_manager.clone() {
-        let workareas_service = WorkareasServer::new(WorkareasHandler::new(workarea_manager));
-        builder = builder.add_service(workareas_service);
-    }
-    // Task 23: `Sessions` requires the agent supervisor + workarea
-    // manager (to resolve the workarea's worktree root as the agent's
-    // cwd). `Streams` requires all three of the agent supervisor +
-    // workspace + workarea managers to back the four V0.1 subjects.
-    if let (Some(supervisor), Some(workarea_mgr)) =
-        (agent_supervisor.as_ref(), workarea_manager.as_ref())
-    {
-        let persistence = supervisor.persistence();
-        let sessions_service = SessionsServer::new(SessionsHandler::new(
-            supervisor.clone(),
-            persistence,
-            workarea_mgr.clone(),
-        ));
-        builder = builder.add_service(sessions_service);
-    }
-    if let (Some(supervisor), Some(workspace_mgr), Some(workarea_mgr)) =
-        (agent_supervisor, workspace_manager, workarea_manager)
-    {
-        let mut handler = StreamsHandler::new(supervisor, workspace_mgr, workarea_mgr);
-        if let Some(suggestions) = suggestions.clone() {
-            handler = handler.with_suggestions(suggestions);
-        }
-        let streams_service = StreamsServer::new(handler);
-        builder = builder.add_service(streams_service);
-    }
-    // Task 38: `Schedules` only needs the scheduler handle. It is wired
-    // independently of the supervisor/workarea managers so a stripped-
-    // down test Core can still expose the schedule surface.
-    if let Some(scheduler) = scheduler {
-        let schedules_service = SchedulesServer::new(SchedulesHandler::new(scheduler));
-        builder = builder.add_service(schedules_service);
-    }
-    // Task 39: `Skills` registry. Independent of every other manager
-    // — discovery walks the filesystem, the toggle path writes
-    // `skills_index` directly, and the in-process broadcast channel
-    // for `skill.*` events is V1.0.
-    if let Some(skills_registry) = skills_registry {
-        let skills_service = SkillsServer::new(SkillsHandler::new(skills_registry));
-        builder = builder.add_service(skills_service);
-    }
-    // Task 40: `Suggestions` registry. Independent of every other
-    // manager — the engine consumes `session.events` via per-session
-    // subscriptions; the gRPC surface just exposes the chip list and
-    // outcome-record stub.
-    if let Some(suggestions) = suggestions {
-        let suggestions_service = SuggestionsServer::new(SuggestionsHandler::new(suggestions));
-        builder = builder.add_service(suggestions_service);
-    }
-    // Task 45: `Vcs` provider integration via `gh` CLI shell-out.
-    // Independent of every other manager — the handle owns its own
-    // (lazy) `gh` path resolution + an `Arc<Persistence>` for the
-    // `pull_requests` cache.
-    if let Some(vcs) = vcs {
-        let vcs_service = VcsServer::new(VcsHandler::new(vcs));
-        builder = builder.add_service(vcs_service);
-    }
-    // Task 207/209: `Devices` service. Registered when the Core established its
-    // keychain-backed identity at boot (the coordinator owns the issuer + the
-    // in-memory token store; the device manager shares the revoked-set handle
-    // the issuer reads + the `SessionCloser` seam). Both are constructed
-    // together in `boot.rs`, so they are `Some` together. Independent of every
-    // other manager — both reach the `devices` table via their own
-    // `Persistence` clones. Pairing RPCs (207) + list/revoke/core-info (209) are
-    // served from the one handler.
-    if let (Some(pairing), Some(device_manager)) = (pairing, device_manager) {
-        let devices_service = DevicesServer::new(DevicesHandler::new(pairing, device_manager));
-        builder = builder.add_service(devices_service);
-    }
+    // The UDS path and the Iroh path (`serve_iroh`) register the IDENTICAL
+    // service set via `add_core_services`; the ONLY difference is this
+    // interceptor's injected `TransportKind`. See `CoreServiceSet`.
+    let services = CoreServiceSet {
+        started_at,
+        supervisor_view,
+        repo_manager,
+        workspace_manager,
+        workarea_manager,
+        agent_supervisor,
+        persistence,
+        scheduler,
+        skills_registry,
+        suggestions,
+        vcs,
+        pairing,
+        device_manager,
+        auth_issuer,
+    };
+    let builder = add_core_services(
+        Server::builder().layer(tonic::service::interceptor(auth_interceptor)),
+        services,
+    )?;
 
     let serve_fut =
         builder.serve_with_incoming_shutdown(UnixListenerStream::new(listener), async move {
@@ -590,6 +481,304 @@ async fn run_uds(
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     Ok(())
+}
+
+/// The full set of subsystem handles every transport's gRPC server registers,
+/// bundled so the **identical** `add_service(..)` chain is shared by both the
+/// UDS path (`run_uds`) and the Iroh path (`serve_iroh`) without duplicating the
+/// per-service registration logic (Task 212). Mirrors `connect_bridge`'s
+/// `BridgeServices`, extended with the `Devices`-backing handles + the auth
+/// issuer the Iroh path also needs.
+///
+/// Every field is `Clone`-able (managers are `Clone`; the rest are `Arc`/option
+/// of `Arc`), so the Iroh dispatcher can build a fresh `Router` per accepted
+/// connection from a cloned set — one gRPC connection == one Iroh bidi stream.
+/// The `#[cfg(unix)]` handles match `ApiServerActor`'s own gating; on Windows the
+/// Iroh server simply serves the cross-platform subset, exactly as the bridge
+/// does.
+#[derive(Clone)]
+pub struct CoreServiceSet {
+    pub started_at: Arc<SystemTime>,
+    pub supervisor_view: SupervisorView,
+    pub repo_manager: Option<RepoManager>,
+    pub workspace_manager: Option<WorkspaceManager>,
+    pub workarea_manager: Option<WorkareaManager>,
+    #[cfg(unix)]
+    pub agent_supervisor: Option<AgentSupervisorHandle>,
+    pub persistence: Option<Arc<Persistence>>,
+    #[cfg(unix)]
+    pub scheduler: Option<SchedulerHandle>,
+    pub skills_registry: Option<SkillsRegistryHandle>,
+    #[cfg(unix)]
+    pub suggestions: Option<SuggestionEngineHandle>,
+    pub vcs: Option<VcsHandle>,
+    pub pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
+    pub device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
+    pub auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
+}
+
+impl CoreServiceSet {
+    /// A minimal service set exposing **only** the `Runtime` service — used by
+    /// the Task-212 Iroh-transport end-to-end test/smoke (which asserts
+    /// `GetServerCapabilities.transport_kind == IROH` over a real `serve_iroh`)
+    /// and by a stripped-down `serve_iroh` caller. Every optional subsystem is
+    /// `None`; `auth_issuer` is `None` so the cert path admits the loopback
+    /// double's injected metadata path. Task 217's façade builds the full set
+    /// from boot handles instead.
+    pub fn runtime_only(started_at: Arc<SystemTime>, supervisor_view: SupervisorView) -> Self {
+        Self {
+            started_at,
+            supervisor_view,
+            repo_manager: None,
+            workspace_manager: None,
+            workarea_manager: None,
+            #[cfg(unix)]
+            agent_supervisor: None,
+            persistence: None,
+            #[cfg(unix)]
+            scheduler: None,
+            skills_registry: None,
+            #[cfg(unix)]
+            suggestions: None,
+            vcs: None,
+            pairing: None,
+            device_manager: None,
+            auth_issuer: None,
+        }
+    }
+}
+
+/// Apply the **shared** `add_service(..)` chain — the single source of truth for
+/// which gRPC services every transport exposes — onto an interceptor-layered
+/// `Server` builder, returning the configured `Router`. The ONLY per-transport
+/// difference is the interceptor `L` (which injects the transport's
+/// `ConnTransport` tag) and the incoming stream the caller serves the `Router`
+/// over; the handler set is identical (Task 212, `design/10 §3.4` "the schema
+/// does not branch by transport").
+fn add_core_services<L>(
+    mut server: tonic::transport::server::Server<L>,
+    services: CoreServiceSet,
+) -> Result<tonic::transport::server::Router<L>>
+where
+    L: Clone,
+{
+    use concerto_proto::v1::devices_server::DevicesServer;
+    use concerto_proto::v1::files_server::FilesServer;
+    use concerto_proto::v1::projects_server::ProjectsServer;
+    use concerto_proto::v1::repositories_server::RepositoriesServer;
+    use concerto_proto::v1::runtime_server::RuntimeServer;
+    use concerto_proto::v1::skills_server::SkillsServer;
+    use concerto_proto::v1::vcs_server::VcsServer;
+    use concerto_proto::v1::workareas_server::WorkareasServer;
+    use concerto_proto::v1::workspaces_server::WorkspacesServer;
+
+    use crate::handlers::devices::DevicesHandler;
+    use crate::handlers::files::FilesHandler;
+    use crate::handlers::projects::ProjectsHandler;
+    use crate::handlers::repositories::RepositoriesHandler;
+    use crate::handlers::runtime::RuntimeHandler;
+    use crate::handlers::skills::SkillsHandler;
+    use crate::handlers::vcs::VcsHandler;
+    use crate::handlers::workareas::WorkareasHandler;
+    use crate::handlers::workspaces::WorkspacesHandler;
+
+    let CoreServiceSet {
+        started_at,
+        supervisor_view,
+        repo_manager,
+        workspace_manager,
+        workarea_manager,
+        #[cfg(unix)]
+        agent_supervisor,
+        persistence,
+        #[cfg(unix)]
+        scheduler,
+        skills_registry,
+        #[cfg(unix)]
+        suggestions,
+        vcs,
+        pairing,
+        device_manager,
+        auth_issuer: _auth_issuer,
+    } = services;
+
+    let runtime_service = RuntimeServer::new(RuntimeHandler::new(started_at, supervisor_view));
+    let mut builder = server.add_service(runtime_service);
+
+    if let Some(persistence) = persistence {
+        let home = home::home_dir().ok_or_else(|| {
+            Error::Internal("home::home_dir() returned None; cannot scope Files allow-list".into())
+        })?;
+        let files_service = FilesServer::new(FilesHandler::new(persistence.clone(), home));
+        builder = builder.add_service(files_service);
+        let projects_service = ProjectsServer::new(ProjectsHandler::new(persistence));
+        builder = builder.add_service(projects_service);
+    }
+    if let Some(repo_manager) = repo_manager {
+        let repositories_service = RepositoriesServer::new(RepositoriesHandler::new(repo_manager));
+        builder = builder.add_service(repositories_service);
+    }
+    if let Some(workspace_manager) = workspace_manager.clone() {
+        let workspaces_service = WorkspacesServer::new(WorkspacesHandler::new(workspace_manager));
+        builder = builder.add_service(workspaces_service);
+    }
+    if let Some(workarea_manager) = workarea_manager.clone() {
+        let workareas_service = WorkareasServer::new(WorkareasHandler::new(workarea_manager));
+        builder = builder.add_service(workareas_service);
+    }
+    // `Sessions` + `Streams` need the `#[cfg(unix)]` agent supervisor; on a
+    // non-unix target these handles don't exist, so the services are simply
+    // absent (the Iroh server serves the cross-platform subset).
+    #[cfg(unix)]
+    {
+        use crate::handlers::schedules::SchedulesHandler;
+        use crate::handlers::sessions::SessionsHandler;
+        use crate::handlers::streams::StreamsHandler;
+        use crate::handlers::suggestions::SuggestionsHandler;
+        use concerto_proto::v1::schedules_server::SchedulesServer;
+        use concerto_proto::v1::sessions_server::SessionsServer;
+        use concerto_proto::v1::streams_server::StreamsServer;
+        use concerto_proto::v1::suggestions_server::SuggestionsServer;
+
+        if let (Some(supervisor), Some(workarea_mgr)) =
+            (agent_supervisor.as_ref(), workarea_manager.as_ref())
+        {
+            let persistence = supervisor.persistence();
+            let sessions_service = SessionsServer::new(SessionsHandler::new(
+                supervisor.clone(),
+                persistence,
+                workarea_mgr.clone(),
+            ));
+            builder = builder.add_service(sessions_service);
+        }
+        if let (Some(supervisor), Some(workspace_mgr), Some(workarea_mgr)) =
+            (agent_supervisor, workspace_manager, workarea_manager)
+        {
+            let mut handler = StreamsHandler::new(supervisor, workspace_mgr, workarea_mgr);
+            if let Some(suggestions) = suggestions.clone() {
+                handler = handler.with_suggestions(suggestions);
+            }
+            let streams_service = StreamsServer::new(handler);
+            builder = builder.add_service(streams_service);
+        }
+        if let Some(scheduler) = scheduler {
+            let schedules_service = SchedulesServer::new(SchedulesHandler::new(scheduler));
+            builder = builder.add_service(schedules_service);
+        }
+        if let Some(suggestions) = suggestions {
+            let suggestions_service = SuggestionsServer::new(SuggestionsHandler::new(suggestions));
+            builder = builder.add_service(suggestions_service);
+        }
+    }
+    if let Some(skills_registry) = skills_registry {
+        let skills_service = SkillsServer::new(SkillsHandler::new(skills_registry));
+        builder = builder.add_service(skills_service);
+    }
+    if let Some(vcs) = vcs {
+        let vcs_service = VcsServer::new(VcsHandler::new(vcs));
+        builder = builder.add_service(vcs_service);
+    }
+    if let (Some(pairing), Some(device_manager)) = (pairing, device_manager) {
+        let devices_service = DevicesServer::new(DevicesHandler::new(pairing, device_manager));
+        builder = builder.add_service(devices_service);
+    }
+
+    Ok(builder)
+}
+
+/// The Iroh-transport gRPC dispatcher (Task 212). Holds a [`CoreServiceSet`] and
+/// the boot auth issuer; for every accepted Iroh API stream the transport's
+/// serve loop hands it a Noise-wrapped duplex, over which it builds the **same**
+/// `add_core_services` router as the UDS path — the only difference being the
+/// interceptor injects `ConnTransport(TransportKind::Iroh)` so the 210 auth path
+/// validates the `concerto-device-cert` header and 201 caps report `IROH`, with
+/// **no per-transport handler branching**.
+///
+/// One `serve_connection` call == one gRPC connection == one Iroh bidi stream
+/// (the spike's gotcha #2). The 64 MiB message limits ride the `add_service`
+/// registrations + the transport's adapter limits.
+struct IrohDispatcher {
+    services: CoreServiceSet,
+}
+
+impl concerto_transport::ApiDispatcher for IrohDispatcher {
+    fn serve_connection(
+        &self,
+        io: concerto_transport::NoiseDuplex,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<(), concerto_transport::TransportError>,
+                > + Send,
+        >,
+    > {
+        // Clone the service set so each connection gets a fresh router.
+        let services = self.services.clone();
+        Box::pin(async move {
+            use crate::conn_transport::ConnTransport;
+            use concerto_proto::v1::TransportKind;
+            use tonic::transport::Server;
+
+            // Tag `Iroh` then run the SAME auth interceptor the UDS path uses —
+            // the auth step takes the cert-validation branch for `Iroh`.
+            let auth = crate::security::auth::AuthInterceptor::new(services.auth_issuer.clone());
+            #[allow(clippy::result_large_err)]
+            let interceptor = move |mut req: tonic::Request<()>| -> std::result::Result<
+                tonic::Request<()>,
+                tonic::Status,
+            > {
+                req.extensions_mut()
+                    .insert(ConnTransport(TransportKind::Iroh));
+                auth.authenticate(req)
+            };
+
+            let builder = add_core_services(
+                Server::builder().layer(tonic::service::interceptor(interceptor)),
+                services,
+            )
+            .map_err(|e| {
+                concerto_transport::TransportError::Adapter(format!(
+                    "building iroh gRPC router: {e}"
+                ))
+            })?;
+
+            // One gRPC connection over the single Noise-wrapped duplex (one Iroh
+            // bidi stream). `serve_with_incoming` over a single-element stream is
+            // the "QUIC stream pool for gRPC" shape (`design/11 §3.3`).
+            let incoming = futures::stream::once(async move { Ok::<_, std::io::Error>(io) });
+            builder.serve_with_incoming(incoming).await.map_err(|e| {
+                concerto_transport::TransportError::Adapter(format!(
+                    "iroh serve_with_incoming: {e}"
+                ))
+            })
+        })
+    }
+}
+
+/// Serve the Core's gRPC services over an Iroh transport (Task 212), the Iroh
+/// twin of [`run_uds`]. Builds the [`IrohDispatcher`] from the same handle set
+/// and drives the transport's accept/serve loop until the transport is stopped
+/// (which the caller wires to `ctx.shutdown.cancelled()` exactly like the UDS
+/// path). The transport is pre-`start`ed by the caller (it owns the Iroh
+/// endpoint + the Core's Noise static); this function only attaches the shared
+/// dispatcher and runs the loop.
+///
+/// Cross-platform: Iroh is QUIC, so unlike `run_uds` this is **not**
+/// `#[cfg(unix)]`-gated and builds on the Windows CI lane (Task 113). The actor
+/// wiring that constructs the `IrohTransport` from boot config + spawns this is
+/// deferred to Task 217's `TransportHandle` (the façade); this function is the
+/// internal entry that façade drives, and the Tier-2 loopback double drives the
+/// transport + an equivalent dispatcher directly without a keychain-touching
+/// boot.
+pub async fn serve_iroh(
+    transport: std::sync::Arc<concerto_transport::IrohTransport>,
+    services: CoreServiceSet,
+) -> Result<()> {
+    let dispatcher = std::sync::Arc::new(IrohDispatcher { services });
+    transport
+        .serve(dispatcher)
+        .await
+        .map_err(|e| Error::Internal(format!("iroh transport serve loop: {e}")))
 }
 
 /// RAII socket-file cleanup. Removes the socket on every drop path —
