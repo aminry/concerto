@@ -74,6 +74,10 @@ tower.workspace = true
 hyper-util.workspace = true
 tokio-stream = { workspace = true, features = ["net", "sync"] }
 hostname.workspace = true
+# Task 204: Connect-Web bridge. `GrpcWebLayer` wraps the same Tonic services
+# the UDS server hosts so a browser-reachable loopback hyper server can serve
+# gRPC-Web (+ SSE) over TCP. Workspace pin; cross-platform (no `#[cfg(unix)]`).
+tonic-web = { workspace = true }
 # Task 30: files-to-copy resolver.
 ignore = { workspace = true }
 pathdiff = { workspace = true }
@@ -132,6 +136,13 @@ hex = "0.4"
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# Task 204: the Connect-Web bridge integration test drives the loopback
+# gRPC-Web server with a headless HTTP client. It reuses the workspace
+# `reqwest` (rustls) pin but adds the `stream` feature so the test can read
+# the `Streams.Subscribe` server-stream body chunk-by-chunk
+# (`Response::bytes_stream`). Feature unification keeps the production build
+# unchanged (production reqwest does not enable `stream`).
+reqwest = { workspace = true, features = ["stream"] }
 # Task 18: direct DB access in the repository_clone integration test —
 # we seed a `projects` row before exercising `Repositories.AddRepository`
 # because the `Projects` service does not exist until Task 19.

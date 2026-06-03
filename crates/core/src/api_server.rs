@@ -202,7 +202,40 @@ impl Actor for ApiServerActor {
                 let cfg = ctx.config.read().await;
                 cfg.socket_path.clone()
             };
-            run_uds(
+
+            // Task 204: the Connect-Web bridge is a second front door onto
+            // the *same* handler set — a loopback gRPC-Web server, opt-in
+            // via `CONCERTO_CONNECT_BRIDGE` (default OFF so a pure
+            // co-located install never opens a TCP port). Build its
+            // `BridgeServices` from clones of the same handles before
+            // `run_uds` consumes the originals, then run both serve loops
+            // concurrently under the one shutdown token.
+            let bridge_cfg = crate::connect_bridge::ConnectBridgeConfig::from_env()?;
+            let bridge = if bridge_cfg.enabled {
+                let services = crate::connect_bridge::BridgeServices {
+                    started_at: Arc::clone(&self.started_at),
+                    supervisor_view: self.supervisor_view.clone(),
+                    repo_manager: self.repo_manager.clone(),
+                    workspace_manager: self.workspace_manager.clone(),
+                    workarea_manager: self.workarea_manager.clone(),
+                    agent_supervisor: self.agent_supervisor.clone(),
+                    persistence: self.persistence.clone(),
+                    scheduler: self.scheduler.clone(),
+                    skills_registry: self.skills_registry.clone(),
+                    suggestions: self.suggestions.clone(),
+                    vcs: self.vcs.clone(),
+                };
+                let (listener, bound) = crate::connect_bridge::bind(&bridge_cfg).await?;
+                tracing::info!(
+                    addr = %bound.local_addr,
+                    "Connect-Web bridge enabled alongside UDS server"
+                );
+                Some((listener, services))
+            } else {
+                None
+            };
+
+            let uds_fut = run_uds(
                 socket_path,
                 self.started_at,
                 self.supervisor_view,
@@ -215,9 +248,22 @@ impl Actor for ApiServerActor {
                 self.skills_registry,
                 self.suggestions,
                 self.vcs,
-                ctx.shutdown,
-            )
-            .await
+                ctx.shutdown.clone(),
+            );
+
+            match bridge {
+                Some((listener, services)) => {
+                    let bridge_fut =
+                        crate::connect_bridge::serve(listener, services, ctx.shutdown.clone());
+                    // Both serve loops resolve on the shared shutdown token;
+                    // surface the first error from either front door.
+                    let (uds_res, bridge_res) = tokio::join!(uds_fut, bridge_fut);
+                    uds_res?;
+                    bridge_res?;
+                    Ok(())
+                }
+                None => uds_fut.await,
+            }
         }
         #[cfg(not(unix))]
         {

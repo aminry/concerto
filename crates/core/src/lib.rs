@@ -21,6 +21,7 @@ pub mod api_server;
 pub mod audit;
 pub mod boot;
 pub mod conn_transport;
+pub mod connect_bridge;
 pub mod error_map;
 pub mod handlers;
 pub mod log_fields;
