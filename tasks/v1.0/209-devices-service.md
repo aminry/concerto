@@ -75,22 +75,24 @@ Tier 1 — the test double is an **in-process `SessionCloser` stub** that record
 6. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit the regen (the extended `Devices` surface appears in the generated proto interface doc; the `devices` columns are unchanged so `schema.md` is untouched — confirm).
 
 ## Definition of Done
-- [ ] `devices.proto` extended with `ListDevices`/`RevokeDevice`/`GetCoreInfo` + their messages (NEW field numbers, 207's surface untouched); `UpdateDevicePushToken` reserved-DEFERRED-to-P5 comment
-- [ ] `RevokeDevice` performs the `§7.3` sequence (persist `revoked_at` → insert shared revoked set → `SessionCloser::close_sessions_for_device` → `DeviceRevoked` audit + `device.revoked` broadcast); idempotency documented
-- [ ] `ListDevices` / `GetCoreInfo` read paths implemented; `CoreInfo` returns the wired `core_pubkey` + host/version
-- [ ] `SessionCloser` seam defined + injected; real wiring deferred to Task 217 and noted in Handoff
-- [ ] `Devices` handler implements the three new RPCs (already registered by 207); state threaded through its constructor
-- [ ] Tier-1 tests incl. revoke→close latency < 1 s against the stub + validate-rejects-after-revoke pass; the Tier-3 uncovered part stated in Verification
-- [ ] Existing `devices` table wired with NO migration added
-- [ ] Verification commands pass; interfaces regenerated + committed
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
-- [ ] Single commit with the message below
+- [x] `devices.proto` extended with `ListDevices`/`RevokeDevice`/`GetCoreInfo` + their messages (NEW field numbers, 207's surface untouched); `UpdateDevicePushToken` reserved-DEFERRED-to-P5 comment
+- [x] `RevokeDevice` performs the `§7.3` sequence (persist `revoked_at` → insert shared revoked set → `SessionCloser::close_sessions_for_device` → `DeviceRevoked` audit + `device.revoked` broadcast); idempotency documented
+- [x] `ListDevices` / `GetCoreInfo` read paths implemented; `CoreInfo` returns the wired `core_pubkey` + host/version
+- [x] `SessionCloser` seam defined + injected; real wiring deferred to Task 217 and noted in Handoff
+- [x] `Devices` handler implements the three new RPCs (already registered by 207); state threaded through its constructor
+- [x] Tier-1 tests incl. revoke→close latency < 1 s against the stub + validate-rejects-after-revoke pass; the Tier-3 uncovered part stated in Verification
+- [x] Existing `devices` table wired with NO migration added
+- [x] Verification commands pass; interfaces regenerated + committed
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/proto/proto/concerto/v1/devices.proto` (modified — append `ListDevices`/`RevokeDevice`/`GetCoreInfo` + messages)
-- `crates/core/src/security/pairing.rs` *(or `crates/core/src/security/devices.rs` — match 207)* (modified/new — `revoke_device`/`list_devices` + the `SessionCloser` trait) + `crates/core/src/security/mod.rs` (modified)
+- `crates/core/src/security/devices.rs` (new — `DeviceManager` with `revoke_device`/`list_devices`/`core_info` + the `SessionCloser` trait + `NoopSessionCloser`) + `crates/core/src/security/mod.rs` (modified)
 - `crates/core/src/handlers/devices.rs` (modified — three new RPCs)
-- `crates/core/src/api_server.rs` (modified — thread the revoked-set + `SessionCloser` handles into the `Devices` constructor)
+- `crates/core/src/api_server.rs` (modified — thread the `DeviceManager` through the `Devices` constructor)
+- `crates/core/src/boot.rs` (modified — construct the `DeviceManager` sharing the revoked-set handle + the `NoopSessionCloser` seam; ADDED to Outputs, see Drift)
+- `crates/core/src/audit/event.rs` (modified — `DeviceRevoked` audit kind; ADDED to Outputs, see Drift)
 - `crates/core/tests/device_revocation.rs` (new — Tier-1 revoke/list/core-info + latency tests)
 - `docs/interfaces/proto.md` (regenerated)
 
@@ -109,5 +111,103 @@ an in-process stream stub. UpdateDevicePushToken reserved for P5.
 Refs: tasks/v1.0/209-devices-service.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- devices.proto field numbers assigned (append range) / revoked-set handle shared with 206 issuer / `SessionCloser` seam signature for Task 217 to satisfy / revoke idempotency choice / last_seen_at + device.seen still deferred / Open questions / Deliberate debt / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+
+- **Drift from plan.**
+  - `crates/core/src/boot.rs` and `crates/core/src/audit/event.rs` were modified
+    but were not in the original `Outputs` list — both ADDED to Outputs above and
+    flagged here. `boot.rs` is the assembly site (it constructs the
+    `DeviceManager` sharing the SAME `revoked_set` handle the issuer reads + wires
+    the `NoopSessionCloser` seam, exactly as 206/207's Handoffs anticipated);
+    `event.rs` needed the new `DeviceRevoked` audit kind. (The `devices.proto` +
+    `audit/event.rs` `DeviceRevoked` additions already existed as uncommitted
+    working-tree changes when this branch was checked out — a prior partial pass;
+    they are correct and were kept/completed.)
+  - **Sibling `DeviceManager`, not an extension of `PairingCoordinator`.** The
+    task allowed either (`pairing.rs` *or* a sibling `devices.rs`). I chose a
+    sibling `crates/core/src/security/devices.rs` so I did **not** have to widen
+    `PairingCoordinator::new` — that constructor is a FROZEN Task-207 surface its
+    loopback test (`crates/core/tests/pairing.rs`, a merged 207 output) constructs
+    directly, and widening it would have forced editing a prior task's test. The
+    `Devices` handler now holds BOTH `Arc<PairingCoordinator>` (pairing RPCs) and
+    `Arc<DeviceManager>` (management RPCs); `boot.rs` constructs both from the one
+    Core identity and `api_server.rs` registers them as `Some` together.
+
+- **Proto numbers assigned (append-only, 207's surface untouched).** proto3 RPCs
+  have no field numbers, only order — the three new RPCs are appended **after**
+  `CompletePairing` in service order: `ListDevices` / `RevokeDevice` /
+  `GetCoreInfo`. Their NEW message field numbers all start at `1` within each new
+  message: `DeviceEntry { device_id=1, name=2, public_key=3, paired_at=4,
+  last_seen_at=5, revoked_at=6 }`, `ListDevicesResponse { devices=1 }`,
+  `RevokeDeviceRequest { device_id=1 }`, `CoreInfo { core_pubkey=1,
+  core_version=2, core_host_os=3, core_hostname=4 }`. 207's `PairingChallenge`/
+  `CompletePairingRequest`/`CompletePairingResponse` numbers are byte-for-byte
+  untouched. `UpdateDevicePushToken` is reserved-DEFERRED-to-P5 in a service
+  comment (no RPC; appends after `GetCoreInfo` when P5 lands).
+
+- **`SessionCloser` seam signature for Task 217 (FROZEN).**
+  `pub trait SessionCloser: Send + Sync { fn close_sessions_for_device(&self,
+  device_id: [u8; 32]); }` in `crates/core/src/security/devices.rs`. Sync +
+  non-blocking (a revoke must not stall on a slow transport); `device_id` is the
+  **raw 32-byte BLAKE2b fingerprint** (the cert form the validator keys on), NOT
+  the hex string. The `DeviceManager` depends on `Arc<dyn SessionCloser>`. Boot
+  injects `NoopSessionCloser` today (a co-located UDS Core has no remote streams
+  to sever). **Task 217 wires its `TransportHandle` as the real impl** — replace
+  the one-line `let session_closer: Arc<dyn SessionCloser> =
+  Arc::new(NoopSessionCloser);` in `boot.rs` with the handle. Name + signature
+  are FROZEN so 217 needs no rename.
+
+- **Revoked-set handle shared with the 206 issuer (the whole point).** The
+  `DeviceManager` receives the SAME `concerto_identity::RevokedSet`
+  (`Arc<RwLock<HashSet<[u8;32]>>>`) clone the `LocalCoreIssuer` holds — built once
+  via `new_revoked_set()` in `boot.rs` and cloned into BOTH. `revoke_device`
+  takes the write lock and inserts the raw id BEFORE closing sessions, so a
+  racing reconnect fails `validate` (proven by the test: the same issuer
+  ACCEPTS a cert pre-revoke and REJECTS it post-revoke). Poisoned-lock recovery
+  still inserts (a dropped revocation would let a stolen device reconnect).
+  **Boot does NOT yet mirror the `devices` table's already-revoked rows into the
+  set at startup** — see Open questions.
+
+- **Revoke idempotency choice (documented + FROZEN).** Unknown device id →
+  `Error::NotFound` → gRPC `NOT_FOUND`. Already-revoked id → **idempotent no-op
+  success** (the UPDATE uses `WHERE id = ? AND revoked_at IS NULL`; 0 rows
+  affected + the row exists ⇒ re-insert into the revoked set defensively but emit
+  NO second `revoked_at` change, audit, or broadcast). A malformed/non-hex id is
+  treated as unknown → `NOT_FOUND`.
+
+- **`device.revoked` broadcast is an in-manager `tokio::sync::broadcast` channel,
+  NOT a `Streams` subject.** The `Streams` service has a CLOSED `Subject` enum
+  (workspace/workarea/session/suggestion only); adding a `device.events` subject
+  is a `Streams` change outside this task's scope (and the Desktop revoke UI is
+  Task 219). So `DeviceManager` owns a `broadcast::Sender<DeviceRevokedEvent>`
+  exposed via `subscribe_revoked()`; the test subscribes to assert the broadcast.
+  Task 210/219 bridge this onto a real `Streams` subject when they wire the auth
+  path / Desktop "Connected Cores" view.
+
+- **Open questions for next task(s).**
+  - **210 (auth middleware):** consumes the revoked set this task populates —
+    it calls 206's `LocalCoreIssuer::validate`, which already reads the shared
+    set. No new wiring needed from 210 beyond holding the issuer; the
+    `PERMISSION_DENIED`/`auth.revoked` mapping is 210's (`design/10 §8`).
+  - **Boot does not re-mirror already-revoked `devices` rows into the in-memory
+    revoked set at startup.** Today the set starts empty each boot and only fills
+    as `revoke_device` runs in-process. A Core restart would therefore accept a
+    previously-revoked device's cert UNTIL it is re-revoked — a gap. The fix is a
+    one-time `SELECT id FROM devices WHERE revoked_at IS NOT NULL` mirror at boot
+    (or inside `validate`/the auth middleware). I left it for **210** (the auth
+    path is where revocation is actually enforced and where the boot-mirror most
+    naturally belongs); flagging so 210 owns the boot-time mirror. **Recommend
+    210 add the startup mirror.**
+  - **217** implements `SessionCloser` (see seam above).
+  - **219** consumes `subscribe_revoked()` / `ListDevices` / `GetCoreInfo` for the
+    Desktop "Connected Cores" + revoke UI and bridges `device.revoked` to a
+    `Streams` subject if a live subscription is wanted there.
+
+- **Deliberate debt.** (1) Boot-time revoked-set mirror deferred to **Task 210**
+  (above). (2) `last_seen_at` always `0` and the `device.seen` event are deferred
+  (auth-path concern, not management) — out of scope per the task; no closing task
+  assigned in this phase. No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new
+  code.
+
+- **Smoke-gate state.** Unchanged (this task added no smoke check; `Smoke gate`
+  field = unchanged).

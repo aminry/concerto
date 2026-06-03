@@ -18,6 +18,7 @@
 //! [`permission::ack_for_bypass_destructive_guard`].
 
 pub mod destructive;
+pub mod devices;
 pub mod identity;
 pub mod managed;
 pub mod pairing;

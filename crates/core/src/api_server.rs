@@ -107,6 +107,12 @@ pub struct ApiServerActor {
     /// any in-flight tokens. `None` on a Core that could not establish its
     /// identity (no keychain), which leaves remote pairing unavailable.
     pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
+    /// Optional device manager (Task 209). Constructed alongside `pairing` at
+    /// boot (both need the Core identity); shares the revoked-set handle the
+    /// issuer reads and the `SessionCloser` seam. Threaded into the same
+    /// `Devices` service so its `ListDevices`/`RevokeDevice`/`GetCoreInfo` RPCs
+    /// are served next to the pairing RPCs. `None` whenever `pairing` is `None`.
+    device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
 }
 
 impl ApiServerActor {
@@ -129,6 +135,7 @@ impl ApiServerActor {
             suggestions: None,
             vcs: None,
             pairing: None,
+            device_manager: None,
         }
     }
 
@@ -157,6 +164,7 @@ impl ApiServerActor {
             suggestions: None,
             vcs: None,
             pairing: None,
+            device_manager: None,
         }
     }
 
@@ -180,6 +188,7 @@ impl ApiServerActor {
         #[cfg(unix)] suggestions: Option<SuggestionEngineHandle>,
         vcs: Option<VcsHandle>,
         pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
+        device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
     ) -> Self {
         Self {
             started_at,
@@ -197,6 +206,7 @@ impl ApiServerActor {
             suggestions,
             vcs,
             pairing,
+            device_manager,
         }
     }
 }
@@ -260,6 +270,7 @@ impl Actor for ApiServerActor {
                 self.suggestions,
                 self.vcs,
                 self.pairing,
+                self.device_manager,
                 ctx.shutdown.clone(),
             );
 
@@ -289,6 +300,7 @@ impl Actor for ApiServerActor {
                 self.skills_registry,
                 self.vcs,
                 self.pairing,
+                self.device_manager,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -320,6 +332,7 @@ async fn run_uds(
     suggestions: Option<SuggestionEngineHandle>,
     vcs: Option<VcsHandle>,
     pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
+    device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -521,14 +534,16 @@ async fn run_uds(
         let vcs_service = VcsServer::new(VcsHandler::new(vcs));
         builder = builder.add_service(vcs_service);
     }
-    // Task 207: `Devices` pairing service. Registered when the Core
-    // established its keychain-backed identity at boot (the coordinator owns
-    // the issuer + the in-memory token store). Independent of every other
-    // manager — the coordinator INSERTs into `devices` via its own
-    // `Persistence` clone. Task 209 extends the same service with
-    // list/revoke/core-info RPCs.
-    if let Some(pairing) = pairing {
-        let devices_service = DevicesServer::new(DevicesHandler::new(pairing));
+    // Task 207/209: `Devices` service. Registered when the Core established its
+    // keychain-backed identity at boot (the coordinator owns the issuer + the
+    // in-memory token store; the device manager shares the revoked-set handle
+    // the issuer reads + the `SessionCloser` seam). Both are constructed
+    // together in `boot.rs`, so they are `Some` together. Independent of every
+    // other manager — both reach the `devices` table via their own
+    // `Persistence` clones. Pairing RPCs (207) + list/revoke/core-info (209) are
+    // served from the one handler.
+    if let (Some(pairing), Some(device_manager)) = (pairing, device_manager) {
+        let devices_service = DevicesServer::new(DevicesHandler::new(pairing, device_manager));
         builder = builder.add_service(devices_service);
     }
 

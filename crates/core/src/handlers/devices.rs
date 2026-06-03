@@ -8,14 +8,16 @@
 //!   row) and returns the signed cert as opaque CBOR bytes (Decision D1).
 //!
 //! Task 209 extends the same `Devices` service with `ListDevices` /
-//! `RevokeDevice` / `GetCoreInfo`; this handler implements only the two pairing
-//! RPCs the generated trait declares today.
+//! `RevokeDevice` / `GetCoreInfo`, delegated to
+//! [`crate::security::devices::DeviceManager`]; this handler now implements all
+//! five RPCs the generated trait declares.
 //!
 //! Failure mapping (`design/12 §8`): the coordinator returns
 //! `concerto_error::Error::Pairing(code)` with a wire-code string; the handler
 //! maps `pairing.bad_signature` / `pairing.bad_*` to `UNAUTHENTICATED` and the
 //! token-state failures (`pairing.expired` / `pairing.consumed`) to
-//! `FAILED_PRECONDITION`. Everything else flows through [`error_to_status`].
+//! `FAILED_PRECONDITION`. The management RPCs flow through [`error_to_status`]
+//! (`RevokeDevice` on an unknown id → `Error::NotFound` → `NOT_FOUND`).
 
 use std::sync::Arc;
 
@@ -24,22 +26,30 @@ use tonic::{Request, Response, Status};
 
 use concerto_proto::v1::devices_server::Devices as DevicesService;
 use concerto_proto::v1::{
-    CompletePairingRequest, CompletePairingResponse, PairingChallenge as ProtoPairingChallenge,
+    CompletePairingRequest, CompletePairingResponse, CoreInfo as ProtoCoreInfo, DeviceEntry,
+    ListDevicesResponse, PairingChallenge as ProtoPairingChallenge, RevokeDeviceRequest,
 };
 
 use crate::error_map::error_to_status;
+use crate::security::devices::{CoreInfo, DeviceManager, DeviceRecord};
 use crate::security::pairing::{CompletePairingInput, PairingChallenge, PairingCoordinator};
 use concerto_error::Error;
 
-/// Implements the generated `Devices` service trait (pairing RPCs).
+/// Implements the generated `Devices` service trait: the two pairing RPCs
+/// (delegated to [`PairingCoordinator`]) plus the three management RPCs
+/// (delegated to [`DeviceManager`]).
 #[derive(Clone)]
 pub struct DevicesHandler {
     coordinator: Arc<PairingCoordinator>,
+    devices: Arc<DeviceManager>,
 }
 
 impl DevicesHandler {
-    pub fn new(coordinator: Arc<PairingCoordinator>) -> Self {
-        Self { coordinator }
+    pub fn new(coordinator: Arc<PairingCoordinator>, devices: Arc<DeviceManager>) -> Self {
+        Self {
+            coordinator,
+            devices,
+        }
     }
 }
 
@@ -96,6 +106,64 @@ impl DevicesService for DevicesHandler {
             signed_device_cert: outcome.signed_device_cert,
             core_pubkey: outcome.core_pubkey.to_vec(),
         }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Devices::ListDevices")]
+    async fn list_devices(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<ListDevicesResponse>, Status> {
+        let records = self.devices.list_devices().await.map_err(error_to_status)?;
+        Ok(Response::new(ListDevicesResponse {
+            devices: records.into_iter().map(record_to_proto).collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Devices::RevokeDevice")]
+    async fn revoke_device(
+        &self,
+        request: Request<RevokeDeviceRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.device_id.is_empty() {
+            return Err(Status::invalid_argument("device_id is required"));
+        }
+        self.devices
+            .revoke_device(&req.device_id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "Devices::GetCoreInfo")]
+    async fn get_core_info(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<ProtoCoreInfo>, Status> {
+        Ok(Response::new(core_info_to_proto(self.devices.core_info())))
+    }
+}
+
+/// Map a [`DeviceRecord`] to the proto [`DeviceEntry`]. The `0`-sentinel for the
+/// nullable columns is already applied in [`DeviceManager::list_devices`].
+fn record_to_proto(r: DeviceRecord) -> DeviceEntry {
+    DeviceEntry {
+        device_id: r.device_id,
+        name: r.name,
+        public_key: r.public_key,
+        paired_at: r.paired_at,
+        last_seen_at: r.last_seen_at,
+        revoked_at: r.revoked_at,
+    }
+}
+
+/// Map [`CoreInfo`] to the proto [`ProtoCoreInfo`].
+fn core_info_to_proto(c: CoreInfo) -> ProtoCoreInfo {
+    ProtoCoreInfo {
+        core_pubkey: c.core_pubkey.to_vec(),
+        core_version: c.core_version,
+        core_host_os: c.core_host_os,
+        core_hostname: c.core_hostname,
     }
 }
 
