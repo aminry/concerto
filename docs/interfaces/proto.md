@@ -37,6 +37,91 @@ enum PermissionMode {
 }
 ```
 
+## `crates/proto/proto/concerto/v1/devices.proto`
+
+- package: `concerto.v1`
+
+### message `PairingChallenge`
+
+```proto
+message PairingChallenge {
+  // The Core's Ed25519 identity public key (32 bytes). The device persists
+  // this as `core_pubkey` so subsequent connects can validate the Core's
+  // signature on its DeviceCert.
+  bytes core_pubkey = 1;
+  // The raw 32-byte one-shot pairing token. Secret; carried in the QR only.
+  bytes pairing_token = 2;
+  // The Core's LAN endpoint (mDNS-resolved address), when discovered, so the
+  // pairing never touches the relay. Empty when no LAN endpoint is known. The
+  // real endpoint string is supplied by Task 212/213; Task 207 emits whatever
+  // the coordinator is configured with (empty in the loopback double).
+  string lan_endpoint = 3;
+  // A relay hint for off-LAN pairing fallback (design/12 §3.3 / §12 R-3).
+  // Empty when no relay is configured. Same protocol either way.
+  string relay_hint = 4;
+  // When the token expires (issued_at + 60 s). The device should complete
+  // pairing before this instant; a photographed-but-unused token still expires.
+  google.protobuf.Timestamp expires_at = 5;
+}
+```
+
+### message `CompletePairingRequest`
+
+```proto
+message CompletePairingRequest {
+  // The pairing device's Ed25519 public key (32 bytes). Becomes the cert's
+  // `device_pubkey`; `device_id = BLAKE2b-256(device_pubkey)`.
+  bytes device_pubkey = 1;
+  // The user-supplied device name captured at pairing time.
+  string device_name = 2;
+  // A 32-byte random nonce the device chose, included verbatim in the signed
+  // payload to bind this request (replay-distinct). FROZEN length: 32 bytes.
+  bytes nonce = 3;
+  // The device's Ed25519 signature (64 bytes) over
+  // `pairing_token || nonce || device_pubkey`.
+  bytes signature = 4;
+  // The raw 32-byte pairing token the device read from the QR. The Core hashes
+  // it (BLAKE2b-256) to look up + consume the matching in-memory token state,
+  // and uses the raw bytes as the leading segment of the signed payload it
+  // re-derives. (In production this rides inside the Noise channel whose PSK is
+  // the same token; carrying it here keeps the handler transport-agnostic for
+  // the Tier-2 loopback double.)
+  bytes pairing_token = 5;
+}
+```
+
+### message `CompletePairingResponse`
+
+```proto
+message CompletePairingResponse {
+  // The signed device certificate as opaque CBOR bytes (`cert_bytes ||
+  // signature`). NOT a protobuf message — see Decision D1 above.
+  bytes signed_device_cert = 1;
+  // The Core's Ed25519 identity public key (32 bytes), echoed so the device
+  // can persist `{device_priv, device_cert, core_pubkey}` (design/12 §3.3).
+  bytes core_pubkey = 2;
+}
+```
+
+### service `Devices`
+
+```proto
+service Devices {
+  // Mint a one-shot pairing token (32 random bytes, 60 s TTL, ≤ 3 active,
+  // in-memory only) and return the QR payload (design/12 §3.3, §6.2). The
+  // operator triggers this from the tray / `concerto pair` CLI.
+  rpc StartPairing(google.protobuf.Empty) returns (PairingChallenge);
+  // Complete pairing: verify the device's signature over
+  // `pairing_token || nonce || device_pubkey`, consume the token one-shot,
+  // mint + sign a DeviceCert, insert the `devices` row, and return the signed
+  // cert (opaque CBOR bytes, D1). Replays of a consumed token fail with
+  // `FAILED_PRECONDITION` (`pairing.consumed`); expired tokens fail with
+  // `FAILED_PRECONDITION` (`pairing.expired`); a bad signature fails with
+  // `UNAUTHENTICATED` (design/12 §8).
+  rpc CompletePairing(CompletePairingRequest) returns (CompletePairingResponse);
+}
+```
+
 ## `crates/proto/proto/concerto/v1/files.proto`
 
 - package: `concerto.v1`

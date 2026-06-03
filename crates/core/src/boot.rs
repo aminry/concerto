@@ -162,43 +162,71 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     // keychain denies access; that hardening belongs with Task 210/211 (the
     // remote-auth path that actually consumes the issuer and can refuse remote
     // connections when no identity exists) — until then, local UDS operation
-    // must not require a keychain. The issuer is not yet injected into any
-    // gRPC service (that is Task 209/210); it is bound with a leading
-    // underscore to keep the construction site explicit and warning-clean.
-    match home::home_dir() {
-        Some(core_home) => {
-            let secrets = concerto_keychain::Secrets::new();
-            match crate::security::identity::load_or_create_core_identity(
-                &secrets,
-                &core_home,
-                &audit_writer,
-            )
-            .await
-            {
-                Ok(core_identity) => {
-                    let _core_issuer = concerto_identity::LocalCoreIssuer::new(
-                        core_identity.keypair,
-                        core_identity.public_key,
-                        revoked_set.clone(),
-                    );
-                    tracing::info!(
-                        core_pubkey = %hex::encode(core_identity.public_key.to_bytes()),
-                        first_launch = core_identity.created,
-                        "core device-cert issuer constructed"
-                    );
+    // must not require a keychain.
+    //
+    // Task 207: when the identity is established, construct the
+    // `PairingCoordinator` from the issuer + a `Persistence` clone + an audit
+    // writer clone, behind an `Arc` so the api-server actor's factory closure
+    // (which may re-run on a supervised restart) shares the SAME in-memory
+    // token store. It is injected into the gRPC `Devices` service below. The
+    // revoked-set handle is still bound (Task 209 wires the revoke path to it);
+    // the underscore keeps the construction site explicit and warning-clean.
+    let _revoked_set = revoked_set.clone();
+    let pairing_coordinator: Option<Arc<crate::security::pairing::PairingCoordinator>> =
+        match home::home_dir() {
+            Some(core_home) => {
+                let secrets = concerto_keychain::Secrets::new();
+                match crate::security::identity::load_or_create_core_identity(
+                    &secrets,
+                    &core_home,
+                    &audit_writer,
+                )
+                .await
+                {
+                    Ok(core_identity) => {
+                        let core_pubkey_hex = hex::encode(core_identity.public_key.to_bytes());
+                        let first_launch = core_identity.created;
+                        let core_issuer = concerto_identity::LocalCoreIssuer::new(
+                            core_identity.keypair,
+                            core_identity.public_key,
+                            revoked_set.clone(),
+                        );
+                        // LAN endpoint / relay hint are supplied by the
+                        // transport layer (Task 212/213/214); empty here until
+                        // those land — the QR carries no endpoint yet and the
+                        // pairing exchange is transport-agnostic.
+                        let coordinator = crate::security::pairing::PairingCoordinator::new(
+                            core_issuer,
+                            Arc::clone(&persistence),
+                            audit_writer.clone(),
+                            String::new(),
+                            String::new(),
+                        );
+                        tracing::info!(
+                            core_pubkey = %core_pubkey_hex,
+                            first_launch,
+                            "core device-cert issuer + pairing coordinator constructed"
+                        );
+                        Some(Arc::new(coordinator))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "core identity establishment failed; remote device pairing \
+                             unavailable until a keychain-backed identity exists (Task 210/211 \
+                             will gate remote connections on it)"
+                        );
+                        None
+                    }
                 }
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    "core identity establishment failed; remote device-cert auth \
-                     unavailable until a keychain-backed identity exists (Task 210/211 \
-                     will gate remote connections on it)"
-                ),
             }
-        }
-        None => {
-            tracing::warn!("home::home_dir() returned None; skipping core identity establishment")
-        }
-    }
+            None => {
+                tracing::warn!(
+                    "home::home_dir() returned None; skipping core identity establishment"
+                );
+                None
+            }
+        };
 
     // Task 19: spawn the Workspace Manager. Same pattern as the repo
     // manager — the actor's `run` parks on shutdown; the cheap-to-clone
@@ -466,6 +494,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     #[cfg(unix)]
     let factory_suggestions_handle = suggestions_handle.clone();
     let factory_vcs_handle = vcs_handle.clone();
+    let factory_pairing = pairing_coordinator.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -486,6 +515,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     #[cfg(unix)]
                     Some(factory_suggestions_handle.clone()),
                     Some(factory_vcs_handle.clone()),
+                    factory_pairing.clone(),
                 )
             },
             ApiServerConfig {

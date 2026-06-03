@@ -69,6 +69,8 @@ fn main() -> io::Result<()> {
         "concerto.v1.Schedule.created_at",
         "concerto.v1.ScheduleRun.started_at",
         "concerto.v1.ScheduleRun.ended_at",
+        // Task 207 — pairing token expiry on the QR challenge.
+        "concerto.v1.PairingChallenge.expires_at",
     ];
 
     let mut builder = tonic_build::configure()

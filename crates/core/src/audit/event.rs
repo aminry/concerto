@@ -91,6 +91,15 @@ pub enum AuditKind {
     /// 206, `design/12 §3.7`). Emitted by `load_or_create_core_identity` on
     /// first launch only.
     CoreIdentityCreated,
+    /// A device-pairing ceremony was initiated — a one-shot token minted
+    /// (Task 207, `design/12 §3.7`). Emitted by `start_pairing`.
+    DevicePairingStarted,
+    /// A device completed pairing — token consumed, cert issued, `devices`
+    /// row inserted (Task 207). Emitted by `complete_pairing` on success.
+    DevicePairingCompleted,
+    /// A pairing attempt failed — bad signature, expired/consumed token, or
+    /// issuance/insert error (Task 207, `design/12 §3.7`/§8).
+    DevicePairingFailed,
     WorkspaceCreated,
     WorkspaceArchived,
     WorkspaceRestored,
@@ -121,6 +130,9 @@ impl AuditKind {
     pub fn as_str(self) -> &'static str {
         match self {
             AuditKind::CoreIdentityCreated => "core_identity_created",
+            AuditKind::DevicePairingStarted => "device_pairing_started",
+            AuditKind::DevicePairingCompleted => "device_pairing_completed",
+            AuditKind::DevicePairingFailed => "device_pairing_failed",
             AuditKind::WorkspaceCreated => "workspace_created",
             AuditKind::WorkspaceArchived => "workspace_archived",
             AuditKind::WorkspaceRestored => "workspace_restored",
