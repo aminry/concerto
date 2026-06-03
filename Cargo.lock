@@ -899,6 +899,7 @@ dependencies = [
  "async-trait",
  "blake2",
  "ciborium",
+ "criterion",
  "ed25519-dalek",
  "getrandom 0.2.17",
  "serde",

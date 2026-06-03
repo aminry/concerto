@@ -26,6 +26,14 @@ members = [
     "crates/test-harness",
 ]
 default-members = ["crates/core", "crates/cli"]
+# Task 208: the cargo-fuzz crate (`crates/identity/fuzz`) is EXCLUDED from the
+# parent workspace. It needs nightly + a libFuzzer toolchain that the stable CI
+# lanes (`cargo check/clippy/test --workspace`, `cargo bench --no-run`) lack, so
+# it must never be pulled into the workspace build. It carries its own empty
+# `[workspace]` table too (the cargo-fuzz convention); this `exclude` is the
+# belt-and-suspenders so `cargo --workspace` never tries to compile it. Build it
+# only via `cargo +nightly fuzz build` (typically the Linux CI lane).
+exclude = ["crates/identity/fuzz"]
 
 [workspace.package]
 version = "0.0.1"

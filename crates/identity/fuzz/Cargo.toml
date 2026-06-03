@@ -1,0 +1,41 @@
+# cargo-fuzz crate for `concerto-identity` (Task 208).
+#
+# IMPORTANT — stable-CI safety: this crate carries its OWN empty `[workspace]`
+# table so it is EXCLUDED from the parent workspace, and the root `Cargo.toml`
+# also lists `crates/identity/fuzz` under `[workspace] exclude`. The libfuzzer
+# target needs nightly + a libFuzzer-capable toolchain, which the stable CI
+# lanes (`cargo check/clippy/test --workspace`, `cargo bench --no-run`) do NOT
+# have — so it must never be pulled into the parent workspace build. It is built
+# ONLY by `cargo +nightly fuzz build` (the compile gate). Running the fuzzer to
+# convergence is a manual local step, not a CI gate.
+[package]
+name = "concerto-identity-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Empty workspace table → this crate is its own workspace root, excluded from
+# the parent. (The cargo-fuzz convention.)
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# libfuzzer-sys: the libFuzzer harness shim. MIT/Apache-2.0/MIT-0.
+libfuzzer-sys = "0.4"
+# arbitrary: structured-input derivation for fuzz targets. MIT/Apache-2.0.
+arbitrary = { version = "1", features = ["derive"] }
+concerto-identity = { path = ".." }
+
+[[bin]]
+name = "validate_cert"
+path = "fuzz_targets/validate_cert.rs"
+test = false
+doc = false
+bench = false
+
+# Fuzz targets build with overflow checks + debug assertions on; keep the
+# release profile lean otherwise (the cargo-fuzz default).
+[profile.release]
+debug = 1
