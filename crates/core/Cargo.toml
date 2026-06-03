@@ -42,6 +42,20 @@ mem-bench = []
 concerto-error = { path = "../error" }
 concerto-persist = { path = "../persist" }
 concerto-proto = { path = "../proto" }
+# Task 206: the device-cert issuer (`LocalCoreIssuer`) + the Ed25519 key
+# primitives the Core's identity loader generates/loads. Pure crypto leaf
+# crate (no keychain/DB) — the Core injects the keychain-loaded signing key.
+concerto-identity = { path = "../identity" }
+# Task 206: the OS keychain wrapper holding the Core's Ed25519 private key
+# under `SecretKind::CoreIdentityPrivateKey`. `load_or_create_core_identity`
+# reads/writes it at boot.
+concerto-keychain = { path = "../keychain" }
+# Task 206: lowercase-hex encoding of the 32-byte Ed25519 seed before it goes
+# into the keychain `SecretValue` (the FROZEN seed encoding — see
+# `security/identity.rs`). `hex` is already in the tree (agent-host + the
+# unix cookie path); promoted to a cross-platform core dep here. No new
+# external crate enters the graph.
+hex = "0.4"
 # Task 18: shell-out + gix git operations live under `repo_manager`.
 concerto-gix-wrap = { path = "../gix-wrap" }
 uuid = { workspace = true }
@@ -131,7 +145,9 @@ getrandom = { workspace = true }
 # Task 22: CBOR codec used to encode `Hello` frames sent to the host.
 ciborium = "0.2"
 # Task 22: hex-encode the cookie when passing it to the host as `--cookie`.
-hex = "0.4"
+# (`hex` itself is declared cross-platform in the main `[dependencies]`
+# block above, added by Task 206; this comment documents the unix cookie
+# consumer.)
 
 [dev-dependencies]
 tempfile = "3"

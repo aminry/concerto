@@ -144,6 +144,62 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         "audit writer ready"
     );
 
+    // Task 206: establish the Core's Ed25519 identity (`design/12 §3.1`).
+    // Runs AFTER the audit writer (so a first-launch generation can emit
+    // `CoreIdentityCreated`) and is constructed here so the issuer's signing
+    // key + the shared revoked-set handle exist before any remote-auth path is
+    // wired (Task 210's auth middleware consumes `validate`; Task 209 populates
+    // the same revoked-set handle on revoke).
+    //
+    // The revoked-set handle the issuer reads and Task 209's revoke path
+    // writes. Empty at boot; Task 209 will mirror the `devices` table into it.
+    let revoked_set = concerto_identity::new_revoked_set();
+    // Identity establishment is a best-effort boot probe, mirroring the
+    // `vcs.gh_auth` / `skills.boot_refresh` probes below: a keychain failure
+    // (e.g. a headless CI sandbox or a Linux box with no Secret Service)
+    // logs a warning and leaves the issuer unconstructed rather than aborting
+    // the whole Core. `design/12 §8` calls for *blocking* startup when the
+    // keychain denies access; that hardening belongs with Task 210/211 (the
+    // remote-auth path that actually consumes the issuer and can refuse remote
+    // connections when no identity exists) — until then, local UDS operation
+    // must not require a keychain. The issuer is not yet injected into any
+    // gRPC service (that is Task 209/210); it is bound with a leading
+    // underscore to keep the construction site explicit and warning-clean.
+    match home::home_dir() {
+        Some(core_home) => {
+            let secrets = concerto_keychain::Secrets::new();
+            match crate::security::identity::load_or_create_core_identity(
+                &secrets,
+                &core_home,
+                &audit_writer,
+            )
+            .await
+            {
+                Ok(core_identity) => {
+                    let _core_issuer = concerto_identity::LocalCoreIssuer::new(
+                        core_identity.keypair,
+                        core_identity.public_key,
+                        revoked_set.clone(),
+                    );
+                    tracing::info!(
+                        core_pubkey = %hex::encode(core_identity.public_key.to_bytes()),
+                        first_launch = core_identity.created,
+                        "core device-cert issuer constructed"
+                    );
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "core identity establishment failed; remote device-cert auth \
+                     unavailable until a keychain-backed identity exists (Task 210/211 \
+                     will gate remote connections on it)"
+                ),
+            }
+        }
+        None => {
+            tracing::warn!("home::home_dir() returned None; skipping core identity establishment")
+        }
+    }
+
     // Task 19: spawn the Workspace Manager. Same pattern as the repo
     // manager — the actor's `run` parks on shutdown; the cheap-to-clone
     // handle is what the gRPC `Workspaces` service holds.

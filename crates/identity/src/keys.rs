@@ -12,13 +12,24 @@ use crate::error::IdentityError;
 
 /// Generate a fresh keypair from 32 OS-random bytes.
 pub(crate) fn generate() -> Result<KeyPair, IdentityError> {
-    let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed).map_err(|e| IdentityError::Rng(e.to_string()))?;
+    let mut seed = generate_seed()?;
     let kp = from_seed(&seed);
     // The seed has been copied into the SigningKey; wipe our stack copy.
     use zeroize::Zeroize;
     seed.zeroize();
     Ok(kp)
+}
+
+/// Generate a fresh 32-byte Ed25519 seed from the OS RNG.
+///
+/// The persistence path (Task 206): the keychain-backed Core identity loader
+/// takes the raw seed, stores it, and rebuilds the live key via
+/// [`from_seed`]. The returned array is secret material — the caller zeroizes
+/// it after encoding.
+pub(crate) fn generate_seed() -> Result<[u8; 32], IdentityError> {
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|e| IdentityError::Rng(e.to_string()))?;
+    Ok(seed)
 }
 
 /// Build a keypair from a fixed 32-byte seed (deterministic — used by the

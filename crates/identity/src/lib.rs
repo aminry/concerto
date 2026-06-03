@@ -31,12 +31,15 @@
 
 pub mod api;
 pub mod error;
+pub mod issuer;
 
 pub(crate) mod cert;
 pub(crate) mod keys;
 
 pub use api::{
-    device_id, encode_cert, sign_cert, verify_cert, DeviceCert, KeyPair, PublicKey, Signature,
+    device_id, encode_cert, generate_seed, sign_cert, verify_cert, DeviceCert, DeviceCertIssuer,
+    DeviceContext, KeyPair, LocalCoreIssuer, PairingRequest, PublicKey, Signature,
     SignedDeviceCert,
 };
-pub use error::IdentityError;
+pub use error::{IdentityError, Result};
+pub use issuer::{new_revoked_set, RevokedSet, CERT_LIFETIME_SECS, SKEW_TOLERANCE_SECS};
