@@ -72,15 +72,15 @@ Tier 2 — the double is **two in-process gRPC/coordinator endpoints completing 
 7. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit the regen (the new `Devices` proto surface appears in the generated proto interface doc; the Noise XX wrapper surface in `crates/identity/src/api.rs` if exposed there).
 
 ## Definition of Done
-- [ ] `devices.proto` created with the two pairing RPCs (`SignedDeviceCert` as opaque CBOR `bytes`); 209/P5 extension reserved in a comment
-- [ ] Noise XX (PSK = pairing_token) primitive in `crates/identity`; chosen protocol string documented + frozen
-- [ ] Pairing coordinator: token rules (`§6.2`) enforced; signed-payload `pairing_token||nonce||device_pubkey` verified; one-shot consume; issues cert via 206; INSERTs `devices` row; audits Started/Completed/Failed
-- [ ] `Devices` gRPC handler implemented + registered/served
-- [ ] Tier-2 loopback pairing tests (happy/one-shot/expiry/≤3-active/bad-sig/replay) pass; the Tier-3 uncovered part stated in Verification
-- [ ] `snow` pinned in workspace deps + ratified in `deny.toml`; `cargo deny check` green
-- [ ] Verification commands pass; interfaces regenerated + committed
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
-- [ ] Single commit with the message below
+- [x] `devices.proto` created with the two pairing RPCs (`SignedDeviceCert` as opaque CBOR `bytes`); 209/P5 extension reserved in a comment
+- [x] Noise XX (PSK = pairing_token) primitive in `crates/identity`; chosen protocol string documented + frozen
+- [x] Pairing coordinator: token rules (`§6.2`) enforced; signed-payload `pairing_token||nonce||device_pubkey` verified; one-shot consume; issues cert via 206; INSERTs `devices` row; audits Started/Completed/Failed
+- [x] `Devices` gRPC handler implemented + registered/served
+- [x] Tier-2 loopback pairing tests (happy/one-shot/expiry/≤3-active/bad-sig/replay) pass; the Tier-3 uncovered part stated in Verification
+- [x] `snow` pinned in workspace deps; `cargo deny check` green (resolved SPDX = MIT, already on the allow-list — no `deny.toml` ratification needed; see Handoff)
+- [x] Verification commands pass; interfaces regenerated + committed
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/proto/proto/concerto/v1/devices.proto` (new)
@@ -88,9 +88,15 @@ Tier 2 — the double is **two in-process gRPC/coordinator endpoints completing 
 - `crates/core/src/security/pairing.rs` (new — token store + coordinator) + `crates/core/src/security/mod.rs` (modified)
 - `crates/core/src/handlers/devices.rs` (new) + `crates/core/src/handlers/mod.rs` (modified — register `Devices`)
 - `crates/core/tests/pairing.rs` (new — Tier-2 loopback tests)
-- `Cargo.toml` (modified — `snow` in `[workspace.dependencies]`)
-- `deny.toml` (modified — `snow` SPDX ratification comment, if a new expression surfaces)
-- `docs/interfaces/*` (regenerated)
+- `Cargo.toml` (modified — `snow` in `[workspace.dependencies]`) + `Cargo.lock` (resolved)
+- `crates/core/src/handlers/mod.rs` (modified — register `devices` module)
+- `crates/core/src/api_server.rs` (modified — register `DevicesServer` + thread the coordinator)
+- `crates/core/src/boot.rs` (modified — construct + inject the `PairingCoordinator`)
+- `crates/core/src/audit/event.rs` (modified — 3 design-mandated pairing `AuditKind`s)
+- `crates/proto/build.rs` (modified — `PairingChallenge.expires_at` timestamp field)
+- `crates/identity/src/error.rs` (modified — `IdentityError::Noise` variant)
+- `deny.toml` — **NOT modified** (`snow` SPDX `Apache-2.0 OR MIT` resolves to MIT, already allowed; see Handoff)
+- `docs/interfaces/*` (regenerated — `proto.md` gains the `Devices` surface)
 
 ## Commit message
 ```
@@ -108,4 +114,150 @@ Refs: tasks/v1.0/207-pairing-noise-xx.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- Chosen Noise XX protocol string / token-store + clock-injection shape / how the handler reaches the 206 issuer + revoked-set / devices.proto field numbers assigned (for 209) / snow SPDX ratification / Open questions / Deliberate debt / Smoke-gate state
+
+- **Chosen Noise XX protocol string (FROZEN wire contract):**
+  `Noise_XXpsk3_25519_AESGCM_SHA256` — declared as
+  `concerto_identity::PAIRING_NOISE_PARAMS` in `crates/identity/src/noise_xx.rs`.
+  `psk3` places the pairing-token PSK at message index 3 (after `-> s, se`),
+  the latest point that binds the token on **both** ends, so a handshake that
+  reaches transport mode has provably mixed the token everywhere — exactly the
+  design's "both ends authenticate via the `pairing_token`" intent. A wrong PSK
+  fails the final `read_message` decrypt (→ dropped pairing, `§8`). Cipher suite
+  is X25519 / AES-256-GCM / SHA-256. The wrapper exposes a two-sided API
+  (`NoiseHandshake::initiator`/`responder` → 3 XX messages → `into_transport()`
+  → `NoiseTransport::{write,read}_message`) over a **caller-supplied byte
+  duplex** — transport-agnostic (Task 212 supplies the real Iroh stream; the
+  Tier-2 test uses `tokio::io::duplex`).
+
+- **`snow` pin + SPDX:** `snow = "0.9"` in `[workspace.dependencies]` (resolves
+  **0.9.6**), `default-features = false` + `default-resolver` (pure-Rust crypto,
+  no `ring`/libsodium C deps → Windows lane stays green). **Pinned 0.9, NOT
+  0.10**: snow 0.10 declares `rust-version = 1.85`, above the workspace MSRV of
+  1.82 (`[workspace.package].rust-version`); 0.9.6 has the same `XXpsk3` surface
+  and no MSRV floor. License is **`Apache-2.0 OR MIT`** (the task body guessed
+  "Unlicense OR MIT" — it is actually Apache/MIT); cargo-deny resolves it to
+  **MIT**, already on the allow-list. **No `deny.toml` change was needed** —
+  `cargo deny check` is green with `deny.toml` untouched. (So `deny.toml` is NOT
+  in the final Outputs; flagged under Drift.)
+
+- **Token store + clock-injection shape:**
+  `crates/core/src/security/pairing.rs` holds a `TokenStore`
+  (`std::sync::Mutex<HashMap<TokenHash, PairingTokenState>>`, sync — no `.await`
+  under the lock). Tokens are 32 `getrandom` bytes; the store keys on
+  `BLAKE2b-256(token)` (`TokenHash = [u8;32]`) — **the raw token is never
+  stored**; the raw bytes go out in the QR / are the Noise PSK. Rules:
+  `PAIRING_TOKEN_TTL = 60s`, `MAX_ACTIVE_TOKENS = 3` (mint evicts the oldest by
+  `issued_at`), one-shot consume (remove-on-success). The coordinator exposes
+  **clock-injected** `start_pairing_at(now)` / `complete_pairing_at(input, now)`
+  (the public `start_pairing()`/`complete_pairing()` call them with
+  `SystemTime::now()`), so the expiry test advances the clock instead of
+  sleeping 60s. `PAIRING_NONCE_LEN = 32` is the FROZEN nonce length in the
+  signed payload `pairing_token(32) || nonce(32) || device_pubkey(32)`.
+  **Signature is verified BEFORE the token is consumed**, so a bad-signature
+  attempt does not burn a still-valid token (the device can retry) — tested.
+
+- **How the handler reaches the 206 issuer + revoked-set:** `boot::start`
+  (`crates/core/src/boot.rs`) now, right where 206 constructed the
+  `LocalCoreIssuer`, builds a `PairingCoordinator::new(issuer, Arc<Persistence>,
+  audit_writer, lan_endpoint, relay_hint)` and wraps it in an `Arc` (so the
+  api-server actor's factory closure — which may re-run on a supervised restart
+  — shares the **same in-memory token store**). The `Arc<PairingCoordinator>` is
+  threaded as a new trailing `Option<Arc<PairingCoordinator>>` arg to
+  `ApiServerActor::with_managers`, and `run_uds` registers `DevicesServer` when
+  it is `Some`. The coordinator owns the issuer and a `Persistence` clone (for
+  the `devices` INSERT). **The revoked-set handle** is still built at the same
+  boot site (`new_revoked_set()`, bound `_revoked_set`) — Task 209 wires its
+  `RevokeDevice` write path into that same `Arc`; the issuer the coordinator
+  owns already reads it on `validate`. `lan_endpoint`/`relay_hint` are passed
+  empty (Task 212/213/214 supply the real values; the QR carries no endpoint
+  yet and the exchange is transport-agnostic).
+
+- **`devices.proto` field numbers assigned (FROZEN — for Task 209):**
+  `service Devices` has `StartPairing` (RPC #1, by declaration order) +
+  `CompletePairing` (#2). Message field numbers:
+  - `PairingChallenge`: `core_pubkey=1`, `pairing_token=2`, `lan_endpoint=3`,
+    `relay_hint=4`, `expires_at=5`.
+  - `CompletePairingRequest`: `device_pubkey=1`, `device_name=2`, `nonce=3`,
+    `signature=4`, `pairing_token=5`.
+  - `CompletePairingResponse`: `signed_device_cert=1` (opaque CBOR bytes,
+    `cert_bytes || signature`, D1), `core_pubkey=2`.
+  Task 209 **appends** `ListDevices`/`RevokeDevice`/`GetCoreInfo` RPCs + their
+  messages with NEW numbers to the SAME service — never reorder the two pairing
+  RPCs or renumber these fields. A push-token RPC is deferred to Phase 5 (noted
+  in a proto comment).
+
+- **Cert wire form for 209/210:** `CompletePairingResponse.signed_device_cert`
+  is `signed.cert_bytes || signed.signature` — exactly what 205's `verify_cert`
+  / 206's `validate` expect (the same form 206's Handoff froze). The device
+  persists these bytes verbatim and presents them on every connect; the proto
+  layer never decodes the CBOR (D1).
+
+- **Audit:** added `AuditKind::{DevicePairingStarted, DevicePairingCompleted,
+  DevicePairingFailed}` (+ `as_str` arms) to `crates/core/src/audit/event.rs`
+  (design-mandated `§3.7` kinds, additive enum entries). `start_pairing` emits
+  Started; `complete_pairing` emits Completed on success and Failed on any
+  rejection (bad sig / expired / consumed / issue / insert).
+
+- **Drift from plan:**
+  - **`deny.toml` NOT modified** (it is in the task's Outputs as "if a new
+    expression surfaces"): `snow`'s `Apache-2.0 OR MIT` resolves to the
+    already-allowed MIT, so no SPDX ratification was needed. `cargo deny check`
+    is green with `deny.toml` untouched. (Removed from the final Outputs.)
+  - **`snow` pinned at 0.9, not the latest 0.10** — MSRV reason above (0.10
+    needs rustc 1.85 > workspace MSRV 1.82). 0.9.6 has the identical `XXpsk3`
+    pattern surface.
+  - **Touched files beyond the literal Outputs list (all additive / wiring):**
+    `crates/core/src/audit/event.rs` (3 design-mandated audit kinds),
+    `crates/core/src/api_server.rs` (register `DevicesServer` + thread the
+    coordinator through `with_managers`/`run_uds`), `crates/core/src/boot.rs`
+    (construct the coordinator at the 206 issuer site + inject it),
+    `crates/proto/build.rs` (one `timestamp_fields` row for
+    `PairingChallenge.expires_at`), `crates/identity/src/error.rs` (the
+    `IdentityError::Noise` variant), `Cargo.lock`. None are prior-task interface
+    files; all are in-crate, necessary wiring.
+  - **Proto comment formatting:** a 4-space-indented byte-layout line in the
+    `CompletePairingRequest` message comment was being captured as a Rust
+    doctest by the generated rustdoc (it failed to compile). Reflowed the layout
+    inline (backtick-quoted) so the comment carries no indented code block. No
+    semantic change.
+
+- **Open questions for next task:**
+  - **Task 208 (Noise IK session):** the XX wrapper here is the *pairing*
+    channel only (first contact, mutual-unauthenticated + token PSK). The IK
+    session layer (post-pairing per-connection crypto, initiator=device static
+    key, responder=Core static key) is a **different snow pattern** — do not
+    reuse `noise_xx.rs`; add a sibling module. The `snow` dep + `IdentityError::
+    Noise` variant are already in place for you.
+  - **Task 209 (`Devices` list/revoke + `devices` table):** wire `RevokeDevice`
+    into the SAME `revoked_set` `Arc` built in `boot.rs` (clone it from the
+    coordinator-construction site); mirror revoked `devices` rows into it at
+    boot. The `devices` row this task INSERTs uses `id = hex(device_id)`,
+    `name`, `public_key = raw 32-byte Ed25519`, `paired_at = unix secs`;
+    `revoked_at`/`push_*` are left NULL for you. Append your RPCs/messages to
+    `devices.proto` with new numbers (see the frozen numbers above).
+  - **Task 210 (auth middleware):** the coordinator hands the issuer's `issue`
+    output back as `signed_device_cert` bytes; your middleware calls the same
+    issuer's `validate` on inbound cert metadata. The `Arc<PairingCoordinator>`
+    is registered on the UDS server today; the bridge (Task 204) does NOT yet
+    serve `Devices` — if remote pairing must traverse the Connect-Web bridge,
+    register `DevicesServer` in `connect_bridge::serve` too (out of scope here).
+
+- **Deliberate debt:** — (none; no `TODO`/`unimplemented!()`/`todo!()` in new
+  code).
+
+- **Smoke-gate state:** **unchanged.** No smoke check added; `scripts/smoke.sh`
+  untouched. Note: `boot::start` calls `Secrets::new()` (added by **Task 206**,
+  not this task) to establish the Core identity; on a headless **macOS** runner
+  that blocks on a Keychain prompt. The Tier-2 pairing test in
+  `crates/core/tests/pairing.rs` therefore deliberately **does NOT boot a full
+  Core** — it constructs the `LocalCoreIssuer` + `Persistence` directly, so it
+  is keychain-free and hermetic. (Integration tests that DO boot a Core — the
+  pre-existing harness/lifecycle suites — already need
+  `CONCERTO_KEYCHAIN_SERVICE` set on macOS local; that is a 206 condition, green
+  on Linux CI where `keyring` errors fast and boot continues via its warning
+  path.)
+
+- **Tier-3 not covered by the loopback double** (→ Phase-2 manual checklist):
+  real cross-device QR-scan pairing over a real Iroh LAN/relay transport — no
+  NAT, no camera, no real endpoint, no relay. Stated in the `Verification`
+  section and the test module doc.

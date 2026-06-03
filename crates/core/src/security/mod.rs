@@ -20,6 +20,7 @@
 pub mod destructive;
 pub mod identity;
 pub mod managed;
+pub mod pairing;
 pub mod path_policy;
 pub mod permission;
 pub mod tool_classes;

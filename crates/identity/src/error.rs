@@ -64,4 +64,11 @@ pub enum IdentityError {
     /// — the client was paired with a different Core (`design/12 §8`).
     #[error("device cert issued by a different Core")]
     WrongCore,
+
+    /// A Noise XX pairing-handshake operation failed (Task 207): bad protocol
+    /// params, a `snow` state error, or a decrypt failure (including a wrong
+    /// pairing-token PSK). `design/12 §8`: a failed Noise handshake drops the
+    /// pairing connection. The wrapped string is `snow`'s diagnostic.
+    #[error("noise handshake error: {0}")]
+    Noise(String),
 }

@@ -35,6 +35,11 @@ thiserror.workspace = true
 # MDM/CA API). `async-trait` is the workspace convention for object-safe
 # async traits (already a workspace dep — see `crates/core`).
 async-trait.workspace = true
+# Task 207: Noise XX pairing handshake. The `pairing_token` from the QR is the
+# pre-shared key; `snow` runs the `Noise_XXpsk3_25519_AESGCM_SHA256` pattern over
+# a caller-supplied byte channel. Pinned at the workspace level (see rationale
+# there); the pure-Rust `default-resolver` keeps the crate C-dep-free.
+snow = { workspace = true }
 
 [dev-dependencies]
 # Task 206: `tests/issuer.rs` drives the async `DeviceCertIssuer::issue` over

@@ -32,6 +32,7 @@
 pub mod api;
 pub mod error;
 pub mod issuer;
+pub mod noise_xx;
 
 pub(crate) mod cert;
 pub(crate) mod keys;
@@ -43,3 +44,4 @@ pub use api::{
 };
 pub use error::{IdentityError, Result};
 pub use issuer::{new_revoked_set, RevokedSet, CERT_LIFETIME_SECS, SKEW_TOLERANCE_SECS};
+pub use noise_xx::{NoiseHandshake, NoiseTransport, PAIRING_NOISE_PARAMS};

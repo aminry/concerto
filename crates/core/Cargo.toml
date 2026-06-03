@@ -56,6 +56,11 @@ concerto-keychain = { path = "../keychain" }
 # unix cookie path); promoted to a cross-platform core dep here. No new
 # external crate enters the graph.
 hex = "0.4"
+# Task 207: the pairing token store (`security/pairing.rs`) fills 32 OS-random
+# bytes via `getrandom`. The pairing/`Devices` path is cross-platform (not
+# `cfg(unix)`-gated like the agent-host cookie consumer below), so the dep
+# must be cross-platform — moved here from the `cfg(unix)` block.
+getrandom = { workspace = true }
 # Task 18: shell-out + gix git operations live under `repo_manager`.
 concerto-gix-wrap = { path = "../gix-wrap" }
 uuid = { workspace = true }
@@ -140,8 +145,9 @@ concerto-agent-host = { path = "../agent-host" }
 # which the Agent Supervisor uses to spawn `concerto-agent-host` with a
 # Unix `pre_exec` hook (`setsid()`) for detachment.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "net", "process"] }
-# Task 22: 32-byte session cookie generated via OS entropy.
-getrandom = { workspace = true }
+# Task 22: the unix session-cookie path also uses `getrandom`; the dep is now
+# declared cross-platform in the main `[dependencies]` block above (moved there
+# by Task 207, whose cross-platform pairing path also needs it).
 # Task 22: CBOR codec used to encode `Hello` frames sent to the host.
 ciborium = "0.2"
 # Task 22: hex-encode the cookie when passing it to the host as `--cookie`.

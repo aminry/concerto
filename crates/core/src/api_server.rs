@@ -100,6 +100,13 @@ pub struct ApiServerActor {
     /// service is registered (Task 45). The handle is cheap to clone
     /// and lazily resolves the `gh` binary path on first use.
     vcs: Option<VcsHandle>,
+    /// Optional pairing coordinator (Task 207). When `Some`, the gRPC
+    /// `Devices` service is registered (the two pairing RPCs). Built once at
+    /// boot from the Core's keychain-backed identity + issuer; the token store
+    /// it owns lives behind the `Arc` so a restart of this actor preserves
+    /// any in-flight tokens. `None` on a Core that could not establish its
+    /// identity (no keychain), which leaves remote pairing unavailable.
+    pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
 }
 
 impl ApiServerActor {
@@ -121,6 +128,7 @@ impl ApiServerActor {
             #[cfg(unix)]
             suggestions: None,
             vcs: None,
+            pairing: None,
         }
     }
 
@@ -148,6 +156,7 @@ impl ApiServerActor {
             #[cfg(unix)]
             suggestions: None,
             vcs: None,
+            pairing: None,
         }
     }
 
@@ -170,6 +179,7 @@ impl ApiServerActor {
         skills_registry: Option<SkillsRegistryHandle>,
         #[cfg(unix)] suggestions: Option<SuggestionEngineHandle>,
         vcs: Option<VcsHandle>,
+        pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     ) -> Self {
         Self {
             started_at,
@@ -186,6 +196,7 @@ impl ApiServerActor {
             #[cfg(unix)]
             suggestions,
             vcs,
+            pairing,
         }
     }
 }
@@ -248,6 +259,7 @@ impl Actor for ApiServerActor {
                 self.skills_registry,
                 self.suggestions,
                 self.vcs,
+                self.pairing,
                 ctx.shutdown.clone(),
             );
 
@@ -276,6 +288,7 @@ impl Actor for ApiServerActor {
                 self.persistence,
                 self.skills_registry,
                 self.vcs,
+                self.pairing,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -306,6 +319,7 @@ async fn run_uds(
     skills_registry: Option<SkillsRegistryHandle>,
     suggestions: Option<SuggestionEngineHandle>,
     vcs: Option<VcsHandle>,
+    pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -318,6 +332,7 @@ async fn run_uds(
     use concerto_proto::v1::TransportKind;
 
     use crate::conn_transport::ConnTransport;
+    use crate::handlers::devices::DevicesHandler;
     use crate::handlers::files::FilesHandler;
     use crate::handlers::projects::ProjectsHandler;
     use crate::handlers::repositories::RepositoriesHandler;
@@ -330,6 +345,7 @@ async fn run_uds(
     use crate::handlers::vcs::VcsHandler;
     use crate::handlers::workareas::WorkareasHandler;
     use crate::handlers::workspaces::WorkspacesHandler;
+    use concerto_proto::v1::devices_server::DevicesServer;
     use concerto_proto::v1::files_server::FilesServer;
     use concerto_proto::v1::projects_server::ProjectsServer;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
@@ -504,6 +520,16 @@ async fn run_uds(
     if let Some(vcs) = vcs {
         let vcs_service = VcsServer::new(VcsHandler::new(vcs));
         builder = builder.add_service(vcs_service);
+    }
+    // Task 207: `Devices` pairing service. Registered when the Core
+    // established its keychain-backed identity at boot (the coordinator owns
+    // the issuer + the in-memory token store). Independent of every other
+    // manager — the coordinator INSERTs into `devices` via its own
+    // `Persistence` clone. Task 209 extends the same service with
+    // list/revoke/core-info RPCs.
+    if let Some(pairing) = pairing {
+        let devices_service = DevicesServer::new(DevicesHandler::new(pairing));
+        builder = builder.add_service(devices_service);
     }
 
     let serve_fut =

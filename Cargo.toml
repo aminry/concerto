@@ -226,3 +226,15 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 #   known-answer tests in `crates/identity/tests/cert_vectors.rs`).
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 ciborium = "0.2"
+# Task 207: `snow` (pure-Rust Noise Protocol Framework) powers the device-pairing
+# Noise XX handshake bootstrapped by the one-shot pairing token (used as the
+# Noise PSK). Pinned at 0.9 (resolves 0.9.6) NOT 0.10: snow 0.10 declares
+# `rust-version = 1.85`, above the workspace MSRV of 1.82 (`[workspace.package].
+# rust-version`); 0.9.6 has the same `XXpsk3` pattern surface and no MSRV
+# floor. `default-features = false` + `default-resolver` selects the pure-Rust
+# crypto backend (no `ring`/libsodium C deps), keeping the Windows CI lane green
+# and the dep tree pure-Rust. License `Apache-2.0 OR MIT` → cargo-deny selects
+# MIT (already on the allow-list); no new SPDX expression. The aes-gcm/blake2/
+# sha2/chacha20poly1305/curve25519-dalek features back the `_25519_AESGCM_SHA256`
+# cipher suite this task's protocol string names.
+snow = { version = "0.9", default-features = false, features = ["default-resolver"] }
