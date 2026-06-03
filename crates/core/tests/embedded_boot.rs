@@ -15,6 +15,15 @@ use concerto_core::runtime::RuntimeConfig;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn embedded_boot_serves_and_shuts_down() {
+    // Isolate the Core-identity keychain access (Task 206 establishes the
+    // identity in `boot::start`) to a unique throwaway service, so this test
+    // binary only ever touches an item it created — otherwise a headless
+    // macOS CI runner blocks forever on a Keychain Access prompt.
+    std::env::set_var(
+        "CONCERTO_KEYCHAIN_SERVICE",
+        format!("concerto-test-{}-embed", std::process::id()),
+    );
+
     let tmp = tempfile::tempdir().expect("tempdir");
     let data_dir = tmp.path().join("data");
     let config_dir = tmp.path().join("config");

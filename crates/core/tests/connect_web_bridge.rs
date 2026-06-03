@@ -234,6 +234,14 @@ async fn boot_with_bridge(bridge_addr: SocketAddr) -> (boot::RunningCore, std::p
     // actor. This test is the sole owner of these vars (one serial test).
     std::env::set_var("CONCERTO_CONNECT_BRIDGE", "1");
     std::env::set_var("CONCERTO_CONNECT_BRIDGE_ADDR", bridge_addr.to_string());
+    // Isolate the Core-identity keychain access (Task 206 establishes the
+    // identity in `boot::start`) to a unique throwaway service, so this test
+    // binary only ever touches an item it created — otherwise a headless
+    // macOS CI runner blocks forever on a Keychain Access prompt.
+    std::env::set_var(
+        "CONCERTO_KEYCHAIN_SERVICE",
+        format!("concerto-test-{}-cwb", std::process::id()),
+    );
 
     let tmp = tempfile::tempdir().expect("tempdir");
     // Leak the tempdir so the DB/worktrees outlive this fn; the process is

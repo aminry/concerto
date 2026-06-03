@@ -97,11 +97,22 @@ impl SecretValue {
 
 impl Secrets {
     /// Construct a `Secrets` handle bound to the default `"concerto"`
-    /// service.
+    /// service — or to the service named by the `CONCERTO_KEYCHAIN_SERVICE`
+    /// environment variable when it is set and non-empty.
+    ///
+    /// The override exists for **isolation**: integration tests (and
+    /// parallel/headless CI jobs) can bind a unique throwaway service so the
+    /// process only ever touches a keychain item *it* created. Accessing the
+    /// shared `"concerto"` login-keychain item from a *different* unsigned
+    /// binary triggers a blocking macOS Keychain Access prompt — and a
+    /// headless CI runner has no GUI to answer it, so the call hangs forever.
+    /// Production leaves the variable unset and uses `"concerto"`.
     pub fn new() -> Self {
-        Self {
-            service: std::borrow::Cow::Borrowed(crate::DEFAULT_SERVICE),
-        }
+        let service = match std::env::var("CONCERTO_KEYCHAIN_SERVICE") {
+            Ok(s) if !s.is_empty() => std::borrow::Cow::Owned(s),
+            _ => std::borrow::Cow::Borrowed(crate::DEFAULT_SERVICE),
+        };
+        Self { service }
     }
 
     /// Read a secret. Returns `Ok(None)` if no entry exists for `kind`.
