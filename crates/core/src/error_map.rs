@@ -111,6 +111,49 @@ pub fn error_to_status(err: Error) -> Status {
     Status::with_details(code, format!("{err}"), buf.into())
 }
 
+/// Build a `Status` carrying a typed [`ConcertoError`] details payload from a
+/// `(code, gRPC code, message)` triple. Shared by the auth-status helpers below;
+/// mirrors [`error_to_status`]'s details-encoding so clients decode auth
+/// failures the same way as every other error (`design/10 §3.5`).
+fn status_with_concerto_code(grpc_code: Code, code: &str, message: impl Into<String>) -> Status {
+    let message = message.into();
+    let proto = ConcertoError {
+        code: code.to_string(),
+        message: message.clone(),
+        fields: None,
+        transaction_id: String::new(),
+    };
+    let mut buf = Vec::with_capacity(proto.encoded_len());
+    proto
+        .encode(&mut buf)
+        .expect("prost encode into pre-sized Vec");
+    Status::with_details(grpc_code, message, buf.into())
+}
+
+/// The FROZEN auth failure for an invalid / expired / wrong-Core / malformed /
+/// missing device cert (`design/10 §8`, Task 210): `UNAUTHENTICATED` +
+/// `ConcertoError{code = "auth.invalid_cert"}`.
+pub fn auth_invalid_cert_status(message: impl Into<String>) -> Status {
+    status_with_concerto_code(Code::Unauthenticated, "auth.invalid_cert", message)
+}
+
+/// The FROZEN auth failure for a revoked device (`design/10 §8`, Task 210):
+/// `PERMISSION_DENIED` + `ConcertoError{code = "auth.revoked"}`.
+pub fn auth_revoked_status(message: impl Into<String>) -> Status {
+    status_with_concerto_code(Code::PermissionDenied, "auth.revoked", message)
+}
+
+/// Decode the `ConcertoError.code` from a [`Status`]'s details payload, if
+/// present. Used by the auth tests (and any client-side inspection) to assert
+/// the FROZEN `auth.invalid_cert` / `auth.revoked` codes ride in the details
+/// rather than only in the human message.
+pub fn concerto_code(status: &Status) -> Option<String> {
+    if status.details().is_empty() {
+        return None;
+    }
+    ConcertoError::decode(status.details()).ok().map(|e| e.code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -68,22 +68,23 @@ Tier 1 — the test double is an **injected `Arc<dyn DeviceCertIssuer>` stub** (
 7. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → the middleware/`DeviceContext`-extension surface is internal to `crates/core` (depth-4 / no `core` `api.rs`) → expect **no** `docs/interfaces/` diff (confirm, cf. Task 112's regen note); commit if any surfaces.
 
 ## Definition of Done
-- [ ] UDS peer-uid check (`#[cfg(unix)]`) at the listener: owner-UID match → implicit-admin "local-uds" `DeviceContext`; mismatch → rejected
-- [ ] Cert-validation tower layer: reads `concerto-device-cert`, calls 206's `validate`, injects `DeviceContext`; maps errors to `auth.invalid_cert` / `auth.revoked`
-- [ ] Path chosen off the Task-201 `ConnTransport` tag; handlers never branch on transport; `AuthzScope` seam stubbed (binary `["admin"]`)
-- [ ] `concerto-device-cert` key constant + "local-uds" pseudo-cert sentinel defined + FROZEN; both layers wired into `api_server.rs`
-- [ ] Windows named-pipe peer-identity gap left as a documented gated TODO (Handoff)
-- [ ] Tier-1 valid/expired/revoked/missing + peer-uid match/mismatch tests pass; the Tier-3 uncovered part stated in Verification
-- [ ] Verification commands pass; smoke green; interfaces clean (or regenerated)
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate gated ones — e.g. Windows peer-id — in Handoff)
-- [ ] Single commit with the message below
+- [x] UDS peer-uid check (`#[cfg(unix)]`) at the listener: owner-UID match → implicit-admin "local-uds" `DeviceContext`; mismatch → rejected
+- [x] Cert-validation tower layer: reads `concerto-device-cert`, calls 206's `validate`, injects `DeviceContext`; maps errors to `auth.invalid_cert` / `auth.revoked`
+- [x] Path chosen off the Task-201 `ConnTransport` tag; handlers never branch on transport; `AuthzScope` seam stubbed (binary `["admin"]`)
+- [x] `concerto-device-cert` key constant + "local-uds" pseudo-cert sentinel defined + FROZEN; both layers wired into `api_server.rs`
+- [x] Windows named-pipe peer-identity gap left as a documented gated TODO (Handoff)
+- [x] Tier-1 valid/expired/revoked/missing + peer-uid match/mismatch tests pass; the Tier-3 uncovered part stated in Verification
+- [x] Verification commands pass; smoke green; interfaces clean (or regenerated)
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate gated ones — e.g. Windows peer-id — in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/core/src/security/auth.rs` (new — the cert tower-layer + peer-uid check + `DeviceContext` extension accessor + `AuthzScope` stub + metadata-key constant) + `crates/core/src/security/mod.rs` (modified — `pub mod auth;`)
 - `crates/core/src/api_server.rs` (modified — attach the cert layer to the shared builder; add the peer-uid gate at the UDS connect-info site)
 - `crates/core/src/error_map.rs` *(or the auth error helper home)* (modified — `auth.invalid_cert` / `auth.revoked` codes)
 - `crates/core/tests/auth_middleware.rs` (new — Tier-1 cert + peer-uid tests with the injected issuer stub + `ConnTransport` tag)
-- `docs/interfaces/*` (regenerated only if a surface appears)
+- `docs/interfaces/*` (regenerated only if a surface appears) — **no diff** (the auth surface is internal to `crates/core`).
+- **ADDED to Outputs (flagged in Handoff):** `crates/core/src/boot.rs` (modified — construct the auth `Arc<dyn DeviceCertIssuer>` + thread it into the api-server factory + run the Task-209 startup revoked-set mirror before the auth path goes live) and `crates/core/Cargo.toml` (modified — promote the already-in-tree `base64` to a direct dep for the metadata-header codec). `Cargo.lock` churn (one line) as expected.
 
 ## Commit message
 ```
@@ -102,5 +103,33 @@ lands; Windows named-pipe peer-id is a gated TODO.
 Refs: tasks/v1.0/210-auth-middleware.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- `concerto-device-cert` key + local-uds sentinel device_id / where the cert layer + peer-uid gate attach in api_server.rs / how the issuer Arc is threaded from 206 boot / peer-cred mechanism used (tokio peer_cred vs libc) per-OS / Windows named-pipe peer-id gated-TODO state / auth event-emission wiring state / Open questions / Deliberate debt / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+
+**Frozen surface (for clients 218/511/520 and the wiring tasks 212/217):**
+- **Metadata key constant** — `concerto_core::security::auth::DEVICE_CERT_METADATA_KEY = "concerto-device-cert"` (ASCII key). The value is **base64(STANDARD) of the on-wire signed cert `cert_bytes || signature`** — exactly the bytes `complete_pairing` returns (proto `signed_device_cert`, D1 opaque CBOR) and the device stores verbatim. Helper `encode_cert_metadata(&[u8]) -> String` produces the value; the layer base64-decodes then calls `issuer.validate(raw)`. Clients MUST use STANDARD base64 under this exact ASCII key.
+- **local-uds pseudo-cert** — `LOCAL_UDS_DEVICE_ID = [0xED; 32]` (FROZEN sentinel, deliberately not a BLAKE2b fingerprint), `LOCAL_UDS_DEVICE_NAME = "local-uds"`, `capabilities = ["admin"]`; built by `local_uds_context()`.
+- **DeviceContext accessor** — `concerto_core::security::auth::device_context(&Request<T>) -> Option<&DeviceContext>` (FROZEN signature). Populated **identically** on both paths. `AuthzScope::allows(&DeviceContext) -> bool` is the stubbed `design/10 §6` seam (V1.0: any context with the `"admin"` token → allow).
+- **Error mapping (FROZEN, `design/10 §8`)** — invalid/expired/wrong-core/malformed/**missing** cert → `UNAUTHENTICATED` + `ConcertoError{code="auth.invalid_cert"}`; revoked → `PERMISSION_DENIED` + `ConcertoError{code="auth.revoked"}`. Built directly in `error_map::auth_invalid_cert_status` / `auth_revoked_status` (no new `concerto_error::Error` variants — that crate is not in Outputs); `error_map::concerto_code(&Status)` decodes the code from the details payload.
+
+**Where it attaches (api_server.rs):** one tonic interceptor on the shared `Server::builder().layer(...)` covers every service uniformly. On the UDS listener it first inserts the Task-201 `ConnTransport(Uds)` tag, then calls `AuthInterceptor::authenticate`. `authenticate` chooses the path off the tag: `Uds` → peer-uid; `Iroh`/`WssBridge`/`Unspecified` → cert. Task 212's Iroh listener / Task 204's WSS bridge tag their own kind the same way and inherit the cert path with **no edit** to this interceptor or any handler.
+
+**Issuer Arc threading from 206 boot:** `boot.rs` constructs an `Arc<dyn DeviceCertIssuer>` for the auth layer that shares the **SAME `revoked_set` handle** as the pairing/device-manager issuer (so a revoke is observed on the auth path with no DB hit). Because Task-207's `PairingCoordinator::new` takes `LocalCoreIssuer` **by value** and needs its `LocalCoreIssuer`-specific `core_public_key()` (not on the trait), and `KeyPair` is `ZeroizeOnDrop` (not `Clone`), boot builds a **second** issuer by calling `load_or_create_core_identity` again (the keychain reload returns the same key; `created==false` so no second `CoreIdentityCreated` audit). It is threaded `boot → ApiServerActor::with_managers(..., auth_issuer) → run_uds → AuthInterceptor::new`. `None` when no keychain identity exists → cert path refuses every remote (`auth.invalid_cert`); the UDS peer-uid path still works (needs no issuer).
+
+**Peer-cred mechanism per-OS:** `#[cfg(unix)]` uses **tonic's `UdsConnectInfo` (tokio `UCred`) `peer_cred.uid()`** — tonic 0.12 inserts `UdsConnectInfo` into request extensions before the interceptor runs (verified in `tonic-0.12.3/src/transport/server/mod.rs`), so no raw `libc` socket calls are needed; the Core's own UID is `libc::geteuid()` (`libc` already a core dep). A request tagged `Uds` lacking `UdsConnectInfo` (an unattested in-process request) is **refused**, never granted implicit admin.
+
+**Closed the Task-209 startup-mirror gap:** YES. `auth::mirror_revoked_devices(&Persistence, &RevokedSet)` runs `SELECT id FROM devices WHERE revoked_at IS NOT NULL` and inserts each decoded `device_id` into the shared set; `boot.rs` calls it **before the gRPC server (auth path) goes live**, unconditionally (even with no keychain identity — it only touches the DB + set, and only ever *adds* trust-removal, never fail-open). The test `revoked_device_stays_revoked_across_a_restart` proves a revoked device, after a fresh empty set rebuilt only from the DB, is rejected `Revoked`/`auth.revoked` (and asserts it would be *accepted* without the mirror — pinning the bug). I put the mirror in `auth.rs` (an Output) rather than editing the Task-209 `devices.rs` (not an Output).
+
+**Windows named-pipe peer-id (gated gap, loud):** On Windows the co-located named pipe maps to `TransportKind::Uds` (Task 201) but peer attestation (`GetNamedPipeClientProcessId` + token UID) is **NOT** implemented in V1.0. The peer-uid glue is `#[cfg(unix)]`; the `#[cfg(not(unix))]` `authenticate_uds` grants the local-uds context **unconditionally** (no peer check) — but the whole UDS gRPC server is itself unsupported on non-Unix in V1.0 (`api_server` errors on non-unix), so this is unreachable today. Real named-pipe attestation lands with the Windows Core (Task 701-adjacent). Recorded under Deliberate debt below.
+
+**Auth event-emission wiring state:** the `auth.revoked` status is returned correctly, but the `design/10 §8` "emit revocation/`security.violation` event" on the revoked-reconnect path is **NOT** wired here — the interceptor does not hold an audit/event handle (threading one into the tonic interceptor closure would be fragile, and the per-listener auth layer is the wrong place to own an audit writer). Revocation itself is already audited by Task 209's `revoke_device` (`AuditKind::DeviceRevoked`). The reconnect-rejection event is best emitted where an audit handle naturally lives; flagged as an Open question for 211/212.
+
+**Drift from plan:** Added `crates/core/src/boot.rs` + `crates/core/Cargo.toml` to Outputs (flagged above): the cert layer needs a real issuer at runtime, which only boot can supply, and the task explicitly scopes the startup mirror "at boot (or when the auth layer / DeviceManager is constructed)". No other prior-task files touched (`devices.rs`/`pairing.rs`/`identity.rs` unchanged). `base64` promoted from transitive to direct dep — **no new external crate** enters the graph (already vendored via tonic/tonic-web); `cargo deny` unchanged.
+
+**Open questions for next task:**
+- **211** enforces `managed.json` (disable_remote / allowed / max devices) on THIS path: it should layer on top of `AuthInterceptor` (e.g. consult policy after `validate` succeeds, before injecting the context) — the `AuthzScope` seam is the natural home, or a sibling policy check in the same interceptor. The `device_context` accessor + the metadata-key constant are the stable hooks.
+- **212/217** wire the real transport + active session closing: 212's Iroh listener tags `ConnTransport(Iroh)` and presents the cert under `DEVICE_CERT_METADATA_KEY` (base64) — the cert path is already mounted and unit-tested, so 212 only adds the listener. 217 replaces `NoopSessionCloser`; the auth layer is the *reconnect* rejection (revoked-set read), not the active close.
+- The **revoked-reconnect `security.violation` event** (see above) wants an audit handle reachable from the auth layer — decide its home in 211/212.
+
+**Deliberate debt:** Windows named-pipe peer attestation is a gated `#[cfg(not(unix))]` no-peer-check path (unreachable in V1.0 since non-unix UDS serving is itself unsupported) — closes with the Windows Core, **Task 701-adjacent**. No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` markers in new code.
+
+**Smoke-gate state:** **unchanged.** No new smoke check added. `scripts/smoke.sh` passes (exit 0) — the same-UID smoke client connects through the new peer-uid gate with no regression.
