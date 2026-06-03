@@ -265,8 +265,18 @@ async fn connect_web_bridge_serves_grpc_web() {
     let (core, data_dir) = boot_with_bridge(bridge_addr).await;
     let base = format!("http://{bridge_addr}");
 
+    // Bound every HTTP call so a stalled request on a loaded CI runner fails
+    // fast (a rerunnable error) instead of hanging the whole test forever.
+    // The unary gRPC-Web calls below have no other timeout of their own; the
+    // server-streaming read is consumed and dropped within its own 10s
+    // deadline, well under this 30s ceiling, so it is never cut short in the
+    // happy path. (Without this, an intermittent macOS-runner stall in a
+    // unary `.send()/.bytes()` blocked indefinitely — there is no GUI/CI
+    // watchdog to kill it.)
     let http = reqwest::Client::builder()
         .http1_only()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client");
 
