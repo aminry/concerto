@@ -69,15 +69,15 @@ Tier 1 — pure enforcement unit tests against constructed `managed.json` files 
 6. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → the `managed.rs` surface is internal to `crates/core` (depth-4 / no `core` `api.rs`) → expect **no** `docs/interfaces/` diff (confirm, cf. Task 112's regen note); commit if any surfaces.
 
 ## Definition of Done
-- [ ] Parser extended with `disable_remote` / `allowedPairingDevices` / `maxPairedDevicesPerUser` / `relayUrl` / `auditForwardEndpoint` / `denyFilesystemPaths` (exact keys, `null`/default semantics); V0.1 parse contract preserved
-- [ ] Predicates `remote_disabled()` / `is_pairing_allowed(fingerprint)` / `max_paired_devices()` (+ `relay_url`/`deny_filesystem_paths` accessors) exposed + FROZEN
-- [ ] Invalid field → `ManagedSettingsViolation` audit + revert-to-default; clean load → `ManagedSettingsLoaded`; malformed file still boots on full default
-- [ ] Each predicate's consumer task named (212/214 disable_remote, 207 whitelist, 207/209 max-paired, allow-list deny-paths) in Implementation notes + Handoff
-- [ ] Task-112 audit-forwarder question resolved: `auditForwardEndpoint` parsed + exposed here; subscriber registration explicitly deferred + noted
-- [ ] Tier-1 enforcement tests pass; the Tier-3 uncovered part stated in Verification
-- [ ] Verification commands pass; interfaces clean (or regenerated); no migration added
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
-- [ ] Single commit with the message below
+- [x] Parser extended with `disable_remote` / `allowedPairingDevices` / `maxPairedDevicesPerUser` / `relayUrl` / `auditForwardEndpoint` / `denyFilesystemPaths` (exact keys, `null`/default semantics); V0.1 parse contract preserved
+- [x] Predicates `remote_disabled()` / `is_pairing_allowed(fingerprint)` / `max_paired_devices()` (+ `relay_url`/`deny_filesystem_paths` accessors) exposed + FROZEN
+- [x] Invalid field → `ManagedSettingsViolation` audit + revert-to-default; clean load → `ManagedSettingsLoaded`; malformed file still boots on full default
+- [x] Each predicate's consumer task named (212/214 disable_remote, 207 whitelist, 207/209 max-paired, allow-list deny-paths) in Implementation notes + Handoff
+- [x] Task-112 audit-forwarder question resolved: `auditForwardEndpoint` parsed + exposed here; subscriber registration explicitly deferred + noted
+- [x] Tier-1 enforcement tests pass; the Tier-3 uncovered part stated in Verification
+- [x] Verification commands pass; interfaces clean (or regenerated); no migration added
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/core/src/security/managed.rs` (modified — new fields + predicates + violation audit) + `crates/core/src/security/mod.rs` (modified only if a `ManagedEnforcement` wrapper is added)
@@ -101,4 +101,29 @@ Refs: tasks/v1.0/211-managed-settings-enforcement.md
 ```
 
 ## Handoff Notes (fill in when finishing)
-- Frozen managed.json keys + null/empty-array semantics / predicate surface for 207/212/214 / fingerprint format shared with 207 / how the violation audit handle is reached from the parser / auditForwardEndpoint provided-not-wired boundary / Open questions / Deliberate debt / Smoke-gate state
+
+**Frozen `managed.json` keys + semantics** (in `ManagedFile`, `crates/core/src/security/managed.rs`, via `#[serde(rename)]`):
+- `disable_remote` (snake_case, `design/11 §6.4`) — bool, default `false`.
+- `allowedPairingDevices` (camelCase) — `null`/absent → `None` (**any device may pair**); `["fp", …]` → `Some(vec)` (whitelist); `[]` → `Some(vec![])` (**hard lockdown, deny all**). The `null`-vs-`[]` distinction is load-bearing and tested.
+- `maxPairedDevicesPerUser` (camelCase) — `null`/absent → `None` (unlimited); else `Some(u32)`.
+- `relayUrl` / `auditForwardEndpoint` (camelCase) — `Option<String>`.
+- `denyFilesystemPaths` (camelCase) — `Vec<String>`, default `[]`, opaque strings.
+
+**Predicate surface (FROZEN, on `ManagedPolicy`)** — methods, all pure reads:
+- `remote_disabled(&self) -> bool` — **Task 212/214** gate relay registration + remote-accept off this. RESTATE for the consumer: LAN-only (`design/11 §6.4`) = (1) don't register with any relay, (2) **keep publishing mDNS**, (3) accept LAN only. Do NOT also kill mDNS — LAN-only ≠ discovery-off.
+- `is_pairing_allowed(&self, fingerprint: &str) -> bool` — **Task 207** pairing coordinator (pre-issuance; reject + pairing-denied audit on `false`).
+- `max_paired_devices(&self) -> Option<u32>` — **Task 207/209** compare against the live active (`revoked_at IS NULL`) `devices` count at issuance.
+- `relay_url(&self) -> Option<&str>` — **Task 214** relay config.
+- `deny_filesystem_paths(&self) -> &[String]` — the `design/12 §3.5` allow-list policy (later); opaque here, no canonicalization.
+- `audit_forward_endpoint(&self) -> Option<&str>` — see boundary below.
+
+**Fingerprint format shared with 207/206**: the whitelist entry format is the **hex-encoded `BLAKE2b-256(device_pubkey)`** device id (`concerto_identity::device_id`) — the exact string stored in `devices.id` and used as the `EntityKind::Device` pairing audit subject (`pairing.rs` uses `hex::encode(signed.cert.device_id)`). 207's coordinator must compare `is_pairing_allowed(&hex::encode(device_id(&device_pubkey)))`. Verified by a unit test against a real derived id.
+
+**How the violation audit handle is reached from the parser**: the free parser (`parse_managed_policy_load_at`) has no `AuditWriter` in reach, so it **collects** violations into the new `ManagedPolicyLoad { policy, violations: Vec<String> }`. The boot/reload call site calls the new `load_managed_policy_audited(config_dir, &AuditWriter) -> Result<ManagedPolicy>`, which emits one `ManagedSettingsViolation` per collected violation, then one `ManagedSettingsLoaded` summary. The V0.1 `load_managed_policy(config_dir) -> Result<ManagedPolicy>` keeps its exact signature + `tracing::warn!`-only behaviour (drops violations) for the existing permission-mode call sites that have no writer. Two new `AuditKind` variants added: `ManagedSettingsLoaded` / `ManagedSettingsViolation` (wire: `managed_settings_loaded` / `managed_settings_violation`). **NB: `load_managed_policy_audited` is provided but NOT yet wired into `boot.rs`** — whoever owns the boot config-dir load (or 212 when it first needs the policy) should call it once at startup so the audit events actually fire in production; it is exercised today only by the Tier-1 integration test. Recorded under Open questions.
+
+**`auditForwardEndpoint` provided-not-wired boundary (resolves Task 112's deferred question)**: 211 parses + exposes `audit_forward_endpoint()` — this `managed.json` field is the config home Task 112 anticipated. **Registering** the `SyslogSubscriber`/`HttpsForwarderSubscriber` from it (the one-line `boot.rs` subscriber-`vec!` extension) is **explicitly out of scope** and left to a later audit-pipeline/ops task. 211 supplies the field only.
+
+- **Drift from plan**: `crates/core/src/security/mod.rs` was modified (re-export `load_managed_policy_audited` + `ManagedPolicyLoad`) although the task said to touch it "only if a `ManagedEnforcement` wrapper is added." No wrapper was added — predicates live as methods directly on `ManagedPolicy` (simpler, no extra type; the task allowed "methods on `ManagedPolicy`, or a thin wrapper"). The mod.rs change is just two added re-export names. `crates/core/src/audit/event.rs` was also modified (two additive `AuditKind` variants) — this is in `design/12 §3.7`'s enum and necessary for the violation audit, but `event.rs` was not listed in `Outputs`; flagging it here.
+- **Open questions for next task**: (1) `load_managed_policy_audited` needs a single boot-time call site to emit the load/violation audits in production — currently unwired (no `ManagedSettingsSource`/boot consumer exists yet); 212 (first relay consumer of `remote_disabled()`) or a boot-load task should call it. (2) 212 wires `remote_disabled()` into the transport listener — remember mDNS stays on. (3) 214 uses `relay_url()`. (4) 207 must use the hex-`device_id` fingerprint format above for `is_pairing_allowed`, and check `max_paired_devices()` against the active-`devices` count.
+- **Deliberate debt**: none (no `TODO`/`unimplemented!`/`todo!` in new code).
+- **Smoke-gate state**: unchanged (no `scripts/smoke.sh` change; no new capability check).
