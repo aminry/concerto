@@ -134,12 +134,19 @@ async fn echo_round_trip() {
     // Drain frames until AgentExited, accumulating stdout.
     let mut stdout = Vec::new();
     let mut exit: Option<(Option<i32>, Option<i32>)> = None;
-    let drain_deadline = Instant::now() + Duration::from_secs(10);
+    // Generous deadlines: this drives a real `echo` subprocess over a PTY, and
+    // on a heavily-loaded CI runner (the full `cargo test --workspace` runs
+    // dozens of test binaries at once) the OS can delay scheduling the host
+    // process and its frame writes by several seconds. The tight 5s/10s budgets
+    // here flaked intermittently; these bounds only need to be large enough to
+    // never fire when the system is merely busy (a genuinely hung host still
+    // fails, just later).
+    let drain_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if Instant::now() > drain_deadline {
-            panic!("did not see AgentExited within 10s; stdout so far: {stdout:?}");
+            panic!("did not see AgentExited within 60s; stdout so far: {stdout:?}");
         }
-        let r = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut reader)).await;
+        let r = tokio::time::timeout(Duration::from_secs(30), read_frame(&mut reader)).await;
         let frame = match r {
             Ok(Ok(f)) => f,
             Ok(Err(FrameError::Eof)) => break,
@@ -166,7 +173,7 @@ async fn echo_round_trip() {
     assert_eq!(code, Some(0), "echo should exit 0");
 
     // Host should exit shortly after the child does.
-    let exit_deadline = Instant::now() + Duration::from_secs(10);
+    let exit_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         match h.child.try_wait().expect("try_wait") {
             Some(status) => {
@@ -174,7 +181,7 @@ async fn echo_round_trip() {
                 break;
             }
             None if Instant::now() > exit_deadline => {
-                panic!("host did not exit within 10s");
+                panic!("host did not exit within 60s");
             }
             None => tokio::time::sleep(Duration::from_millis(50)).await,
         }
