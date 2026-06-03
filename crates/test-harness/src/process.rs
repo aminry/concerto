@@ -88,6 +88,23 @@ impl Handle {
             // group still reaps it via Drop fallback.
             .kill_on_drop(true);
 
+        // Keychain isolation (Task 206/207): the spawned Core establishes its
+        // Ed25519 identity in the OS keychain on boot. On macOS, accessing the
+        // shared "concerto" service from this freshly-built (unsigned) binary
+        // pops a *blocking* Keychain Access prompt — a dev-machine annoyance
+        // and a hard hang on a headless CI runner. Bind a unique throwaway
+        // service per spawn so the child only ever touches an item it created
+        // (no cross-binary access => no prompt). Honor a caller-pinned value
+        // (CI / `cargo test` wrappers) by only setting it when unset.
+        if std::env::var_os("CONCERTO_KEYCHAIN_SERVICE").is_none() {
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            cmd.env(
+                "CONCERTO_KEYCHAIN_SERVICE",
+                format!("concerto-harness-{}-{}", std::process::id(), n),
+            );
+        }
+
         let child = cmd.spawn().map_err(ProcessError::Spawn)?;
         let handle = Handle {
             process: Some(child),
