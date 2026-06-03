@@ -1,0 +1,32 @@
+[package]
+name = "concerto-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "concerto_identity"
+path = "src/lib.rs"
+
+[dependencies]
+# Ed25519 signatures (device + Core identity). BSD-3-Clause; clears
+# `deny.toml`. `zeroize` makes the secret scalar zero on drop; `std` brings
+# the std error impls. Key generation uses `getrandom` directly (see the
+# workspace pin rationale) rather than dalek's `rand_core` feature.
+ed25519-dalek = { workspace = true }
+# OS randomness for 32-byte Ed25519 seeds. Already a workspace pin.
+getrandom = { workspace = true }
+# BLAKE2b-256 for `device_id` derivation. Single workspace pin shared with
+# Task 203's Files checksum (per the Task 203 handoff note).
+blake2 = { workspace = true }
+# Deterministic CBOR for the `DeviceCert` wire format. The `serde`-derived
+# struct serializes fields in declaration order, so field order = wire order
+# (frozen + asserted by the byte-stability / known-answer tests).
+ciborium = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+# In-memory secret hygiene for the private signing key, mirroring the
+# keychain crate's posture.
+zeroize = { workspace = true, features = ["derive"] }
+thiserror.workspace = true

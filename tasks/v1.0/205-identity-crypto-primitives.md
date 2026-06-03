@@ -57,17 +57,18 @@ Tier 1.
 6. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit the regen (`rust-api.md` gains the `concerto-identity` surface from `src/api.rs`).
 
 ## Definition of Done
-- [ ] `crates/identity` created, registered in workspace members, builds clean
-- [ ] Ed25519 keys (zeroizing private key), BLAKE2b `device_id`, `DeviceCert`/`SignedDeviceCert` canonical CBOR + sign/verify implemented
-- [ ] Byte-stability + tamper + wrong-key + garbage-input tests pass; known-answer vector committed
-- [ ] `cargo deny check` green; any new license SPDX ratified in `deny.toml` with a dated comment
-- [ ] Verification commands pass; interfaces regenerated + committed
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code
-- [ ] Single commit with the message below
+- [x] `crates/identity` created, registered in workspace members, builds clean
+- [x] Ed25519 keys (zeroizing private key), BLAKE2b `device_id`, `DeviceCert`/`SignedDeviceCert` canonical CBOR + sign/verify implemented
+- [x] Byte-stability + tamper + wrong-key + garbage-input tests pass; known-answer vector committed
+- [x] `cargo deny check` green; any new license SPDX ratified in `deny.toml` with a dated comment (no new SPDX needed — see Handoff)
+- [x] Verification commands pass; interfaces regenerated + committed
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code
+- [x] Single commit with the message below
 
 ## Outputs
 - `Cargo.toml` (modified — `[workspace.members]` += `crates/identity`; `[workspace.dependencies]` += crypto pins)
 - `crates/identity/Cargo.toml`, `crates/identity/src/lib.rs`, `crates/identity/src/keys.rs`, `crates/identity/src/cert.rs`, `crates/identity/src/api.rs` (new)
+- `crates/identity/src/error.rs` (new — crate-local `IdentityError`, mirroring the keychain `error.rs` convention this task's Inputs point at; added to Outputs per the "unexpected file → add to Outputs first" rule)
 - `crates/identity/tests/cert_vectors.rs` (new — known-answer + tamper tests)
 - `deny.toml` (modified only if a new SPDX needs ratification)
 - `docs/interfaces/rust-api.md` (regenerated)
@@ -84,5 +85,64 @@ vector freezing the wire encoding. Fuzz-ready for Task 208.
 Refs: tasks/v1.0/205-identity-crypto-primitives.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / Open questions for next task / Deliberate debt (e.g. CBOR canonicalization choice) / License ratifications / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+
+- **Drift from plan:**
+  - The task note called `ciborium` "already a workspace dep"; it was actually
+    pinned per-crate (`ciborium = "0.2"` in `crates/agent-host` and `crates/core`).
+    I promoted it to `[workspace.dependencies]` (mirroring how `clap`/`regex` were
+    promoted) and consumed it as `ciborium = { workspace = true }` in
+    `crates/identity`. I did **not** touch the existing per-crate literals in
+    agent-host/core (out of my Outputs scope) — they resolve to the same `0.2.2`,
+    so no behaviour change. A future cleanup task can switch them to
+    `{ workspace = true }`.
+  - **`SignedDeviceCert` carries `cert_bytes: Vec<u8>`** (the exact canonical-CBOR
+    body) in addition to the decoded `cert` and the `signature`. `design/12 §3.2`'s
+    sketch shows only `{ cert, signature }`. Storing the signed-over bytes makes the
+    signature re-verifiable byte-for-byte without a re-encode, and the on-wire form
+    is `cert_bytes || signature`. The decoded `cert` is a convenience view. This is
+    additive, not a reorder of the FROZEN `DeviceCert` field layout.
+  - **Canonicalization choice (frozen):** `serde`-derived struct + `ciborium`
+    (declaration-order struct fields → a CBOR text-keyed map, byte-stable for a
+    fixed struct). I did **not** need the positional-array fallback the task allowed
+    — the byte-stability + known-answer tests pass with the struct encoding. Note:
+    ciborium encodes byte-array fields (`[u8; 32]`) as a CBOR *array of integers*
+    (each byte >0x17 becomes a 2-byte `0x18 0xXX`), so the 312-byte vector is larger
+    than a raw-bytes encoding would be — this is fine and frozen; 206/recovery
+    tooling must decode it as an array, not a byte-string. `verify_cert`
+    additionally re-encodes the decoded cert and rejects any body whose re-encode
+    differs (catches non-canonical / trailing-garbage CBOR even under a valid sig).
+
+- **Open questions for next task (206 builds the issuer on these):**
+  - The on-wire cert format is `cert_bytes || signature` (CBOR body then the raw
+    64-byte Ed25519 sig). `verify_cert(raw, core_pub)` expects exactly that framing.
+    When 206/209 put the cert in gRPC metadata, use `SignedDeviceCert.cert_bytes`
+    concatenated with `.signature`.
+  - `is_expired(now_unix)` is the exact comparison `now_unix >= expires_at` with
+    **no skew**. `design/12 §8` specifies ±5min skew tolerance — that policy lives in
+    206/the validator, not here. 206 owns the +365-day default `expires_at` and the
+    clock source (205 takes `issued_at`/`expires_at` as plain inputs).
+  - Key generation uses `getrandom` directly (fill 32-byte seed →
+    `SigningKey::from_bytes`) rather than dalek's `rand_core` feature, to avoid the
+    rand_core-major split across the workspace. `KeyPair::from_seed` is the
+    deterministic path the known-answer vector uses; 206 will load the Core seed from
+    the keychain (`SecretKind::CoreIdentityPrivateKey`) and call `from_seed`.
+  - `verify_cert` is shaped for Task 208's `cargo-fuzz` target: every error path
+    returns `Err(IdentityError::*)` and never panics on attacker-controlled bytes
+    (truncated/garbage/non-canonical all covered by tests).
+  - `capabilities` is an ordered `Vec<String>`, V1.0 always `["admin"]` (missing/empty
+    ⇒ "admin" per `10` R-7 is the *consumer's* interpretation; 205 always emits the
+    explicit `["admin"]`).
+
+- **Deliberate debt:** — (none; no `TODO`/`unimplemented!()` left)
+
+- **License ratifications:** **None needed.** New deps `ed25519-dalek` 2.2 +
+  transitive `curve25519-dalek`/`ed25519` are **BSD-3-Clause** (already in
+  `deny.toml`'s allow-list); `ciborium`/`ciborium-ll`/`half` are MIT; `zeroize`/
+  `zeroize_derive` MIT/Apache-2.0; `blake2`/`getrandom` reuse existing pins.
+  `cargo deny check` → advisories/bans/licenses/sources all **ok**. No `deny.toml`
+  change.
+
+- **Smoke-gate state:** **unchanged.** This task adds no smoke check; the new leaf
+  crate doesn't affect `scripts/smoke.sh` (it has no binary and nothing in the smoke
+  path links it). `Smoke gate` field stays `unchanged`.

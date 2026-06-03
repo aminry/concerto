@@ -6,6 +6,7 @@ members = [
     "crates/cli",
     "crates/proto",
     "crates/transport",
+    "crates/identity",
     "crates/gix-wrap",
     "crates/keychain",
     "crates/persist",
@@ -204,3 +205,24 @@ tar = { version = "0.4", default-features = false }
 # name was `rustls-tls`). `http2` keeps the HTTP/2 POST path. No
 # native-tls / openssl anywhere. MIT/Apache-2.0.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
+# Task 205: identity crypto primitives (`crates/identity`).
+#
+# - `ed25519-dalek = "2"` — the standard pure-Rust Ed25519 signature impl
+#   (RustCrypto / dalek-cryptography). BSD-3-Clause; clears `deny.toml`. We
+#   enable `zeroize` so `SigningKey` zeroes its secret scalar on drop and
+#   `std` for the error types. We do NOT enable the `rand_core` feature: key
+#   generation fills 32 OS-random bytes via the already-pinned `getrandom`
+#   crate and calls `SigningKey::from_bytes`, which avoids coupling to a
+#   specific `rand_core` major (dalek 2 wants rand_core 0.6; the rest of the
+#   workspace is mixed) and keeps the dep tree minimal.
+# - `curve25519-dalek` is pulled transitively by ed25519-dalek (BSD-3-Clause);
+#   not a direct dep, listed here only for the license note.
+# - `ciborium` — deterministic-CBOR codec. Already used by `concerto-agent-host`
+#   (the HostFrame wire codec) at the same `"0.2"`; promoted to a workspace pin
+#   here so the cert codec and the frame codec share one version literal.
+#   MIT-licensed; cargo-deny clean. The `DeviceCert` is a `serde`-derived
+#   struct, so ciborium serializes its fields in declaration order — that
+#   field order IS the frozen wire order (asserted by the byte-stability and
+#   known-answer tests in `crates/identity/tests/cert_vectors.rs`).
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+ciborium = "0.2"
