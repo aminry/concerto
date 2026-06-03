@@ -914,3 +914,190 @@ pub struct PullRequest {
 }
 ```
 
+## `crates/transport/src/api.rs`
+
+### enum `ChannelTag`
+
+```rust
+pub enum ChannelTag {
+    /// The long-lived gRPC API stream pool. Wire byte `0x01`.
+    Api = 0x01,
+    /// The lightweight push-hint / wakeup-fetch channel. Wire byte `0x02`.
+    PushHint = 0x02,
+    /// The short-lived pairing channel (Noise XX over the token). Wire byte `0x03`.
+    Pairing = 0x03,
+}
+```
+
+### struct `DeviceId`
+
+```rust
+pub struct DeviceId(pub String);
+```
+
+### enum `ConnectionPath`
+
+```rust
+pub enum ConnectionPath {
+    /// Hole-punched direct path over a public/routable IP (NAT traversal won).
+    Direct,
+    /// Relayed QUIC through the configured relay (hole-punch fell back).
+    Relayed,
+    /// LAN-direct over a loopback / private-range IP (mDNS-discovered or
+    /// same-network), no relay involved.
+    Lan,
+}
+```
+
+### struct `NatStats`
+
+```rust
+pub struct NatStats {
+    /// Sessions that came up on a direct (hole-punched) path today.
+    pub direct_today: u32,
+    /// Sessions that came up relayed today.
+    pub relayed_today: u32,
+    /// Sessions that came up LAN-direct today.
+    pub lan_today: u32,
+}
+```
+
+### struct `ActiveSession`
+
+```rust
+pub struct ActiveSession {
+    /// The device this session belongs to (keys the `sessions` map).
+    pub device_id: DeviceId,
+    /// The underlying Iroh QUIC connection (many API bidi streams ride it).
+    pub iroh_connection: Connection,
+    /// The classified connection path, refreshed from Iroh's signal.
+    pub path: ConnectionPath,
+    /// Last time a stream on this connection was seen (liveness / idle GC).
+    pub last_seen: Instant,
+}
+```
+
+### struct `TransportState`
+
+```rust
+pub struct TransportState {
+    /// Live sessions keyed by device id.
+    pub sessions: HashMap<DeviceId, ActiveSession>,
+    /// Daily NAT-success counters (216 aggregates; 212 seeds).
+    pub nat_stats: NatStats,
+}
+```
+
+### struct `IrohDuplex`
+
+```rust
+pub struct IrohDuplex {
+    pub(crate) send: iroh::endpoint::SendStream,
+    pub(crate) recv: iroh::endpoint::RecvStream,
+}
+```
+
+### struct `NoiseDuplex`
+
+```rust
+pub struct NoiseDuplex {
+    pub(crate) inner: IrohDuplex,
+    pub(crate) session: concerto_identity::NoiseSession,
+    pub(crate) read_plain: Vec<u8>,
+    pub(crate) read_plain_pos: usize,
+    pub(crate) read_state: crate::adapter::ReadState,
+    pub(crate) write_buf: Vec<u8>,
+    pub(crate) write_pos: usize,
+}
+```
+
+### struct `IrohConnector`
+
+```rust
+pub struct IrohConnector {
+    pub(crate) conn: Connection,
+    pub(crate) local_static: Arc<concerto_identity::NoiseStatic>,
+    pub(crate) remote_static_pub: [u8; 32],
+}
+```
+
+### trait `ApiDispatcher:`
+
+```rust
+pub trait ApiDispatcher: Send + Sync + 'static {
+    /// Serve exactly one gRPC connection over the established Noise-wrapped
+    /// duplex until the stream closes. Errors are logged by the serve loop.
+    fn serve_connection(
+        &self,
+        io: NoiseDuplex,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<(), TransportError>> + Send>>;
+}
+```
+
+### struct `TransportConfig`
+
+```rust
+pub struct TransportConfig {
+    /// The relay URL to register with. `None` → Iroh's default relay map.
+    /// Ignored entirely under `disable_remote`.
+    pub relay_url: Option<String>,
+    /// LAN-only mode (`managed.json.disable_remote`, Task 211 / `design/11
+    /// §6.4`). `true` → no relay registration, LAN connections only. mDNS
+    /// publication (Task 213) is unaffected.
+    pub disable_remote: bool,
+    /// A directly-supplied Core address (`host:port`) so a blocked-DNS client
+    /// can connect without DNS/pkarr discovery (spike Note B). Ignored when
+    /// empty; a malformed value is a [`TransportError::Endpoint`] at `start`.
+    pub direct_addr: Option<String>,
+}
+```
+
+### struct `RelayInfo`
+
+```rust
+pub struct RelayInfo {
+    /// The relay URL the endpoint uses, or `None` under `disable_remote` / when
+    /// no relay is set.
+    pub url: Option<String>,
+    /// Whether remote (relay) access is disabled by managed policy.
+    pub remote_disabled: bool,
+}
+```
+
+### struct `WakeupHint`
+
+```rust
+pub struct WakeupHint {
+    /// The device to wake.
+    pub device_id: DeviceId,
+    /// Opaque, ID-only payload.
+    pub payload: Vec<u8>,
+}
+```
+
+### struct `PairingListener`
+
+```rust
+pub struct PairingListener {
+    pub(crate) token_hash: [u8; 32],
+    pub(crate) rx: mpsc::Receiver<IrohDuplex>,
+}
+```
+
+### struct `IrohTransport`
+
+```rust
+pub struct IrohTransport {
+    pub(crate) endpoint: iroh::Endpoint,
+    pub(crate) state: Arc<Mutex<TransportState>>,
+    pub(crate) relay: Arc<Mutex<RelayInfo>>,
+    pub(crate) config: TransportConfig,
+    pub(crate) core_static: Arc<concerto_identity::NoiseStatic>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) pairing_tx: Arc<Mutex<Option<([u8; 32], mpsc::Sender<IrohDuplex>)>>>,
+    pub(crate) wakeup_tx: mpsc::UnboundedSender<WakeupHint>,
+    pub(crate) wakeup_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<WakeupHint>>>>,
+    pub(crate) shutdown: CancellationToken,
+}
+```
+

@@ -46,6 +46,12 @@ concerto-proto = { path = "../proto" }
 # primitives the Core's identity loader generates/loads. Pure crypto leaf
 # crate (no keychain/DB) — the Core injects the keychain-loaded signing key.
 concerto-identity = { path = "../identity" }
+# Task 212: the production Iroh QUIC transport. `serve_iroh` (in
+# `src/api_server.rs`) implements `concerto_transport::ApiDispatcher` over the
+# SAME `Server::builder().add_service(..)` chain `run_uds` uses, injecting
+# `ConnTransport(TransportKind::Iroh)` so Iroh callers hit the identical handler
+# set with no per-transport branching. Cross-platform (QUIC) — not `cfg(unix)`.
+concerto-transport = { path = "../transport" }
 # Task 206: the OS keychain wrapper holding the Core's Ed25519 private key
 # under `SecretKind::CoreIdentityPrivateKey`. `load_or_create_core_identity`
 # reads/writes it at boot.
@@ -166,6 +172,11 @@ ciborium = "0.2"
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# Task 212: the Iroh end-to-end test (`tests/transport_iroh.rs`) builds a client
+# Iroh endpoint directly to dial the Core's `serve_iroh` listener. Workspace pin
+# (the validated trio); test-only, so it never enters the production graph.
+# (`concerto-transport` + `concerto-identity` are already production deps above.)
+iroh = { workspace = true }
 # Task 204: the Connect-Web bridge integration test drives the loopback
 # gRPC-Web server with a headless HTTP client. It reuses the workspace
 # `reqwest` (rustls) pin but adds the `stream` feature so the test can read

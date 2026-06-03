@@ -79,23 +79,26 @@ Per README §5.3 (`rust`):
 7. `scripts/smoke.sh` → the new `transport-loopback` capability brings up two in-process Iroh endpoints (relays disabled) and runs one RPC + one stream + asserts `IROH`; existing caps stay green. Exits 0.
 
 ## Definition of Done
-- [ ] `crates/transport` filled: pinned Iroh endpoint, hand-rolled tonic-0.12 adapter (four gotchas, ≥64 MiB limits), three logical channels, `TransportState`/`ActiveSession`/`ConnectionPath`
-- [ ] `serve_iroh` wired into the Core api server reusing the UDS service set + shutdown; Noise IK (208) layered inside each stream; `ConnTransport(Iroh)` tagged via the 201 seam
-- [ ] `disable_remote` (211) consulted before relay registration / remote accept; directly-supplied address/relay path honored (spike Note B); LAN path usable when relay is down
-- [ ] FROZEN: the `crates/transport` surface 217 wraps + the adapter contract, declared in `src/api.rs`
-- [ ] `cargo deny check` green; any new SPDX ratified in `deny.toml` with a dated comment
-- [ ] Tier-2 loopback double tests pass; Verification commands pass; interfaces regenerated; smoke `transport-loopback` green
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate debt in Handoff)
-- [ ] Single commit with the message below
+- [x] `crates/transport` filled: pinned Iroh endpoint, hand-rolled tonic-0.12 adapter (four gotchas, ≥64 MiB limits), three logical channels, `TransportState`/`ActiveSession`/`ConnectionPath`
+- [x] `serve_iroh` wired into the Core api server reusing the UDS service set + shutdown; Noise IK (208) layered inside each stream; `ConnTransport(Iroh)` tagged via the 201 seam
+- [x] `disable_remote` (211) consulted before relay registration / remote accept; directly-supplied address/relay path honored (spike Note B); LAN path usable when relay is down
+- [x] FROZEN: the `crates/transport` surface 217 wraps + the adapter contract, declared in `src/api.rs`
+- [x] `cargo deny check` green; any new SPDX ratified in `deny.toml` with a dated comment
+- [x] Tier-2 loopback double tests pass; Verification commands pass; interfaces regenerated; smoke `transport-loopback` green
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate debt in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `Cargo.toml` (modified — `[workspace.dependencies]` += `iroh = "=0.98.2"` / `iroh-relay = "=0.98.0"` pins with rationale)
 - `crates/transport/Cargo.toml` (modified — deps + a `dev`/`test` feature for the in-process relay double)
 - `crates/transport/src/lib.rs`, `crates/transport/src/endpoint.rs`, `crates/transport/src/adapter.rs`, `crates/transport/src/channels.rs`, `crates/transport/src/state.rs`, `crates/transport/src/api.rs` (new — names indicative; freeze the public surface in `api.rs`)
 - `crates/transport/tests/loopback.rs` (new — the two-endpoints-relays-disabled double)
-- `crates/core/src/api_server.rs` (modified — `serve_iroh` listener + `ConnTransport(Iroh)` tag, reusing the shared service set)
-- `deny.toml` (modified only if a new SPDX needs ratification)
-- `scripts/smoke.d/<NN>-transport-loopback.sh` + `scripts/smoke.manifest` (new capability)
+- `crates/transport/proto/loopback.proto` + `crates/transport/build.rs` (new — ADDED to Outputs, see Drift: the trivial echo/firehose service the loopback double drives over the adapter; tonic-0.12 codegen so the test exercises real framing)
+- `crates/core/src/api_server.rs` (modified — `serve_iroh` listener + `IrohDispatcher` + the shared `CoreServiceSet`/`add_core_services` refactor + `ConnTransport(Iroh)` tag, reusing the shared service set)
+- `crates/core/Cargo.toml` (modified — ADDED to Outputs, see Drift: `concerto-transport` prod dep + `iroh` dev-dep for the Core IROH end-to-end test)
+- `crates/core/tests/transport_iroh.rs` (new — ADDED to Outputs, see Drift: the Core end-to-end IROH assertion over the real `serve_iroh` path)
+- `deny.toml` (modified — ratified `Unlicense` license + ignored two unfixable-under-pin hickory advisories; see Handoff)
+- `scripts/smoke.d/98-transport-loopback.sh` + `scripts/smoke.manifest` (new capability)
 - `docs/interfaces/rust-api.md` (regenerated)
 
 ## Commit message
@@ -113,5 +116,143 @@ two endpoints, relays disabled, forced direct path.
 Refs: tasks/v1.0/212-transport-iroh-endpoint.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / Open questions for next task (217 surface boundary, Noise-vs-adapter layering) / Deliberate debt / License ratifications / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+
+- **Drift from plan.**
+  - **Added outputs (flagged above):** `crates/transport/proto/loopback.proto` +
+    `crates/transport/build.rs` (the trivial echo/firehose service the Tier-2
+    double drives over the adapter — the transport's ONLY codegen; production is
+    proto-free), `crates/core/Cargo.toml` (the `concerto-transport` prod dep +
+    `iroh` dev-dep for the Core IROH end-to-end test), and
+    `crates/core/tests/transport_iroh.rs` (the Core end-to-end test asserting
+    `transport_kind = IROH` over the real `serve_iroh` — the in-Rust twin of the
+    smoke capability). `deny.toml` was modified (see License ratifications).
+  - **`api_server.rs` refactor:** factored the UDS `add_service(..)` chain into a
+    shared `CoreServiceSet` + `add_core_services<L>(server, set) -> Router` so
+    `run_uds` and the new `serve_iroh`/`IrohDispatcher` register the **identical**
+    handler set — the only per-transport difference is the interceptor's injected
+    `ConnTransport(TransportKind)`. `CoreServiceSet` + `serve_iroh` are `pub`
+    (217's façade wraps them); added `CoreServiceSet::runtime_only(..)` for the
+    minimal Runtime-only server the test/smoke stand up.
+  - **`serve_iroh` is NOT auto-spawned by the `ApiServerActor` yet.** It is the
+    wired, tested internal entry (driven by the end-to-end test + smoke); the
+    actor-level spawn (building the `IrohTransport` from boot config + managed
+    policy + the Noise static, attaching it to `ctx.shutdown`) is **deferred to
+    Task 217's `TransportHandle` façade**, which `design/11` + this task's
+    Scope-out assign there. `boot.rs` was deliberately **not** touched (stayed
+    inside the `api_server.rs`/transport Outputs).
+  - **`api.rs` convention:** to satisfy `regen-interfaces.sh` (which indexes only
+    `pub struct/enum/trait` *declarations* literally present in `api.rs`, not
+    `pub use`), the FROZEN named types are **declared directly in `api.rs`** with
+    their `impl`s + free helpers in the topic modules (the identity-crate
+    pattern). `IrohDuplex`/`NoiseDuplex`/`IrohConnector` fields are `pub(crate)`
+    so the impls in `adapter.rs` reach them.
+
+- **Open questions for next task (213/214/215/216/217/218).**
+  - **The FROZEN `concerto-transport` `api.rs` surface** (217's façade is a thin
+    wrapper over these): `IrohTransport::{start(cfg, core_noise_static_private:
+    [u8;32]) -> Result<Self>, stop(), serve<D: ApiDispatcher>(dispatcher) ->
+    Result<()>, listen_pairing(token_hash: [u8;32]) -> PairingListener,
+    close_pairing(), current_relay() -> RelayInfo, switch_relay(url) ->
+    Result<()>, nat_stats() -> NatStats, session_paths() -> Vec<(DeviceId,
+    ConnectionPath)>, close_sessions_for_device(&DeviceId),
+    send_wakeup_hint(DeviceId, Vec<u8>) -> Result<()>, take_wakeup_receiver(),
+    core_noise_public() -> [u8;32], endpoint_id(), endpoint()}`; the free fns
+    `connect_channel(client, server_addr, local_static, core_noise_pub) ->
+    Result<Channel>`, `direct_endpoint_addr(&Endpoint) -> Result<EndpointAddr>`,
+    `classify_path(&Connection) -> ConnectionPath`; the types `TransportConfig {
+    relay_url, disable_remote, direct_addr }`, `RelayInfo { url, remote_disabled
+    }`, `WakeupHint { device_id, payload }`, `PairingListener {token_hash(),
+    accept() -> Option<IrohDuplex>}`, `ConnectionPath = Direct|Relayed|Lan`,
+    `ActiveSession`, `TransportState`, `NatStats {direct_today, relayed_today,
+    lan_today}`, `DeviceId(pub String)`, and the trait `ApiDispatcher {
+    serve_connection(NoiseDuplex) -> Future<Result<(), TransportError>> }`.
+  - **The adapter contract (FROZEN):** `IrohDuplex` (one Iroh bidi stream ⇒ one
+    `AsyncRead+AsyncWrite+Connected` raw duplex) → wrapped by `NoiseDuplex` (the
+    same traits + the Noise session). `IrohConnector` (one gRPC connection ⇒ one
+    fresh primed bidi stream). `MAX_MESSAGE_SIZE = 64 MiB`,
+    `NOISE_PLAINTEXT_CHUNK = 64000`.
+  - **Channel-tag framing (FROZEN):** every bidi stream opens with a single tag
+    byte — `0x01 Api`, `0x02 PushHint`, `0x03 Pairing` (`ChannelTag`). The tag
+    byte IS the acceptor-priming write (spike gotcha #3 — no separate zero-byte
+    flush). The acceptor demuxes on it: API/PushHint → Noise responder → the
+    `ApiDispatcher`; Pairing → the open `listen_pairing` listener (207 drives the
+    Noise XX token handshake inside; 212 only routes the raw duplex). 213/214/215
+    speak the same first byte.
+  - **The Noise-vs-adapter layering decision (the 208 spike-deferred line):**
+    Noise wraps the byte duplex **before** Tonic — `Iroh bidi → channel-tag read
+    → Noise IK handshake (responder on accept, initiator on connect) → NoiseDuplex
+    → tonic`. `NoiseDuplex` frames each direction as length-prefixed (`u16` BE)
+    Noise frames, chunking plaintext into ≤ 64000-byte pieces (the 208 "≤ 64 KiB
+    Noise frames" intent). A decrypt failure (AEAD/replay, `design/12 §6.3`)
+    surfaces an `io::Error` → Tonic tears the connection → reconnect. The pairing
+    channel uses the **raw** duplex (Noise XX is the pairing handshake itself).
+  - **The X25519-static provenance decision (the 208 open question this task
+    owned):** the transport owns the Core's Noise static and carries its public
+    half. `IrohTransport::start(cfg, core_noise_static_private: [u8;32])` takes
+    the **persisted 32-byte X25519 private key**; the transport derives the
+    `NoiseStatic` via `NoiseStatic::from_private` and exposes
+    `core_noise_public() -> [u8;32]` — the value a pairing QR embeds alongside
+    `core_pubkey` + `iroh_endpoint_id` so the initiator pre-loads it (the IK
+    precondition). **It is NOT derived from the Core's Ed25519 identity** (keys
+    are never crossed). **Open for 217:** the *at-rest persistence* of that 32-byte
+    Noise private (a dedicated keychain `SecretKind` vs Iroh's own state dir) is
+    deferred to 217's boot wiring; this task accepts it as a `start` argument so
+    the Core owns the storage. The device (initiator) static is the device's own
+    Noise static carried from pairing (Task 207/511's concern).
+  - **Tier-3 lines the loopback double does NOT cover** (Phase-2 manual checklist
+    / spike 101 field matrix): real-NAT hole-punch direct-% across real networks;
+    a real WAN relay (the spike's PENDING real-WAN-relayed row); real QUIC
+    connection migration (Wi-Fi↔LTE, Task 216). The double is two endpoints on one
+    host, relays disabled, forced direct loopback — it proves the logic, not the
+    physics.
+  - **For 213 (mDNS):** `ConnectionPath` already distinguishes `Lan` (loopback/
+    private-range IP) from `Direct` (public-range hole-punched) via a documented
+    address-range heuristic in `classify_path`; 213 can refine `Lan` when a
+    session is known to be mDNS-discovered. `disable_remote` leaves mDNS
+    publication untouched (it only gates relay registration + remote accept).
+  - **For 216 (telemetry):** `NatStats` (direct/relayed/lan counters) +
+    `session_paths()` + `ActiveSession::refresh_path()` are seeded; 216 owns
+    `by_network_class` aggregation + `transport.nat_success_changed`.
+  - **For 214 (relay binary):** `iroh-relay` is in `[workspace.dependencies]`
+    (pinned `=0.98.0`); the transport pulls it only behind its `dev-relay` test
+    feature, so 214's relay binary depends on it directly without contending.
+
+- **Deliberate debt.** None deferred via `TODO`/`unimplemented!`. Two scoped
+  deferrals, both recorded with their closing task: (1) the `ApiServerActor`
+  auto-spawn of `serve_iroh` + the Noise-static at-rest persistence → **Task
+  217**; (2) push-hint (`ChannelTag::PushHint`) currently routes to the same
+  gRPC dispatcher as API (the wakeup-fetch rides the gRPC surface) — lightweight
+  special-casing → **Task 217 / Task 14**.
+
+- **License / advisory ratifications (`deny.toml`).**
+  - **Ratified license:** `Unlicense` (public-domain dedication, OSI/FSF-approved)
+    — `iroh-relay 0.98.0` pulls a wasm32-only websocket subtree
+    (`ws_stream_wasm` → `pharos`/`async_io_stream`) under it. Functionally
+    equivalent to the already-allowed `CC0-1.0`/`0BSD`; dated 2026-06-03.
+  - **⚠️ OPERATOR STOP-AND-ASK — two ignored advisories.** `iroh = 0.98.2` pins
+    `hickory-resolver = "=0.26.0-beta.4"` EXACTLY, dragging in **RUSTSEC-2026-0119**
+    (`hickory-proto` O(n²) name-compression CPU exhaustion) and **RUSTSEC-2026-0120**
+    (`hickory-net` NSEC3 unbounded loop). The fixes are `>= 0.26.1`, which exist
+    only on the stable line — the beta line iroh pins has **no patched release**.
+    The ONLY way to clear them is to bump iroh, which the validated spike-102 trio
+    forbids without a re-spike. Both are **remote-DoS in the DNS-discovery path**
+    (malicious DNS responses) — NOT RCE/auth-bypass — and the transport
+    deliberately allows a **directly-supplied address/relay** (spike Note B) that
+    bypasses DNS/pkarr entirely. I added a **scoped `[advisories] ignore`** of
+    exactly these two IDs with a dated justification (every other advisory still
+    fails the gate) rather than disabling the check. **Operator action:** confirm
+    the ignore is acceptable, and revisit when iroh ships a release that re-pins
+    hickory `>= 0.26.1` (re-validate the adapter on the bump).
+
+- **Smoke-gate state.** New capability `transport-loopback` registered in
+  `scripts/smoke.manifest` (`scripts/smoke.d/98-transport-loopback.sh`). It runs
+  hermetically (no Core boot / no keychain / no network): (1) the
+  `concerto-transport` Tier-2 loopback double (`--features dev-relay --test
+  loopback`, 8 tests — gRPC-over-Iroh + adapter four gotchas + Noise inside the
+  stream + channel mux + disable_remote refusal + `ConnectionPath` class +
+  >4 MiB large-message + first-RPC-no-stall), and (2) the Core end-to-end IROH
+  assertion (`concerto-core --test transport_iroh` — real `serve_iroh` + real
+  Runtime handler + real device cert → `transport_kind = IROH`). Full
+  `scripts/smoke.sh` (all prior caps + the new one) passes; `--only
+  transport-loopback` verified green (65 s).
