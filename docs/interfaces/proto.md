@@ -37,6 +37,133 @@ enum PermissionMode {
 }
 ```
 
+## `crates/proto/proto/concerto/v1/files.proto`
+
+- package: `concerto.v1`
+
+### service `Files`
+
+```proto
+service Files {
+  // Client → Core streaming upload. The first frame MUST be an
+  // `UploadChunk { header }`; subsequent frames carry `data` (≤ 256 KiB
+  // each); the final frame is `finalize` with the BLAKE2b-256 digest of
+  // the full uploaded byte stream, which the Core verifies before the
+  // atomic rename.
+  rpc Upload(stream UploadChunk) returns (UploadResult);
+  // Core → client streaming download with optional byte range.
+  rpc Download(DownloadRequest) returns (stream DownloadChunk);
+  // Stat a single path within scope (existence / size / is_dir).
+  rpc Stat(StatRequest) returns (StatResult);
+  // List the immediate entries of a directory within scope
+  // (non-recursive).
+  rpc List(ListFilesRequest) returns (ListFilesResponse);
+}
+```
+
+### message `UploadChunk`
+
+```proto
+message UploadChunk {
+  oneof body {
+    UploadHeader header = 1;      // first frame: target path + expected size
+    bytes data = 2;              // subsequent frames: ≤ 256 KiB each
+    UploadFinalize finalize = 3; // last frame: checksum
+  }
+}
+```
+
+### message `UploadHeader`
+
+```proto
+message UploadHeader {
+  string workarea_id = 1;
+  optional string repository_id = 2; // None ⇒ the workarea's .context/ root
+  string relative_path = 3;          // within the (workarea, repo) scope
+  uint64 expected_size = 4;
+  string content_type = 5;
+}
+```
+
+### message `UploadFinalize`
+
+```proto
+message UploadFinalize { bytes blake2b = 1; }
+```
+
+### message `UploadResult`
+
+```proto
+message UploadResult   { string stored_path = 1; uint64 size = 2; }
+```
+
+### message `DownloadRequest`
+
+```proto
+message DownloadRequest {
+  string workarea_id = 1;
+  optional string repository_id = 2; // None ⇒ the workarea's .context/ root
+  string relative_path = 3;
+  optional uint64 offset = 4;        // start byte; default 0
+  optional uint64 length = 5;        // byte count; default to EOF
+}
+```
+
+### message `DownloadChunk`
+
+```proto
+message DownloadChunk { bytes data = 1; } // ≤ 256 KiB each
+```
+
+### message `StatRequest`
+
+```proto
+message StatRequest {
+  string workarea_id = 1;
+  optional string repository_id = 2; // None ⇒ the workarea's .context/ root
+  string relative_path = 3;
+}
+```
+
+### message `StatResult`
+
+```proto
+message StatResult {
+  bool exists = 1;
+  uint64 size = 2;
+  bool is_dir = 3;
+  string content_type = 4;
+}
+```
+
+### message `ListFilesRequest`
+
+```proto
+message ListFilesRequest {
+  string workarea_id = 1;
+  optional string repository_id = 2; // None ⇒ the workarea's .context/ root
+  string relative_path = 3;
+}
+```
+
+### message `ListFilesResponse`
+
+```proto
+message ListFilesResponse {
+  repeated FileEntry entries = 1;
+}
+```
+
+### message `FileEntry`
+
+```proto
+message FileEntry {
+  string name = 1;
+  uint64 size = 2;
+  bool is_dir = 3;
+}
+```
+
 ## `crates/proto/proto/concerto/v1/projects.proto`
 
 - package: `concerto.v1`

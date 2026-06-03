@@ -140,6 +140,15 @@ enum Command {
         #[arg(long)]
         repo_id: String,
     },
+    /// Task 203: probe the `Files` service over the live UDS Core. Uploads
+    /// a multi-chunk file into the workarea's `.context/` root, downloads
+    /// it back (asserting byte-identical + matching BLAKE2b-256), stats it,
+    /// and asserts an out-of-scope `../escape.txt` upload is rejected.
+    /// Prints `files-transfer-probe: OK` on success.
+    FilesTransferProbe {
+        #[arg(long)]
+        workarea_id: String,
+    },
     /// Call `Workareas.UpdateWorkareaPermissionMode`. Prints the
     /// resulting mode's proto-enum string name.
     SetPermMode {
@@ -290,6 +299,10 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
         } => {
             let socket = require_socket(cli.socket)?;
             cmd::streams_replay_probe::run(&socket, &project_id, &repo_id).await
+        }
+        Command::FilesTransferProbe { workarea_id } => {
+            let socket = require_socket(cli.socket)?;
+            cmd::files_transfer_probe::run(&socket, &workarea_id).await
         }
         Command::SetPermMode {
             workarea,

@@ -66,15 +66,15 @@ Tier 1.
 7. `scripts/smoke.sh` → add a new `files-transfer` capability (`scripts/smoke.d/<NN>-files-transfer.sh` defining `check_files_transfer`, appended to `scripts/smoke.manifest` after `streams-subscribe`): over the live UDS Core, upload a small file into a workarea scope, download it back, assert byte-identical + checksum, and assert an out-of-scope path is rejected. Exits 0.
 
 ## Definition of Done
-- [ ] `crates/proto/proto/concerto/v1/files.proto` reproduces the §5.1 surface faithfully + frozen `Stat`/`List` messages; added to the proto build list
-- [ ] `crates/core/src/handlers/files.rs` implements Upload/Download/Stat/List with chunking (≤256 KiB) + incremental BLAKE2b + atomic rename
-- [ ] Every RPC resolves `(workarea, repo)` scope and enforces `path_policy` (Allowed-only); `..`/absolute paths rejected
-- [ ] `Files` service registered in `api_server.rs`; `pub mod files` in `handlers/mod.rs`
-- [ ] `blake2` is a single workspace pin (reused from 205 or introduced here + noted in Handoff); `cargo deny check` green
-- [ ] Tests cover round-trip, checksum/size mismatch, path-escape, deny/outside reject, oversize chunk, ranged download
-- [ ] Builds on the Windows CI lane (no `std::os::unix` in the handler)
-- [ ] Verification commands pass; new `files-transfer` smoke green; interfaces regenerated
-- [ ] Single commit with the message below
+- [x] `crates/proto/proto/concerto/v1/files.proto` reproduces the §5.1 surface faithfully + frozen `Stat`/`List` messages; added to the proto build list
+- [x] `crates/core/src/handlers/files.rs` implements Upload/Download/Stat/List with chunking (≤256 KiB) + incremental BLAKE2b + atomic rename
+- [x] Every RPC resolves `(workarea, repo)` scope and enforces `path_policy` (Allowed-only); `..`/absolute paths rejected
+- [x] `Files` service registered in `api_server.rs`; `pub mod files` in `handlers/mod.rs`
+- [x] `blake2` is a single workspace pin (introduced here + noted in Handoff); `cargo deny check` green
+- [x] Tests cover round-trip, checksum/size mismatch, path-escape, deny/outside reject, oversize chunk, ranged download
+- [x] Builds on the Windows CI lane (no `std::os::unix` in the handler)
+- [x] Verification commands pass; new `files-transfer` smoke green; interfaces regenerated
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/proto/proto/concerto/v1/files.proto` (new — auto-globbed by `build.rs`; edit `build.rs` only if a field needs an explicit serde `with` mapping)
@@ -83,7 +83,8 @@ Tier 1.
 - `crates/core/src/api_server.rs` (modified — register `FilesServer`)
 - `crates/core/Cargo.toml` / root `Cargo.toml` (modified — `blake2` dep, if introduced here)
 - `crates/core/tests/files_service.rs` (new)
-- `scripts/smoke.d/<NN>-files-transfer.sh` (new) + `scripts/smoke.manifest` (modified)
+- `scripts/smoke.d/45-files-transfer.sh` (new) + `scripts/smoke.manifest` (modified)
+- `tools/smoke-client/src/cmd/files_transfer_probe.rs` (new) + `tools/smoke-client/src/cmd/mod.rs` / `tools/smoke-client/src/main.rs` / `tools/smoke-client/Cargo.toml` (modified) — the `files-transfer-probe` subcommand the smoke check drives (added beyond the original Outputs list, mirroring Task 202's `streams_replay_probe`; see Handoff)
 - `docs/interfaces/proto.md` (regenerated)
 
 ## Commit message
@@ -99,5 +100,8 @@ repo) scope and enforced against the path_policy allow/deny floor
 Refs: tasks/v1.0/203-files-service-streaming.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / Open questions for next task / Deliberate debt (e.g. blake2 pin ownership, Stat/List shape) / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+- **Drift from plan:** Two additions beyond the literal `Outputs` list, both required to satisfy the `new:files-transfer` smoke gate and flagged here per the rules of engagement. (1) `tools/smoke-client/src/cmd/files_transfer_probe.rs` (+ registration in `cmd/mod.rs`, `main.rs`, and a `blake2` dep in `tools/smoke-client/Cargo.toml`): the smoke gate drives RPCs exclusively through `smoke-client`, exactly as Task 202 added `streams_replay_probe.rs` for its smoke capability — this is the established pattern, not new surface. (2) One extra line in `crates/core/src/handlers/files.rs` beyond pure byte-plumbing: `resolve_allowed` canonicalizes the DB-stored scope root before joining `relative_path`. Without it, on hosts where the data root sits behind a symlink (macOS `/var`→`/private/var`), a target whose leaf doesn't yet exist falls back to lexical cleaning and keeps the un-canonical prefix, so `classify` wrongly returns `Outside`. Canonicalization is on the existing scope dir only; `classify` still does the authoritative symlink-resolving check on the full target (the deny-list symlink-escape test confirms this).
+- **Open questions for next task:** None blocking. Note for Task 210 (auth middleware): the `Files` handler does NOT do peer-uid / device-cert gating — it assumes 210 applies auth uniformly across all services (per Scope — out). Note for Task 220 (split-host loopback smoke): the over-Iroh `Files` transfer is unexercised here; 220 owns that Tier-3 reality. `content_type` is echoed in `UploadHeader` but `Stat`/`List` return `""` for files (no sniffing — V1.5+ per Scope — out); a future content-type task can populate it without a proto change.
+- **Deliberate debt:** None. No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code.
+- **Smoke-gate state:** Added `scripts/smoke.d/45-files-transfer.sh` (`check_files_transfer`) and registered `files-transfer` in `scripts/smoke.manifest` immediately after `streams-subscribe` (so `WA_ID` + the `.context/` root exist). The probe uploads a ~450 KiB multi-chunk file into the workarea's `.context/` (repository_id unset, always allow-listed), downloads it back asserting byte-identical + BLAKE2b-256 match, stats it, and asserts an out-of-scope `../escape.txt` upload is rejected. `scripts/smoke.sh` (full + `--only files-transfer`) is GREEN; `shellcheck -x` on the new check is clean. **blake2 pin ownership:** introduced here as the single `[workspace.dependencies] blake2 = "0.10"` pin (BLAKE2b-256, `Blake2b<U32>`); Task 205 should REUSE this pin for its `device_id` hash rather than re-declare it. **Digest width FROZEN:** BLAKE2b-256 (32-byte output), documented in the `files.proto` `UploadFinalize.blake2b` comment.

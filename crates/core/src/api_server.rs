@@ -272,6 +272,7 @@ async fn run_uds(
     use concerto_proto::v1::TransportKind;
 
     use crate::conn_transport::ConnTransport;
+    use crate::handlers::files::FilesHandler;
     use crate::handlers::projects::ProjectsHandler;
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
@@ -283,6 +284,7 @@ async fn run_uds(
     use crate::handlers::vcs::VcsHandler;
     use crate::handlers::workareas::WorkareasHandler;
     use crate::handlers::workspaces::WorkspacesHandler;
+    use concerto_proto::v1::files_server::FilesServer;
     use concerto_proto::v1::projects_server::ProjectsServer;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
@@ -372,6 +374,17 @@ async fn run_uds(
         .layer(tonic::service::interceptor(tag_uds))
         .add_service(runtime_service);
     if let Some(persistence) = persistence {
+        // Task 203: the `Files` service shares the same `Persistence`
+        // handle (to resolve workarea → worktree_root → repo scope via
+        // `path_policy::for_workarea_from_db`). Register it from a clone
+        // of the Arc, then hand the original to `Projects`. `home` expands
+        // the hard deny-list; `home_dir()` is the canonical accessor used
+        // everywhere in the Core (boot/runtime/supervisor).
+        let home = home::home_dir().ok_or_else(|| {
+            Error::Internal("home::home_dir() returned None; cannot scope Files allow-list".into())
+        })?;
+        let files_service = FilesServer::new(FilesHandler::new(persistence.clone(), home));
+        builder = builder.add_service(files_service);
         let projects_service = ProjectsServer::new(ProjectsHandler::new(persistence));
         builder = builder.add_service(projects_service);
     }

@@ -17,6 +17,7 @@ project-repo-clone
 workspace-workarea
 echo-session
 streams-subscribe
+files-transfer
 permission-flip
 audit-log
 audit-rotation
