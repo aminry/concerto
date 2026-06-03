@@ -916,6 +916,73 @@ pub struct PullRequest {
 
 ## `crates/transport/src/api.rs`
 
+### struct `DiscoveredCore`
+
+```rust
+pub struct DiscoveredCore {
+    /// The advertised instance label (the Core's display name).
+    pub instance_name: String,
+    /// The Iroh endpoint id to dial (TXT `endpoint_id`).
+    pub endpoint_id: String,
+    /// The base64 Ed25519 Core public key (TXT `core_pubkey`) — fingerprint hint.
+    pub core_pubkey_b64: String,
+    /// The Core semver (TXT `version`).
+    pub version: String,
+    /// The raw comma-separated coarse feature list (TXT `caps`); see
+    /// [`Self::caps_list`].
+    pub caps: String,
+    /// The resolved IP addresses (IPv4 + IPv6, R-3) — informational; the dial
+    /// uses `endpoint_id` via Iroh, not these directly.
+    pub addresses: Vec<IpAddr>,
+}
+```
+
+### struct `MdnsConfig`
+
+```rust
+pub struct MdnsConfig {
+    /// The advertised instance label (the Core's display name).
+    pub instance_name: String,
+    /// The Iroh endpoint id (TXT `endpoint_id`).
+    pub endpoint_id: String,
+    /// The base64 Ed25519 Core public key (TXT `core_pubkey`).
+    pub core_pubkey_b64: String,
+    /// The Core semver (TXT `version`).
+    pub version: String,
+    /// The comma-separated coarse feature list (TXT `caps`).
+    pub caps: String,
+    /// The advertised port (informational; the Iroh endpoint id is the real
+    /// dial target). Carried for SRV-record completeness.
+    pub port: u16,
+    /// Host IPs to advertise (both v4 and v6 where available, R-3). Empty → the
+    /// responder auto-detects and keeps the host's addresses updated.
+    pub addrs: Vec<IpAddr>,
+    /// Suppress publication entirely (the dedicated mDNS opt-out). When `true`,
+    /// [`MdnsResponder::publish`] returns a no-op handle that advertises
+    /// nothing. **NOT** driven by `disable_remote`.
+    pub opt_out: bool,
+}
+```
+
+### struct `MdnsResponder`
+
+```rust
+pub struct MdnsResponder {
+    pub(crate) daemon: Option<mdns_sd::ServiceDaemon>,
+    pub(crate) fullname: Option<String>,
+    pub(crate) config: MdnsConfig,
+}
+```
+
+### struct `MdnsBrowser`
+
+```rust
+pub struct MdnsBrowser {
+    pub(crate) daemon: Option<mdns_sd::ServiceDaemon>,
+    pub(crate) rx: mpsc::UnboundedReceiver<DiscoveredCore>,
+}
+```
+
 ### enum `ChannelTag`
 
 ```rust
@@ -1097,6 +1164,12 @@ pub struct IrohTransport {
     pub(crate) pairing_tx: Arc<Mutex<Option<([u8; 32], mpsc::Sender<IrohDuplex>)>>>,
     pub(crate) wakeup_tx: mpsc::UnboundedSender<WakeupHint>,
     pub(crate) wakeup_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<WakeupHint>>>>,
+    /// The live mDNS responder (`design/11 §4` `mdns_responder`). `None` until
+    /// [`IrohTransport::publish_mdns`] is called (the Core publishes after the
+    /// endpoint is up, since the TXT needs the `endpoint_id`). Replaced on
+    /// re-announce; deregistered (mDNS goodbye) on [`IrohTransport::stop_mdns`]
+    /// / drop.
+    pub(crate) mdns: Arc<Mutex<Option<MdnsResponder>>>,
     pub(crate) shutdown: CancellationToken,
 }
 ```

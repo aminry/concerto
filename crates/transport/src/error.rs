@@ -31,6 +31,9 @@ pub enum TransportError {
     /// A remote (non-LAN) operation was refused because `disable_remote = true`
     /// (Task 211, `design/11 §6.4`).
     RemoteDisabled(String),
+    /// The mDNS responder/browser (`design/11 §3.5`, Task 213) failed — daemon
+    /// creation, service registration, or browse setup.
+    Mdns(String),
     /// I/O on the underlying byte channel failed.
     Io(String),
 }
@@ -44,6 +47,7 @@ impl fmt::Display for TransportError {
             TransportError::Channel(m) => write!(f, "channel tag: {m}"),
             TransportError::Noise(m) => write!(f, "noise ik: {m}"),
             TransportError::RemoteDisabled(m) => write!(f, "remote disabled: {m}"),
+            TransportError::Mdns(m) => write!(f, "mdns: {m}"),
             TransportError::Io(m) => write!(f, "transport io: {m}"),
         }
     }

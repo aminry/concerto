@@ -56,6 +56,13 @@ tower = { workspace = true, features = ["util"] }
 http = "1"
 futures = { workspace = true }
 tracing.workspace = true
+# Task 213: mDNS LAN discovery (`_concerto._tcp.local`). Pure-Rust responder +
+# browser in one crate, IPv4+IPv6 out of the box (`design/11 §12 R-3`), with
+# loopback interfaces enabled by default (the Tier-2 double discovers on
+# loopback with no cross-host multicast). `default-features = false` drops the
+# `async` (flume/async) feature we don't use; `logging` routes the daemon
+# thread's diagnostics through `log`. Pinned at the workspace level.
+mdns-sd = { workspace = true, features = ["logging"] }
 
 [dev-dependencies]
 # The loopback double turns on the in-process relay.

@@ -37,8 +37,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapter;
 use crate::api::{
-    ApiDispatcher, ChannelTag, DeviceId, IrohConnector, IrohDuplex, IrohTransport, PairingListener,
-    RelayInfo, TransportConfig, TransportState, WakeupHint,
+    ApiDispatcher, ChannelTag, DeviceId, IrohConnector, IrohDuplex, IrohTransport, MdnsConfig,
+    PairingListener, RelayInfo, TransportConfig, TransportState, WakeupHint,
 };
 use crate::error::{Result, TransportError};
 
@@ -100,6 +100,7 @@ impl IrohTransport {
             pairing_tx: Arc::new(Mutex::new(None)),
             wakeup_tx,
             wakeup_rx: Arc::new(Mutex::new(Some(wakeup_rx))),
+            mdns: Arc::new(Mutex::new(None)),
             shutdown: CancellationToken::new(),
         };
 
@@ -133,6 +134,61 @@ impl IrohTransport {
     /// addrs; Task 216 reads migration signals).
     pub fn endpoint(&self) -> Endpoint {
         self.endpoint.clone()
+    }
+
+    /// Publish (or re-publish) this Core on the LAN via mDNS
+    /// (`_concerto._tcp.local`, `design/11 §3.5`, Task 213). Call **after** the
+    /// endpoint is up — the TXT record's `endpoint_id` is read from
+    /// [`Self::endpoint_id`] when the caller is `None`, otherwise from the
+    /// supplied [`MdnsConfig`].
+    ///
+    /// `config.opt_out` (the dedicated managed / per-network mDNS opt-out)
+    /// suppresses publication; **`disable_remote` does NOT** — LAN-only mode
+    /// still publishes mDNS (`design/11 §6.4`). Re-announces by replacing the
+    /// prior responder (its drop sends the goodbye for the old record), so
+    /// callers re-invoke this on `version` / `endpoint_id` / `caps` change.
+    pub fn publish_mdns(&self, config: MdnsConfig) -> Result<()> {
+        let responder = crate::api::MdnsResponder::publish(config)?;
+        let mut slot = self.mdns.lock().expect("mdns lock");
+        // Drop any prior responder first (its Drop sends the goodbye packet for
+        // the stale record before the new one is registered).
+        *slot = None;
+        *slot = Some(responder);
+        Ok(())
+    }
+
+    /// Deregister the mDNS service (mDNS goodbye) and stop advertising. After
+    /// this the Core is no longer LAN-discoverable until [`Self::publish_mdns`]
+    /// is called again. Idempotent.
+    pub fn stop_mdns(&self) {
+        if let Some(mut responder) = self.mdns.lock().expect("mdns lock").take() {
+            responder.shutdown();
+        }
+    }
+
+    /// Whether the Core is currently advertising over mDNS (false before
+    /// [`Self::publish_mdns`], after [`Self::stop_mdns`], or when the opt-out
+    /// suppressed publication).
+    pub fn is_mdns_publishing(&self) -> bool {
+        self.mdns
+            .lock()
+            .expect("mdns lock")
+            .as_ref()
+            .is_some_and(|r| r.is_publishing())
+    }
+
+    /// Start an mDNS **browser** for `_concerto._tcp.local` (`design/11 §3.5`,
+    /// Task 213). The returned [`MdnsBrowser`] yields discovered Cores; the
+    /// caller feeds each [`DiscoveredCore::endpoint_id`] to
+    /// [`connect_channel`] to open Iroh directly on the LAN
+    /// ([`ConnectionPath::Lan`]). Independent of the responder — a client that
+    /// is not itself a Core browses without publishing.
+    ///
+    /// This is a free helper on the transport for ergonomics; it does not need
+    /// `self`'s endpoint (browsing is pure mDNS). 218/219/511 may also call
+    /// [`MdnsBrowser::start`] directly.
+    pub fn browse_lan(&self) -> Result<crate::api::MdnsBrowser> {
+        crate::api::MdnsBrowser::start(None)
     }
 
     /// The current relay association (`design/11 §5.1`, Task 217 `current_relay`).
@@ -247,8 +303,11 @@ impl IrohTransport {
         Ok(())
     }
 
-    /// Signal the serve loop to stop (`design/11 §5.1`, Task 217 `stop`).
+    /// Signal the serve loop to stop (`design/11 §5.1`, Task 217 `stop`). Also
+    /// deregisters the mDNS service (goodbye packet) so a stopped Core stops
+    /// being LAN-discoverable.
     pub fn stop(&self) {
+        self.stop_mdns();
         self.shutdown.cancel();
     }
 
