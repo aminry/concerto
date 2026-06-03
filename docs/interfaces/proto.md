@@ -103,6 +103,64 @@ message CompletePairingResponse {
 }
 ```
 
+### message `DeviceEntry`
+
+```proto
+message DeviceEntry {
+  // The device id: BLAKE2b-256(device_pubkey), hex-encoded — the `devices.id`
+  // primary key (the cert/fingerprint form).
+  string device_id = 1;
+  // The user-supplied device name captured at pairing time.
+  string name = 2;
+  // The device's raw Ed25519 public key (32 bytes).
+  bytes public_key = 3;
+  // Unix seconds the device was paired (`devices.paired_at`).
+  int64 paired_at = 4;
+  // Unix seconds of last contact, or `0` when never recorded (NULL column).
+  // Deferred: V1.0 always reports `0` (the auth path populates it later).
+  int64 last_seen_at = 5;
+  // Unix seconds the device was revoked, or `0` when still active. `0` ==
+  // active (FROZEN sentinel — see the message comment above).
+  int64 revoked_at = 6;
+}
+```
+
+### message `ListDevicesResponse`
+
+```proto
+message ListDevicesResponse {
+  repeated DeviceEntry devices = 1;
+}
+```
+
+### message `RevokeDeviceRequest`
+
+```proto
+message RevokeDeviceRequest {
+  // The hex device id (`devices.id`) to revoke. Revoking an already-revoked
+  // device is an idempotent no-op success; an unknown id fails `NOT_FOUND`.
+  string device_id = 1;
+}
+```
+
+### message `CoreInfo`
+
+```proto
+message CoreInfo {
+  // The Core's Ed25519 identity public key (32 bytes) — the same value the
+  // device persisted at pairing time and validates the DeviceCert against.
+  bytes core_pubkey = 1;
+  // The Core binary version (`CARGO_PKG_VERSION`).
+  string core_version = 2;
+  // The Core host OS (`std::env::consts::OS`) — the same source `Runtime`'s
+  // `ServerCapabilities.core_host_os` uses (Task 201).
+  string core_host_os = 3;
+  // The Core hostname (`hostname::get()`) — same source as
+  // `ServerCapabilities.core_hostname` (Task 201).
+  string core_hostname = 4;
+}
+```
+
 ### service `Devices`
 
 ```proto
@@ -119,6 +177,18 @@ service Devices {
   // `FAILED_PRECONDITION` (`pairing.expired`); a bad signature fails with
   // `UNAUTHENTICATED` (design/12 §8).
   rpc CompletePairing(CompletePairingRequest) returns (CompletePairingResponse);
+  // List every paired device (active + revoked), most-recently-paired first
+  // (design/12 §5.2). Read-only.
+  rpc ListDevices(google.protobuf.Empty) returns (ListDevicesResponse);
+  // Revoke a device (design/12 §3.11, §7.3): persist `revoked_at`, insert the
+  // device id into the shared revoked set the validator reads (so future
+  // connects fail at auth), actively close any open sessions from that device,
+  // then audit + broadcast `device.revoked`. Idempotent on an already-revoked
+  // device (no-op success); an unknown id fails `NOT_FOUND`.
+  rpc RevokeDevice(RevokeDeviceRequest) returns (google.protobuf.Empty);
+  // Return the Core's identity + host/version (design/12 §5.2). Read-only; the
+  // `core_pubkey` clients carry from pairing.
+  rpc GetCoreInfo(google.protobuf.Empty) returns (CoreInfo);
 }
 ```
 

@@ -100,6 +100,10 @@ pub enum AuditKind {
     /// A pairing attempt failed — bad signature, expired/consumed token, or
     /// issuance/insert error (Task 207, `design/12 §3.7`/§8).
     DevicePairingFailed,
+    /// A device was revoked — `revoked_at` persisted, the device id inserted
+    /// into the shared revoked set, open sessions closed (Task 209,
+    /// `design/12 §3.7`/§3.11/§7.3). Emitted by `revoke_device` on success.
+    DeviceRevoked,
     WorkspaceCreated,
     WorkspaceArchived,
     WorkspaceRestored,
@@ -133,6 +137,7 @@ impl AuditKind {
             AuditKind::DevicePairingStarted => "device_pairing_started",
             AuditKind::DevicePairingCompleted => "device_pairing_completed",
             AuditKind::DevicePairingFailed => "device_pairing_failed",
+            AuditKind::DeviceRevoked => "device_revoked",
             AuditKind::WorkspaceCreated => "workspace_created",
             AuditKind::WorkspaceArchived => "workspace_archived",
             AuditKind::WorkspaceRestored => "workspace_restored",

@@ -164,69 +164,92 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     // connections when no identity exists) — until then, local UDS operation
     // must not require a keychain.
     //
-    // Task 207: when the identity is established, construct the
-    // `PairingCoordinator` from the issuer + a `Persistence` clone + an audit
-    // writer clone, behind an `Arc` so the api-server actor's factory closure
-    // (which may re-run on a supervised restart) shares the SAME in-memory
-    // token store. It is injected into the gRPC `Devices` service below. The
-    // revoked-set handle is still bound (Task 209 wires the revoke path to it);
-    // the underscore keeps the construction site explicit and warning-clean.
-    let _revoked_set = revoked_set.clone();
-    let pairing_coordinator: Option<Arc<crate::security::pairing::PairingCoordinator>> =
-        match home::home_dir() {
-            Some(core_home) => {
-                let secrets = concerto_keychain::Secrets::new();
-                match crate::security::identity::load_or_create_core_identity(
-                    &secrets,
-                    &core_home,
-                    &audit_writer,
-                )
-                .await
-                {
-                    Ok(core_identity) => {
-                        let core_pubkey_hex = hex::encode(core_identity.public_key.to_bytes());
-                        let first_launch = core_identity.created;
-                        let core_issuer = concerto_identity::LocalCoreIssuer::new(
-                            core_identity.keypair,
-                            core_identity.public_key,
-                            revoked_set.clone(),
-                        );
-                        // LAN endpoint / relay hint are supplied by the
-                        // transport layer (Task 212/213/214); empty here until
-                        // those land — the QR carries no endpoint yet and the
-                        // pairing exchange is transport-agnostic.
-                        let coordinator = crate::security::pairing::PairingCoordinator::new(
-                            core_issuer,
-                            Arc::clone(&persistence),
-                            audit_writer.clone(),
-                            String::new(),
-                            String::new(),
-                        );
-                        tracing::info!(
-                            core_pubkey = %core_pubkey_hex,
-                            first_launch,
-                            "core device-cert issuer + pairing coordinator constructed"
-                        );
-                        Some(Arc::new(coordinator))
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "core identity establishment failed; remote device pairing \
-                             unavailable until a keychain-backed identity exists (Task 210/211 \
-                             will gate remote connections on it)"
-                        );
-                        None
-                    }
+    // Task 207/209: when the identity is established, construct the
+    // `PairingCoordinator` (pairing RPCs) AND the `DeviceManager`
+    // (list/revoke/core-info RPCs) from the issuer + a `Persistence` clone + an
+    // audit writer clone, behind `Arc`s so the api-server actor's factory
+    // closure (which may re-run on a supervised restart) shares the SAME
+    // in-memory token store. Both are injected into the gRPC `Devices` service
+    // below. The `DeviceManager` shares the SAME `revoked_set` handle the
+    // issuer reads, so a `RevokeDevice` insert is observed by the next
+    // `validate` (Task 206) with no DB round-trip.
+    //
+    // The `SessionCloser` seam is a `NoopSessionCloser` for now: a co-located
+    // UDS Core has no remote device streams to sever. Task 217's
+    // `TransportHandle` replaces this one-liner with the real Iroh stream
+    // teardown.
+    let session_closer: Arc<dyn crate::security::devices::SessionCloser> =
+        Arc::new(crate::security::devices::NoopSessionCloser);
+    let identity_subsystems: Option<(
+        Arc<crate::security::pairing::PairingCoordinator>,
+        Arc<crate::security::devices::DeviceManager>,
+    )> = match home::home_dir() {
+        Some(core_home) => {
+            let secrets = concerto_keychain::Secrets::new();
+            match crate::security::identity::load_or_create_core_identity(
+                &secrets,
+                &core_home,
+                &audit_writer,
+            )
+            .await
+            {
+                Ok(core_identity) => {
+                    let core_pubkey = core_identity.public_key;
+                    let core_pubkey_hex = hex::encode(core_pubkey.to_bytes());
+                    let first_launch = core_identity.created;
+                    let core_issuer = concerto_identity::LocalCoreIssuer::new(
+                        core_identity.keypair,
+                        core_pubkey,
+                        revoked_set.clone(),
+                    );
+                    // LAN endpoint / relay hint are supplied by the
+                    // transport layer (Task 212/213/214); empty here until
+                    // those land — the QR carries no endpoint yet and the
+                    // pairing exchange is transport-agnostic.
+                    let coordinator = crate::security::pairing::PairingCoordinator::new(
+                        core_issuer,
+                        Arc::clone(&persistence),
+                        audit_writer.clone(),
+                        String::new(),
+                        String::new(),
+                    );
+                    // Task 209: the device manager shares the SAME revoked-set
+                    // handle the issuer above reads, plus the `SessionCloser`
+                    // seam, so a revoke severs the device everywhere.
+                    let device_manager = crate::security::devices::DeviceManager::new(
+                        Arc::clone(&persistence),
+                        revoked_set.clone(),
+                        core_pubkey,
+                        audit_writer.clone(),
+                        Arc::clone(&session_closer),
+                    );
+                    tracing::info!(
+                        core_pubkey = %core_pubkey_hex,
+                        first_launch,
+                        "core device-cert issuer + pairing coordinator + device manager constructed"
+                    );
+                    Some((Arc::new(coordinator), Arc::new(device_manager)))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "core identity establishment failed; remote device pairing \
+                         unavailable until a keychain-backed identity exists (Task 210/211 \
+                         will gate remote connections on it)"
+                    );
+                    None
                 }
             }
-            None => {
-                tracing::warn!(
-                    "home::home_dir() returned None; skipping core identity establishment"
-                );
-                None
-            }
-        };
+        }
+        None => {
+            tracing::warn!("home::home_dir() returned None; skipping core identity establishment");
+            None
+        }
+    };
+    let pairing_coordinator: Option<Arc<crate::security::pairing::PairingCoordinator>> =
+        identity_subsystems.as_ref().map(|(c, _)| Arc::clone(c));
+    let device_manager: Option<Arc<crate::security::devices::DeviceManager>> =
+        identity_subsystems.map(|(_, d)| d);
 
     // Task 19: spawn the Workspace Manager. Same pattern as the repo
     // manager — the actor's `run` parks on shutdown; the cheap-to-clone
@@ -495,6 +518,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let factory_suggestions_handle = suggestions_handle.clone();
     let factory_vcs_handle = vcs_handle.clone();
     let factory_pairing = pairing_coordinator.clone();
+    let factory_device_manager = device_manager.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -516,6 +540,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     Some(factory_suggestions_handle.clone()),
                     Some(factory_vcs_handle.clone()),
                     factory_pairing.clone(),
+                    factory_device_manager.clone(),
                 )
             },
             ApiServerConfig {

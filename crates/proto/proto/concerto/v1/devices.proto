@@ -104,14 +104,76 @@ message CompletePairingResponse {
   bytes core_pubkey = 2;
 }
 
+// One row of the paired-device list (design/12 §5.2), returned by
+// `Devices.ListDevices`. Mirrors the `devices` table (09 §4.4); Task 209 reads
+// active + revoked rows alike so an admin client can show revoked devices.
+//
+// SENTINEL CONVENTION (FROZEN): the nullable `last_seen_at` / `revoked_at`
+// SQLite INTEGER columns map to `0` here when NULL. `revoked_at == 0` means the
+// device is **active** (never revoked); any non-zero `revoked_at` is the unix
+// second at which it was revoked. This matches the integer-seconds convention
+// Task 207 froze for `paired_at`. (`last_seen_at` population is deferred — it
+// is an auth-path / `device.seen` concern, not device management — so V1.0
+// always reports `0` until that lands.)
+message DeviceEntry {
+  // The device id: BLAKE2b-256(device_pubkey), hex-encoded — the `devices.id`
+  // primary key (the cert/fingerprint form).
+  string device_id = 1;
+  // The user-supplied device name captured at pairing time.
+  string name = 2;
+  // The device's raw Ed25519 public key (32 bytes).
+  bytes public_key = 3;
+  // Unix seconds the device was paired (`devices.paired_at`).
+  int64 paired_at = 4;
+  // Unix seconds of last contact, or `0` when never recorded (NULL column).
+  // Deferred: V1.0 always reports `0` (the auth path populates it later).
+  int64 last_seen_at = 5;
+  // Unix seconds the device was revoked, or `0` when still active. `0` ==
+  // active (FROZEN sentinel — see the message comment above).
+  int64 revoked_at = 6;
+}
+
+// Response for `Devices.ListDevices`: every paired device (active + revoked),
+// most-recently-paired first.
+message ListDevicesResponse {
+  repeated DeviceEntry devices = 1;
+}
+
+// Inputs for `Devices.RevokeDevice` (design/12 §3.11, §7.3). Names the device
+// to sever by its `devices.id` (hex BLAKE2b-256 fingerprint).
+message RevokeDeviceRequest {
+  // The hex device id (`devices.id`) to revoke. Revoking an already-revoked
+  // device is an idempotent no-op success; an unknown id fails `NOT_FOUND`.
+  string device_id = 1;
+}
+
+// Response for `Devices.GetCoreInfo` (design/12 §5.2). Carries the Core's
+// identity + host/version so a client can confirm which Core it is paired with
+// and carry `core_pubkey` forward (FROZEN field set).
+message CoreInfo {
+  // The Core's Ed25519 identity public key (32 bytes) — the same value the
+  // device persisted at pairing time and validates the DeviceCert against.
+  bytes core_pubkey = 1;
+  // The Core binary version (`CARGO_PKG_VERSION`).
+  string core_version = 2;
+  // The Core host OS (`std::env::consts::OS`) — the same source `Runtime`'s
+  // `ServerCapabilities.core_host_os` uses (Task 201).
+  string core_host_os = 3;
+  // The Core hostname (`hostname::get()`) — same source as
+  // `ServerCapabilities.core_hostname` (Task 201).
+  string core_hostname = 4;
+}
+
 // The device pairing + management service (design/12 §5.2).
 //
-// Task 207 locks the two pairing RPCs below. Task 209 appends:
-//   rpc ListDevices(google.protobuf.Empty) returns (ListDevicesResponse);
-//   rpc RevokeDevice(RevokeDeviceRequest) returns (google.protobuf.Empty);
-//   rpc GetCoreInfo(google.protobuf.Empty) returns (CoreInfo);
-// (plus their messages) with NEW numbers. A Devices push-token RPC is deferred
-// to Phase 5. Never reorder the RPCs below.
+// Task 207 locks the two pairing RPCs (StartPairing/CompletePairing). Task 209
+// appends the three management RPCs below with NEW numbers; the pairing RPCs
+// above keep their numbers untouched. Never reorder.
+//
+// DEFERRED (Decision D1): an `UpdateDevicePushToken(...)` RPC that writes the
+// already-existing `devices.push_token` / `devices.push_platform` columns is
+// **deferred to Phase 5** (notifications). No RPC in V1.0 writes those columns;
+// when it lands it appends with a NEW number after `GetCoreInfo`.
 service Devices {
   // Mint a one-shot pairing token (32 random bytes, 60 s TTL, ≤ 3 active,
   // in-memory only) and return the QR payload (design/12 §3.3, §6.2). The
@@ -125,4 +187,16 @@ service Devices {
   // `FAILED_PRECONDITION` (`pairing.expired`); a bad signature fails with
   // `UNAUTHENTICATED` (design/12 §8).
   rpc CompletePairing(CompletePairingRequest) returns (CompletePairingResponse);
+  // List every paired device (active + revoked), most-recently-paired first
+  // (design/12 §5.2). Read-only.
+  rpc ListDevices(google.protobuf.Empty) returns (ListDevicesResponse);
+  // Revoke a device (design/12 §3.11, §7.3): persist `revoked_at`, insert the
+  // device id into the shared revoked set the validator reads (so future
+  // connects fail at auth), actively close any open sessions from that device,
+  // then audit + broadcast `device.revoked`. Idempotent on an already-revoked
+  // device (no-op success); an unknown id fails `NOT_FOUND`.
+  rpc RevokeDevice(RevokeDeviceRequest) returns (google.protobuf.Empty);
+  // Return the Core's identity + host/version (design/12 §5.2). Read-only; the
+  // `core_pubkey` clients carry from pairing.
+  rpc GetCoreInfo(google.protobuf.Empty) returns (CoreInfo);
 }
