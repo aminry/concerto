@@ -243,6 +243,74 @@ pub struct FetchReport {
 }
 ```
 
+## `crates/identity/src/api.rs`
+
+### struct `KeyPair`
+
+```rust
+pub struct KeyPair {
+    pub(crate) signing: ed25519_dalek::SigningKey,
+}
+```
+
+### struct `PublicKey`
+
+```rust
+pub struct PublicKey {
+    pub(crate) verifying: ed25519_dalek::VerifyingKey,
+}
+```
+
+### struct `Signature`
+
+```rust
+pub struct Signature {
+    pub(crate) inner: ed25519_dalek::Signature,
+}
+```
+
+### struct `DeviceCert`
+
+```rust
+pub struct DeviceCert {
+    /// Format version. V1.0 = `1`. Bump on any append-only field addition.
+    pub version: u8,
+    /// `BLAKE2b-256(device_pubkey)` — the canonical [`device_id`] derivation.
+    pub device_id: [u8; 32],
+    /// The device's Ed25519 public key.
+    pub device_pubkey: [u8; 32],
+    /// User-supplied name captured at pairing time.
+    pub device_name: String,
+    /// The issuing Core's Ed25519 identity public key (for cross-machine
+    /// validation; clients carry this from pairing).
+    pub core_pubkey: [u8; 32],
+    /// Issuance time, unix epoch seconds.
+    pub issued_at: u64,
+    /// Expiry time, unix epoch seconds (default issuer policy: +365 days,
+    /// owned by Task 206 — 205 only exposes the pure [`DeviceCert::is_expired`]
+    /// helper).
+    pub expires_at: u64,
+    /// Capability tokens. V1.0: `["admin"]`. Ordered; never a set/map.
+    pub capabilities: Vec<String>,
+    /// Whether the auth path must consult the revocation set. V1.0: `true`.
+    pub revocation_check_required: bool,
+}
+```
+
+### struct `SignedDeviceCert`
+
+```rust
+pub struct SignedDeviceCert {
+    /// The canonical CBOR encoding of [`SignedDeviceCert::cert`] — the exact
+    /// bytes the signature covers and the bytes sent on the wire.
+    pub cert_bytes: Vec<u8>,
+    /// The decoded certificate (a convenience view of `cert_bytes`).
+    pub cert: DeviceCert,
+    /// The Core's Ed25519 signature over `cert_bytes`.
+    pub signature: [u8; 64],
+}
+```
+
 ## `crates/keychain/src/api.rs`
 
 ### enum `Provider`
