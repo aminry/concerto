@@ -734,6 +734,8 @@ dependencies = [
  "concerto-agent-host",
  "concerto-error",
  "concerto-gix-wrap",
+ "concerto-identity",
+ "concerto-keychain",
  "concerto-persist",
  "concerto-proto",
  "concerto-test-harness",
@@ -824,12 +826,14 @@ dependencies = [
 name = "concerto-identity"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "blake2",
  "ciborium",
  "ed25519-dalek",
  "getrandom 0.2.17",
  "serde",
  "thiserror 1.0.69",
+ "tokio",
  "zeroize",
 ]
 

@@ -30,3 +30,13 @@ serde = { workspace = true, features = ["derive"] }
 # keychain crate's posture.
 zeroize = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
+# Task 206: the `DeviceCertIssuer` trait's `issue` method is async (matches
+# the design signature in `design/12 §3.10` and future issuers that hit an
+# MDM/CA API). `async-trait` is the workspace convention for object-safe
+# async traits (already a workspace dep — see `crates/core`).
+async-trait.workspace = true
+
+[dev-dependencies]
+# Task 206: `tests/issuer.rs` drives the async `DeviceCertIssuer::issue` over
+# a tokio runtime (`#[tokio::test]`), mirroring how Tasks 207/210 call it.
+tokio = { workspace = true, features = ["rt", "macros"] }

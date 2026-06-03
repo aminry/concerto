@@ -77,23 +77,26 @@ Tier 1.
 7. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit the regen (`rust-api.md` gains `DeviceCertIssuer`/`LocalCoreIssuer`/`PairingRequest`/`DeviceContext` from `crates/identity/src/api.rs`; the `crates/core/src/security/identity.rs` surface is internal and at depth 4 → no `core` diff, per Task 112's regen note — confirm).
 
 ## Definition of Done
-- [ ] `DeviceCertIssuer` trait (verbatim `§3.10` signature) + `LocalCoreIssuer` implemented in `crates/identity`, composing 205's primitives
-- [ ] `PairingRequest` (issuance input) + `DeviceContext` declared in `crates/identity/src/api.rs` and FROZEN
-- [ ] `validate` implements the 4 steps of `§3.2` with `±5 min` skew, in-memory revoked-set, no DB hit; hot-path budget documented
-- [ ] Core Ed25519 identity established: `load_or_create_core_identity` generates+stores+mirrors on first launch, reloads thereafter, emits `CoreIdentityCreated`, and is wired into the Core boot/runtime path
-- [ ] V2.0 BSL issuer names reserved as comments for Task 707's registry check
-- [ ] Issue/validate/expiry/wrong-core/revoked/garbage + keychain round-trip tests pass
-- [ ] `cargo deny check` green; verification commands pass; interfaces regenerated + committed
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
-- [ ] Single commit with the message below
+- [x] `DeviceCertIssuer` trait (verbatim `§3.10` signature) + `LocalCoreIssuer` implemented in `crates/identity`, composing 205's primitives
+- [x] `PairingRequest` (issuance input) + `DeviceContext` declared in `crates/identity/src/api.rs` and FROZEN
+- [x] `validate` implements the 4 steps of `§3.2` with `±5 min` skew, in-memory revoked-set, no DB hit; hot-path budget documented
+- [x] Core Ed25519 identity established: `load_or_create_core_identity` generates+stores+mirrors on first launch, reloads thereafter, emits `CoreIdentityCreated`, and is wired into the Core boot/runtime path
+- [x] V2.0 BSL issuer names reserved as comments for Task 707's registry check
+- [x] Issue/validate/expiry/wrong-core/revoked/garbage + keychain round-trip tests pass
+- [x] `cargo deny check` green; verification commands pass; interfaces regenerated + committed
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
-- `crates/identity/src/api.rs` (modified — `DeviceCertIssuer`, `PairingRequest`, `DeviceContext` decls)
-- `crates/identity/src/issuer.rs` (new — `LocalCoreIssuer` impl + the reserved-names comment) + `crates/identity/src/lib.rs` (modified — `mod issuer;`)
-- `crates/identity/Cargo.toml` (modified — `async-trait`)
-- `crates/identity/tests/issuer.rs` (new — issue/validate/expiry/wrong-core/revoked/garbage)
-- `crates/core/src/security/identity.rs` (new — `load_or_create_core_identity` + keychain seed encoding) + `crates/core/src/security/mod.rs` (modified — `pub mod identity;`)
-- `crates/core/src/<boot/runtime path>` (modified — call `load_or_create_core_identity` and construct the issuer at startup; exact file recorded in Handoff)
+- `crates/identity/src/api.rs` (modified — `DeviceCertIssuer`, `PairingRequest`, `DeviceContext`, `LocalCoreIssuer` decls + `generate_seed`)
+- `crates/identity/src/issuer.rs` (new — `LocalCoreIssuer` impl + the reserved-names comment) + `crates/identity/src/lib.rs` (modified — `mod issuer;` + re-exports)
+- `crates/identity/src/keys.rs` (modified — `generate_seed` persistence path) + `crates/identity/src/error.rs` (modified — `Result` alias + `Expired`/`Revoked`/`WrongCore` variants) — added to Outputs (in-crate, additive; see Handoff)
+- `crates/identity/Cargo.toml` (modified — `async-trait` + `tokio` dev-dep)
+- `crates/identity/tests/issuer.rs` (new — issue/validate/wrong-core/revoked/garbage over the public trait)
+- `crates/core/src/security/identity.rs` (new — `load_or_create_core_identity` + FROZEN hex seed encoding) + `crates/core/src/security/mod.rs` (modified — `pub mod identity;`)
+- `crates/core/src/boot.rs` (modified — the **exact boot file**: calls `load_or_create_core_identity` + constructs `LocalCoreIssuer` after the audit writer, best-effort per Handoff)
+- `crates/core/src/audit/event.rs` (modified — `AuditKind::CoreIdentityCreated` variant + `as_str` arm) — added to Outputs (design-mandated additive enum entry; see Handoff)
+- `crates/core/Cargo.toml` (modified — `concerto-identity`/`concerto-keychain`/`hex` deps)
 - `docs/interfaces/rust-api.md` (regenerated)
 
 ## Commit message
@@ -111,5 +114,111 @@ BSL issuers for Task 707.
 Refs: tasks/v1.0/206-device-cert-issuer.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Where the issuer trait lives / Core-identity wiring site / revoked-set handle type for 209 / PairingRequest split with 207 / audit wiring state / Open questions / Deliberate debt / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+
+- **Where things live:**
+  - `DeviceCertIssuer` trait + `PairingRequest` + `DeviceContext` + the
+    `LocalCoreIssuer` struct/constructor are declared in
+    `crates/identity/src/api.rs` (the regen-indexed public surface). The
+    `LocalCoreIssuer` impl (`issue`/`validate`/`supported_capabilities` + the
+    reserved V2.0 BSL issuer names) lives in `crates/identity/src/issuer.rs`.
+  - Core identity loader: `crates/core/src/security/identity.rs`
+    (`load_or_create_core_identity`).
+  - **Core-identity wiring site (exact boot file): `crates/core/src/boot.rs`**,
+    in `boot::start`, immediately AFTER the AuditWriter is spawned (~line 147).
+    It calls `load_or_create_core_identity(&Secrets::new(), &home_dir,
+    &audit_writer)`, then constructs the `LocalCoreIssuer` with a fresh
+    `new_revoked_set()`. The issuer is bound as `_core_issuer` (not yet consumed
+    — Task 210 injects it into the auth middleware; Task 209 shares the
+    `revoked_set` handle with the revoke path). There is no `runtime.rs`
+    injection point for an identity/issuer yet; `boot.rs` is the assembly site
+    and the natural place for 209/210 to thread the handles into the gRPC
+    factory closure.
+
+- **Revoked-set handle type for 209 (FROZEN):**
+  `RevokedSet = Arc<RwLock<HashSet<[u8; 32]>>>` (`std::sync`, not `tokio` — the
+  `validate` hot path is sync and must not `.await`). Build one with
+  `concerto_identity::new_revoked_set()`. The validator takes a *read* lock per
+  call; **Task 209's `RevokeDevice` path takes a *write* lock to `insert` the
+  revoked `device_id`** into the SAME `Arc` it must clone from the issuer-
+  construction site in `boot.rs`. Boot currently builds an empty set; 209 wires
+  it to the `devices` table (mirror revoked rows in at boot + insert on revoke).
+
+- **`PairingRequest` split with 207 (FROZEN):** `PairingRequest { device_pubkey:
+  [u8;32], device_name: String }` is the *issuance-input* slice only. **207 owns
+  the full pairing message** (32-byte token, nonce, and the device's signature
+  proving possession of `device_pubkey`); 207 verifies those pairing-channel
+  concerns, then constructs THIS exact struct and calls `issue`. `device_id` is
+  derived inside `issue` (via `device_id(&device_pubkey)`) — the caller does not
+  (and cannot) supply it. The issuer crate stays a leaf (207 depends on 206, not
+  vice-versa).
+
+- **Audit wiring state:** `CoreIdentityCreated` is emitted on first generation
+  via the existing `AuditWriter::append` path (`AuditActor::System`, subject
+  `Secret:"core_identity_private_key"`, details carry the hex `core_pubkey`).
+  The variant did **not** exist in the live `AuditKind` enum (V0.1 froze a
+  subset; `design/12 §3.7` lists it) — I added `AuditKind::CoreIdentityCreated`
+  (+ its `"core_identity_created"` `as_str` arm) to
+  `crates/core/src/audit/event.rs`. This is an additive enum change (the enum
+  doc says "additions are additive"); see Drift below.
+
+- **`validate` latency:** release-build `#[cfg(test)]` timing
+  (`validate_hot_path_timing_informational`, **informational, not a gate**):
+  **~29 µs/call**, comfortably inside the `design/12 §6.1` **< 200 µs** budget
+  (Ed25519 verify dominates; the revoked-set read lock + skew check are
+  negligible). Debug build measures ~210 µs/call (unoptimized — not
+  representative; the budget is for the release hot path).
+
+- **FROZEN keychain seed encoding:** the Core's Ed25519 private key is stored as
+  the **lowercase-hex of the 32-byte seed** (32 bytes → 64 hex chars), under
+  `SecretKind::CoreIdentityPrivateKey` (account `identity.core_private_key`). A
+  re-encode would orphan an existing Core's identity, so this is frozen. The
+  public key is mirrored to `~/.concerto/identity.pub` as `hex(pubkey) + "\n"`,
+  self-healed on every boot.
+
+- **Drift from plan:**
+  - The task body said to **base64** the seed; the same task's License note
+    forbids new third-party crates beyond `async-trait`, and no base64 crate is
+    in the workspace. I froze **hex** instead — already in the tree (agent-host
+    + the unix cookie path), so the dependency graph is unchanged and `cargo
+    deny` stays green. The *encoding* (bare 32-byte seed, minimal +
+    schema-free-decodable) is what the task froze; hex satisfies that intent
+    exactly. Documented inline in `security/identity.rs`.
+  - Added `crates/core/src/audit/event.rs` (the `CoreIdentityCreated` variant +
+    `as_str` arm) and `crates/core/Cargo.toml` (deps) and
+    `crates/identity/src/{keys.rs,error.rs,lib.rs}` to the touched set beyond the
+    literal `Outputs` list. All are in-crate, additive, and necessary:
+    `event.rs` for the design-mandated audit kind; `keys.rs`/`error.rs`/`lib.rs`
+    for `generate_seed` (the keychain persistence path that keeps `KeyPair` from
+    ever re-exposing its private bytes) and the issuer `Result` alias/variants.
+  - The FROZEN trait renders in `docs/interfaces/rust-api.md` with the result
+    alias spelled `IdentityResult<…>` (design/12 §3.10 writes bare
+    `Result<…>`). The alias is `crate::error::Result`; I imported it as
+    `IdentityResult` in `api.rs` to avoid shadowing the two-arg
+    `Result<T, IdentityError>` form used by 205's already-frozen signatures in
+    the same file. The trait *semantics* are verbatim; only the alias spelling
+    differs.
+
+- **Open questions for next task (207 constructs `PairingRequest` to call
+  `issue`):**
+  - On-wire cert form is `cert_bytes || signature` (from 205's handoff):
+    `validate(raw)` and `verify_cert` expect exactly that framing. When 207/209
+    move the cert over the wire / into gRPC metadata, concatenate
+    `SignedDeviceCert.cert_bytes` with `.signature`.
+  - `issue` derives `issued_at` from `SystemTime::now()` and sets `expires_at =
+    issued_at + 365d`. 207 does not pass a clock.
+  - 207 must enforce the pairing token/nonce/sig BEFORE calling `issue` — the
+    issuer trusts that `device_pubkey` was proven to belong to the pairing peer
+    (the issuer does no possession check; that's the pairing channel's job).
+  - To consume the issuer from a gRPC service, 209/210 should thread the
+    `LocalCoreIssuer` (and the shared `revoked_set`) from `boot.rs` into the
+    `ApiServerActor::with_managers` factory closure (where every other handle is
+    injected). The construction site is already there as `_core_issuer`.
+
+- **Deliberate debt:** — (none; no `TODO`/`unimplemented!()`/`todo!()` in new
+  code).
+
+- **Smoke-gate state:** **unchanged.** No smoke check added; establishing the
+  Core identity at boot is a fast keychain read (+ a one-time generate on first
+  launch) and does not alter the existing boot smoke path. `scripts/smoke.sh`
+  unaffected.

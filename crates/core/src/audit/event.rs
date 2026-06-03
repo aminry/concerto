@@ -87,6 +87,10 @@ impl AuditEvent {
 /// snake-cased variant name and lives behind [`AuditKind::as_str`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AuditKind {
+    /// The Core's Ed25519 identity was generated for the first time (Task
+    /// 206, `design/12 §3.7`). Emitted by `load_or_create_core_identity` on
+    /// first launch only.
+    CoreIdentityCreated,
     WorkspaceCreated,
     WorkspaceArchived,
     WorkspaceRestored,
@@ -116,6 +120,7 @@ impl AuditKind {
     /// change here plus a new `match` arm.
     pub fn as_str(self) -> &'static str {
         match self {
+            AuditKind::CoreIdentityCreated => "core_identity_created",
             AuditKind::WorkspaceCreated => "workspace_created",
             AuditKind::WorkspaceArchived => "workspace_archived",
             AuditKind::WorkspaceRestored => "workspace_restored",

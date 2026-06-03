@@ -311,6 +311,67 @@ pub struct SignedDeviceCert {
 }
 ```
 
+### struct `PairingRequest`
+
+```rust
+pub struct PairingRequest {
+    /// The pairing device's Ed25519 public key (32 bytes).
+    pub device_pubkey: [u8; 32],
+    /// The user-supplied device name captured during pairing.
+    pub device_name: String,
+}
+```
+
+### struct `DeviceContext`
+
+```rust
+pub struct DeviceContext {
+    /// `BLAKE2b-256(device_pubkey)` — the canonical device identifier.
+    pub device_id: [u8; 32],
+    /// The device name carried in the cert.
+    pub device_name: String,
+    /// The capability tokens granted to this device. V1.0: `["admin"]`.
+    pub capabilities: Vec<String>,
+}
+```
+
+### trait `DeviceCertIssuer:`
+
+```rust
+pub trait DeviceCertIssuer: Send + Sync + 'static {
+    /// Verify the incoming pairing request and produce a signed cert.
+    ///
+    /// The default impl ([`LocalCoreIssuer`]) signs with the Core's own
+    /// Ed25519 identity (`design/12 §3.1`, §3.2). Enterprise impls may
+    /// delegate to an org root of trust, an MDM API, or an external CA.
+    async fn issue(&self, req: PairingRequest) -> IdentityResult<SignedDeviceCert>;
+
+    /// Validate a cert presented by a client, returning the authenticated
+    /// [`DeviceContext`].
+    ///
+    /// The default impl checks the Core's own signature, expiry (with ±5 min
+    /// skew), and revocation membership — the four steps of `design/12 §3.2`,
+    /// all in-memory (no DB) to stay within the < 200 µs hot-path budget
+    /// (`design/12 §6.1`). Enterprise impls may additionally check an org cert
+    /// chain.
+    fn validate(&self, raw: &[u8]) -> IdentityResult<DeviceContext>;
+
+    /// List the capability tokens this issuer can attach to certs. V1.0
+    /// [`LocalCoreIssuer`] returns `&["admin"]`.
+    fn supported_capabilities(&self) -> &'static [&'static str];
+}
+```
+
+### struct `LocalCoreIssuer`
+
+```rust
+pub struct LocalCoreIssuer {
+    pub(crate) core_key: KeyPair,
+    pub(crate) core_pub: PublicKey,
+    pub(crate) revoked: crate::issuer::RevokedSet,
+}
+```
+
 ## `crates/keychain/src/api.rs`
 
 ### enum `Provider`
