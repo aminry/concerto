@@ -66,16 +66,16 @@ Tier 2 — the double is a **loopback IK handshake (two in-process endpoints ove
 8. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit the regen (the `NoiseSession`/`establish_noise_session` surface in `crates/identity/src/api.rs`, if exposed there).
 
 ## Definition of Done
-- [ ] Noise IK wrapper in `crates/identity` with `§3.4` roles + documented frozen protocol string
-- [ ] `NoiseSession` (AES-256-GCM) with rekey at 1 GB OR 1 h (whichever first) + drop-on-overflow; keys never persisted/logged, zeroized on drop
-- [ ] Committed `snow` IK known-answer vectors freezing the protocol
-- [ ] `cargo-fuzz` target on `validate_cert` in `crates/identity/fuzz/`; compile gate green; panic-freedom asserted
-- [ ] Replay-rejection test passes
-- [ ] Second-AEAD overhead benchmarked (unary + streaming); result vs the `>1 MB/s session.io` bar recorded in Handoff (the spike-deferred line)
-- [ ] Tier-2 double + uncovered (Tier-3) part stated in Verification
-- [ ] `cargo deny check` green; verification commands pass; interfaces regenerated + committed
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
-- [ ] Single commit with the message below
+- [x] Noise IK wrapper in `crates/identity` with `§3.4` roles + documented frozen protocol string
+- [x] `NoiseSession` (AES-256-GCM) with rekey at 1 GB OR 1 h (whichever first) + drop-on-overflow; keys never persisted/logged, zeroized on drop
+- [x] Committed `snow` IK known-answer vectors freezing the protocol
+- [x] `cargo-fuzz` target on `validate_cert` in `crates/identity/fuzz/`; compile gate green; panic-freedom asserted
+- [x] Replay-rejection test passes
+- [x] Second-AEAD overhead benchmarked (unary + streaming); result vs the `>1 MB/s session.io` bar recorded in Handoff (the spike-deferred line)
+- [x] Tier-2 double + uncovered (Tier-3) part stated in Verification
+- [x] `cargo deny check` green; verification commands pass; interfaces regenerated + committed
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/identity/src/noise_ik.rs` (new — IK wrapper + `NoiseSession`) + `crates/identity/src/lib.rs` / `src/api.rs` (modified — module + exposed surface)
@@ -101,5 +101,165 @@ session.io bar.
 Refs: tasks/v1.0/208-noise-ik-session.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Chosen Noise IK protocol string + snow rekey mechanism / measured second-AEAD throughput (unary + streaming) vs the 1 MB/s bar / fuzz crate workspace-exclusion + CI lane / replay-rejection approach / Open questions for Task 212 / Deliberate debt / Smoke-gate state
+## Handoff Notes
+
+- **Chosen Noise IK protocol string (FROZEN wire contract):**
+  `Noise_IK_25519_AESGCM_BLAKE2b` — declared as
+  `concerto_identity::NOISE_IK_PARAMS` in `crates/identity/src/noise_ik.rs`.
+  `IK` gives the two messages `design/12 §3.4` names (`-> e, es, s, ss` /
+  `<- e, ee, se`), initiator = device (pre-loads the responder's static),
+  responder = Core. Cipher suite is X25519 / AES-256-GCM / BLAKE2b. **Key-type
+  nuance (important for Task 212):** the Noise static is an **X25519 (DH) key**,
+  *distinct* from the Ed25519 identity/signature key in the `DeviceCert`. This
+  layer takes raw 32-byte X25519 statics (`NoiseStatic::generate` /
+  `NoiseStatic::from_private`, which derives the pub via `snow`'s pure-Rust
+  resolver). Task 212 owns deriving/storing the Core's and device's Noise
+  statics and carrying the responder's public half so the initiator can
+  pre-load it; the design says "device key"/"Core identity key" at the *role*
+  level — at the *crypto* level these are the DH statics, not the cert's Ed25519
+  keys. The establishment API is `establish_initiator(local, remote_static_pub,
+  now, send, recv) -> NoiseSession` and `establish_responder(local, now, send,
+  recv) -> NoiseSession` over a **caller-supplied byte channel** (the
+  `establish_noise_session(transport) -> Result<NoiseSession>` intent of
+  `design/12 §5.1`), plus the lower-level `NoiseIkHandshake` + `into_session`.
+
+- **`snow` rekey mechanism (FROZEN thresholds 1 GB OR 1 h, whichever first):**
+  `NoiseSession` owns a **combined-direction** byte counter (`REKEY_BYTES =
+  1_000_000_000`) and a creation `Instant` (`REKEY_INTERVAL = 1 h`). Every
+  `encrypt`/`decrypt` adds the plaintext length and, if either threshold is
+  reached, **rekeys in place** via `snow`'s `TransportState::rekey_outgoing()` +
+  `rekey_incoming()` (Noise spec §4.2 — deterministic key advance from the
+  existing key, **no extra wire message**) and resets both counters. Each end
+  rekeys symmetrically when its own accounting trips, so the two stay in
+  lockstep without a re-handshake (per-Iroh-connection sessions; the byte
+  budget is combined, time is wall-clock from session start). Clock-injected
+  `encrypt_at`/`decrypt_at` make the rekey trip deterministic in tests. On
+  **replay-counter (nonce) overflow** (`snow` `StateProblem::Exhausted` after
+  2⁶⁴−1 msgs) or any AEAD auth failure, `decrypt` returns `IdentityError::Noise`
+  → the caller (212) drops + reconnects (`design/12 §6.3`). Keys never touch
+  disk: `NoiseSession` is not `Serialize`/`Debug`/`Clone`, logs no key
+  material, and drops `snow`'s `TransportState` eagerly on `Drop` (snow zeroizes
+  its cipher state). `NoiseStatic` zeroizes its private bytes on drop.
+
+- **Frame-size limit (Task 212 must chunk):** a single Noise transport message
+  is ≤ 65535 B incl. the 16 B AEAD tag, so `encrypt`'s payload must be ≤ 65519 B
+  (oversized → `Err`, tested). A `session.io` 1 MiB chunk is split into ≤ 64 KiB
+  Noise frames before encryption — exactly what the bench measures and what 212
+  must do.
+
+- **Measured second-AEAD throughput (the spike-deferred line) — Apple M-series
+  (this dev host), `cargo bench -p concerto-identity`, informational not a CI
+  gate:**
+  - **unary (64 B encrypt+decrypt roundtrip):** ~2.1 µs/op (≈28 MiB/s — a 64 B
+    payload is fixed-overhead-bound, so read it as per-op latency, not bytes/s).
+  - **streaming (1 MiB transfer, chunked into 64 KiB Noise frames, encrypt+
+    decrypt):** **~108 MiB/s**.
+  **Conclusion vs the bar:** the `session.io` bar is **> 1 MB/s** (`design/11
+  §10`). The second AEAD pass sustains ~108 MiB/s — **~100× the bar**, in the
+  same order as the spike's ~70–230 MB/s Iroh-TLS streaming numbers — so the
+  second AEAD pass **does NOT breach the `> 1 MB/s session.io` bar** and cannot
+  plausibly drag the combined Iroh-TLS + Noise path under it. This confirms the
+  spike's expectation (`tonic-iroh-findings.md` §3/§7). The **real-WAN-relayed**
+  combined number remains the spike's PENDING operator Tier-3 field line.
+
+- **Fuzz crate workspace-exclusion + CI lane:** `crates/identity/fuzz/` is a
+  cargo-fuzz crate kept out of the stable workspace build **two ways** — it
+  carries its own empty `[workspace]` table (cargo-fuzz convention) AND the root
+  `Cargo.toml` lists `exclude = ["crates/identity/fuzz"]`. Verified: `cargo
+  metadata --no-deps` lists no `*fuzz*` package, and `cargo check --workspace`
+  does not compile it (nor `libfuzzer`/the fuzz crate in the main `Cargo.lock`).
+  The compile gate is `cargo +nightly fuzz build` (or `cargo +nightly build`
+  inside the fuzz dir) — to run on a libFuzzer-capable lane (typically Linux;
+  not the Windows lane). **No nightly/cargo-fuzz on this dev host**, so I
+  verified the target type-checks on stable via `cargo check` inside
+  `crates/identity/fuzz` (passes); the libFuzzer link step itself needs nightly
+  and is the operator/CI Linux-lane gate. The `validate_cert` target hammers
+  both `verify_cert` (205) and `LocalCoreIssuer::validate` (206) with arbitrary
+  bytes + a fixed Core pubkey and asserts panic-freedom + `Ok`/`Err` totality.
+  Local convergence run (not a CI gate): `cargo +nightly fuzz run validate_cert
+  -- -max_total_time=60`.
+  - `libfuzzer-sys` (MIT/Apache-2.0/MIT-0) + `arbitrary` (MIT/Apache-2.0) are
+    already on the `deny.toml` allow-list. Because the fuzz crate is excluded
+    from the workspace these deps don't appear in workspace `cargo deny check`
+    (which stays green); they're permissive regardless, so **`deny.toml` was NOT
+    modified**.
+
+- **Bench approach (criterion):** `crates/identity/benches/noise_aead.rs` uses
+  **criterion** (dev-dep `criterion = "0.5"`, already in the lockfile via
+  `concerto-gix-wrap`; `[[bench]] harness = false`), mirroring the existing
+  gix-wrap bench convention. CI runs `cargo bench --no-run` (compile gate only),
+  verified green.
+
+- **Replay-rejection approach:** `tests/noise_ik_vectors.rs` records a
+  legitimate transport frame, delivers it once (accepted), then re-delivers the
+  **same** ciphertext — the receiver's AES-GCM nonce/counter has advanced, so
+  the replayed frame fails to authenticate and `decrypt` returns `Err`
+  (`design/12 §10`). A companion test flips a ciphertext bit and asserts the
+  tampered frame is rejected.
+
+- **Committed known-answer vectors:** `tests/noise_ik_vectors.rs` freezes a full
+  IK handshake from fixed statics (`from_private`, deterministic pub derivation)
+  + fixed ephemerals (`*_with_fixed_ephemeral`, `#[doc(hidden)]`, testing-only):
+  the exact 96 B message 1, 48 B message 2, and 64 B BLAKE2b transport hash. A
+  `snow` upgrade that perturbed the IK protocol fails these loudly (the
+  cross-version freeze). Regen helper: `cargo test -p concerto-identity --test
+  noise_ik_vectors -- --ignored --nocapture print_known_answer_vector`.
+
+- **Drift from plan:**
+  - **`api.rs` NOT modified / no `rust-api.md` diff.** The Outputs line said
+    "`src/lib.rs` / `src/api.rs` (modified — module + exposed surface)". I
+    exposed the IK surface as **re-exports from `lib.rs`** (the
+    `NoiseSession`/`establish_*`/`NoiseStatic`/`NoiseIkHandshake` + consts) and
+    did **not** relocate the struct definitions into `api.rs` — exactly
+    mirroring how Task 207 handled the parallel `noise_xx` surface (its
+    `NoiseHandshake`/`NoiseTransport` are lib-level re-exports, not in `api.rs`).
+    Consequence: `regen-interfaces.sh` (which scans only `api.rs` for
+    `pub struct/trait/enum`) produces **no `docs/interfaces/rust-api.md` diff**,
+    so the `git diff --exit-code docs/interfaces/` gate passes with the regen
+    committed and unchanged. `api.rs` is therefore NOT in the final touched set.
+  - **`NoiseStatic` is an X25519 keypair, taken raw** (not derived from the
+    Ed25519 cert key). The IK static is a DH key; converting Ed25519→X25519 is
+    out of this layer's scope and a Task 212 wiring concern (see the protocol
+    note above). The API is shaped so 212 feeds whichever bytes it derives.
+  - **Transport hash is 64 bytes** (`TRANSPORT_HASH_LEN`), because the
+    `BLAKE2b` Noise suite's handshake hash is BLAKE2b-512 — distinct from the
+    32-byte BLAKE2b-256 `device_id` digest. Exposed as `[u8; 64]`.
+  - **`crates/identity/fuzz/Cargo.lock`** is committed with the fuzz crate (the
+    cargo-fuzz convention for reproducible fuzz builds); it is a separate lock
+    inside the excluded crate and does not affect the main workspace lock.
+  - **`Cargo.toml` modified** to add the `exclude` entry; `crates/identity/
+    Cargo.toml` modified to add the criterion dev-dep + `[[bench]]`. `snow` was
+    already pinned by 207 (reused, NOT bumped — 0.9.6, MSRV-safe). `deny.toml`
+    NOT modified.
+
+- **Open questions for Task 212 (transport wiring):**
+  - **Where do the X25519 Noise statics come from?** This layer takes raw
+    statics; 212 must decide how the Core's persistent Noise static is
+    generated/stored (keychain alongside the Ed25519 identity?) and how the
+    device carries the Core's Noise *public* static (alongside `core_pubkey` in
+    the cert flow, or as a separate pairing-time field). If the design intends
+    the Noise static to be *derived* from the Ed25519 identity (Ed25519→X25519
+    birational map), that conversion belongs in 212/the identity-loader, not
+    here — flag for the operator.
+  - **Chunking:** 212 must split `session.io`/gRPC frames into ≤ 64 KiB Noise
+    frames before `encrypt` (the bench's `NOISE_FRAME` shows the shape).
+  - **Rekey is in-place, no wire signal:** both ends rekey deterministically
+    when their own byte/time accounting trips; 212 must keep the accounting on
+    *both* peers consistent (count plaintext on the same `encrypt`/`decrypt`
+    boundary this layer does) so they stay in lockstep. A hard `decrypt` error
+    (exhausted/auth-fail) is 212's "drop + reconnect" signal.
+
+- **Deliberate debt:** — (none; no `TODO`/`FIXME`/`unimplemented!()`/`todo!()`
+  in new code).
+
+- **Smoke-gate state:** **unchanged.** No smoke check added; `scripts/smoke.sh`
+  untouched. The IK layer is pure in-crate crypto with an in-process loopback
+  double — no Core boot, no keychain, no network — so it adds no smoke
+  capability (the live cross-device session is Task 212/220 Tier-3).
+
+- **Tier-3 not covered by the loopback double** (→ Phase-2 manual checklist):
+  a real cross-device Noise IK session inside a live Iroh QUIC stream across a
+  real network (NAT, relay, real RTT) — exercised by **Task 212 / Task 220**
+  (split-host file transfer + real-NAT). The real-WAN-relayed throughput of the
+  combined second-AEAD path remains the spike's **PENDING** operator field line.
+  Stated in the `Verification` section and the test-module doc.

@@ -45,3 +45,15 @@ snow = { workspace = true }
 # Task 206: `tests/issuer.rs` drives the async `DeviceCertIssuer::issue` over
 # a tokio runtime (`#[tokio::test]`), mirroring how Tasks 207/210 call it.
 tokio = { workspace = true, features = ["rt", "macros"] }
+# Task 208: Criterion harness for `benches/noise_aead.rs` — the second-AEAD
+# overhead the spike (design/spikes/tonic-iroh-findings.md §3) deferred. Pinned
+# at the same `0.5` already used by `concerto-gix-wrap`'s benches; already in
+# the lockfile so no new SPDX. CI only runs `cargo bench --no-run` (compile
+# gate) — the measurement is informational, not a pass/fail gate.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Task 208: bench harness. `harness = false` hands test running to criterion's
+# `criterion_main!` macro (mirrors `concerto-gix-wrap`'s bench convention).
+[[bench]]
+name = "noise_aead"
+harness = false
