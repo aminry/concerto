@@ -113,6 +113,14 @@ pub struct ApiServerActor {
     /// `Devices` service so its `ListDevices`/`RevokeDevice`/`GetCoreInfo` RPCs
     /// are served next to the pairing RPCs. `None` whenever `pairing` is `None`.
     device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
+    /// Optional device-cert issuer for the Task-210 auth middleware. `Some`
+    /// whenever the Core established a keychain-backed identity at boot (the
+    /// same condition as `pairing`/`device_manager`). The cert-validation path
+    /// of the auth interceptor validates inbound `concerto-device-cert` headers
+    /// against it; `None` leaves the cert path refusing every remote connection
+    /// (`auth.invalid_cert`) while the UDS peer-uid fast path still works
+    /// (kernel attestation needs no issuer).
+    auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
 }
 
 impl ApiServerActor {
@@ -136,6 +144,7 @@ impl ApiServerActor {
             vcs: None,
             pairing: None,
             device_manager: None,
+            auth_issuer: None,
         }
     }
 
@@ -165,6 +174,7 @@ impl ApiServerActor {
             vcs: None,
             pairing: None,
             device_manager: None,
+            auth_issuer: None,
         }
     }
 
@@ -189,6 +199,7 @@ impl ApiServerActor {
         vcs: Option<VcsHandle>,
         pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
         device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
+        auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
     ) -> Self {
         Self {
             started_at,
@@ -207,6 +218,7 @@ impl ApiServerActor {
             vcs,
             pairing,
             device_manager,
+            auth_issuer,
         }
     }
 }
@@ -271,6 +283,7 @@ impl Actor for ApiServerActor {
                 self.vcs,
                 self.pairing,
                 self.device_manager,
+                self.auth_issuer,
                 ctx.shutdown.clone(),
             );
 
@@ -301,6 +314,7 @@ impl Actor for ApiServerActor {
                 self.vcs,
                 self.pairing,
                 self.device_manager,
+                self.auth_issuer,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -333,6 +347,7 @@ async fn run_uds(
     vcs: Option<VcsHandle>,
     pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
+    auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -425,28 +440,36 @@ async fn run_uds(
 
     // Tag every request that arrives on this UDS listener with
     // `ConnTransport(Uds)` so `RuntimeHandler::get_server_capabilities`
-    // reports the live transport kind (Task 201). This is the seam every
-    // listener writes: Task 212's Iroh listener and Task 204's WSS bridge
-    // apply the same interceptor with their own `TransportKind` in their
-    // own listener setup — they never edit the handler. The interceptor
-    // layer is applied to the whole server (before `add_service`) so the
-    // tag is present on every service, not just `Runtime`. On Windows the
-    // co-located named-pipe listener maps to `Uds` too (see
-    // `crate::conn_transport`).
-    // The `Err` variant is `tonic::Status`, which clippy flags as large;
-    // the `Interceptor` trait fixes the return type, so we never return
-    // `Err` here and the lint is moot.
+    // reports the live transport kind (Task 201), THEN run the Task-210 auth
+    // middleware. This is the seam every listener writes: Task 212's Iroh
+    // listener and Task 204's WSS bridge apply the same interceptor with their
+    // own `TransportKind` in their own listener setup — they never edit the
+    // handler. The interceptor layer is applied to the whole server (before
+    // `add_service`) so the tag + auth are present on every service, not just
+    // `Runtime`. On Windows the co-located named-pipe listener maps to `Uds`
+    // too (see `crate::conn_transport`).
+    //
+    // The Task-210 auth interceptor reads the tag (`Uds` → kernel-attested
+    // peer-uid fast path producing the local-uds pseudo-cert `DeviceContext`;
+    // `Iroh`/`WssBridge` → validate the `concerto-device-cert` header against
+    // the boot issuer). Tagging happens FIRST so the auth step sees `Uds` and
+    // takes the peer-uid branch. The one interceptor covers both paths so the
+    // cert layer is mounted uniformly today (exercised by injected metadata in
+    // the Tier-1 tests until Task 212's Iroh listener lands).
+    let auth = crate::security::auth::AuthInterceptor::new(auth_issuer);
+    // The interceptor returns `Result<_, tonic::Status>` — `Status` is large, so
+    // clippy's `result_large_err` fires; this is the fixed shape the tonic
+    // `Interceptor` trait requires (the prior `tag_uds` carried the same allow).
     #[allow(clippy::result_large_err)]
-    fn tag_uds(
-        mut req: tonic::Request<()>,
-    ) -> std::result::Result<tonic::Request<()>, tonic::Status> {
-        req.extensions_mut()
-            .insert(ConnTransport(TransportKind::Uds));
-        Ok(req)
-    }
+    let auth_interceptor =
+        move |mut req: tonic::Request<()>| -> std::result::Result<tonic::Request<()>, tonic::Status> {
+            req.extensions_mut()
+                .insert(ConnTransport(TransportKind::Uds));
+            auth.authenticate(req)
+        };
 
     let mut builder = Server::builder()
-        .layer(tonic::service::interceptor(tag_uds))
+        .layer(tonic::service::interceptor(auth_interceptor))
         .add_service(runtime_service);
     if let Some(persistence) = persistence {
         // Task 203: the `Files` service shares the same `Persistence`

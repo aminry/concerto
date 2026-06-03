@@ -180,9 +180,11 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     // teardown.
     let session_closer: Arc<dyn crate::security::devices::SessionCloser> =
         Arc::new(crate::security::devices::NoopSessionCloser);
+    #[allow(clippy::type_complexity)]
     let identity_subsystems: Option<(
         Arc<crate::security::pairing::PairingCoordinator>,
         Arc<crate::security::devices::DeviceManager>,
+        Arc<dyn concerto_identity::DeviceCertIssuer>,
     )> = match home::home_dir() {
         Some(core_home) => {
             let secrets = concerto_keychain::Secrets::new();
@@ -197,6 +199,32 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     let core_pubkey = core_identity.public_key;
                     let core_pubkey_hex = hex::encode(core_pubkey.to_bytes());
                     let first_launch = core_identity.created;
+                    // Task 210: the auth middleware needs an
+                    // `Arc<dyn DeviceCertIssuer>` to validate inbound
+                    // `concerto-device-cert` headers. The `PairingCoordinator`
+                    // (Task 207) owns a `LocalCoreIssuer` BY VALUE and needs its
+                    // `LocalCoreIssuer`-specific `core_public_key()` accessor, so
+                    // it cannot share a `dyn` handle. `KeyPair` is `ZeroizeOnDrop`
+                    // (not `Clone`), so rather than fork pairing.rs we build a
+                    // SECOND issuer for the auth path by reloading the identity
+                    // (the keychain reload returns the same key material;
+                    // `created == false` so no second `CoreIdentityCreated`
+                    // event fires). Both issuers share the SAME `revoked_set`
+                    // handle, so a revoke is observed on the auth path too.
+                    let auth_issuer: Arc<dyn concerto_identity::DeviceCertIssuer> = {
+                        let auth_identity =
+                            crate::security::identity::load_or_create_core_identity(
+                                &secrets,
+                                &core_home,
+                                &audit_writer,
+                            )
+                            .await?;
+                        Arc::new(concerto_identity::LocalCoreIssuer::new(
+                            auth_identity.keypair,
+                            auth_identity.public_key,
+                            revoked_set.clone(),
+                        ))
+                    };
                     let core_issuer = concerto_identity::LocalCoreIssuer::new(
                         core_identity.keypair,
                         core_pubkey,
@@ -228,7 +256,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                         first_launch,
                         "core device-cert issuer + pairing coordinator + device manager constructed"
                     );
-                    Some((Arc::new(coordinator), Arc::new(device_manager)))
+                    Some((Arc::new(coordinator), Arc::new(device_manager), auth_issuer))
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -247,9 +275,33 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         }
     };
     let pairing_coordinator: Option<Arc<crate::security::pairing::PairingCoordinator>> =
-        identity_subsystems.as_ref().map(|(c, _)| Arc::clone(c));
+        identity_subsystems.as_ref().map(|(c, _, _)| Arc::clone(c));
+    let auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>> =
+        identity_subsystems.as_ref().map(|(_, _, i)| Arc::clone(i));
     let device_manager: Option<Arc<crate::security::devices::DeviceManager>> =
-        identity_subsystems.map(|(_, d)| d);
+        identity_subsystems.map(|(_, d, _)| d);
+
+    // Task 210 — CLOSE THE TASK-209 STARTUP-MIRROR GAP. The in-memory
+    // `revoked_set` the auth middleware + issuer read starts EMPTY each boot;
+    // Task 209 only inserts into it on a live `RevokeDevice` call. Without this
+    // mirror, a device revoked in a previous run would be accepted again after a
+    // Core restart until it was re-revoked (its `devices.revoked_at` is set on
+    // disk, but the set has forgotten it). Re-populate the set from the table —
+    // `SELECT id FROM devices WHERE revoked_at IS NOT NULL` — BEFORE the gRPC
+    // server (and thus the auth path) goes live below, so a previously-revoked
+    // cert stays rejected across restarts. Runs unconditionally (even when no
+    // keychain identity exists) since it only touches the DB + the shared set;
+    // a query failure is logged but does not abort boot (the set simply stays as
+    // it was — defence in depth, never a fail-open that *adds* trust).
+    match crate::security::auth::mirror_revoked_devices(&persistence, &revoked_set).await {
+        Ok(0) => tracing::debug!("revoked-device mirror: no revoked devices to restore"),
+        Ok(n) => tracing::info!(restored = n, "revoked-device mirror complete"),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "revoked-device mirror failed; a previously-revoked device could be \
+             accepted until re-revoked this session"
+        ),
+    }
 
     // Task 19: spawn the Workspace Manager. Same pattern as the repo
     // manager — the actor's `run` parks on shutdown; the cheap-to-clone
@@ -519,6 +571,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let factory_vcs_handle = vcs_handle.clone();
     let factory_pairing = pairing_coordinator.clone();
     let factory_device_manager = device_manager.clone();
+    let factory_auth_issuer = auth_issuer.clone();
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
@@ -541,6 +594,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     Some(factory_vcs_handle.clone()),
                     factory_pairing.clone(),
                     factory_device_manager.clone(),
+                    factory_auth_issuer.clone(),
                 )
             },
             ApiServerConfig {

@@ -56,6 +56,14 @@ concerto-keychain = { path = "../keychain" }
 # unix cookie path); promoted to a cross-platform core dep here. No new
 # external crate enters the graph.
 hex = "0.4"
+# Task 210: base64 decode/encode of the `concerto-device-cert` metadata header
+# value (the on-wire signed cert `cert_bytes || signature` rides as base64 under
+# the ASCII metadata key). `base64 = "0.22"` is ALREADY in the workspace
+# dependency tree (transitive via `tonic`/`tonic-web`), so promoting it to a
+# direct dep here adds NO new external crate to the graph and `cargo deny` is
+# unchanged. The auth middleware (`security/auth.rs`) is cross-platform, so this
+# is a top-level (not `cfg(unix)`) dep.
+base64 = "0.22"
 # Task 207: the pairing token store (`security/pairing.rs`) fills 32 OS-random
 # bytes via `getrandom`. The pairing/`Devices` path is cross-platform (not
 # `cfg(unix)`-gated like the agent-host cookie consumer below), so the dep
