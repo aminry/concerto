@@ -93,6 +93,16 @@ tower = "0.5"
 hyper-util = "0.1"
 tokio-stream = "0.1"
 hostname = "0.4"
+# Task 204: Connect-Web bridge — gRPC-Web framing layered onto the same
+# Tonic services the UDS server hosts. `tonic-web = "0.12"` tracks the
+# `tonic = "0.12"` pin (its `GrpcWebLayer` is version-coupled to tonic's
+# tower-layer plumbing). tonic-web's server IS a hyper server underneath,
+# so this satisfies `design/11 §3.4` Path A's "tiny hyper server" without a
+# separate direct `hyper` pin. Cross-platform (pure TCP + http framing — no
+# `#[cfg(unix)]`), so it builds on the Windows CI lane (Task 113). MIT;
+# transitive tree (base64 / http-body-util / pin-project / tower-http 0.5)
+# is all MIT/Apache-2.0 — already covered by `deny.toml`, no new SPDX.
+tonic-web = "0.12"
 # Task 18: gix powers the read-only git operations in `concerto-gix-wrap`
 # (rev-parse, list-branches). Heavy write paths (clone, worktree add)
 # shell out to `git` per `design/02 §3.1`. `default-features = false`
