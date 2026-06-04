@@ -281,3 +281,16 @@ iroh-relay = "=0.98.0"
 # drops the `async` (flume/async) feature; the transport crate opts into
 # `logging` locally.
 mdns-sd = { version = "0.20", default-features = false }
+# Task 214: Prometheus metrics for the self-hosted relay binary
+# (`crates/relay`, `design/11 §6.3`). The `prometheus` crate is the maintained,
+# de-facto Rust client (registry + `TextEncoder` exposition) — the relay serves
+# the FROZEN `concerto_relay_*` metric names over a minimal TCP handler on
+# `PROMETHEUS_LISTEN_ADDR`, so no `metrics-exporter-prometheus` HTTP framework is
+# needed. License `Apache-2.0 OR MIT` → cargo-deny selects MIT (already on the
+# allow-list); no new SPDX. `default-features = false` drops the optional
+# `protobuf` exposition format and the `process`/`libc` collectors (the relay
+# exports only its own app metrics), keeping the dep tree small + cross-platform
+# (Windows/Linux/macOS — the relay's Docker artifact is Linux, the Windows CI
+# lane compiles it). Not exact-pinned: it is a self-contained observability leaf
+# with a stable API, not part of the spike-validated QUIC trio.
+prometheus = { version = "0.13", default-features = false }

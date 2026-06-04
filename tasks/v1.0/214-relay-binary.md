@@ -72,26 +72,28 @@ Per README §5.3 (`rust`):
 7. `scripts/smoke.sh` → the new `relay-route` capability starts the relay in-process, registers a loopback endpoint, routes one relayed stream, and asserts the Prometheus `routes count`/`bytes forwarded`; existing caps stay green. Exits 0.
 
 ## Definition of Done
-- [ ] `crates/relay` filled: `iroh-relay 0.98.0` embedded as a library (no new protocol — R-7); `concerto_relay` lib + thin `concerto-relay` bin
-- [ ] `RelayState`/`EndpointRoute` (90 s TTL, ~per-min refresh, `MAX_ROUTES` cap); bandwidth caps enforced; routing/forwarding via embedded iroh-relay
-- [ ] Twelve-Factor env config: `RELAY_LISTEN_ADDR`/`WSS_LISTEN_ADDR`(reserved)/`MAX_ROUTES`/`BANDWIDTH_CAP_PER_ENDPOINT`/`PROMETHEUS_LISTEN_ADDR`, validated, fail-fast
-- [ ] Prometheus endpoint: routes count + bytes forwarded + hole-punch success (by region); ciphertext-only posture (metadata-only logs/metrics, asserted)
-- [ ] Dockerfile producing the single static binary image
-- [ ] FROZEN: env-var config surface + Prometheus metric names + `RelayState`/`EndpointRoute` + the `concerto_relay` lib entry point
-- [ ] `cargo deny check` green; any new SPDX ratified in `deny.toml` with a dated comment
-- [ ] Tier-2 in-process-relay double tests pass; Verification commands pass; interfaces clean/regenerated; smoke `relay-route` green
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate debt in Handoff)
-- [ ] Single commit with the message below
+- [x] `crates/relay` filled: `iroh-relay 0.98.0` embedded as a library (no new protocol — R-7); `concerto_relay` lib + thin `concerto-relay` bin
+- [x] `RelayState`/`EndpointRoute` (90 s TTL, ~per-min refresh, `MAX_ROUTES` cap); bandwidth caps enforced; routing/forwarding via embedded iroh-relay
+- [x] Twelve-Factor env config: `RELAY_LISTEN_ADDR`/`WSS_LISTEN_ADDR`(reserved)/`MAX_ROUTES`/`BANDWIDTH_CAP_PER_ENDPOINT`/`PROMETHEUS_LISTEN_ADDR`, validated, fail-fast
+- [x] Prometheus endpoint: routes count + bytes forwarded + hole-punch success (by region); ciphertext-only posture (metadata-only logs/metrics, asserted)
+- [x] Dockerfile producing the single static binary image
+- [x] FROZEN: env-var config surface + Prometheus metric names + `RelayState`/`EndpointRoute` + the `concerto_relay` lib entry point
+- [x] `cargo deny check` green; any new SPDX ratified in `deny.toml` with a dated comment
+- [x] Tier-2 in-process-relay double tests pass; Verification commands pass; interfaces clean/regenerated; smoke `relay-route` green
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate debt in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
-- `Cargo.toml` (modified — `[workspace.dependencies]` += `iroh-relay = "=0.98.0"` + the metrics crate, with rationale)
-- `crates/relay/Cargo.toml` (modified — deps + the `server` feature)
-- `crates/relay/src/lib.rs` (filled — relay core + `RelayState`/`EndpointRoute` + config struct + metrics), `crates/relay/src/main.rs` (filled — env parse + start + signals), `crates/relay/src/api.rs` (new — frozen lib entry point if surfaced)
-- `crates/relay/Dockerfile` (new — single static binary image)
+- `Cargo.toml` (modified — `[workspace.dependencies]` += `prometheus = "0.13"` with rationale; `iroh-relay = "=0.98.0"` was already pinned by Task 212)
+- `crates/relay/Cargo.toml` (modified — deps + the `server` feature; dev-deps + a `build.rs` for the relay-route double's proto)
+- `crates/relay/src/lib.rs` (filled — module wiring + re-exports), `crates/relay/src/main.rs` (filled — env parse + start + signals), `crates/relay/src/api.rs` (new — frozen lib entry point: `Relay`/`RelayConfig`/`RelayState`/`EndpointRoute`/`BandwidthCounter`/`WssBridge` + consts)
+- **ADDED to Outputs (drift):** `crates/relay/src/config.rs` (env parse/validate + unit tests), `crates/relay/src/error.rs` (`RelayError`), `crates/relay/src/metrics.rs` (FROZEN metric names + Prometheus registry + `/metrics` server), `crates/relay/src/state.rs` (`RelayState` lifecycle), `crates/relay/src/relay.rs` (the relay core: embeds iroh-relay + sweep + caps) — the lib core split into topic modules per the `api.rs`/identity convention (the task's `lib.rs` "relay core + ... + metrics" decomposed)
+- **ADDED to Outputs (drift):** `crates/relay/build.rs` + `crates/relay/proto/relay_route.proto` (the trivial `RelayRoute` gRPC service the Tier-2 double drives over the Task-212 adapter THROUGH the relay; tonic-0.12 codegen — the relay itself is proto-free, only the test compiles it; mirrors the transport crate's loopback-double build.rs)
+- `crates/relay/Dockerfile` (new — single static (musl/scratch) binary image)
 - `crates/relay/tests/relay_route.rs` (new — the in-process relay double)
-- `deny.toml` (modified only if a new SPDX needs ratification)
-- `scripts/smoke.d/<NN>-relay-route.sh` + `scripts/smoke.manifest` (new capability)
-- `docs/interfaces/rust-api.md` (regenerated if the relay lib surface is indexed)
+- `deny.toml` (NOT modified — `prometheus` is `Apache-2.0 OR MIT` → cargo-deny selects already-allowed MIT; no new SPDX)
+- `scripts/smoke.d/46-relay-route.sh` + `scripts/smoke.manifest` (new capability; `46` prefix because the smoke-driver glob requires a two-digit prefix and 99 — mdns — is the ceiling; manifest order, not filename, drives execution)
+- `docs/interfaces/rust-api.md` (regenerated — `crates/relay/src/api.rs` surface indexed)
 
 ## Commit message
 ```
@@ -108,5 +110,106 @@ registration + a relayed loopback stream. Real WAN relay = Tier-3.
 Refs: tasks/v1.0/214-relay-binary.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / Frozen Prometheus metric names (exact spelling) / Open questions for Task 215 (WSS bridge embed point) / Deliberate debt / License ratifications / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+
+- **Drift from plan.**
+  - **Lib decomposed into topic modules.** The task's `lib.rs` ("relay core +
+    `RelayState`/`EndpointRoute` + config struct + metrics") is split — per the
+    `api.rs`/identity convention the transport crate set — into `api.rs` (the
+    FROZEN, regen-indexed type declarations), `config.rs`, `error.rs`,
+    `metrics.rs`, `state.rs`, `relay.rs`. `lib.rs` is module wiring +
+    re-exports. All flagged in Outputs.
+  - **`iroh-relay` was already pinned** in `[workspace.dependencies]` (Task 212's
+    validated trio) — this task only **added `prometheus = "0.13"`** there (with
+    rationale). The relay crate enables `iroh-relay`'s `server` feature directly.
+  - **Added outputs:** `crates/relay/{build.rs, proto/relay_route.proto}` (the
+    trivial gRPC service the Tier-2 double routes through the relay — the relay is
+    otherwise proto-free), and the five lib modules above.
+  - **`account_forward` vs `bytes_forwarded` metric.** iroh-relay (R-7) owns the
+    actual forwarding and exposes its own monotonic byte counters; the FROZEN
+    `concerto_relay_bytes_forwarded_total` is driven from iroh-relay's real
+    ingress counter (`server.metrics().server.bytes_recv`), synced before each
+    scrape + by the sweep — so "bytes forwarded > 0 after the transfer" reflects
+    **real relayed bytes**, not a synthetic tally. `Relay::account_forward` is the
+    separate per-endpoint **bandwidth-CAP policy** layer (our `RelayState`
+    counters) — it does NOT also drive the global metric (no double count). The
+    routing-table (`register_route`/`keepalive`) is likewise our parallel
+    observability/policy layer over iroh-relay's internal routing (0.98.0 exposes
+    no per-route register/forward hooks); it is driven by the relay operator's
+    integration / the test.
+
+- **Open questions for Task 215 (WSS bridge — wraps `concerto_relay` in the same
+  binary).**
+  - **The FROZEN `concerto_relay` lib entry point** 215 wraps:
+    `Relay::start(config: RelayConfig) -> Result<Self>` (async; spawns embedded
+    iroh-relay + Prometheus + sweep, returns once bound),
+    `Relay::run_until_signal(self) -> Result<()>`, `Relay::shutdown(self) ->
+    Result<()>`, plus the read/observe surface `relay_listen_addr() ->
+    Option<SocketAddr>`, `prometheus_listen_addr() -> SocketAddr`, `relay_url() ->
+    Option<String>`, `config() -> &RelayConfig`, `register_route(&self, id:&str,
+    addr:SocketAddr) -> Result<()>`, `keepalive(..)`, `account_forward(&self,
+    id:&str, bytes:u64) -> Result<()>`, `record_holepunch_{attempt,success}
+    (region:&str)`, `route_count()`, `total_bytes_forwarded()`, `metrics_text()
+    -> Result<String>`. **215's embed point:** call `Relay::start`, then bind the
+    WSS listener on `config.wss_listen_addr` (the reserved `WSS_LISTEN_ADDR`),
+    bridging WSS↔Iroh ciphertext-only; replace `run_until_signal` with 215's own
+    loop that also drives the bridge. Fill `RelayState::wss_bridges`
+    (`HashMap<String, WssBridge>`) — the `WssBridge { bridge_id: String }`
+    placeholder is reserved here for 215 to extend.
+  - **FROZEN env vars (`design/11 §6.3`):** `RELAY_LISTEN_ADDR` (iroh-relay HTTP,
+    default `0.0.0.0:80`), `WSS_LISTEN_ADDR` (**reserved — 215**; already
+    parsed/validated into `RelayConfig::wss_listen_addr: Option<SocketAddr>`,
+    fails fast on malformed), `MAX_ROUTES` (default 50000; `0`/non-numeric
+    rejected), `BANDWIDTH_CAP_PER_ENDPOINT` (bytes; unset=unlimited, `0`
+    rejected), `PROMETHEUS_LISTEN_ADDR` (default `0.0.0.0:9090`). Parsed via
+    `RelayConfig::from_env()` / `from_lookup()` (the latter is the test seam — no
+    process-`std::env` touch).
+  - **FROZEN Prometheus metric names (exact spelling, `crates/relay/src/metrics.rs`):**
+    `concerto_relay_routes` (gauge), `concerto_relay_bytes_forwarded_total`
+    (counter), `concerto_relay_holepunch_success_total{region=...}` (counter vec),
+    `concerto_relay_holepunch_attempt_total{region=...}` (counter vec — the rate
+    denominator), `concerto_relay_routes_rejected_total` (counter),
+    `concerto_relay_bandwidth_capped_total` (counter), `concerto_relay_up`
+    (gauge). Region label key = `region`. **Additions are append-only**; 215 may
+    add WSS-bridge metrics under the same `concerto_relay_*` prefix.
+
+- **Deliberate debt.** None deferred via `TODO`/`unimplemented!`/`todo!`. Two
+  scoped, design-assigned deferrals (both already Scope-out): (1) the **WSS
+  bridge** itself (`WSS_LISTEN_ADDR` reserved + `RelayState::wss_bridges`
+  stubbed) → **Task 215**; (2) **Redis persistence / multi-tenant / dynamic
+  geographic relay selection** → **V2.0** (`design/11 §2`, §3.2) — `RelayState`
+  stays in-memory single-tenant, no schema reserved.
+
+- **License ratifications (`deny.toml`).** None needed. `prometheus 0.13`
+  (`Apache-2.0 OR MIT`) resolves to the already-allowed MIT — `cargo deny check`
+  is green (advisories/bans/licenses/sources all ok) with **no `deny.toml`
+  edit**. `iroh-relay`'s `server` feature tree was already cleared by Task 212
+  (the `Unlicense` ratification + the two scoped hickory advisory ignores
+  remain Task 212's, unchanged). `Cargo.lock`: `prometheus 0.13.4` added; `wmi`
+  still depends on `windows 0.62.2` (NOT regressed to 0.61).
+
+- **Smoke-gate state.** New capability `relay-route` registered in
+  `scripts/smoke.manifest` (`scripts/smoke.d/46-relay-route.sh`; the `46` prefix
+  is the smoke-driver's two-digit-glob constraint with 99/mdns at the ceiling —
+  the manifest, not the filename, orders execution: it runs last). It runs
+  hermetically (no Core boot / no keychain / no external relay binary / no
+  network beyond loopback) via `cargo test -p concerto-relay --test relay_route`:
+  the in-process embedded relay + two Iroh endpoints (IP transports CLEARED, so
+  the only path is relayed) + a real relayed gRPC unary round-trip + a streaming
+  firehose over the Task-212 adapter + Noise, asserting the route in
+  `RelayState`, `concerto_relay_routes` ≥ 1 + `concerto_relay_bytes_forwarded_total`
+  > 0 scraped over real HTTP, `MAX_ROUTES`/bandwidth caps enforced + counted,
+  hole-punch metrics labelled by region, and the ciphertext-only assertion (a
+  plaintext marker never appears in the metrics surface). Every internal wait is
+  timeout-bounded. Full `scripts/smoke.sh` passes (all prior caps + relay-route);
+  `--only relay-route` green.
+
+- **Tier-3 line the in-process double does NOT cover** (Phase-2 manual checklist
+  / the spike's PENDING real-WAN-relayed row): a relay deployed on **real
+  infrastructure** (Fly.io anycast) routing a **real remote client** over a real
+  WAN — real relay-server distance, real RTT, real bandwidth limits, anycast
+  routing, and real DNS/pkarr discovery. The double proves the embed + routing-
+  table TTL + relayed forwarding + env-config + Prometheus + caps + ciphertext-
+  only **logic** hermetically; it does not prove the **physics**. The Dockerfile +
+  the `concerto-relay` binary are the artifacts the operator deploys for that
+  manual check.
