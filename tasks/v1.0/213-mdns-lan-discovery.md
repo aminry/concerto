@@ -67,23 +67,27 @@ Per README §5.3 (`rust`):
 7. `scripts/smoke.sh` → the new `mdns-discovery` capability publishes + browses on the loopback interface and asserts the TXT schema; existing caps stay green. Exits 0.
 
 ## Definition of Done
-- [ ] mDNS crate chosen + pinned + `cargo deny` cleared; choice justified in Handoff
-- [ ] Responder publishes `_concerto._tcp.local` with the exact 4-key TXT schema, IPv4+IPv6, clean (de)register lifecycle
-- [ ] Browser discovers + parses TXT into a discovered-Core descriptor; feeds `endpoint_id` to the 212 LAN connect path
-- [ ] Opt-out (managed / per-network) suppresses publication; `disable_remote = true` does NOT (asserted by test)
-- [ ] FROZEN: the TXT record schema + service type + discovered-Core descriptor on `crates/transport`
-- [ ] Tier-2 loopback discovery double tests pass; Verification commands pass; interfaces clean/regenerated; smoke `mdns-discovery` green
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate debt in Handoff)
-- [ ] Single commit with the message below
+- [x] mDNS crate chosen + pinned + `cargo deny` cleared; choice justified in Handoff
+- [x] Responder publishes `_concerto._tcp.local` with the exact 4-key TXT schema, IPv4+IPv6, clean (de)register lifecycle
+- [x] Browser discovers + parses TXT into a discovered-Core descriptor; feeds `endpoint_id` to the 212 LAN connect path
+- [x] Opt-out (managed / per-network) suppresses publication; `disable_remote = true` does NOT (asserted by test)
+- [x] FROZEN: the TXT record schema + service type + discovered-Core descriptor on `crates/transport`
+- [x] Tier-2 loopback discovery double tests pass; Verification commands pass; interfaces clean/regenerated; smoke `mdns-discovery` green
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate debt in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `Cargo.toml` (modified — `[workspace.dependencies]` += the mDNS crate pin with rationale)
+- `Cargo.lock` (modified — mdns-sd + if-addrs/socket-pktinfo lockfile churn; expected)
 - `crates/transport/Cargo.toml` (modified — mDNS dep)
-- `crates/transport/src/mdns.rs` (new — responder + browser), `crates/transport/src/api.rs` (modified — discovered-Core descriptor + browse entry), `crates/transport/src/state.rs` (modified — `MdnsResponder` in `TransportState`)
+- `crates/transport/src/mdns.rs` (new — responder + browser), `crates/transport/src/api.rs` (modified — discovered-Core descriptor + `MdnsConfig`/`MdnsResponder`/`MdnsBrowser` + service-type/TXT-key consts + `mdns` field on `IrohTransport`)
+- `crates/transport/src/endpoint.rs` (modified — ADDED to Outputs, see Drift: `publish_mdns`/`stop_mdns`/`is_mdns_publishing`/`browse_lan` on `IrohTransport`, `mdns` field init, `stop()` deregisters mDNS — the responder is owned alongside the endpoint per 212's frozen `IrohTransport`/`TransportState` split, NOT on `TransportState`)
+- `crates/transport/src/lib.rs` (modified — ADDED to Outputs: `pub mod mdns;` + re-export the new frozen names)
+- `crates/transport/src/error.rs` (modified — ADDED to Outputs: new `TransportError::Mdns` variant)
 - `crates/transport/tests/mdns_loopback.rs` (new — the two-task discovery double)
-- `deny.toml` (modified only if a new SPDX needs ratification)
-- `scripts/smoke.d/<NN>-mdns-discovery.sh` + `scripts/smoke.manifest` (new capability)
-- `docs/interfaces/rust-api.md` (regenerated if the discovery surface changed)
+- `deny.toml` (NOT modified — mdns-sd tree clears `cargo deny check` with no new SPDX)
+- `scripts/smoke.d/99-mdns-discovery.sh` + `scripts/smoke.manifest` (new capability)
+- `docs/interfaces/rust-api.md` (regenerated — the 4 new `api.rs` decls)
 
 ## Commit message
 ```
@@ -98,5 +102,133 @@ does NOT silence mDNS. Tier-2 double: two tasks discover on loopback.
 Refs: tasks/v1.0/213-mdns-lan-discovery.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / mDNS crate choice + rationale / Open questions for next task / Deliberate debt / License ratifications / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+
+- **mDNS crate choice + rationale.** `mdns-sd = "0.20"` (pure-Rust mDNS/DNS-SD
+  responder + browser in one crate). Picked because: (1) it registers **A and
+  AAAA** records and the browser accepts either out of the box — satisfies
+  `design/11 §12 R-3` (support both v4 and v6) without hand-rolling dual-stack
+  sockets; (2) **loopback interfaces (`LoopbackV4`/`LoopbackV6`) are enabled by
+  default in 0.20**, which is the load-bearing property that makes the Tier-2
+  double hermetic — the responder+browser pair resolve over **loopback
+  multicast** with no real LAN and no external network, exactly what a headless
+  CI network sandbox needs; (3) pure-Rust + cross-platform (`if-addrs` +
+  `socket2`), no `#[cfg(unix)]` on the discovery path → the Task-113 Windows
+  lane stays green; (4) license `Apache-2.0 OR MIT`, with a tiny transitive tree
+  (`if-addrs` MIT/BSD-3-Clause, `socket-pktinfo`/`flume`/`fastrand`
+  MIT/Apache-2.0) all already on the `deny.toml` allow-list. Pinned at the
+  **minor** (`"0.20"`, not an exact patch) — unlike the iroh trio it is a
+  self-contained leaf with a stable wire format, not part of the spike-validated
+  QUIC stack. Earlier 0.13 lacks the default loopback interfaces; 0.20 is why
+  this is hermetic.
+
+- **License ratifications.** **None needed** — `cargo deny check` is green
+  (`advisories ok, bans ok, licenses ok, sources ok`) with the mdns-sd tree
+  added; no new SPDX expression appears (every license is already allowed).
+  `deny.toml` was **not** modified.
+
+- **Drift from plan.**
+  - **`MdnsResponder` lives on `IrohTransport`, not on the in-memory
+    `TransportState`.** The task said "Add the `MdnsResponder` field to
+    `TransportState` (`design/11 §4` already names it)", and the design's §4
+    struct does list `mdns_responder` on `TransportState`. BUT Task 212 (merged,
+    FROZEN) deliberately split the design's one struct: the **owning** fields
+    (`iroh_endpoint`, `relay_url`, `pairing_listener`) moved to `IrohTransport`,
+    leaving `TransportState` as the **pure session-registry** (`sessions` +
+    `nat_stats`) with `#[derive(Default)]`. The mDNS responder owns a non-`Default`
+    daemon thread and its lifecycle is "start/stop with the transport" (the
+    task's own Scope-in wording: "owned alongside the endpoint"), so it belongs
+    with the endpoint on `IrohTransport` (field `mdns: Arc<Mutex<Option<
+    MdnsResponder>>>`), exactly where 212 put the other owned fields. Putting it
+    on `TransportState` would have broken 212's FROZEN `Default` derive and the
+    216/217 "pure registry" contract. This honors the design intent
+    (responder owned by the transport, started after the endpoint is up) while
+    respecting 212's frozen split. Flagged here per the "don't modify a frozen
+    surface silently" rule — the `TransportState` struct was **not** touched.
+  - **`MdnsConfig` carries no `disable_remote`** (by design): the opt-out
+    (`MdnsConfig::opt_out`) is the *only* mDNS switch. `disable_remote` is
+    consulted nowhere in `mdns.rs` — a reviewer can confirm `disable_remote =
+    true` leaves mDNS publishing. The `disable_remote_does_not_silence_mdns`
+    test drives the real `IrohTransport::start(disable_remote=true)` →
+    `publish_mdns(opt_out=false)` → `is_mdns_publishing() == true` path
+    (`design/11 §6.4`).
+  - **No `concerto-core` wiring.** This task fills the transport surface only.
+    The Core actor that builds the live `MdnsConfig` (real `endpoint_id` from
+    212, `core_pubkey` base64 of the Task-206 Ed25519 public key, `version`,
+    `caps` mirroring `ServerCapabilities`) and calls `publish_mdns` at
+    boot/re-announce, plus the wiring of the *opt-out* to a concrete managed /
+    per-network setting, is **deferred to Task 217's `TransportHandle` façade /
+    boot wiring** (the same place 212 deferred its `serve_iroh` auto-spawn). See
+    Open questions. No `boot.rs` / `api_server.rs` changes.
+
+- **Open questions for next task (217 / 218 / 219 / 511 / 211-followup).**
+  - **The FROZEN mDNS surface (declared in `crates/transport/src/api.rs`):**
+    the consts `SERVICE_TYPE = "_concerto._tcp.local."`, `TXT_ENDPOINT_ID =
+    "endpoint_id"`, `TXT_CORE_PUBKEY = "core_pubkey"`, `TXT_VERSION = "version"`,
+    `TXT_CAPS = "caps"`; the descriptor `DiscoveredCore { instance_name,
+    endpoint_id, core_pubkey_b64, version, caps, addresses }` (+ `caps_list()`);
+    `MdnsConfig { instance_name, endpoint_id, core_pubkey_b64, version, caps,
+    port, addrs, opt_out }` (+ `::new(..)`); `MdnsResponder::{publish(config) ->
+    Result<Self>, is_publishing(), config(), fullname(), shutdown()}` (+ `Drop`);
+    `MdnsBrowser::{start(exclude_fullname: Option<String>) -> Result<Self>,
+    recv() -> Option<DiscoveredCore>, shutdown()}` (+ `Drop`); and on
+    `IrohTransport`: `publish_mdns(MdnsConfig) -> Result<()>`, `stop_mdns()`,
+    `is_mdns_publishing() -> bool`, `browse_lan() -> Result<MdnsBrowser>`. New
+    TXT keys are **append-only** (`design/11 §3.5`). 218/219/511/521 browse for
+    this exact schema.
+  - **For 217 (`TransportHandle` / boot):** build the live `MdnsConfig` from the
+    transport (`endpoint_id()`), the Core Ed25519 public key
+    (base64, Task 206), the Core version, and the coarse `caps` list (mirror
+    `ServerCapabilities` from 201 at low fidelity), then call
+    `transport.publish_mdns(cfg)` **after** the endpoint is up; re-call it on
+    `version`/`endpoint_id`/`caps` change (the responder replaces the prior
+    registration, sending the old record's goodbye on drop). Wire `opt_out` to a
+    concrete setting (see next bullet). `stop()` already deregisters mDNS.
+  - **For 211-followup (the opt-out predicate):** Task 213 takes `opt_out` as a
+    plain bool on `MdnsConfig`; there is **no `mdns_opt_out` key in
+    `managed.json` yet** (211 froze `disable_remote` / pairing / max-devices /
+    relay / deny-paths, and explicitly restated that `disable_remote` must NOT
+    silence mDNS). A dedicated managed-setting key (e.g. `disableMdns` /
+    `mdnsOptOut`) + a per-network preference predicate is the natural home for
+    the boolean 217 will pass; that key is **not** in scope here (no proto, no
+    managed.json change in this task). Recommend 217 (or a small 211-followup)
+    add the managed key and feed its value into `MdnsConfig::opt_out`.
+  - **For 218/219/511 (discovery UI):** drive `MdnsBrowser::start(None)` (or
+    `IrohTransport::browse_lan()`), drain `recv()` for `DiscoveredCore`s, and
+    hand each `endpoint_id` to the 212 connect path
+    (`connect_channel(...)` → `ConnectionPath::Lan`, no relay). `core_pubkey_b64`
+    is a fingerprint **hint** only — trust is still established by the QR/cert
+    pairing flow (Task 207); discovery is unauthenticated advertisement.
+
+- **Deliberate debt.** None deferred via `TODO`/`unimplemented!`/`todo!`. Two
+  scoped deferrals, both recorded with their closing task: (1) the Core-actor
+  `publish_mdns` boot/re-announce wiring + building the live `MdnsConfig` from
+  the real identity/version/caps → **Task 217**; (2) the `managed.json` mDNS
+  opt-out key + per-network preference predicate that feeds `MdnsConfig::opt_out`
+  → **Task 217 / a 211-followup** (the bool seam exists today and is tested).
+
+- **Tier-3 lines the loopback double does NOT cover** (Phase-2 manual checklist):
+  **real cross-device LAN discovery across two physical machines on real Wi-Fi**
+  — multicast on a real switch (224.0.0.251 / ff02::fb), mDNS-suppressing work
+  networks, IPv6-only segments, and the LAN-direct Iroh open to a discovered
+  endpoint actually classifying as `ConnectionPath::Lan` end-to-end. The double
+  proves publish + browse + the exact 4-key TXT round-trip + opt-out suppression
+  + `disable_remote`-doesn't-silence on **loopback**; "pair a real second machine
+  over LAN via mDNS direct" stays on the Phase-2 Tier-3 checklist. On this dev
+  host loopback delivered the IPv4 (A) record but not the IPv6 (AAAA) one over
+  loopback multicast, so the **dual-stack** assertion is OR-floored ("at least
+  one family resolves") with full IPv4+IPv6 advertisement registered and the
+  AAAA round-trip itself a Tier-3 line; the responder always *registers* both A
+  and AAAA (R-3).
+
+- **Smoke-gate state.** New capability `mdns-discovery` registered in
+  `scripts/smoke.manifest` (`scripts/smoke.d/99-mdns-discovery.sh`), running
+  after `transport-loopback`. It is **hermetic** (no Core boot / no keychain /
+  no real network): one `cargo test -p concerto-transport --test mdns_loopback`
+  invocation drives a responder + a browser discovering over loopback, every
+  wait timeout-bounded (8 s) so it never hangs, degrading gracefully (assert the
+  responder published + the unit-tested TXT encode/parse) if a sandbox blocks
+  even loopback multicast. Full `scripts/smoke.sh` passes (all 18 caps,
+  86 seconds); `cargo test -p concerto-transport --test mdns_loopback` →
+  3 passed; the 6 `src/mdns.rs` unit tests pass under `cargo test --workspace`.
+  `shellcheck -x` on the new smoke script is clean.

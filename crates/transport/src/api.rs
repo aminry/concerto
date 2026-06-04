@@ -21,6 +21,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -41,6 +42,112 @@ pub use crate::channels::{MAX_MESSAGE_SIZE, NOISE_PLAINTEXT_CHUNK};
 pub use crate::endpoint::{connect_channel, direct_endpoint_addr, ALPN};
 pub use crate::error::Result as TransportResult;
 pub use crate::state::classify_path;
+
+// ===========================================================================
+// mdns.rs surface — LAN discovery (`design/11 §3.5`, Task 213)
+// ===========================================================================
+
+/// The mDNS service type the Core advertises and clients browse for
+/// (`design/11 §3.5`). **FROZEN** — mobile (Task 511) and web (Task 521) browse
+/// for this exact string. The trailing `.local.` is the mDNS convention
+/// (`mdns-sd` requires the fully-qualified form).
+pub const SERVICE_TYPE: &str = "_concerto._tcp.local.";
+
+/// TXT key for the Iroh endpoint id the client dials (`design/11 §3.5`).
+/// **FROZEN.**
+pub const TXT_ENDPOINT_ID: &str = "endpoint_id";
+/// TXT key for the base64 Ed25519 Core public key — a fingerprint hint, NOT an
+/// auth credential (`design/11 §3.5`, `design/12 §3.6`). **FROZEN.**
+pub const TXT_CORE_PUBKEY: &str = "core_pubkey";
+/// TXT key for the Core semver (`design/11 §3.5`). **FROZEN.**
+pub const TXT_VERSION: &str = "version";
+/// TXT key for the comma-separated coarse feature list (`design/11 §3.5`).
+/// **FROZEN.** New keys are append-only; values within `caps` grow freely.
+pub const TXT_CAPS: &str = "caps";
+
+/// A Core discovered on the LAN via mDNS — the parsed `_concerto._tcp.local` TXT
+/// record plus the resolved addresses (`design/11 §3.5`). The descriptor
+/// Task 218/219 (Desktop Connect-to-Core picker) and Task 511 (mobile pairing)
+/// consume: the client hands [`Self::endpoint_id`] to the Task-212 connect path
+/// ([`connect_channel`]) to open Iroh **directly** on the LAN
+/// ([`ConnectionPath::Lan`], no relay). **FROZEN shape** (fields are
+/// append-only).
+///
+/// The `core_pubkey_b64` is a fingerprint *hint* only — discovery is
+/// unauthenticated advertisement; trust is still established by the QR/cert
+/// pairing flow (Task 207).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredCore {
+    /// The advertised instance label (the Core's display name).
+    pub instance_name: String,
+    /// The Iroh endpoint id to dial (TXT `endpoint_id`).
+    pub endpoint_id: String,
+    /// The base64 Ed25519 Core public key (TXT `core_pubkey`) — fingerprint hint.
+    pub core_pubkey_b64: String,
+    /// The Core semver (TXT `version`).
+    pub version: String,
+    /// The raw comma-separated coarse feature list (TXT `caps`); see
+    /// [`Self::caps_list`].
+    pub caps: String,
+    /// The resolved IP addresses (IPv4 + IPv6, R-3) — informational; the dial
+    /// uses `endpoint_id` via Iroh, not these directly.
+    pub addresses: Vec<IpAddr>,
+}
+
+/// The values the responder stamps into the `_concerto._tcp.local` advertisement
+/// (`design/11 §3.5`). The Core actor (Task 217) builds this from the live
+/// transport: `endpoint_id` from [`IrohTransport::endpoint_id`], `core_pubkey`
+/// from the Core Ed25519 identity (Task 206), `version` from the Core version,
+/// `caps` mirroring the coarse `ServerCapabilities` feature surface (Task 201).
+///
+/// `opt_out` is the dedicated managed / per-network mDNS suppression
+/// (`design/11 §3.5`) — **orthogonal to `disable_remote`** (which leaves mDNS
+/// publishing, `design/11 §6.4`).
+#[derive(Debug, Clone)]
+pub struct MdnsConfig {
+    /// The advertised instance label (the Core's display name).
+    pub instance_name: String,
+    /// The Iroh endpoint id (TXT `endpoint_id`).
+    pub endpoint_id: String,
+    /// The base64 Ed25519 Core public key (TXT `core_pubkey`).
+    pub core_pubkey_b64: String,
+    /// The Core semver (TXT `version`).
+    pub version: String,
+    /// The comma-separated coarse feature list (TXT `caps`).
+    pub caps: String,
+    /// The advertised port (informational; the Iroh endpoint id is the real
+    /// dial target). Carried for SRV-record completeness.
+    pub port: u16,
+    /// Host IPs to advertise (both v4 and v6 where available, R-3). Empty → the
+    /// responder auto-detects and keeps the host's addresses updated.
+    pub addrs: Vec<IpAddr>,
+    /// Suppress publication entirely (the dedicated mDNS opt-out). When `true`,
+    /// [`MdnsResponder::publish`] returns a no-op handle that advertises
+    /// nothing. **NOT** driven by `disable_remote`.
+    pub opt_out: bool,
+}
+
+/// The Core's mDNS responder — owns the `mdns-sd` daemon and the registered
+/// service instance (`design/11 §3.5`, §4 `mdns_responder`). Held alongside the
+/// Iroh endpoint in [`crate::api::TransportState`]'s owning transport; published
+/// after the endpoint is up (it needs the `endpoint_id`) and deregistered (mDNS
+/// goodbye) on shutdown/drop. When the opt-out is set the handle holds no daemon
+/// and advertises nothing. Method impls in [`crate::mdns`].
+pub struct MdnsResponder {
+    pub(crate) daemon: Option<mdns_sd::ServiceDaemon>,
+    pub(crate) fullname: Option<String>,
+    pub(crate) config: MdnsConfig,
+}
+
+/// The client-side mDNS browser — owns the `mdns-sd` browse daemon and yields
+/// [`DiscoveredCore`] descriptors as `_concerto._tcp.local` services resolve
+/// (`design/11 §3.5`). The discovery helper Task 218/219/511 drive; they feed
+/// each discovered `endpoint_id` to the Task-212 LAN connect path. Method impls
+/// in [`crate::mdns`].
+pub struct MdnsBrowser {
+    pub(crate) daemon: Option<mdns_sd::ServiceDaemon>,
+    pub(crate) rx: mpsc::UnboundedReceiver<DiscoveredCore>,
+}
 
 // ===========================================================================
 // channels.rs surface
@@ -363,7 +470,9 @@ impl PairingListener {
 /// The owning transport handle — the internals Task 217's `TransportHandle`
 /// wraps (`design/11 §5.1`). Holds the one Iroh endpoint, the session registry
 /// ([`TransportState`]), the current relay association, the pairing-listener
-/// slot, and the push-hint channel. **FROZEN public surface**; method impls in
+/// slot, the push-hint channel, and the mDNS responder ([`MdnsResponder`],
+/// `design/11 §4` `mdns_responder` — owned alongside the endpoint so it starts/
+/// stops with the transport). **FROZEN public surface**; method impls in
 /// [`crate::endpoint`].
 pub struct IrohTransport {
     pub(crate) endpoint: iroh::Endpoint,
@@ -375,5 +484,11 @@ pub struct IrohTransport {
     pub(crate) pairing_tx: Arc<Mutex<Option<([u8; 32], mpsc::Sender<IrohDuplex>)>>>,
     pub(crate) wakeup_tx: mpsc::UnboundedSender<WakeupHint>,
     pub(crate) wakeup_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<WakeupHint>>>>,
+    /// The live mDNS responder (`design/11 §4` `mdns_responder`). `None` until
+    /// [`IrohTransport::publish_mdns`] is called (the Core publishes after the
+    /// endpoint is up, since the TXT needs the `endpoint_id`). Replaced on
+    /// re-announce; deregistered (mDNS goodbye) on [`IrohTransport::stop_mdns`]
+    /// / drop.
+    pub(crate) mdns: Arc<Mutex<Option<MdnsResponder>>>,
     pub(crate) shutdown: CancellationToken,
 }

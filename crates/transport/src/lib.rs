@@ -39,6 +39,7 @@ pub mod api;
 pub mod channels;
 pub mod endpoint;
 pub mod error;
+pub mod mdns;
 pub mod state;
 
 // The frozen surface, flattened to the crate root for ergonomic `use
@@ -46,8 +47,9 @@ pub mod state;
 // canonical declarations live in `api`; this re-exports them at the root.
 pub use api::{
     classify_path, connect_channel, direct_endpoint_addr, ActiveSession, ApiDispatcher, ChannelTag,
-    ConnectionPath, DeviceId, IrohConnector, IrohDuplex, IrohTransport, NatStats, NoiseDuplex,
-    PairingListener, RelayInfo, TransportConfig, TransportState, WakeupHint, ALPN,
-    MAX_MESSAGE_SIZE,
+    ConnectionPath, DeviceId, DiscoveredCore, IrohConnector, IrohDuplex, IrohTransport,
+    MdnsBrowser, MdnsConfig, MdnsResponder, NatStats, NoiseDuplex, PairingListener, RelayInfo,
+    TransportConfig, TransportState, WakeupHint, ALPN, MAX_MESSAGE_SIZE, SERVICE_TYPE, TXT_CAPS,
+    TXT_CORE_PUBKEY, TXT_ENDPOINT_ID, TXT_VERSION,
 };
 pub use error::{Result, TransportError};

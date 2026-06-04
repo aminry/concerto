@@ -261,3 +261,23 @@ snow = { version = "0.9", default-features = false, features = ["default-resolve
 # core. The license tree is ratified in `deny.toml` (see the Task-212 block).
 iroh = "=0.98.2"
 iroh-relay = "=0.98.0"
+# Task 213: mDNS LAN discovery for the Core (`crates/transport`,
+# `design/11 §3.5`). `mdns-sd` is a pure-Rust mDNS/DNS-SD responder + browser in
+# one crate — it publishes the `_concerto._tcp.local` service (TXT:
+# endpoint_id/core_pubkey/version/caps) and browses for it. Chosen over
+# hand-rolling dual-stack sockets because it registers A **and** AAAA records and
+# accepts either out of the box (`design/11 §12 R-3` — support both v4 and v6),
+# and (load-bearing for our Tier-2 CI hermeticity) it enables the loopback
+# interfaces (`LoopbackV4`/`LoopbackV6`) by default, so the responder+browser
+# double resolves over loopback multicast with no real LAN / no external network
+# — exactly what a headless CI network sandbox needs. Pure-Rust + cross-platform
+# (Windows/Linux/macOS via `if-addrs` + `socket2`; no `#[cfg(unix)]` on the
+# discovery path → the Task-113 Windows lane stays green). License
+# `Apache-2.0 OR MIT`; its small transitive tree (`if-addrs` MIT/BSD-3-Clause,
+# `socket-pktinfo`/`flume`/`fastrand` MIT/Apache-2.0) is already on the
+# `deny.toml` allow-list — no new SPDX to ratify. Not pinned to an exact patch
+# (unlike the iroh trio): mDNS is a self-contained leaf with a stable wire
+# format, not part of the spike-validated QUIC stack. `default-features = false`
+# drops the `async` (flume/async) feature; the transport crate opts into
+# `logging` locally.
+mdns-sd = { version = "0.20", default-features = false }
