@@ -1,0 +1,33 @@
+// Trivial gRPC service the Tier-2 relay-route double (`tests/relay_route.rs`)
+// drives over the Task-212 adapter + Noise, ROUTED THROUGH the in-process
+// `concerto-relay` (two Iroh endpoints with IP transports cleared, so the only
+// viable QUIC path is the relay). NOT a product service — only the relay-route
+// test compiles it (tonic 0.12 codegen, the production generator, so the test
+// exercises real framing over the relay). Mirrors the transport crate's
+// loopback proto: one unary echo (round-trip) + one server-streaming firehose
+// (so `bytes forwarded` > 0 after a real transfer).
+syntax = "proto3";
+
+package concerto.relay.route.v1;
+
+message EchoRequest {
+  bytes payload = 1;
+}
+
+message EchoReply {
+  bytes payload = 1;
+}
+
+message FirehoseRequest {
+  uint64 total_bytes = 1;
+  uint32 chunk_bytes = 2;
+}
+
+message FirehoseChunk {
+  bytes data = 1;
+}
+
+service RelayRoute {
+  rpc Echo(EchoRequest) returns (EchoReply);
+  rpc Firehose(FirehoseRequest) returns (stream FirehoseChunk);
+}

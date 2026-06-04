@@ -914,6 +914,92 @@ pub struct PullRequest {
 }
 ```
 
+## `crates/relay/src/api.rs`
+
+### struct `RelayConfig`
+
+```rust
+pub struct RelayConfig {
+    /// `RELAY_LISTEN_ADDR` — the Iroh-relay HTTP server bind address (the relay
+    /// protocol endpoint, `design/11 §3.2`). Defaults to
+    /// [`DEFAULT_RELAY_LISTEN_ADDR`].
+    pub relay_listen_addr: SocketAddr,
+    /// `WSS_LISTEN_ADDR` — **reserved for Task 215** (the WSS↔Iroh bridge,
+    /// `design/11 §3.4`). Parsed + validated here so the env surface is frozen
+    /// and a malformed value fails fast, but this task does **not** stand up a
+    /// WSS listener. `None` when unset.
+    pub wss_listen_addr: Option<SocketAddr>,
+    /// `MAX_ROUTES` — the routing-table cap (`design/11 §6.3`). Registrations
+    /// beyond it are rejected (and counted). Defaults to [`DEFAULT_MAX_ROUTES`].
+    pub max_routes: usize,
+    /// `BANDWIDTH_CAP_PER_ENDPOINT` — max forwarded bytes per endpoint
+    /// (`design/11 §6.3`, §3.9). `None` (unset) → unlimited. `0` is rejected as
+    /// malformed (a zero cap would forward nothing).
+    pub bandwidth_cap_per_endpoint: Option<u64>,
+    /// `PROMETHEUS_LISTEN_ADDR` — where the `/metrics` endpoint is served
+    /// (`design/11 §6.3`). Defaults to [`DEFAULT_PROMETHEUS_LISTEN_ADDR`].
+    pub prometheus_listen_addr: SocketAddr,
+}
+```
+
+### struct `EndpointRoute`
+
+```rust
+pub struct EndpointRoute {
+    /// The endpoint's current public IP + port (`design/11 §4`: `endpoint_id →
+    /// current public IP+port`).
+    pub public_addr: SocketAddr,
+    /// When this route was last refreshed by a keep-alive.
+    pub last_seen: Instant,
+    /// When this route expires absent a refresh (`last_seen + `[`ROUTE_TTL`]).
+    pub expires_at: Instant,
+}
+```
+
+### struct `BandwidthCounter`
+
+```rust
+pub struct BandwidthCounter {
+    /// Total ciphertext bytes forwarded for this endpoint since registration.
+    pub bytes_forwarded: u64,
+}
+```
+
+### struct `RelayState`
+
+```rust
+pub struct RelayState {
+    /// The routing table: `iroh_endpoint_id → current route` (`design/11 §4`).
+    /// Keyed by the endpoint id string (the relay never parses the Iroh key
+    /// material — it only routes by id, `design/11 §3.9`).
+    pub routes: HashMap<String, EndpointRoute>,
+    /// Per-endpoint forwarded-byte counters (`design/11 §4`).
+    pub bandwidth_counters: HashMap<String, BandwidthCounter>,
+    /// **Reserved for Task 215** — the active WSS↔Iroh bridges
+    /// (`design/11 §3.4`, §4 `wss_bridges`). Keyed by bridge id. Empty in V1.0
+    /// Task 214; 215 populates it.
+    pub wss_bridges: HashMap<String, WssBridge>,
+}
+```
+
+### struct `WssBridge`
+
+```rust
+pub struct WssBridge {
+    /// The bridge's identifier (the relay-side handle Task 215 keys the bridge
+    /// on).
+    pub bridge_id: String,
+}
+```
+
+### struct `Relay`
+
+```rust
+pub struct Relay {
+    pub(crate) inner: crate::relay::RelayInner,
+}
+```
+
 ## `crates/transport/src/api.rs`
 
 ### struct `DiscoveredCore`

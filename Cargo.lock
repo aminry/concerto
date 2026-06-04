@@ -1110,6 +1110,25 @@ dependencies = [
 [[package]]
 name = "concerto-relay"
 version = "0.0.1"
+dependencies = [
+ "concerto-identity",
+ "concerto-transport",
+ "futures",
+ "http",
+ "hyper-util",
+ "iroh",
+ "iroh-relay",
+ "prometheus",
+ "prost",
+ "rustls",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tonic-build",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "concerto-smoke-client"
@@ -6318,6 +6337,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a6efc566849d3d9d737c5cb06cc50e48950ebe3d3f9d70631490fff3a07b139"
 dependencies = [
  "parking_lot",
+]
+
+[[package]]
+name = "prometheus"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "memchr",
+ "parking_lot",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

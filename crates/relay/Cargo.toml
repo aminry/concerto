@@ -13,3 +13,59 @@ path = "src/lib.rs"
 [[bin]]
 name = "concerto-relay"
 path = "src/main.rs"
+
+[dependencies]
+# Task 214: embed Iroh's relay server as a LIBRARY (no new protocol — R-7,
+# `design/11 §3.2`). The `server` feature exposes the embeddable relay/dev
+# server the spike (`design/spikes/tonic-iroh-findings.md` §6) proved stands up
+# hermetically on a loopback port. Pinned `=0.98.0` (the validated trio, root
+# Cargo.toml Task-212 note). `iroh` gives the endpoint id / addr types the
+# routing-table observability keys on. Both are pure-Rust QUIC (quinn/rustls/
+# ring), cross-platform (Windows/Linux/macOS — the Docker image targets Linux,
+# the Windows CI lane just compiles, Task 113).
+iroh = { workspace = true }
+iroh-relay = { workspace = true, features = ["server"] }
+# iroh-relay initializes a rustls crypto provider on some (TLS-less) code paths;
+# install the ring provider process-wide so nothing panics. Same backend
+# iroh/iroh-relay use; no new crypto C dep (also a transitive iroh-relay dep).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# Task 214: Prometheus metrics endpoint (`design/11 §6.3`). The `prometheus`
+# crate is a maintained, widely-deployed registry + text-exposition encoder
+# (Apache-2.0 OR MIT, already on the deny allow-list) — no exporter framework
+# needed: we serve the FROZEN `concerto_relay_*` names over a minimal TCP
+# handler bound to `PROMETHEUS_LISTEN_ADDR`. `default-features = false` drops the
+# optional `protobuf` exposition format and the `process`/`libc` collectors we
+# don't use, keeping the tree small and cross-platform.
+prometheus = { workspace = true }
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time", "net", "sync", "signal"] }
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time", "net", "sync", "test-util"] }
+# The Tier-2 relay-route double routes a real session through the in-process
+# relay: two Iroh endpoints with IP transports CLEARED (so the only viable QUIC
+# path is the relay), pointed at the embedded `concerto-relay`'s URL, running a
+# gRPC stream over the Task-212 adapter. We drive `iroh` directly to build the
+# relay-forced endpoint pair (the production transport doesn't expose
+# `clear_ip_transports`), and reuse the transport's production adapter
+# (`IrohConnector` / `IrohDuplex` / Noise) for the gRPC layer.
+iroh = { workspace = true }
+concerto-transport = { path = "../transport" }
+concerto-identity = { path = "../identity" }
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+prost = { workspace = true }
+futures = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http = "1"
+
+[build-dependencies]
+# Generates the trivial echo/firehose service the relay-route double drives over
+# the adapter through the relay (the Tier-2 relayed gRPC round-trip + stream).
+# tonic 0.12 codegen — the production generator, so the test exercises real
+# framing. Mirrors the transport crate's loopback-double build.rs.
+tonic-build = "=0.12.3"
