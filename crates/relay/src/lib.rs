@@ -39,11 +39,13 @@ pub mod error;
 pub mod metrics;
 pub mod relay;
 pub mod state;
+pub mod wss;
 
 // The FROZEN public surface (re-exported from `api` per the regen-interfaces
 // convention — `api.rs` is the canonical, generator-indexed declaration site).
 pub use crate::api::{
-    BandwidthCounter, EndpointRoute, Relay, RelayConfig, RelayState, WssBridge, DEFAULT_MAX_ROUTES,
-    DEFAULT_PROMETHEUS_LISTEN_ADDR, DEFAULT_RELAY_LISTEN_ADDR, ROUTE_TTL,
+    BandwidthCounter, EndpointRoute, Relay, RelayConfig, RelayState, WssBridge, WssBridgeMetrics,
+    WssBridgeServer, WssTlsConfig, DEFAULT_MAX_ROUTES, DEFAULT_PROMETHEUS_LISTEN_ADDR,
+    DEFAULT_RELAY_LISTEN_ADDR, MAX_ENDPOINT_ID_LEN, ROUTE_TTL, WSS_PATH_PREFIX,
 };
 pub use crate::error::{RelayError, Result};

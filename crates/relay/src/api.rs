@@ -147,15 +147,93 @@ pub struct RelayState {
     pub wss_bridges: HashMap<String, WssBridge>,
 }
 
-/// A WSS↔Iroh bridge entry (`design/11 §3.4`, §4 `wss_bridges`). **Reserved for
-/// Task 215** — declared here so [`RelayState::wss_bridges`]'s value type is
-/// frozen; 215 fills the fields. The placeholder carries only the bridge id (the
-/// minimal identity 215 keys on) so the relay stays ciphertext-only.
+/// A live WSS↔Iroh bridge entry (`design/11 §3.4`, §4 `wss_bridges`). One per
+/// open browser WSS connection (Task 215). Bridges are **ephemeral** — created on
+/// a successful `/wss/<endpoint_id>` upgrade, torn down on disconnect — so this
+/// entry carries only the §3.9-permitted metadata: the bridge id, the addressed
+/// endpoint id, and the source IP. **No payload, no inner-frame structure, no
+/// device credential** ever reaches this struct (the relay sees ciphertext only,
+/// `design/11 §3.9`); the byte *counts* live on [`BandwidthCounter`], keyed by
+/// `endpoint_id`. Field additions are append-only.
 #[derive(Debug, Clone)]
 pub struct WssBridge {
-    /// The bridge's identifier (the relay-side handle Task 215 keys the bridge
-    /// on).
+    /// The bridge's identifier (the relay-side handle the bridge is keyed on in
+    /// [`RelayState::wss_bridges`]). A fresh opaque id per browser connection.
     pub bridge_id: String,
+    /// The addressed Iroh endpoint id parsed from the `/wss/<endpoint_id>` path
+    /// (`design/11 §3.4`) — the Core this bridge forwards to. Routing metadata
+    /// (`design/11 §3.9`: "Iroh endpoint ID being addressed" is observable).
+    pub endpoint_id: String,
+    /// The source IP+port of the browser's WSS connection (`design/11 §3.9`:
+    /// "source IP of a connecting client" is observable — QUIC/TCP headers a
+    /// network observer sees anyway). Metadata only.
+    pub peer_addr: SocketAddr,
+}
+
+// ===========================================================================
+// wss.rs surface — the WSS↔Iroh bridge (`design/11 §3.4` Path B, Task 215)
+// ===========================================================================
+
+/// The maximum length (bytes) of the `<endpoint_id>` segment accepted on the
+/// FROZEN `/wss/<endpoint_id>` path before the upgrade is refused with HTTP 4xx
+/// (`design/11 §3.4`). An Iroh endpoint id is a 32-byte Ed25519 key rendered as
+/// 64 lowercase hex chars; the ceiling is generous (a few multiples) so the parse
+/// — never the length — is the real validator, while still rejecting an
+/// oversized path before any work. **FROZEN** (the Phase-5 web client builds
+/// `wss://<relay-host>/wss/<endpoint_id>` with the hex id).
+pub const MAX_ENDPOINT_ID_LEN: usize = 128;
+
+/// The FROZEN URL path prefix the WSS bridge upgrades on: `/wss/<endpoint_id>`
+/// (`design/11 §3.4`). The Phase-5 web client (Task 521) constructs exactly
+/// `wss://<relay-host>/wss/<endpoint_id>`; changing this prefix is a wire break
+/// across the relay↔web-client boundary. **FROZEN.**
+pub const WSS_PATH_PREFIX: &str = "/wss/";
+
+/// The TLS material the WSS bridge terminates the browser's `wss://` connection
+/// with (`design/11 §3.4`: "TLS terminated at the relay"). The inner Noise IK
+/// (`design/12 §3.4`), established by the browser *inside* the WSS stream, is what
+/// protects payload confidentiality end-to-end; this is only the **outer**
+/// transport hop the browser's `wss://` scheme requires, so the relay can read
+/// **ciphertext only** (`design/11 §3.9`).
+///
+/// PEM-encoded so an operator supplies their own cert/key (Fly.io / their own
+/// CA). [`WssTlsConfig::self_signed`] generates an ephemeral self-signed pair for
+/// the Tier-2 loopback double (and as a last-resort dev fallback) — production
+/// deploys supply a real cert. **FROZEN shape** (fields append-only).
+#[derive(Clone)]
+pub struct WssTlsConfig {
+    /// The PEM-encoded certificate chain (leaf first).
+    pub cert_pem: Vec<u8>,
+    /// The PEM-encoded PKCS#8 private key.
+    pub key_pem: Vec<u8>,
+}
+
+/// A running WSS↔Iroh bridge listener (`design/11 §3.4` Path B, §6.2 the `Wss`
+/// node) — the only non-Iroh path the relay runs. Browsers cannot speak Iroh
+/// natively in V1.0, so per browser WSS connection on `/wss/<endpoint_id>` this
+/// bridge opens **one** Iroh bidi stream to the addressed Core and pumps opaque
+/// bytes both ways (WSS binary-frame payload → Iroh `SendStream`; Iroh
+/// `RecvStream` bytes → WSS binary frame). The pump is **transparent**: it copies
+/// `&[u8]` and never parses, decodes, decrypts, or logs frame contents — the
+/// browser does Noise IK inside the stream with its device cert and the relay
+/// sees **ciphertext only** (`design/11 §3.9`).
+///
+/// Started by [`crate::wss::WssBridgeServer::start`] when
+/// [`RelayConfig::wss_listen_addr`] (the reserved `WSS_LISTEN_ADDR`) is set; the
+/// `concerto-relay` binary spawns it alongside [`Relay`]. Method impls live in
+/// [`crate::wss`].
+pub struct WssBridgeServer {
+    pub(crate) inner: crate::wss::WssBridgeInner,
+}
+
+/// The WSS-bridge Prometheus metrics handle (`design/11 §3.9` metadata-only — the
+/// FROZEN `concerto_relay_*` names live in [`crate::metrics`]). Tracks the live
+/// bridge gauge and the per-direction forwarded-byte counters (**byte counts
+/// only**, never content). Cloneable into each per-connection pump. Method impls
+/// live in [`crate::metrics`].
+#[derive(Clone)]
+pub struct WssBridgeMetrics {
+    pub(crate) inner: crate::metrics::WssMetricsInner,
 }
 
 // ===========================================================================

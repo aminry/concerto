@@ -18,6 +18,7 @@ use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Opts, Registry, T
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+use crate::api::WssBridgeMetrics;
 use crate::error::{RelayError, Result};
 
 // ---------------------------------------------------------------------------
@@ -43,9 +44,27 @@ pub const METRIC_BANDWIDTH_CAPPED_TOTAL: &str = "concerto_relay_bandwidth_capped
 /// Gauge.
 pub const METRIC_UP: &str = "concerto_relay_up";
 
+/// Current number of live WSS↔Iroh bridges — one per open browser connection
+/// (`design/11 §3.4`, Task 215). Gauge. **FROZEN** (append-only addition under
+/// the `concerto_relay_*` prefix). Bridges are ephemeral; this rises on upgrade,
+/// falls on teardown.
+pub const METRIC_WSS_BRIDGES: &str = "concerto_relay_wss_bridges";
+/// Total ciphertext bytes pumped across all WSS↔Iroh bridges, labelled by
+/// direction (`design/11 §3.4`, §3.9 — byte *counts* only, never content).
+/// Counter vec. **FROZEN** (append-only).
+pub const METRIC_WSS_BYTES_FORWARDED_TOTAL: &str = "concerto_relay_wss_bytes_forwarded_total";
+
 /// The label key for the region dimension on the hole-punch metrics
 /// (`design/11 §6.3` "per region"). FROZEN.
 pub const LABEL_REGION: &str = "region";
+
+/// The label key for the direction dimension on the WSS bridge byte counter
+/// (`design/11 §3.4`). FROZEN.
+pub const LABEL_DIRECTION: &str = "direction";
+/// Direction label value: WSS binary frame → Iroh stream (browser → Core).
+pub const DIRECTION_TO_CORE: &str = "to_core";
+/// Direction label value: Iroh stream → WSS binary frame (Core → browser).
+pub const DIRECTION_TO_BROWSER: &str = "to_browser";
 
 /// The relay's Prometheus metrics handles, cloneable into the routing-table and
 /// forwarding paths. Backed by one [`Registry`] the `/metrics` endpoint encodes.
@@ -206,6 +225,96 @@ impl RelayMetrics {
             .map_err(|e| RelayError::Metrics(format!("encoding metrics: {e}")))?;
         String::from_utf8(buf)
             .map_err(|e| RelayError::Metrics(format!("metrics output not utf-8: {e}")))
+    }
+}
+
+impl RelayMetrics {
+    /// Register the WSS-bridge metrics (`design/11 §3.4`, Task 215) into **this**
+    /// relay registry and return the cloneable [`WssBridgeMetrics`] handle the
+    /// bridge drives, so the WSS series appear on the same `/metrics` endpoint as
+    /// the relay's core metrics. Idempotent registration is **not** assumed —
+    /// call once per [`RelayMetrics`].
+    pub fn wss_metrics(&self) -> Result<WssBridgeMetrics> {
+        let bridges = IntGauge::with_opts(Opts::new(
+            METRIC_WSS_BRIDGES,
+            "Current number of live WSS<->Iroh bridges (one per open browser connection).",
+        ))
+        .map_err(metrics_err)?;
+        let bytes_forwarded = IntCounterVec::new(
+            Opts::new(
+                METRIC_WSS_BYTES_FORWARDED_TOTAL,
+                "Total ciphertext bytes pumped across WSS bridges, by direction (metadata only).",
+            ),
+            &[LABEL_DIRECTION],
+        )
+        .map_err(metrics_err)?;
+
+        self.registry
+            .register(Box::new(bridges.clone()))
+            .map_err(metrics_err)?;
+        self.registry
+            .register(Box::new(bytes_forwarded.clone()))
+            .map_err(metrics_err)?;
+
+        // Touch both direction series so they appear at 0 before any traffic
+        // (dashboards prefer a present-at-zero counter to a missing one).
+        bytes_forwarded.with_label_values(&[DIRECTION_TO_CORE]);
+        bytes_forwarded.with_label_values(&[DIRECTION_TO_BROWSER]);
+
+        Ok(WssBridgeMetrics {
+            inner: WssMetricsInner {
+                bridges,
+                bytes_forwarded,
+            },
+        })
+    }
+}
+
+/// The private internals behind [`WssBridgeMetrics`](crate::api::WssBridgeMetrics)
+/// — the live-bridge gauge and the per-direction byte counter, sharing the relay
+/// [`Registry`]. **Byte counts only** (`design/11 §3.9`) — no payload reaches a
+/// metric.
+#[derive(Clone)]
+pub struct WssMetricsInner {
+    bridges: IntGauge,
+    bytes_forwarded: IntCounterVec,
+}
+
+impl WssBridgeMetrics {
+    /// A bridge opened — bump the live-bridge gauge.
+    pub fn bridge_opened(&self) {
+        self.inner.bridges.inc();
+    }
+
+    /// A bridge closed — drop the live-bridge gauge (never below 0).
+    pub fn bridge_closed(&self) {
+        let g = &self.inner.bridges;
+        if g.get() > 0 {
+            g.dec();
+        }
+    }
+
+    /// Account `n` bytes pumped browser → Core (WSS frame → Iroh stream). Only
+    /// the **count** is observed (`design/11 §3.9`).
+    pub fn add_bytes_to_core(&self, n: u64) {
+        self.inner
+            .bytes_forwarded
+            .with_label_values(&[DIRECTION_TO_CORE])
+            .inc_by(n);
+    }
+
+    /// Account `n` bytes pumped Core → browser (Iroh stream → WSS frame). Only
+    /// the **count** is observed (`design/11 §3.9`).
+    pub fn add_bytes_to_browser(&self, n: u64) {
+        self.inner
+            .bytes_forwarded
+            .with_label_values(&[DIRECTION_TO_BROWSER])
+            .inc_by(n);
+    }
+
+    /// The current live-bridge count (the `concerto_relay_wss_bridges` value).
+    pub fn live_bridges(&self) -> i64 {
+        self.inner.bridges.get()
     }
 }
 

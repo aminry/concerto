@@ -294,3 +294,17 @@ mdns-sd = { version = "0.20", default-features = false }
 # lane compiles it). Not exact-pinned: it is a self-contained observability leaf
 # with a stable API, not part of the spike-validated QUIC trio.
 prometheus = { version = "0.13", default-features = false }
+# Task 215: the WSS↔Iroh bridge at the self-hosted relay (`crates/relay`,
+# `design/11 §3.4` Path B). `tokio-tungstenite` is the focused async WebSocket
+# server/client layered over the relay's existing tokio runtime — it gives the
+# clean WSS framing surface (binary frames map 1:1 onto the Iroh bidi stream) the
+# bridge's opaque byte pump needs, with no HTTP framework. TLS is **rustls** (NOT
+# native-tls/openssl) matching the `reqwest`-rustls posture (Task 112) — the
+# `rustls-tls-webpki-roots` feature pulls `tokio-rustls 0.26` over the already-
+# present `rustls 0.23`/`ring` stack (Windows-lane friendly, no C TLS dep). The
+# bridge terminates the browser's outer `wss://` TLS; the inner Noise IK
+# (`design/12 §3.4`) keeps the relay ciphertext-only (`design/11 §3.9`).
+# `tungstenite`/`tokio-tungstenite` are MIT (already on the deny allow-list).
+# Not exact-pinned (a self-contained WebSocket leaf with a stable wire format,
+# not part of the spike-validated QUIC trio).
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }

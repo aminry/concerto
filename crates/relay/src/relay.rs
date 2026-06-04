@@ -315,6 +315,51 @@ impl Relay {
         self.inner.metrics.encode()
     }
 
+    /// Start the WSS↔Iroh bridge (`design/11 §3.4` Path B, Task 215) on the
+    /// reserved `WSS_LISTEN_ADDR` ([`RelayConfig::wss_listen_addr`]), sharing
+    /// **this** relay's [`RelayState`] (so live bridges register in
+    /// `wss_bridges`), its Prometheus registry (so the WSS metrics appear on the
+    /// same `/metrics` endpoint), and its embedded-relay URL (so the bridge dials
+    /// Cores through the same relay). Returns `Ok(None)` when `WSS_LISTEN_ADDR` is
+    /// unset (Iroh-only relay, unchanged from Task 214) — the bridge is opt-in.
+    ///
+    /// `tls` is the outer TLS the `wss://` scheme requires
+    /// ([`WssTlsConfig`](crate::api::WssTlsConfig)); the inner Noise IK the
+    /// browser runs makes the relay ciphertext-only regardless
+    /// (`design/11 §3.9`). The returned [`WssBridgeServer`] runs in the background
+    /// until its own shutdown / the relay's shared [`CancellationToken`].
+    pub async fn start_wss_bridge(
+        &self,
+        tls: crate::api::WssTlsConfig,
+    ) -> Result<Option<crate::api::WssBridgeServer>> {
+        let Some(listen_addr) = self.inner.config.wss_listen_addr else {
+            return Ok(None);
+        };
+        let relay_url: iroh::RelayUrl = self
+            .relay_url()
+            .ok_or_else(|| RelayError::Server("relay URL unavailable for WSS bridge".into()))?
+            .parse()
+            .map_err(|e| RelayError::Server(format!("parsing relay URL for WSS bridge: {e}")))?;
+        let wss_metrics = self.inner.metrics.wss_metrics()?;
+        let server = crate::api::WssBridgeServer::start(
+            listen_addr,
+            relay_url,
+            tls,
+            self.inner.state.clone(),
+            wss_metrics,
+            self.inner.shutdown.clone(),
+        )
+        .await?;
+        Ok(Some(server))
+    }
+
+    /// The shared relay state handle (for tests / the WSS bridge's `wss_bridges`
+    /// assertions). Exposes the in-memory [`RelayState`] behind the same lock the
+    /// relay drives; callers must not hold the lock across `.await`.
+    pub fn state(&self) -> std::sync::Arc<std::sync::Mutex<RelayState>> {
+        self.inner.state.clone()
+    }
+
     /// Run the relay until a Ctrl-C / SIGTERM signal arrives, then shut down
     /// cleanly. The binary wrapper (`main.rs`) calls this; Task 215 may replace
     /// it with its own loop that also drives the WSS bridge.
