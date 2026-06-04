@@ -1336,6 +1336,17 @@ pub struct WakeupHint {
 }
 ```
 
+### struct `WakeupPayload`
+
+```rust
+pub struct WakeupPayload {
+    /// The opaque, ID-only wakeup bytes (`design/14`'s ID-only principle). The
+    /// transport routes this to the device's push-hint channel without
+    /// inspecting it; P5 fills it with a correlation id (no PII — Task 506).
+    pub bytes: Vec<u8>,
+}
+```
+
 ### struct `PairingListener`
 
 ```rust
@@ -1372,6 +1383,14 @@ pub struct IrohTransport {
     /// published from spawned per-connection tasks with no receiver attached.
     pub(crate) telemetry_tx: tokio::sync::broadcast::Sender<TransportTelemetry>,
     pub(crate) shutdown: CancellationToken,
+}
+```
+
+### struct `TransportHandle`
+
+```rust
+pub struct TransportHandle<D: ApiDispatcher> {
+    pub(crate) inner: Arc<crate::handle::HandleInner<D>>,
 }
 ```
 

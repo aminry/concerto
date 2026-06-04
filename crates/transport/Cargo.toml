@@ -63,6 +63,10 @@ tracing.workspace = true
 # `async` (flume/async) feature we don't use; `logging` routes the daemon
 # thread's diagnostics through `log`. Pinned at the workspace level.
 mdns-sd = { workspace = true, features = ["logging"] }
+# Task 217: `url::Url` is the type `design/11 §5.1`'s FROZEN
+# `TransportHandle::switch_relay(url: Url)` names. Already in the build graph via
+# iroh (transitive); a direct dep here just makes the public signature honest.
+url = { workspace = true }
 
 [dev-dependencies]
 # The loopback double turns on the in-process relay.

@@ -85,19 +85,22 @@ Lock the **public Rust API of `crates/transport`** — the `TransportHandle` —
 7. `scripts/smoke.sh` → unchanged (the smoke Core is co-located/UDS; the Iroh `TransportHandle` is the remote path). Exits 0.
 
 ## Definition of Done
-- [ ] `crates/transport/src/api.rs` declares `TransportHandle` + the nine §5.1 methods with exact signatures (decls in `api.rs`, impls in a sibling)
-- [ ] `TransportConfig` / `RelayInfo` / `WakeupPayload` (minimal) declared; `NatStats` / `PairingListener` / `DeviceId` referenced from Task 212 (not duplicated)
-- [ ] Each method wraps Task 212's endpoint/state; downstream consumer named in code/Handoff for each seam
-- [ ] `DeviceId` ↔ `[u8;32]` reconciled so Task 209's `SessionCloser` is satisfied without changing 209's frozen trait
-- [ ] `WakeupPayload` minimal + doc-noted as P5/`design/14`-fleshed; no speculative notification fields
-- [ ] Tier-1 contract tests for all nine methods pass
-- [ ] Verification commands pass; smoke unchanged (exits 0); `rust-api.md` regenerated + committed
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
-- [ ] Single commit with the message below
+- [x] `crates/transport/src/api.rs` declares `TransportHandle` + the nine §5.1 methods with exact signatures (decls in `api.rs`, impls in a sibling)
+- [x] `TransportConfig` / `RelayInfo` / `WakeupPayload` (minimal) declared; `NatStats` / `PairingListener` / `DeviceId` referenced from Task 212 (not duplicated)
+- [x] Each method wraps Task 212's endpoint/state; downstream consumer named in code/Handoff for each seam
+- [x] `DeviceId` ↔ `[u8;32]` reconciled so Task 209's `SessionCloser` is satisfied without changing 209's frozen trait
+- [x] `WakeupPayload` minimal + doc-noted as P5/`design/14`-fleshed; no speculative notification fields
+- [x] Tier-1 contract tests for all nine methods pass
+- [x] Verification commands pass; smoke unchanged (exits 0); `rust-api.md` regenerated + committed
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
-- `crates/transport/src/api.rs` (new/modified — the `TransportHandle` public surface declarations)
-- `crates/transport/src/handle.rs` *(or sibling — match Task 212's layout)* (new/modified — method impls wrapping 212's endpoint) + `crates/transport/src/lib.rs` (modified — module wiring)
+- `crates/transport/src/api.rs` (modified — the `TransportHandle` public surface declarations + `WakeupPayload` + the `DeviceId: From<[u8;32]>` reconciliation)
+- `crates/transport/src/handle.rs` (new — method impls wrapping 212's endpoint) + `crates/transport/src/lib.rs` (modified — module wiring + root re-exports)
+- `crates/transport/src/error.rs` (modified — added the `TransportError::Lifecycle` variant for the `start`/`stop`/not-started states; ADDED to Outputs — see Drift)
+- `crates/transport/Cargo.toml` + `Cargo.toml` (modified — direct `url` dep for the §5.1 `Url` signature; already in the build graph via iroh, no new crate; ADDED to Outputs — see Drift)
+- `Cargo.lock` (modified — `url` added to `concerto-transport`'s dep list only; no version churn, `wmi`→`windows 0.62.2` unchanged)
 - `crates/transport/tests/transport_handle.rs` (new — the nine-method Tier-1 contract tests)
 - `docs/interfaces/rust-api.md` (regenerated — gains the transport public surface)
 
@@ -117,6 +120,44 @@ defined minimally (fleshed in P5/design/14). Tier-1 unit-tested.
 Refs: tasks/v1.0/217-transport-handle-api.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- `DeviceId` vs `[u8;32]` reconciliation chosen (how 209's `SessionCloser` is satisfied) / `PairingListener` ownership (212 vs 207 vs here) / `WakeupPayload` minimal shape + P5 fields deferred / `start`/`stop` reconciliation with 212's lifecycle / any minimal accessor added on 212's side / each method's named downstream consumer / regen-interfaces diff (transport surface added to rust-api.md) / Open questions / Deliberate debt / Smoke-gate state (unchanged)
+## Handoff Notes (filled in when finishing)
+
+**The nine FROZEN `TransportHandle` signatures (design/11 §5.1, reproduced verbatim).** `TransportHandle<D: ApiDispatcher>` is the opaque façade; `D` is the Core's gRPC dispatcher (Task 212's `ApiDispatcher`). Built once via `TransportHandle::new(core_noise_static_private: [u8;32], dispatcher: Arc<D>)`, then:
+```rust
+pub async fn start(&self, cfg: TransportConfig) -> Result<()>;
+pub async fn stop(&self) -> Result<()>;
+pub async fn listen_pairing(&self, token_hash: [u8;32]) -> Result<PairingListener>;
+pub async fn close_pairing(&self) -> Result<()>;
+pub async fn current_relay(&self) -> Result<RelayInfo>;
+pub async fn switch_relay(&self, url: url::Url) -> Result<()>;
+pub async fn nat_stats(&self) -> Result<NatStats>;
+pub async fn close_sessions_for_device(&self, id: DeviceId) -> Result<()>;
+pub async fn send_wakeup_hint(&self, id: DeviceId, payload: WakeupPayload) -> Result<()>;
+```
+`Result` is `concerto_transport::Result` (= `Result<T, TransportError>`). These are FROZEN; 218 builds against them.
+
+- **Drift from plan.** Two files added to Outputs beyond the planned set, both forced by §5.1's verbatim contract (flagged here per the rules, not silently): (1) `crates/transport/src/error.rs` gained a `TransportError::Lifecycle(String)` variant so `start`-while-running / call-before-`start` / call-after-`stop` are clean typed errors (no new public type, just an enum arm). (2) `Cargo.toml` (workspace) + `crates/transport/Cargo.toml` gained a **direct** `url = "2"` dep because §5.1 names `switch_relay(url: Url)` verbatim — `url::Url`. `url` is ALREADY in the build graph transitively via iroh (`cargo tree -i url` → iroh 0.98), so this adds **no new crate to compile and no new SPDX** (`cargo deny` stays green; MIT/Apache-2.0 already ratified). `Cargo.lock` changed only by adding `url` to `concerto-transport`'s dep list — no version churn; `wmi`→`windows 0.62.2` unchanged.
+  - I did **not** touch `boot.rs` / `api_server.rs` (Scope — out). The boot-actor auto-spawn of the transport + the `api_server` wiring + the `SessionCloser` adapter construction are still owed by a later task / Phase-6 (this task only DEFINES the façade).
+
+- **`DeviceId` vs `[u8;32]` reconciliation (how 209's `SessionCloser` is satisfied).** Task 212 keys its session map on `DeviceId(pub String)` (the remote Iroh endpoint-id string at the raw transport boundary). 209's FROZEN trait is `fn close_sessions_for_device(&self, device_id: [u8;32])` (the raw BLAKE2b cert fingerprint). The two key spaces differ, and the transport crate cannot depend on `crates/core` (where `SessionCloser` lives), so `TransportHandle` does **not** itself `impl SessionCloser`. Instead I added `impl From<[u8;32]> for DeviceId` (in `api.rs`) that renders the 32-byte fingerprint to its **lowercase-hex string** (the same hex 209's `devices` table keys on, `design/12 §7.3`). The production wiring — a thin `impl SessionCloser for <adapter>` in `crates/core`/`boot.rs` (209's Outputs, OUT of 217's scope) — feeds the `[u8;32]` through this `From` and calls `handle.close_sessions_for_device(DeviceId::from(id))`. **209's frozen trait needs no rename.** OPEN ITEM for whoever wires it: the transport currently keys live sessions on the Iroh endpoint-id string (212's `serve_conn`), NOT the cert hex; until 210's auth layer resolves cert→endpoint-id and re-keys (or the wiring adapter maps cert-hex→endpoint-id), `close_sessions_for_device(<cert-hex>)` will not match an endpoint-id-keyed session. The hex `From` + `DeviceId` type are frozen so the wiring lands without a rename; the **cert-hex↔endpoint-id mapping** is the one piece 209/210's wiring must supply (noted as an Open question below; it is 212's pre-existing TODO at `serve_conn`, not introduced here).
+
+- **`PairingListener` ownership.** Owned by **Task 212** (declared in `crates/transport/src/api.rs`, impls in `endpoint.rs`). I did NOT create a third — `TransportHandle::listen_pairing` returns 212's `PairingListener`; Task 207 consumes it.
+
+- **`WakeupPayload` minimal shape + P5 fields deferred.** Declared in `api.rs` as `pub struct WakeupPayload { pub bytes: Vec<u8> }` — the smallest opaque, ID-only carrier (the locked `design/14` ID-only principle), with `::new(Vec<u8>)` + `From<Vec<u8>>`. Its **existence + that it is `send_wakeup_hint`'s payload** is FROZEN; its **fields are NOT** — P5/`design/14` flesh them and Task 506's property test polices "no PII". No speculative notification semantics added. Internally `send_wakeup_hint` hands `payload.bytes` to 212's existing `IrohTransport::send_wakeup_hint(.., Vec<u8>)`.
+
+- **`start`/`stop` reconciliation with 212's lifecycle.** 212's `IrohTransport::start(cfg, key)` is a **constructor** (builds+binds the endpoint) and `serve(dispatcher)` runs the accept loop. §5.1's `start(&self, cfg)` is a `&self` lifecycle control, so the façade reconciles: `TransportHandle::new(..)` holds the key+dispatcher; `start(cfg)` calls `IrohTransport::start`, spawns the serve loop, and parks both in a `Mutex<Option<Running>>`; `stop()` cancels the loop (closing the endpoint + mDNS goodbye) and awaits the task. Double-`start` before a `stop` is a clean `TransportError::Lifecycle` (never a double bind, race-checked under the lock); `stop` is idempotent; the handle is restartable (start rebuilds the endpoint from the held key). The seven delegating methods return `Lifecycle` cleanly before `start` / after `stop`.
+
+- **Minimal accessors added on 212's side: NONE.** 212 already exposed every hook the nine methods needed (`current_relay`/`switch_relay`/`nat_stats`/`listen_pairing`/`close_pairing`/`send_wakeup_hint`/`close_sessions_for_device`/`serve`/`stop`/`endpoint`/`endpoint_id`/`core_noise_public`/`subscribe_telemetry`/`take_wakeup_receiver`). No re-architecting, no new pub on 212's types.
+
+- **Companion accessors on the handle (NOT part of the frozen nine).** `subscribe_telemetry()`, `take_wakeup_receiver()`, `endpoint()`, `endpoint_id()`, `core_noise_public()` — all explicitly anticipated by 212 ("Task 217's façade re-exposes this for the Phase-6 Diagnostics consumer") and needed by P5 push delivery (Task 503) / mDNS publish (Task 213) / pairing QR (Task 207/219). Marked in doc-comments as companions, not §5.1 frozen. Not load-bearing for the FROZEN contract; future tasks may add more companions without re-locking.
+
+- **Each method's named downstream consumer (also in the `TransportHandle` doc-comment).** `start`/`stop` → boot actor (Phase-6, still owed) + `api_server` serves gRPC over the sessions; `listen_pairing`/`close_pairing` → Task 207 pairing coordinator; `current_relay`/`switch_relay` → diagnostics + Desktop relay picker (Task 218); `nat_stats` → Runtime/Devices diagnostics (Task 216 populates); `close_sessions_for_device` → Task 209 revocation coordinator (via `SessionCloser`); `send_wakeup_hint` → P5 notifications (Task 507).
+
+- **regen-interfaces diff.** `docs/interfaces/rust-api.md` gained `### struct WakeupPayload` and `### struct TransportHandle` under `crates/transport/src/api.rs`. The nine methods live in an `impl` block, which the generator does not index (consistent with how `IrohTransport`'s methods are already not indexed — keychain/identity convention). Regen is deterministic; committed.
+
+- **Open questions for next task (218 Desktop consumes `TransportHandle`/`nat_stats`).** (1) The nine FROZEN signatures above + `TransportConfig`/`RelayInfo`/`WakeupPayload`/`NatStats`/`PairingListener`/`DeviceId` are the contract 218 builds its `IrohCoreClient` against; `nat_stats()` returns the by-kind shape Task 216 populates. (2) The **device-id key space** open item: 212 keys live sessions on the Iroh endpoint-id string; 209/210's wiring (the `SessionCloser` adapter in `boot.rs`) must supply the cert-hex↔endpoint-id mapping so a revoke by cert-fingerprint severs the right session. The `DeviceId` type + `From<[u8;32]>` (hex) are frozen so this lands without a rename; the mapping itself is the wiring task's job (it is 212's pre-existing `serve_conn` note, not new debt). (3) **Boot-actor wiring of the transport is still owed** — this task DEFINES the façade only; auto-spawning it in `boot.rs` + injecting the real `SessionCloser` (replacing 209's `NoopSessionCloser`) + serving `api_server` over it is a later task / Phase-6.
+
+- **Deliberate debt.** — (none; no `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code).
+
+- **Smoke-gate state.** unchanged — added no smoke check; `scripts/smoke.sh` still passes (exit 0, "all checks PASSED").
 ```
