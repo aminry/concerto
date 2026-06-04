@@ -423,6 +423,20 @@ pub struct Secrets {
 }
 ```
 
+### enum `CoreSecretSlot`
+
+```rust
+pub enum CoreSecretSlot {
+    /// The `SignedDeviceCert` issued to this Desktop by the paired Core (the
+    /// CBOR-encoded `cert_bytes || signature`, base64). Presented in request
+    /// metadata by the split-host `IrohCoreClient`.
+    DeviceCert,
+    /// This Desktop's device Ed25519 private key for the paired Core (the seed,
+    /// base64). Never leaves the keychain.
+    DevicePrivateKey,
+}
+```
+
 ## `crates/persist/src/api.rs`
 
 ### struct `PersistenceConfig`

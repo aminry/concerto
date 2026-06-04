@@ -24,8 +24,13 @@
 
 mod commands;
 mod core_client;
+mod cores_registry;
 #[cfg(feature = "embedded-core")]
 mod embedded;
+#[cfg(feature = "iroh-transport")]
+mod iroh_client;
+mod rpc;
+mod transport;
 mod tray;
 
 fn main() {
@@ -57,6 +62,18 @@ fn main() {
                 }
             }
             commands::manage_subscriptions(app);
+            // Task 218: open + register the connected-Core registry
+            // (`cores.json` + keychain). Rooted at the app config dir
+            // (`~/Library/Application Support/<bundle>/` on macOS). A resolve
+            // failure falls back to the temp dir so the app still boots.
+            {
+                use tauri::Manager;
+                let config_dir = app
+                    .path()
+                    .app_config_dir()
+                    .unwrap_or_else(|_| std::env::temp_dir());
+                commands::manage_cores_registry(app, config_dir);
+            }
             // Task 48: install the menu-bar tray. The call also wires
             // close-to-hide on macOS and spawns the 5s status poll.
             tray::install(app)?;
@@ -69,6 +86,9 @@ fn main() {
             commands::concerto_unsubscribe,
             commands::clone_repository,
             commands::check_command,
+            commands::list_paired_cores,
+            commands::get_active_core,
+            commands::set_active_core,
         ])
         .run(tauri::generate_context!())
         .expect("error while running concerto-desktop");

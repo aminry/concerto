@@ -30,6 +30,29 @@ concerto-core = { path = "../../../crates/core", optional = true }
 # Only the embedded path holds a CancellationToken (Task 4's
 # EmbeddedHandle); keep it out of the lean build.
 tokio-util = { workspace = true, optional = true }
+
+# Task 218 dual transport. The CoreClient trait + cores.json/keychain
+# registry are ALWAYS present (UDS is the always-available impl), so
+# `concerto-keychain` is non-optional: the registry reads/writes per-Core
+# device certs + keys regardless of build flavour. `concerto-identity`
+# (BLAKE2b core_id, Noise statics, SignedDeviceCert) and `concerto-transport`
+# (the Iroh client dial path) are pulled ONLY behind the `iroh-transport`
+# feature so the lean co-located build does not grow the Iroh dependency tree.
+# `concerto-identity` is always present: the registry derives `core_id =
+# BLAKE2b(core_pubkey)` via its `device_id` hash (pure crypto, no iroh), and the
+# IrohCoreClient reuses its Noise statics + `SignedDeviceCert` when the feature
+# is on.
+concerto-keychain = { path = "../../../crates/keychain" }
+concerto-identity = { path = "../../../crates/identity" }
+concerto-transport = { path = "../../../crates/transport", optional = true }
+# `iroh` is needed by the IrohCoreClient to build the client Endpoint + the
+# EndpointAddr it dials; only under `iroh-transport`.
+iroh = { workspace = true, optional = true }
+# Base64 for serializing the device cert / key seed into keychain strings and
+# for the `concerto-device-cert` request-metadata header value (matches the
+# `base64 = "0.22"` already used by `concerto-core`'s auth path). Always present:
+# the registry stores per-Core secrets regardless of the Iroh feature.
+base64 = "0.22"
 # Task 53: auto-update plumbing. The plugin checks an endpoint manifest,
 # verifies the ed25519 signature against the `updater.pubkey` baked into
 # `tauri.conf.json`, and exposes a JS API (`@tauri-apps/plugin-updater`)
@@ -40,6 +63,10 @@ tauri-plugin-updater = "2"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Task 218: `#[async_trait]` makes the dyn-compatible `CoreClient` trait
+# (`design/15 §3.2`'s async `dispatch`/`start_stream`) object-safe so
+# `Box<dyn CoreClient>` resolves the active transport at dispatch time.
+async-trait = { workspace = true }
 
 # gRPC client over UDS — reuses the same Tonic + tower + hyper-util
 # pattern locked in tasks/13 (see crates/core/tests/grpc_runtime.rs).
@@ -62,10 +89,20 @@ home = { workspace = true }
 # in-process. Dev + standalone builds enable it; the production
 # daemon-client build leaves it off.
 embedded-core = ["dep:concerto-core", "dep:tokio-util"]
+# Task 218: the split-host Iroh client (`IrohCoreClient`) and its
+# `concerto-transport`/`concerto-identity`/`iroh` deps. OFF by default so the
+# lean co-located (UDS-only) build stays light; the `CoreClient` trait + the
+# cores.json/keychain registry are always present regardless of this feature.
+# `--all-features` (the Tier-2 cargo gate) turns it on.
+iroh-transport = ["dep:concerto-transport", "dep:iroh"]
 
 [dev-dependencies]
 tempfile = "3"
 tokio-stream = { workspace = true, features = ["net"] }
+# Task 218: the Tier-2 Iroh loopback double (in `iroh_client.rs` unit tests,
+# under the `iroh-transport` feature) serves a minimal tonic service over the
+# transport's `ApiDispatcher` — needs `futures::stream::once`. Test-only.
+futures = { workspace = true }
 
 # Tauri 2's bundler config lives in tauri.conf.json; the [package.metadata]
 # table below stays empty deliberately so we don't accidentally fork the
