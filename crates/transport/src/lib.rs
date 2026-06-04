@@ -26,6 +26,8 @@
 //! - [`channels`] — the channel-tag framing + the 64 MiB message ceiling.
 //! - [`endpoint`] — endpoint lifecycle, the serve loop, relay query/switch,
 //!   `listen_pairing`, `send_wakeup_hint`, `close_sessions_for_device`.
+//! - [`handle`] — the FROZEN `TransportHandle` façade impls (Task 217): the
+//!   nine `design/11 §5.1` methods wrapping `endpoint`'s machinery.
 //! - [`state`] — `TransportState` / `ActiveSession` / `ConnectionPath` / NAT.
 //! - [`error`] — the typed `TransportError`.
 //!
@@ -39,6 +41,7 @@ pub mod api;
 pub mod channels;
 pub mod endpoint;
 pub mod error;
+pub mod handle;
 pub mod mdns;
 pub mod state;
 
@@ -50,8 +53,8 @@ pub use api::{
     network_class_for, ActiveSession, ApiDispatcher, ChannelTag, ClientKind, ConnectionPath,
     DeviceId, DiscoveredCore, IrohConnector, IrohDuplex, IrohTransport, MdnsBrowser, MdnsConfig,
     MdnsResponder, NatStats, NetworkStats, NoiseDuplex, PairingListener, RelayInfo,
-    TransportConfig, TransportState, TransportTelemetry, WakeupHint, ALPN, MAX_MESSAGE_SIZE,
-    NAT_SUCCESS_DELTA_PCT, NAT_SUCCESS_PRD_LINE_PCT, SERVICE_TYPE, TXT_CAPS, TXT_CORE_PUBKEY,
-    TXT_ENDPOINT_ID, TXT_VERSION,
+    TransportConfig, TransportHandle, TransportState, TransportTelemetry, WakeupHint,
+    WakeupPayload, ALPN, MAX_MESSAGE_SIZE, NAT_SUCCESS_DELTA_PCT, NAT_SUCCESS_PRD_LINE_PCT,
+    SERVICE_TYPE, TXT_CAPS, TXT_CORE_PUBKEY, TXT_ENDPOINT_ID, TXT_VERSION,
 };
 pub use error::{Result, TransportError};

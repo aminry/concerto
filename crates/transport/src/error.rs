@@ -36,6 +36,12 @@ pub enum TransportError {
     Mdns(String),
     /// I/O on the underlying byte channel failed.
     Io(String),
+    /// A [`TransportHandle`](crate::api::TransportHandle) lifecycle method was
+    /// called against the wrong state — `start` on an already-running handle, or
+    /// a delegating method (`current_relay`, `switch_relay`, `nat_stats`,
+    /// `listen_pairing`, `send_wakeup_hint`, …) before `start` brought the
+    /// endpoint up / after `stop` tore it down (Task 217, `design/11 §5.1`).
+    Lifecycle(String),
 }
 
 impl fmt::Display for TransportError {
@@ -49,6 +55,7 @@ impl fmt::Display for TransportError {
             TransportError::RemoteDisabled(m) => write!(f, "remote disabled: {m}"),
             TransportError::Mdns(m) => write!(f, "mdns: {m}"),
             TransportError::Io(m) => write!(f, "transport io: {m}"),
+            TransportError::Lifecycle(m) => write!(f, "transport handle lifecycle: {m}"),
         }
     }
 }

@@ -206,6 +206,27 @@ impl From<String> for DeviceId {
     }
 }
 
+impl From<[u8; 32]> for DeviceId {
+    /// Reconcile Task 209's `SessionCloser` device-id type (`[u8; 32]`, the raw
+    /// BLAKE2b cert fingerprint) with this transport's session-map key. 209's
+    /// FROZEN trait is `fn close_sessions_for_device(&self, device_id: [u8; 32])`;
+    /// the production wiring (`boot.rs`, Task 209's outputs — OUT of 217's scope)
+    /// constructs the adapter `impl SessionCloser for TransportHandle` by feeding
+    /// the 32-byte fingerprint through this `From`, so 209's `Arc<dyn
+    /// SessionCloser>` accepts the handle **without changing the frozen trait**.
+    /// The canonical string form is the lowercase hex of the fingerprint (the
+    /// same hex 209's `devices` table keys on, `design/12 §7.3`), so the key the
+    /// transport severs matches the one the revocation coordinator names.
+    fn from(fingerprint: [u8; 32]) -> Self {
+        let mut s = String::with_capacity(64);
+        for b in fingerprint {
+            s.push(char::from_digit((b >> 4) as u32, 16).expect("nibble"));
+            s.push(char::from_digit((b & 0x0f) as u32, 16).expect("nibble"));
+        }
+        DeviceId(s)
+    }
+}
+
 /// How a session's QUIC traffic currently reaches the peer (`design/11 §4`).
 /// **FROZEN** — the in-memory enum 216 aggregates into NAT stats and 217
 /// surfaces per-session. Classified from Iroh's own per-path signal via
@@ -662,6 +683,48 @@ pub struct WakeupHint {
     pub payload: Vec<u8>,
 }
 
+/// The payload of a push-hint sent through [`TransportHandle::send_wakeup_hint`]
+/// (`design/11 §5.1`, §3.3 push-hint channel). **Defined MINIMALLY here**: the
+/// smallest carrier that lets `send_wakeup_hint` compile and route — an opaque,
+/// ID-only byte blob with no notification semantics.
+///
+/// # Frozen vs not-frozen (`design/11 §5.1`, the Task-217 contract)
+///
+/// **FROZEN:** that `WakeupPayload` *exists* and is the second argument of
+/// [`TransportHandle::send_wakeup_hint`]. P5 notifications (Task 507) and the
+/// mobile push registration (Task 516) drive `send_wakeup_hint`, so the *name +
+/// position* of this type is the contract they build against.
+///
+/// **NOT frozen:** the **fields**. P5 / `design/14` flesh out the real shape (the
+/// locked **ID-only wakeup payload** principle — an opaque correlation id the
+/// device fetches the full notification body for over E2EE, NOT the body itself).
+/// The privacy invariant — **no PII in the payload** — is enforced by the
+/// property test in Task 506; this minimal definition does not speculatively add
+/// notification fields that 506 would then have to police. The single `bytes`
+/// field is the ID-only carrier: the transport treats it as opaque and never
+/// inspects it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WakeupPayload {
+    /// The opaque, ID-only wakeup bytes (`design/14`'s ID-only principle). The
+    /// transport routes this to the device's push-hint channel without
+    /// inspecting it; P5 fills it with a correlation id (no PII — Task 506).
+    pub bytes: Vec<u8>,
+}
+
+impl WakeupPayload {
+    /// Wrap opaque ID-only bytes as a payload (the minimal constructor P5 uses
+    /// until `design/14` fleshes the fields).
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+impl From<Vec<u8>> for WakeupPayload {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
 /// A short-lived pairing listener (`design/11 §3.3` / §4 `pairing_listener`).
 /// Opened by [`IrohTransport::listen_pairing`] for one device, gated by the
 /// 32-byte token hash; the serve loop routes [`ChannelTag::Pairing`] raw
@@ -716,4 +779,177 @@ pub struct IrohTransport {
     /// published from spawned per-connection tasks with no receiver attached.
     pub(crate) telemetry_tx: tokio::sync::broadcast::Sender<TransportTelemetry>,
     pub(crate) shutdown: CancellationToken,
+}
+
+// ===========================================================================
+// The FROZEN `TransportHandle` façade (`design/11 §5.1`, Task 217)
+// ===========================================================================
+
+/// The **single public Rust API of `crates/transport`** the rest of Core calls
+/// to drive the Iroh transport (`design/11 §5.1`). A **thin façade** over
+/// [`IrohTransport`] (Task 212): each method wraps the endpoint/state Task 212
+/// built; this type does not re-implement any transport logic.
+///
+/// `/* opaque */` per `design/11 §5.1` — the internals are private; only the
+/// nine methods below are public. The handle is generic over the Core's
+/// [`ApiDispatcher`] `D` (the shared Tonic service set the serve loop hands every
+/// API stream); the Core constructs it once via [`Self::new`] and drives its
+/// lifecycle with [`start`](Self::start) / [`stop`](Self::stop).
+///
+/// # Each method is a named downstream seam (`design/11 §5.1`)
+///
+/// - [`start`](Self::start) / [`stop`](Self::stop) — the boot actor (Phase-6
+///   wiring, still owed) brings the endpoint up/down. `start` builds + binds the
+///   [`IrohTransport`] and spawns its serve loop; the **`api_server`** then serves
+///   gRPC over the sessions the loop accepts.
+/// - [`listen_pairing`](Self::listen_pairing) / [`close_pairing`](Self::close_pairing)
+///   — **Task 207**'s pairing coordinator opens/closes the pairing channel.
+/// - [`current_relay`](Self::current_relay) / [`switch_relay`](Self::switch_relay)
+///   — diagnostics + the Desktop relay picker (Task 218) read / repoint the relay.
+/// - [`nat_stats`](Self::nat_stats) — the Runtime/Devices diagnostics surface
+///   (Task 216 populates the by-kind shape) reads the live counters.
+/// - [`close_sessions_for_device`](Self::close_sessions_for_device) — **Task
+///   209**'s revocation coordinator severs a stolen device (its narrow
+///   `SessionCloser` trait is satisfied by this method via the `[u8; 32]` →
+///   [`DeviceId`] reconciliation, see [`DeviceId`]'s `From<[u8; 32]>`).
+/// - [`send_wakeup_hint`](Self::send_wakeup_hint) — **P5 notifications** (Task
+///   507) push a [`WakeupPayload`] over the push-hint channel.
+///
+/// **FROZEN surface** — the nine method signatures match `design/11 §5.1`
+/// verbatim (names, async-ness, arg types, `Result` returns); renaming or
+/// re-shaping one breaks a named downstream consumer. Method impls in
+/// [`crate::handle`].
+pub struct TransportHandle<D: ApiDispatcher> {
+    pub(crate) inner: Arc<crate::handle::HandleInner<D>>,
+}
+
+impl<D: ApiDispatcher> TransportHandle<D> {
+    /// Build a handle around the Core's Noise static key + its gRPC dispatcher.
+    ///
+    /// `core_noise_static_private` is the Core's persisted 32-byte X25519 Noise
+    /// static private key (the same value [`IrohTransport::start`] takes — the
+    /// handle layer stays keychain-free; the Core owns the at-rest form).
+    /// `dispatcher` is the Core's shared Tonic service set the serve loop hands
+    /// every API stream. The endpoint is **not** brought up here — call
+    /// [`Self::start`] (the `design/11 §5.1` lifecycle control) to bind it.
+    pub fn new(core_noise_static_private: [u8; 32], dispatcher: Arc<D>) -> Self {
+        Self {
+            inner: Arc::new(crate::handle::HandleInner::new(
+                core_noise_static_private,
+                dispatcher,
+            )),
+        }
+    }
+
+    /// Bring the Iroh endpoint up: build + bind the [`IrohTransport`] per `cfg`
+    /// (register with the relay unless `disable_remote`) and spawn its accept /
+    /// serve loop (`design/11 §5.1`). Idempotent-by-error: a second `start`
+    /// before a `stop` is a clean [`TransportError::Lifecycle`], never a double
+    /// endpoint bind.
+    pub async fn start(&self, cfg: TransportConfig) -> Result<()> {
+        self.inner.start(cfg).await
+    }
+
+    /// Tear the endpoint down: cancel the serve loop (which closes the Iroh
+    /// endpoint + deregisters mDNS) and drop the transport (`design/11 §5.1`).
+    /// Idempotent: a `stop` on a not-started / already-stopped handle is a clean
+    /// `Ok(())`.
+    pub async fn stop(&self) -> Result<()> {
+        self.inner.stop().await
+    }
+
+    /// Open the pairing channel gated by the 32-byte token hash, returning the
+    /// [`PairingListener`] **Task 207** drives the Noise XX over (`design/11
+    /// §5.1`, §3.3 pairing channel). Replaces any prior listener.
+    pub async fn listen_pairing(&self, token_hash: [u8; 32]) -> Result<PairingListener> {
+        self.inner.listen_pairing(token_hash)
+    }
+
+    /// Close any open pairing listener (`design/11 §5.1`). Idempotent.
+    pub async fn close_pairing(&self) -> Result<()> {
+        self.inner.close_pairing()
+    }
+
+    /// The current relay association (`design/11 §5.1`) — the [`RelayInfo`] the
+    /// Desktop relay picker (Task 218) + diagnostics read.
+    pub async fn current_relay(&self) -> Result<RelayInfo> {
+        self.inner.current_relay()
+    }
+
+    /// Point the endpoint at a new relay URL (`design/11 §5.1`) — triggers the
+    /// underlying `relay_switched` telemetry. Refused with
+    /// [`TransportError::RemoteDisabled`] under `disable_remote`. Takes
+    /// [`url::Url`] verbatim per `design/11 §5.1`.
+    pub async fn switch_relay(&self, url: url::Url) -> Result<()> {
+        self.inner.switch_relay(url)
+    }
+
+    /// The current [`NatStats`] snapshot (`design/11 §5.1`) — the by-network-class
+    /// and by-client-kind counters Task 216 populates and the Runtime/Devices
+    /// diagnostics surface reads.
+    pub async fn nat_stats(&self) -> Result<NatStats> {
+        self.inner.nat_stats()
+    }
+
+    /// Terminate all open sessions/streams for a device (`design/11 §5.1`,
+    /// `design/12 §7.3`, the < 1 s revocation sever). This is the production
+    /// realization of **Task 209**'s narrow `SessionCloser` trait: 209's
+    /// `fn close_sessions_for_device(&self, device_id: [u8; 32])` reaches this via
+    /// the `[u8; 32]` → [`DeviceId`] conversion at the wiring site (`boot.rs`,
+    /// 209's outputs), so 209's frozen trait needs no rename. Idempotent.
+    pub async fn close_sessions_for_device(&self, id: DeviceId) -> Result<()> {
+        self.inner.close_sessions_for_device(&id)
+    }
+
+    /// Send a [`WakeupPayload`] over the push-hint channel toward a device
+    /// (`design/11 §5.1`, §3.3 push-hint channel) — the live wiring of the side
+    /// **P5 notifications** (Task 507) drive. The payload is opaque + ID-only (no
+    /// PII, `design/14` / Task 506); the transport routes without inspecting it.
+    pub async fn send_wakeup_hint(&self, id: DeviceId, payload: WakeupPayload) -> Result<()> {
+        self.inner.send_wakeup_hint(id, payload)
+    }
+
+    // --- Companion accessors (NOT part of the frozen `design/11 §5.1` nine) ---
+    // Task 212 explicitly anticipated the façade re-exposing these (see
+    // `IrohTransport::subscribe_telemetry` / `take_wakeup_receiver`); they are the
+    // diagnostics + push-delivery drains the Phase-6 / P5 consumers need.
+
+    /// Subscribe to the transport-lifecycle telemetry broadcast (`design/11
+    /// §5.3`, Task 216) for the Phase-6 Diagnostics consumer. Companion accessor,
+    /// not one of the frozen nine. Errors when the endpoint is not up.
+    pub async fn subscribe_telemetry(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<TransportTelemetry>> {
+        self.inner.subscribe_telemetry()
+    }
+
+    /// Take the push-hint receiver the P5 push backend (Task 503) drains
+    /// (`design/14`). Companion accessor, not one of the frozen nine. `None` if
+    /// already taken; errors when the endpoint is not up.
+    pub async fn take_wakeup_receiver(
+        &self,
+    ) -> Result<Option<tokio::sync::mpsc::UnboundedReceiver<WakeupHint>>> {
+        self.inner.take_wakeup_receiver()
+    }
+
+    /// A clone of the running Iroh endpoint (`design/11 §3.1`). Companion
+    /// accessor (not one of the frozen nine) for the mDNS responder (Task 213)
+    /// and the Desktop connect path (Task 218). Errors when the endpoint is down.
+    pub async fn endpoint(&self) -> Result<iroh::Endpoint> {
+        self.inner.endpoint()
+    }
+
+    /// The Iroh endpoint id clients dial (the QR's `iroh_endpoint_id`). Companion
+    /// accessor (not one of the frozen nine) for mDNS (Task 213) + the pairing QR
+    /// (Task 207/219). Errors when the endpoint is down.
+    pub async fn endpoint_id(&self) -> Result<iroh::EndpointId> {
+        self.inner.endpoint_id()
+    }
+
+    /// The Core's X25519 Noise static **public** key (the QR's responder static).
+    /// Companion accessor (not one of the frozen nine) for the pairing QR. Errors
+    /// when the endpoint is down.
+    pub async fn core_noise_public(&self) -> Result<[u8; 32]> {
+        self.inner.core_noise_public()
+    }
 }
