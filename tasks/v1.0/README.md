@@ -179,6 +179,7 @@ The hardest phase and the dependency root for all remote features. Heavy Tier-2 
 | 215 | WSS bridge at relay (WSS↔Iroh, ciphertext-only) | 214 | 2 | rust |
 | 216 | QUIC connection migration (Wi-Fi↔LTE) + NAT-success telemetry by client kind | 212 | 2 | rust |
 | 217 | `TransportHandle` API: start/stop, listen_pairing, current/switch_relay, nat_stats, send_wakeup_hint, close_sessions_for_device | 212 | 1 | rust |
+| 217.5 | Wire the Iroh transport into Core boot: spawn `serve_iroh` (config-gated) + Core-side Noise-XX pairing responder over the `0x03` channel + live `TransportHandle`-backed `SessionCloser` — the boot-wiring 212/217 deferred; makes the spine live end-to-end for 220 + the Tier-3 checklist (added 2026-06-04 per the Phase-2 220-blocker decision) | 212, 217, 207, 208, 209, 210, 211 | 2 | rust |
 | 218 | Desktop dual transport: `CoreClient` trait + `UdsCoreClient`/`IrohCoreClient` + connected-Core registry (`cores.json`+keychain) | 217 | 2 | web-ts |
 | 219 | Desktop pairing UI: show/scan QR + Connect-to-Core picker + Settings→Connected Cores | 218 | 2 | web-ts |
 | 220 | Split-host loopback smoke: two Iroh endpoints, end-to-end RPC + stream + Files transfer | 217 | 2 | infra-ops |
