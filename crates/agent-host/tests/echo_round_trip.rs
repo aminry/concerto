@@ -76,13 +76,13 @@ fn spawn_host(agent_bin: &str, agent_args: &[&str], cookie_hex: &str) -> Harness
 /// Block (in async) until the socket file exists and is bound. The host
 /// creates it just after spawn so this normally returns in a few ms.
 async fn wait_for_socket(path: &std::path::Path) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if path.exists() {
             return;
         }
         if Instant::now() > deadline {
-            panic!("socket {:?} did not appear within 10s", path);
+            panic!("socket {:?} did not appear within 60s", path);
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -91,7 +91,7 @@ async fn wait_for_socket(path: &std::path::Path) {
 /// Connect to the bound host socket. Retries briefly in case `bind`
 /// raced with `accept` start.
 async fn connect(socket: &std::path::Path) -> UnixStream {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match UnixStream::connect(socket).await {
             Ok(s) => return s,
@@ -141,12 +141,15 @@ async fn echo_round_trip() {
     // here flaked intermittently; these bounds only need to be large enough to
     // never fire when the system is merely busy (a genuinely hung host still
     // fails, just later).
-    let drain_deadline = Instant::now() + Duration::from_secs(60);
+    let drain_deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if Instant::now() > drain_deadline {
-            panic!("did not see AgentExited within 60s; stdout so far: {stdout:?}");
+            panic!("did not see AgentExited within 120s; stdout so far: {stdout:?}");
         }
-        let r = tokio::time::timeout(Duration::from_secs(30), read_frame(&mut reader)).await;
+        // 90s per-frame: a 30s budget still flaked when the host PTY subprocess
+        // was CPU-starved under full `cargo test --workspace` CI load. This only
+        // fires on a genuine hang, never on mere busyness.
+        let r = tokio::time::timeout(Duration::from_secs(90), read_frame(&mut reader)).await;
         let frame = match r {
             Ok(Ok(f)) => f,
             Ok(Err(FrameError::Eof)) => break,
