@@ -20,7 +20,7 @@
 pub mod api;
 pub mod error;
 
-pub use api::{Provider, SecretKind, SecretValue, Secrets};
+pub use api::{CoreSecretSlot, Provider, SecretKind, SecretValue, Secrets};
 pub use error::{Result, SecretsError};
 
 /// Service name used for every Concerto keychain entry. Tests override
@@ -75,6 +75,83 @@ impl Secrets {
 fn entry(secrets: &Secrets, kind: SecretKind) -> Result<keyring::Entry> {
     let account = kind.to_account_string();
     keyring::Entry::new(secrets.service.as_ref(), &account).map_err(SecretsError::from)
+}
+
+/// Account string for a per-paired-Core secret: `cores.<core_id>.<slot>`
+/// (`design/15 §3.10.1`). The `core_id` (BLAKE2b hex) keys each paired Core's
+/// secrets apart; the slot slug names the cert vs the key. Public protocol —
+/// changing this format orphans existing keychain entries.
+fn core_account_string(core_id: &str, slot: api::CoreSecretSlot) -> String {
+    format!("cores.{}.{}", core_id, slot.slug())
+}
+
+fn core_entry(
+    secrets: &Secrets,
+    core_id: &str,
+    slot: api::CoreSecretSlot,
+) -> Result<keyring::Entry> {
+    let account = core_account_string(core_id, slot);
+    keyring::Entry::new(secrets.service.as_ref(), &account).map_err(SecretsError::from)
+}
+
+pub(crate) async fn core_secret_get_impl(
+    secrets: &Secrets,
+    core_id: &str,
+    slot: api::CoreSecretSlot,
+) -> Result<Option<SecretValue>> {
+    let entry = core_entry(secrets, core_id, slot)?;
+    match entry.get_password() {
+        Ok(s) => {
+            tracing::info!(
+                target: "concerto::keychain",
+                core_id = %core_id,
+                slot = ?slot,
+                "core secret accessed",
+            );
+            Ok(Some(SecretValue::new(s)))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(SecretsError::from(e)),
+    }
+}
+
+pub(crate) async fn core_secret_set_impl(
+    secrets: &Secrets,
+    core_id: &str,
+    slot: api::CoreSecretSlot,
+    value: SecretValue,
+) -> Result<()> {
+    let entry = core_entry(secrets, core_id, slot)?;
+    entry
+        .set_password(value.expose())
+        .map_err(SecretsError::from)?;
+    tracing::info!(
+        target: "concerto::keychain",
+        core_id = %core_id,
+        slot = ?slot,
+        "core secret written",
+    );
+    Ok(())
+}
+
+pub(crate) async fn core_secret_delete_impl(
+    secrets: &Secrets,
+    core_id: &str,
+    slot: api::CoreSecretSlot,
+) -> Result<()> {
+    let entry = core_entry(secrets, core_id, slot)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {
+            tracing::info!(
+                target: "concerto::keychain",
+                core_id = %core_id,
+                slot = ?slot,
+                "core secret deleted",
+            );
+            Ok(())
+        }
+        Err(e) => Err(SecretsError::from(e)),
+    }
 }
 
 pub(crate) async fn get_impl(secrets: &Secrets, kind: SecretKind) -> Result<Option<SecretValue>> {
@@ -203,6 +280,21 @@ mod account_strings {
         assert_eq!(
             SecretKind::PushExpoApiKey.to_account_string(),
             "push.expo_api_key"
+        );
+    }
+
+    #[test]
+    fn core_secret_account_strings() {
+        // Per-paired-Core secrets (Task 218) embed the `core_id` so each Core's
+        // cert + key are isolated. The format is public protocol: changing it
+        // orphans existing keychain entries.
+        assert_eq!(
+            super::core_account_string("abc123", super::api::CoreSecretSlot::DeviceCert),
+            "cores.abc123.device_cert"
+        );
+        assert_eq!(
+            super::core_account_string("abc123", super::api::CoreSecretSlot::DevicePrivateKey),
+            "cores.abc123.device_private_key"
         );
     }
 }

@@ -78,31 +78,37 @@ Turn the Desktop's single, hard-wired UDS gRPC client into the **transport-agnos
 **Tier-2 double + what it does NOT cover.** The double is a **loopback Iroh endpoint pair on one host with relays disabled (direct)** for the `IrohCoreClient` dispatch test, plus a loopback `UnixListener` for `UdsCoreClient`, plus mocked `invoke` for the TS bindings. It proves: trait routing, registry persistence (secrets-out-of-JSON), device-cert-in-metadata, and the TS read path. It does **NOT** cover: real cross-machine split-host (Desktop on a laptop, Core on a workstation/VM), real NAT traversal/relay fallback, or real OS-keychain prompts on a signed build — those are the **Tier-3 Phase-2 checklist** lines ("pair a real second machine over LAN", "transfer a file split-host"). Task 220's loopback smoke is the end-to-end Tier-2 capstone; this task's tests are unit/component scope.
 
 ## Definition of Done
-- [ ] `CoreClient` trait defined with the FROZEN `design/15 §3.2` signatures; `UdsCoreClient` + `IrohCoreClient` impls; `commands.rs` dispatches through the trait
-- [ ] `IrohCoreClient` consumes Task 217's `TransportHandle` + Task 212's hand-rolled adapter (NO `tonic-iroh-transport`); presents the device cert in metadata
-- [ ] `cores.json` registry (cleartext metadata) + keychain (certs/keys keyed by `core_id`); co-located/embedded UDS promoted as the implicit "This machine" Core
-- [ ] TS `src/api/cores.ts` binding + typed `transport_kind` + active-Core Zustand slice; server-canonical data stays in React Query
-- [ ] Missing `apps/desktop` pnpm scripts/devDeps (typecheck/lint/test) added; all `web-ts` §5.3 commands pass
-- [ ] Both the `cargo` set and the `web-ts` set pass; co-located smoke path unaffected (`scripts/smoke.sh` still green — unchanged gate)
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate seams for 219's pairing writes documented in Handoff)
-- [ ] Single commit with the message below
+- [x] `CoreClient` trait defined with the FROZEN `design/15 §3.2` signatures; `UdsCoreClient` + `IrohCoreClient` impls; `commands.rs` dispatches through the trait
+- [x] `IrohCoreClient` consumes Task 217's `TransportHandle` + Task 212's hand-rolled adapter (NO `tonic-iroh-transport`); presents the device cert in metadata
+- [x] `cores.json` registry (cleartext metadata) + keychain (certs/keys keyed by `core_id`); co-located/embedded UDS promoted as the implicit "This machine" Core
+- [x] TS `src/api/cores.ts` binding + typed `transport_kind` + active-Core Zustand slice; server-canonical data stays in React Query
+- [x] Missing `apps/desktop` pnpm scripts/devDeps (typecheck/lint/test) added; all `web-ts` §5.3 commands pass
+- [x] Both the `cargo` set and the `web-ts` set pass; co-located smoke path unaffected (`scripts/smoke.sh` still green — unchanged gate)
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate seams for 219's pairing writes documented in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 **Rust (`src-tauri`):**
-- `apps/desktop/src-tauri/src/core_client.rs` (modified — `CoreClient` trait + `UdsCoreClient` refactor; or split the trait into a new `src/transport.rs` — decide and note)
-- `apps/desktop/src-tauri/src/iroh_client.rs` (new — `IrohCoreClient`, feature-gated)
+- `apps/desktop/src-tauri/src/core_client.rs` (UNCHANGED — kept as the UDS dial primitives + the FROZEN `CoreClientError` `{kind,message}` envelope + its tests; the trait was split into a new `src/transport.rs` instead — see Drift)
+- `apps/desktop/src-tauri/src/transport.rs` (new — the `CoreClient` trait + `UdsCoreClient`; ADDED to Outputs, see Drift)
+- `apps/desktop/src-tauri/src/rpc.rs` (new — the per-RPC `dispatch_over_channel`/`subscribe_over_channel` shared by both impls, extracted from `commands.rs`; ADDED to Outputs, see Drift)
+- `apps/desktop/src-tauri/src/iroh_client.rs` (new — `IrohCoreClient`, feature-gated + the Tier-2 loopback double)
 - `apps/desktop/src-tauri/src/cores_registry.rs` (new — `cores.json` + keychain registry)
-- `apps/desktop/src-tauri/src/commands.rs` (modified — dispatch through the active `CoreClient`; new registry read-commands)
-- `apps/desktop/src-tauri/src/main.rs` (modified — register the new commands; manage registry state)
-- `apps/desktop/src-tauri/Cargo.toml` (modified — feature-gated `concerto-transport`/`concerto-identity`/`concerto-keychain` deps)
+- `apps/desktop/src-tauri/src/commands.rs` (modified — dispatch through the active `CoreClient`; new registry read/set commands)
+- `apps/desktop/src-tauri/src/main.rs` (modified — register the new commands + modules; manage registry state)
+- `apps/desktop/src-tauri/Cargo.toml` (modified — `concerto-keychain`/`concerto-identity` + `async-trait`/`base64` always-on; `concerto-transport`/`iroh` behind the `iroh-transport` feature)
+- `crates/keychain/src/api.rs` + `crates/keychain/src/lib.rs` (modified — added `CoreSecretSlot` + per-`core_id` `get/set/delete_core_secret`; ADDED to Outputs, see Drift)
+- `docs/interfaces/rust-api.md` (regenerated — gains the keychain `CoreSecretSlot` enum; ADDED to Outputs)
+- `Cargo.lock` (modified — new desktop deps; `wmi`→`windows 0.62.2` unchanged)
 
 **TS (`src/api`, `src/state`):**
 - `apps/desktop/src/api/cores.ts` (new — typed registry read binding)
-- `apps/desktop/src/api/runtime.ts` (modified — typed `transport_kind`)
-- `apps/desktop/src/state/` (new slice or `useUiStore.ts` modified — active-Core selection)
-- `apps/desktop/src/api/cores.test.ts` + the slice test (new — vitest)
-- `apps/desktop/package.json` (modified — add `typecheck`/`lint`/`test` scripts + `vitest`/lint devDeps)
-- `apps/desktop/vitest.config.ts` (new, if needed) + any `eslint`/`tsconfig` lint glue
+- `apps/desktop/src/api/runtime.ts` (modified — typed `transport_kind` enum + `isRemoteTransport`)
+- `apps/desktop/src/state/useCoresStore.ts` (new slice — UI-only pending active-Core selection)
+- `apps/desktop/src/api/cores.test.ts` + `src/state/useCoresStore.test.ts` + `src/api/runtime.test.ts` (new — vitest)
+- `apps/desktop/package.json` (modified — `typecheck`/`lint`/`test` scripts + `vitest` devDep)
+- `apps/desktop/pnpm-lock.yaml` (modified — `vitest` added)
+- `apps/desktop/vitest.config.ts` (new — node env, `src/**/*.test.ts`)
 
 ## Commit message
 ```
@@ -118,5 +124,42 @@ typecheck/lint/test scripts. Pairing UX is Task 219.
 Refs: tasks/v1.0/218-desktop-dual-transport.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / Rust↔TS boundary as built / the Cargo feature name + default for the Iroh path / exact pnpm scripts + devDeps added / registry-write seams left for 219 / Open questions / Smoke-gate state
+## Handoff Notes
+
+**FROZEN `CoreClient` trait (`design/15 §3.2`, `apps/desktop/src-tauri/src/transport.rs`).**
+```rust
+#[async_trait::async_trait]
+pub trait CoreClient: Send + Sync {
+    async fn dispatch(&self, method: &str, payload: Value) -> Result<Value, CoreClientError>;
+    async fn start_stream(&self, subject: &str, filter: Value, sink: StreamSink)
+        -> Result<StreamSubscription, CoreClientError>;
+}
+```
+`StreamSink` is `design/15 §3.2`'s `StreamSink` adapted to the existing event-bus forwarder: a cloneable `Arc<dyn Fn(&Value) -> bool + Send + Sync>` (return `false` to end the stream). `SubscriptionId = String`; `start_stream` returns `StreamSubscription { id, join }` (the id + the forwarder `JoinHandle` so `commands.rs`'s `SubscriptionRegistry` aborts it on unsubscribe — `design/15 §3.2` returns just the id, the handle is the desktop's existing abort mechanism). Impls: `UdsCoreClient` (always present) + `IrohCoreClient` (feature `iroh-transport`). `commands.rs` only ever talks to `Box<dyn CoreClient>`. The `CoreClientError` `{kind,message}` serde envelope is preserved verbatim in `core_client.rs` (its renderer-wire-contract test stays green).
+
+**FROZEN `cores.json` schema (`apps/desktop/src-tauri/src/cores_registry.rs`).** Cleartext doc `{ version: u32 (=1), cores: [PairedCore], active_core_id: Option<String> }`. `PairedCore = { core_id (BLAKE2b(core_pubkey) hex), display_name, transport ("uds"|"iroh"), uds_socket_path?, iroh_endpoint_id?, core_pubkey ([u8;32]), core_noise_pubkey? ([u8;32]), last_connected_at? }`. **Secrets (device cert + device private key) are NEVER in `cores.json`** — they live in the OS keychain keyed by `core_id` via `concerto-keychain`'s new `CoreSecretSlot::{DeviceCert,DevicePrivateKey}` (account string `cores.<core_id>.<slot>`). The implicit co-located UDS is promoted as `PairedCore { core_id: "local-machine", display_name: "This machine", transport: Uds }` (`§3.10.2` step 2). `core_id` reuses `concerto_identity::device_id` (no hand-rolled BLAKE2b).
+
+**Drift from plan.**
+- **Trait split, not in-place.** Per the Outputs' "or split into `src/transport.rs` — decide and note": `core_client.rs` is **unchanged** (kept as UDS dial primitives + the FROZEN `CoreClientError` + its tests); the trait + `UdsCoreClient` live in new `src/transport.rs`, and the per-RPC service mapping moved to new `src/rpc.rs` (`dispatch_over_channel`/`subscribe_over_channel`, generic over the gRPC transport `T` so the plain UDS `Channel` and the Iroh `InterceptedService<Channel, DeviceCertInterceptor>` both route through one place). Both are ADDED to Outputs.
+- **`crates/keychain` touched (ADDED to Outputs + flagged).** The frozen Task-10 `SecretKind` enum is closed/`Copy` and cannot key by `core_id`. Rather than break its `Copy` derive or its frozen variants, I added a **parameterized** accessor — `CoreSecretSlot` + `Secrets::{get,set,delete}_core_secret(core_id, slot)` (account `cores.<core_id>.<slot>`) — append-only, no change to any existing variant/account string (the Task-10 account-string tests stay green). `docs/interfaces/rust-api.md` regenerated (gains `CoreSecretSlot`).
+- **`PairedCore.core_noise_pubkey` appended to the schema (flagged).** The Iroh Noise IK handshake needs the Core's **X25519** Noise static public key, which is a *distinct* key from the Ed25519 `core_pubkey` in `design/15 §3.10.1`'s struct — the dial cannot proceed without it. Added as an append-only `Option<[u8;32]>` (None for UDS), captured at pairing from Task 217's `core_noise_public()` companion. This is the one field beyond the design's literal struct; the schema clause permits append-only additions.
+- Did **not** touch `core_client.rs`, `embedded.rs`, or `tray.rs` logic (embedded's `set_socket_override` still works: `resolve_active_client` promotes the override'd default socket on first dispatch).
+
+**Rust↔TS boundary as built.** All transport/keychain/registry logic is Rust (`src-tauri`). TS is thin: `cores.ts` (read bindings over `list_paired_cores`/`get_active_core`/`set_active_core`), typed `transport_kind` in `runtime.ts` (numeric enum matching the proto ordinals + `isRemoteTransport`), and `useCoresStore.ts` (UI-only **pending** active-Core id; the committed active Core is React-Query-canonical, never duplicated into Zustand).
+
+**Cargo feature name + default for the Iroh path.** `iroh-transport` (default **OFF**). It gates `dep:concerto-transport` + `dep:iroh` (and the `IrohCoreClient` module). The `CoreClient` trait + the `cores.json`/keychain registry are **always present** (UDS is the always-available impl); `concerto-keychain`/`concerto-identity` + `async-trait`/`base64` are non-optional (the registry derives `core_id` + stores per-Core secrets regardless of flavour). The Tier-2 `cargo` gate runs both `--all-features` and default.
+
+**Exact pnpm scripts + devDeps added.** `package.json` scripts: `"typecheck": "tsc --noEmit"`, `"test": "vitest run"`, `"lint": "tsc --noEmit"` (**lint is aliased to typecheck — no eslint config added**, to avoid a large eslint dep tree for a thin data-layer task; a real eslint pass is a later DX task if wanted). devDep added: `vitest ^2.1.8` (resolved 2.1.9; `pnpm-lock.yaml` committed). `vitest.config.ts` uses the `node` environment (`src/**/*.test.ts`; no jsdom — the tests mock `@tauri-apps/api`'s `invoke` and touch no DOM). All four `web-ts` §5.3 commands pass (typecheck/lint/test/build).
+
+**How the loopback-Iroh `IrohCoreClient` test is structured** (`iroh_client.rs` `#[cfg(test)]`, feature `iroh-transport`). Two `iroh::Endpoint`s on one host, **relays disabled** (`RelayMode::Disabled` client; `IrohTransport::start` with `disable_remote:true` server) → the only path is direct loopback. The server runs a minimal `RuntimeServer` over the transport's `ApiDispatcher` (mirroring `crates/transport/tests/loopback.rs`); its `get_server_capabilities` **asserts the `concerto-device-cert` metadata is present + base64-decodable** and echoes `server_version="iroh-probe"` + `transport_kind=2`. The client dials via `connect_channel` (Task 212's hand-rolled adapter + Noise IK initiator), wraps the channel in `InterceptedService<Channel, DeviceCertInterceptor>` (stamps `base64(cert_bytes||signature)`), and routes `dispatch("Runtime.GetServerCapabilities")`. A second test proves an unmapped method returns `NotImplemented` before touching the wire. (No `dev-relay` feature needed — that gates only the *relayed*-path subtests in the transport crate.)
+
+**Registry-write seams left for 219/207/209/601.** The pairing ceremony writes are stubbed-but-present: `CoresRegistry::{upsert, remove, set_active, get, get_secret, set_secret, delete_secret}` + `core_id_for` + the `iroh_client::IrohCoreClient::connect` constructor are all implemented and unit-tested but not yet driven from the live command path (marked `#[cfg_attr(not(test), allow(dead_code))]` where only tests + future tasks call them). 219 builds the pairing UI + Connect-to-Core picker on `cores.ts` + the active-Core slice; 601 wires the live Iroh dial (`resolve_active_client` currently returns `NotImplemented` for an active Iroh Core — the connect flow must build the client `Endpoint` + resolve the cert/key from the keychain + the server `EndpointAddr` from `iroh_endpoint_id`, then construct `IrohCoreClient` and hold it as managed state rather than rebuilding per call).
+
+**Open questions for next task.**
+1. **Iroh client lifetime/caching.** `IrohCoreClient` holds a persistent multiplexed channel; the live connect flow (601) must cache it in Tauri state (per active Core) rather than rebuild per dispatch — `resolve_active_client` builds a fresh `UdsCoreClient` per call (cheap, reuses the process-wide channel) but an Iroh client must not be re-dialed per call. The seam returns `NotImplemented` until 601 supplies the cached-client resolution.
+2. **`iroh_endpoint_id` → `EndpointAddr`.** The Tier-2 double uses `direct_endpoint_addr` (loopback). Real dial must parse `PairedCore.iroh_endpoint_id` into an `iroh::EndpointAddr` (via Iroh discovery / the `relay_hint` captured at pairing). That resolution + relay-hint storage is 601/219's wiring.
+3. **`core_noise_pubkey` capture.** 219's pairing must persist Task 217's `core_noise_public()` into `PairedCore.core_noise_pubkey` (and the device's own Noise static into the keychain alongside the cert/key) — without it the Iroh handshake can't complete.
+
+**Deliberate debt.** — (none; no `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code. `Status::unimplemented(...)` in the test double is a runtime gRPC status for unused probe methods, not the macro.)
+
+**Smoke-gate state.** unchanged — added no smoke check. `scripts/smoke.sh` PASSED (exit 0, "all checks PASSED", including the co-located UDS happy path that now resolves through the registry + `CoreClient` trait).

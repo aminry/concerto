@@ -1010,11 +1010,18 @@ dependencies = [
 name = "concerto-desktop"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
+ "base64 0.22.1",
  "concerto-core",
  "concerto-error",
+ "concerto-identity",
+ "concerto-keychain",
  "concerto-proto",
+ "concerto-transport",
+ "futures",
  "home",
  "hyper-util",
+ "iroh",
  "prost-types",
  "serde",
  "serde_json",

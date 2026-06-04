@@ -141,4 +141,77 @@ impl Secrets {
     pub async fn delete(&self, kind: SecretKind) -> crate::error::Result<(), SecretsError> {
         crate::delete_impl(self, kind).await
     }
+
+    /// Read a **per-paired-Core** secret, keyed by `core_id` (`design/15
+    /// §3.10.1`).
+    ///
+    /// Unlike the singleton [`SecretKind`] entries, a paired-Core secret is
+    /// parameterized by the Core it belongs to (`core_id = BLAKE2b(core_pubkey)`,
+    /// lowercase hex) and the secret [`CoreSecretSlot`] (the device cert or the
+    /// device private key). The Desktop's connected-Core registry (Task 218)
+    /// stores `cores.json` cleartext metadata and **these** secrets in the OS
+    /// keychain so the split-host `IrohCoreClient` can present its device cert
+    /// without the secrets ever touching disk. Returns `Ok(None)` when no entry
+    /// exists.
+    ///
+    /// Added as a parameterized accessor (rather than a new [`SecretKind`]
+    /// variant) so the closed, `Copy` `SecretKind` enum stays unchanged while
+    /// the per-Core keying lands; the Windows keychain backend (Task 608) swaps
+    /// underneath this same API.
+    pub async fn get_core_secret(
+        &self,
+        core_id: &str,
+        slot: CoreSecretSlot,
+    ) -> crate::error::Result<Option<SecretValue>, SecretsError> {
+        crate::core_secret_get_impl(self, core_id, slot).await
+    }
+
+    /// Write or overwrite a per-paired-Core secret keyed by `core_id`.
+    pub async fn set_core_secret(
+        &self,
+        core_id: &str,
+        slot: CoreSecretSlot,
+        value: SecretValue,
+    ) -> crate::error::Result<(), SecretsError> {
+        crate::core_secret_set_impl(self, core_id, slot, value).await
+    }
+
+    /// Delete a per-paired-Core secret keyed by `core_id`. Idempotent.
+    pub async fn delete_core_secret(
+        &self,
+        core_id: &str,
+        slot: CoreSecretSlot,
+    ) -> crate::error::Result<(), SecretsError> {
+        crate::core_secret_delete_impl(self, core_id, slot).await
+    }
+}
+
+/// Which per-paired-Core secret a [`Secrets::get_core_secret`] call addresses
+/// (`design/15 §3.10.1`). Each `(core_id, slot)` pair maps to exactly one
+/// keychain `(service, account)` entry; the `account` embeds the `core_id` so
+/// every paired Core's secrets are isolated.
+///
+/// Stable identifiers: the account-string slug for each slot is public protocol
+/// (changing one orphans existing keychain entries), mirroring the
+/// [`SecretKind::to_account_string`] discipline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CoreSecretSlot {
+    /// The `SignedDeviceCert` issued to this Desktop by the paired Core (the
+    /// CBOR-encoded `cert_bytes || signature`, base64). Presented in request
+    /// metadata by the split-host `IrohCoreClient`.
+    DeviceCert,
+    /// This Desktop's device Ed25519 private key for the paired Core (the seed,
+    /// base64). Never leaves the keychain.
+    DevicePrivateKey,
+}
+
+impl CoreSecretSlot {
+    /// The stable account-string slug for this slot. **Public protocol** —
+    /// changing it orphans existing keychain entries.
+    pub fn slug(self) -> &'static str {
+        match self {
+            CoreSecretSlot::DeviceCert => "device_cert",
+            CoreSecretSlot::DevicePrivateKey => "device_private_key",
+        }
+    }
 }
