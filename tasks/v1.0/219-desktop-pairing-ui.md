@@ -64,15 +64,15 @@ Build the **renderer-side pairing surfaces** `design/15 §3.10` specifies on top
 **Tier-2 double + what it does NOT cover.** The double is **vitest component/DOM tests against a stub `CoreClient` (mocked `invoke`)** plus **fixture pairing payloads**. It proves: the picker, the paste-token decode + complete-pairing call path, TTL/error UX, naming, and the Connected-Cores switch/rename/remove command wiring. It does **NOT** cover: a **real webcam QR scan**, a **real cross-device pairing** (real Noise XX over a real Iroh connection to a second machine), or real OS camera-permission prompts. Those are the **Tier-3 Phase-2 checklist** lines ("pair a real second machine over LAN", "pair from a real remote network"). The end-to-end loopback pairing-over-Iroh is covered by Task 220's smoke (driver-level, not UI).
 
 ## Definition of Done
-- [ ] Connect-to-Core picker (paired list + status dots + "Start local"/"Pair remote" entry points)
-- [ ] Pairing flow: Scan-QR **and** Paste-token, payload decode, complete-pairing via shell command, 60s-TTL UX, name-the-pairing (default = Core hostname), set active
-- [ ] Settings → Connected Cores: list + switch-active (clears cache/reloads) + rename + remove (best-effort revoke) + add-another
-- [ ] QR-show affordance gated on `transport_kind === UDS` (disabled/hinted in split-host per §3.11)
-- [ ] QR libs chosen + added + license posture noted; paste-token works with no webcam
-- [ ] Pairing-UI ↔ Tauri-command contract frozen (co-designed with 218's seams); payload-decode shape matches `concerto pair`
-- [ ] `web-ts` §5.3 set passes (typecheck/lint/test/build); co-located smoke unaffected (gate unchanged)
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate seams for 601 documented)
-- [ ] Single commit with the message below
+- [x] Connect-to-Core picker (paired list + status dots + "Start local"/"Pair remote" entry points)
+- [x] Pairing flow: Scan-QR **and** Paste-token, payload decode, complete-pairing via shell command, 60s-TTL UX, name-the-pairing (default = Core hostname), set active
+- [x] Settings → Connected Cores: list + switch-active (clears cache/reloads) + rename + remove (best-effort revoke) + add-another
+- [x] QR-show affordance gated on `transport_kind === UDS` (disabled/hinted in split-host per §3.11)
+- [x] QR libs chosen + added + license posture noted; paste-token works with no webcam
+- [x] Pairing-UI ↔ Tauri-command contract frozen (co-designed with 218's seams); payload-decode shape matches `concerto pair`
+- [x] `web-ts` §5.3 set passes (typecheck/lint/test/build); co-located smoke unaffected (gate unchanged)
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate seams for 601 documented)
+- [x] Single commit with the message below
 
 ## Outputs
 - `apps/desktop/src/components/ConnectCorePicker.tsx` (new — the picker)
@@ -83,7 +83,14 @@ Build the **renderer-side pairing surfaces** `design/15 §3.10` specifies on top
 - `apps/desktop/src/api/cores.ts` (modified — add the pairing command bindings co-designed with 218)
 - `apps/desktop/src/state/useUiStore.ts` (modified — picker/pairing open-state)
 - `apps/desktop/src/components/*.test.tsx` (new — vitest component tests + fixture payloads)
-- `apps/desktop/package.json` (modified — add `qrcode`/`@zxing/browser` (or chosen equivalents) + any `@testing-library/react`/`jsdom` devDeps)
+- `apps/desktop/src/components/test-utils.tsx` (new — `renderWithClient` RTL helper; ADDED to Outputs, see Handoff)
+- `apps/desktop/src/api/pairing.test.ts` (new — payload-decode + binding tests, node env; ADDED to Outputs)
+- `apps/desktop/src/vitest-env.d.ts` (new — jest-dom matcher type augmentation for `tsc`; ADDED to Outputs)
+- `apps/desktop/vitest.setup.ts` (new — jest-dom runtime matchers; ADDED to Outputs)
+- `apps/desktop/vitest.config.ts` (modified — per-glob `jsdom` env for `*.test.tsx`, setup file, globals; ADDED to Outputs)
+- `apps/desktop/src/App.tsx` (modified — mount `ConnectCorePicker` + `PairCoreModal` at the App root; ADDED to Outputs, see Handoff)
+- `apps/desktop/pnpm-lock.yaml` (modified — QR + RTL/jsdom deps; ADDED to Outputs)
+- `apps/desktop/package.json` (modified — add `qrcode`/`@zxing/browser`+`@zxing/library` deps + `@testing-library/react`/`@testing-library/jest-dom`/`@testing-library/user-event`/`jsdom`/`@types/qrcode` devDeps)
 
 ## Commit message
 ```
@@ -99,5 +106,37 @@ commands; never speaks gRPC directly.
 Refs: tasks/v1.0/219-desktop-pairing-ui.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / QR-show + scan lib choices + license posture / camera-permission decision (entitlement vs paste-only) / the frozen pairing-UI↔Tauri-command signatures / vitest+RTL setup reused vs added / seams left for 601 / Open questions / Smoke-gate state
+## Handoff Notes
+
+**FROZEN pairing-UI ↔ Tauri-command contract** (`apps/desktop/src/api/cores.ts`, co-designed with 218's read seams). The renderer invokes these by name; the **Rust shell implementations are OWED** (see "Rust commands owed" below). Args are the Tauri camelCase shape; returns are the typed shapes:
+- `start_pairing_show()` → `PairingPayload` — the local Core's QR payload (shell runs `Devices.StartPairing` + `GetCoreInfo`). UDS-only.
+- `complete_pairing_from_payload({ token: string })` → `{ core_id: string, suggested_name: string }` — shell decodes the base64 token, runs Noise XX + `Devices.CompletePairing`, writes the `PairedCore` + keychain secrets, returns the new `core_id` (`BLAKE2b(core_pubkey)` hex) + suggested name (Core hostname). An expired/one-shot token rejects with the `{kind,message}` envelope (e.g. `Rpc: pairing token expired`).
+- `rename_paired_core({ coreId: string, displayName: string })` → `void`.
+- `remove_paired_core({ coreId: string })` → `void` — deletes the row + keychain secrets, best-effort `Devices.RevokeDevice`.
+- `start_local_core()` → `void` — the picker's "Start a local Core" auto-spawn (frozen name; **Task 601 fleshes out** the diagnostics/retry/embedded branch).
+- Reuses 218's frozen `list_paired_cores` / `get_active_core` / `set_active_core({ coreId })`.
+
+**FROZEN payload-decode envelope** (`PairingPayload`, `design/12 §3.3`): `base64(JSON{ core_pubkey, pairing_token, lan_endpoint?, iroh_endpoint_id?, relay_hint? })`. `core_pubkey`/`pairing_token` are required base64 byte-strings (32-byte one-shot token, 60s TTL); exactly one of `lan_endpoint`/`iroh_endpoint_id` carries the LAN-vs-relay path, `relay_hint` the fallback. `decodePairingPayload` validates renderer-side (clear errors); the shell re-validates TTL/one-shot authoritatively. **Must match what `concerto pair` (Task 713) emits** — Task 713 owns producing this exact envelope; if it diverges, reconcile there, not here.
+
+**QR + testing libs + license posture.** Runtime: `qrcode@^1.5.4` (MIT — renders the local QR), `@zxing/browser@^0.1.5` + `@zxing/library@^0.21.3` (Apache-2.0 — webcam decode over `getUserMedia`). DevDeps: `@testing-library/react@^16` + `@testing-library/jest-dom@^6` + `@testing-library/user-event@^14` (MIT) + `jsdom@^25` (MIT) + `@types/qrcode` (MIT). All MIT/Apache-2.0 — noted here per the implementation note; **Task 707 owns the full `pnpm licenses` gate.** `pnpm-lock.yaml` committed.
+
+**Camera-permission decision: paste-token is the verified path; scan is graceful-fallback.** I did NOT add a macOS camera entitlement to `capabilities/main.json` / `Info.plist` (those are `src-tauri` files — out of this pure-TS task's scope). The scan path calls `BrowserQRCodeReader.decodeFromVideoDevice`; if `getUserMedia` fails (no entitlement, denied permission, no device) the modal shows "Camera unavailable — <reason>" and a "Paste a token instead" button (always-available path). **OWED:** a `src-tauri` task (601/608 or a follow-up) must add the camera entitlement before real webcam scan works on a signed macOS build — flagged as a Tier-3 Phase-2 checklist item ("pair a real second machine over LAN" via webcam). Until then, paste-token is the verified UX.
+
+**vitest + RTL setup: reused 218's runner, added the DOM layer.** Reused 218's `vitest` + the `typecheck`/`lint`/`test`/`build` scripts (unchanged). Added: `vitest.config.ts` now sets `environmentMatchGlobs: [["src/**/*.test.tsx", "jsdom"]]` (218's `*.test.ts` data tests stay on `node`; my `*.test.tsx` component tests get `jsdom`), `globals: true`, a `setupFiles` entry (`vitest.setup.ts` → `@testing-library/jest-dom/vitest`), and `src/vitest-env.d.ts` so `tsc` sees the jest-dom matchers. 218's existing node-env tests stay green. 39 tests pass across 8 files (5 new component/decode suites: ConnectCorePicker ×5, PairCoreModal ×5, ConnectedCoresList ×5, ShowPairingQr ×3, pairing-decode/bindings ×16).
+
+**Rust pairing commands OWED (no Rust added here — per task rules).** 218's handoff left the registry-write seams present-but-not-wired (`CoresRegistry::{upsert, set_active, get_secret, set_secret, …}` + `IrohCoreClient::connect`). The five Tauri commands above (`start_pairing_show`, `complete_pairing_from_payload`, `rename_paired_core`, `remove_paired_core`, `start_local_core`) are **NOT yet implemented in `src-tauri`** — this task froze the renderer-facing signatures + mocked them in tests. A Rust pairing-commands task (naturally 601, or a dedicated follow-up alongside 207/209) must implement them against 218's seams: wire `StartPairing`/`CompletePairing`/`RevokeDevice` through the active `CoreClient`, persist `core_noise_pubkey` (218 Open-Q #3) + the device key/cert into the keychain, and resolve `iroh_endpoint_id`→`EndpointAddr` (218 Open-Q #2). Without them the UI renders + the flow drives but the `invoke`s reject at runtime.
+
+**Drift from plan.**
+- **Added 8 files beyond the literal Outputs** (all flagged in the amended Outputs list): `src/App.tsx` (mounting `ConnectCorePicker` + `PairCoreModal` at the root — necessary for the surfaces to actually render; mirrors how `SettingsPanel`/modals already mount), `vitest.config.ts` (jsdom per-glob), `vitest.setup.ts`, `src/vitest-env.d.ts`, `src/components/test-utils.tsx` (`renderWithClient` helper), `src/api/pairing.test.ts` (decode/binding tests — kept node-env since they're pure/`invoke`-mock, not DOM), and `pnpm-lock.yaml`. No files outside `apps/desktop/` touched; no Rust, no `design/`, no prior tasks' non-Output files.
+- **`PairingPayload` carries both `lan_endpoint` and `iroh_endpoint_id`** (design/12 §3.3 lists `lan_endpoint`; the task header lists `lan_endpoint/iroh_endpoint_id`). The envelope accepts/normalizes both (either may be null) so it matches both the design's LAN-direct path and `concerto pair`'s headless relay path — append-only, no contradiction.
+- **`coreStatus` reachability heuristic.** The registry view (218) exposes `is_active` + `last_connected_at` but not a live reachability probe. I map: active → ok (green), never-connected (`last_connected_at == null`) → idle, previously-connected-but-not-active → warning. A real reachability ping (reachable vs unreachable dot) is a richer signal 601 can layer on; the dot states + the three §3.10.4 categories are all represented.
+
+**Open questions for next task.**
+1. **(601 / Rust follow-up)** implement the five frozen Tauri pairing commands against 218's registry-write seams (see "Rust pairing commands OWED"). 220's smoke covers loopback pairing-over-Iroh at the driver level (not the UI); the UI's command path is proven only against mocked `invoke` here.
+2. **(601)** "Switch active" currently does `set_active_core` + `window.location.reload()` to clear caches (§3.10.4). 601's full multi-Core switch may want a cleaner teardown/re-bootstrap (close streams, rebuild the Iroh client) instead of a hard reload — the reload is the correct-but-blunt V1.0 behavior.
+3. **(601)** "Start a local Core" fires `start_local_core` with no diagnostics/retry UX — 601 owns the launch banner, retry-poll, and embedded-mode branch (§3.10.2 step 3).
+4. **(601 / src-tauri)** the macOS camera entitlement for the webcam scan path is owed (see camera-permission decision); a Tier-3 checklist line.
+
+**Deliberate debt.** — (none; no `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code. The OWED Rust commands + the camera entitlement are frozen-contract seams documented above, not in-code debt markers.)
+
+**Smoke-gate state.** unchanged — this is a pure-TS task; no Rust, no `scripts/smoke.sh` change. The co-located UDS smoke path (218) is untouched.

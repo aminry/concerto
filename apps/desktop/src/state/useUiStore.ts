@@ -80,6 +80,15 @@ export type UiStore = {
   newProjectModalOpen: boolean;
   /// True when Settings (currently just Add Repository) is on screen.
   settingsOpen: boolean;
+  /// Task 219 — true when the Connect-to-Core picker is on screen. UI-only;
+  /// the paired-Core list it shows is React-Query-canonical (`src/api/cores.ts`),
+  /// never duplicated here. Mirrors `settingsOpen`.
+  connectCoreOpen: boolean;
+  /// Task 219 — true when the Pair-with-a-remote-Core modal (scan QR / paste
+  /// token → name) is on screen. The in-progress pairing draft (the decoded
+  /// payload, the chosen name) lives in the modal's component-local state, not
+  /// here; this flag is the only piece of pairing UI state that is global.
+  pairingOpen: boolean;
   /// Task 46 — three-panel layout state. Persisted to `localStorage`
   /// under [`LAYOUT_STORAGE_KEY`] via the App-root effect.
   sidebarWidth: number;
@@ -100,6 +109,8 @@ export type UiStore = {
   setNewWorkspaceModalOpen: (open: boolean) => void;
   setNewProjectModalOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
+  setConnectCoreOpen: (open: boolean) => void;
+  setPairingOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setSessionRegionHeight: (height: number) => void;
   setRightRailCollapsed: (collapsed: boolean) => void;
@@ -179,6 +190,8 @@ export const useUiStore = create<UiStore>((set) => ({
   newWorkspaceModalOpen: false,
   newProjectModalOpen: false,
   settingsOpen: false,
+  connectCoreOpen: false,
+  pairingOpen: false,
   sidebarWidth: initialLayout.sidebarWidth,
   sessionRegionHeight: initialLayout.sessionRegionHeight,
   rightRailCollapsed: initialLayout.rightRailCollapsed,
@@ -218,6 +231,8 @@ export const useUiStore = create<UiStore>((set) => ({
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
   setNewProjectModalOpen: (open) => set({ newProjectModalOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setConnectCoreOpen: (open) => set({ connectCoreOpen: open }),
+  setPairingOpen: (open) => set({ pairingOpen: open }),
   setSidebarWidth: (width) => set({ sidebarWidth: clampPercent(width) }),
   setSessionRegionHeight: (height) =>
     set({ sessionRegionHeight: clampPercent(height) }),
