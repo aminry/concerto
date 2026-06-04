@@ -17,6 +17,15 @@
 // all above the existing 14): the `GapDetected` event variant
 // (`Event.body.gap_detected = 15`) plus the `AckOffset` unary RPC and its
 // `AckOffsetRequest` message. No existing field number is touched.
+//
+// Task 216 (V1.0, design/11 §5.3) adds the `TransportEvent` variant
+// (`Event.body.transport = 16`) — the three (folded: four) transport
+// lifecycle events (`session_opened` / `session_closed` / `relay_switched`
+// / `nat_success_changed`) the Iroh transport broadcasts on the
+// `transport.events` subject. Decision D1: there is NO `transport.proto`;
+// transport telemetry rides this `Event` oneof. Field number 16 is the
+// next free number above Task 202's `gap_detected = 15` — append-only,
+// never reused/moved.
 
 syntax = "proto3";
 
@@ -71,7 +80,100 @@ message Event {
     // RPCs (per §7.2) to fill the gap, then trust the live tail. Field
     // number 15 — additive above the FROZEN V0.1 range (10..14).
     GapDetected gap_detected = 15;
+    // Task 216 (design/11 §5.3): a transport lifecycle event — a session
+    // opened/closed, the relay switched, or the rolling NAT-success rate
+    // materially changed. Carried on the `transport.events` subject; the
+    // Desktop direct/via-relay badge + Settings→Diagnostics percentage
+    // (design/11 §3.6) and the mobile/web clients key off it. Decision D1:
+    // NO separate `transport.proto` — transport telemetry rides this oneof.
+    // Field number 16 — additive above Task 202's `gap_detected = 15`.
+    TransportEvent transport = 16;
   }
+}
+
+// Task 216 (design/11 §5.3): one of the four transport lifecycle events the
+// Iroh transport (Task 212) broadcasts as it observes sessions come and go,
+// the relay change, and the rolling NAT-success rate move. The migration
+// contract (design/11 §3.7, §7.4) is FROZEN in the wire shape: a client
+// network change (Wi-Fi<->LTE) updates the live session's `path` via
+// `RelaySwitched`/no event but does NOT emit `SessionClosed` — only a true
+// connection drop does, so a subscriber survives the ~1-3s migration blip.
+message TransportEvent {
+  oneof kind {
+    // A device established a session (design/11 §5.3 `transport.session_opened`).
+    SessionOpened session_opened = 1;
+    // A device disconnected — a TRUE connection drop, NOT a path migration
+    // (design/11 §5.3 `transport.session_closed`). Folded in per the task's
+    // §5.3 note (it is broadcast too).
+    SessionClosed session_closed = 2;
+    // The relay URL the Core registers with changed (design/11 §5.3
+    // `transport.relay_switched`).
+    RelaySwitched relay_switched = 3;
+    // The rolling 1-hour NAT-success (direct-%) rate materially changed
+    // (design/11 §5.3 `transport.nat_success_changed`). Debounced — fires
+    // only on a meaningful delta or a crossing of the >70% PRD line
+    // (design/11 §3.6), never per connection.
+    NatSuccessChanged nat_success_changed = 4;
+  }
+}
+
+// How a session's QUIC traffic reaches the peer (mirrors the Rust
+// `concerto_transport::ConnectionPath`, design/11 §4). FROZEN value set.
+enum TransportPath {
+  TRANSPORT_PATH_UNSPECIFIED = 0;
+  // Hole-punched direct path over a public/routable IP (NAT traversal won).
+  TRANSPORT_PATH_DIRECT = 1;
+  // Relayed QUIC through the configured relay (hole-punch fell back).
+  TRANSPORT_PATH_RELAYED = 2;
+  // LAN-direct over a loopback / private-range IP (mDNS-discovered), no relay.
+  TRANSPORT_PATH_LAN = 3;
+}
+
+// The kind of client a session belongs to (design/11 §2). NAT-success is
+// broken out by this so we can see whether split-host Desktops (mostly
+// residential<->residential or residential<->cloud-VM) get worse direct
+// rates than mobile. FROZEN value set { desktop-split-host, mobile, web }.
+enum ClientKind {
+  CLIENT_KIND_UNSPECIFIED = 0;
+  // Split-host Desktop (Tauri shell on a different machine from the Core),
+  // over Iroh (design/11 §3.1).
+  CLIENT_KIND_DESKTOP_SPLIT_HOST = 1;
+  // Mobile (iOS / Android via the RN Iroh native module), over Iroh.
+  CLIENT_KIND_MOBILE = 2;
+  // Web (browser), reaching the Core via the WSS bridge (Task 215).
+  CLIENT_KIND_WEB = 3;
+}
+
+// Task 216 (design/11 §5.3 `transport.session_opened`): a device came up.
+message SessionOpened {
+  // The device id (the transport's session key).
+  string device_id = 1;
+  // The classified path this session came up on.
+  TransportPath path = 2;
+  // The kind of client (drives the by-client-kind NAT breakdown).
+  ClientKind client_kind = 3;
+}
+
+// Task 216 (design/11 §5.3 `transport.session_closed`): a TRUE connection
+// drop (NOT a path migration). The client reconnects + replays from offset
+// via the Task-202 ring buffer.
+message SessionClosed {
+  // The device id whose session dropped.
+  string device_id = 1;
+}
+
+// Task 216 (design/11 §5.3 `transport.relay_switched`): the relay URL changed.
+message RelaySwitched {
+  // The relay URL the Core now uses; empty under `disable_remote` / no relay.
+  string relay_url = 1;
+}
+
+// Task 216 (design/11 §5.3 `transport.nat_success_changed`): the rolling
+// 1-hour direct-connection percentage moved materially (debounced — see
+// `TransportEvent.nat_success_changed`).
+message NatSuccessChanged {
+  // The new rolling direct-% over the last hour, 0..=100.
+  uint32 direct_percent = 1;
 }
 
 // Task 202: emitted when a `Subscribe { since_offset = N }` cannot be

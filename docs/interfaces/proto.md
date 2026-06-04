@@ -493,12 +493,52 @@ message RuntimeStatus {
 }
 ```
 
+### message `NetworkStats`
+
+```proto
+message NetworkStats {
+  // Sessions that came up on a direct (hole-punched) path.
+  uint32 direct = 1;
+  // Sessions that came up relayed (hole-punch fell back).
+  uint32 relayed = 2;
+  // Sessions that came up LAN-direct (no relay).
+  uint32 lan = 3;
+}
+```
+
+### message `NatStats`
+
+```proto
+message NatStats {
+  // Total sessions that came up direct today.
+  uint32 direct_today = 1;
+  // Total sessions that came up relayed today.
+  uint32 relayed_today = 2;
+  // Total sessions that came up LAN-direct today.
+  uint32 lan_today = 3;
+  // Per-network-class counters (design/11 §4 `by_network_class`). The key is
+  // a coarse network label (e.g. "wifi" / "cellular" / "ethernet"); V1.0
+  // populates what the transport can observe and leaves room to grow.
+  map<string, NetworkStats> by_network_class = 4;
+  // Per-client-kind counters (design/11 §2). The key is the `ClientKind`
+  // enum value name (`CLIENT_KIND_DESKTOP_SPLIT_HOST` / `CLIENT_KIND_MOBILE`
+  // / `CLIENT_KIND_WEB`) — a proto map key cannot be an enum, so the enum's
+  // canonical name string is used.
+  map<string, NetworkStats> by_client_kind = 5;
+}
+```
+
 ### service `Runtime`
 
 ```proto
 service Runtime {
   rpc GetServerCapabilities(google.protobuf.Empty) returns (ServerCapabilities);
   rpc GetStatus(google.protobuf.Empty) returns (RuntimeStatus);
+  // Task 216 (design/11 §3.6, D1): the per-client-kind + per-network-class
+  // NAT-traversal telemetry. Surfaces here on Runtime (the transport/runtime
+  // read path) rather than a new service. Returns empty counters when no
+  // transport is attached (co-located / UDS-only Core).
+  rpc GetNatStats(google.protobuf.Empty) returns (NatStats);
 }
 ```
 
@@ -1007,7 +1047,107 @@ message Event {
     // RPCs (per §7.2) to fill the gap, then trust the live tail. Field
     // number 15 — additive above the FROZEN V0.1 range (10..14).
     GapDetected gap_detected = 15;
+    // Task 216 (design/11 §5.3): a transport lifecycle event — a session
+    // opened/closed, the relay switched, or the rolling NAT-success rate
+    // materially changed. Carried on the `transport.events` subject; the
+    // Desktop direct/via-relay badge + Settings→Diagnostics percentage
+    // (design/11 §3.6) and the mobile/web clients key off it. Decision D1:
+    // NO separate `transport.proto` — transport telemetry rides this oneof.
+    // Field number 16 — additive above Task 202's `gap_detected = 15`.
+    TransportEvent transport = 16;
   }
+}
+```
+
+### message `TransportEvent`
+
+```proto
+message TransportEvent {
+  oneof kind {
+    // A device established a session (design/11 §5.3 `transport.session_opened`).
+    SessionOpened session_opened = 1;
+    // A device disconnected — a TRUE connection drop, NOT a path migration
+    // (design/11 §5.3 `transport.session_closed`). Folded in per the task's
+    // §5.3 note (it is broadcast too).
+    SessionClosed session_closed = 2;
+    // The relay URL the Core registers with changed (design/11 §5.3
+    // `transport.relay_switched`).
+    RelaySwitched relay_switched = 3;
+    // The rolling 1-hour NAT-success (direct-%) rate materially changed
+    // (design/11 §5.3 `transport.nat_success_changed`). Debounced — fires
+    // only on a meaningful delta or a crossing of the >70% PRD line
+    // (design/11 §3.6), never per connection.
+    NatSuccessChanged nat_success_changed = 4;
+  }
+}
+```
+
+### enum `TransportPath`
+
+```proto
+enum TransportPath {
+  TRANSPORT_PATH_UNSPECIFIED = 0;
+  // Hole-punched direct path over a public/routable IP (NAT traversal won).
+  TRANSPORT_PATH_DIRECT = 1;
+  // Relayed QUIC through the configured relay (hole-punch fell back).
+  TRANSPORT_PATH_RELAYED = 2;
+  // LAN-direct over a loopback / private-range IP (mDNS-discovered), no relay.
+  TRANSPORT_PATH_LAN = 3;
+}
+```
+
+### enum `ClientKind`
+
+```proto
+enum ClientKind {
+  CLIENT_KIND_UNSPECIFIED = 0;
+  // Split-host Desktop (Tauri shell on a different machine from the Core),
+  // over Iroh (design/11 §3.1).
+  CLIENT_KIND_DESKTOP_SPLIT_HOST = 1;
+  // Mobile (iOS / Android via the RN Iroh native module), over Iroh.
+  CLIENT_KIND_MOBILE = 2;
+  // Web (browser), reaching the Core via the WSS bridge (Task 215).
+  CLIENT_KIND_WEB = 3;
+}
+```
+
+### message `SessionOpened`
+
+```proto
+message SessionOpened {
+  // The device id (the transport's session key).
+  string device_id = 1;
+  // The classified path this session came up on.
+  TransportPath path = 2;
+  // The kind of client (drives the by-client-kind NAT breakdown).
+  ClientKind client_kind = 3;
+}
+```
+
+### message `SessionClosed`
+
+```proto
+message SessionClosed {
+  // The device id whose session dropped.
+  string device_id = 1;
+}
+```
+
+### message `RelaySwitched`
+
+```proto
+message RelaySwitched {
+  // The relay URL the Core now uses; empty under `disable_remote` / no relay.
+  string relay_url = 1;
+}
+```
+
+### message `NatSuccessChanged`
+
+```proto
+message NatSuccessChanged {
+  // The new rolling direct-% over the last hour, 0..=100.
+  uint32 direct_percent = 1;
 }
 ```
 

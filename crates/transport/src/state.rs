@@ -81,14 +81,35 @@ mod tests {
 
     #[test]
     fn nat_stats_record() {
+        use crate::api::ClientKind;
         let mut s = NatStats::default();
-        s.record(ConnectionPath::Direct);
-        s.record(ConnectionPath::Direct);
-        s.record(ConnectionPath::Relayed);
-        s.record(ConnectionPath::Lan);
+        s.record(ConnectionPath::Direct, "direct", ClientKind::Mobile);
+        s.record(
+            ConnectionPath::Direct,
+            "direct",
+            ClientKind::DesktopSplitHost,
+        );
+        s.record(
+            ConnectionPath::Relayed,
+            "relayed",
+            ClientKind::DesktopSplitHost,
+        );
+        s.record(ConnectionPath::Lan, "lan", ClientKind::Mobile);
         assert_eq!(s.direct_today, 2);
         assert_eq!(s.relayed_today, 1);
         assert_eq!(s.lan_today, 1);
+        // by-client-kind: mobile got 1 direct + 1 lan; desktop got 1 direct + 1 relayed.
+        let mobile = s.by_client_kind[&ClientKind::Mobile];
+        assert_eq!(mobile.direct, 1);
+        assert_eq!(mobile.lan, 1);
+        assert_eq!(mobile.relayed, 0);
+        let desktop = s.by_client_kind[&ClientKind::DesktopSplitHost];
+        assert_eq!(desktop.direct, 1);
+        assert_eq!(desktop.relayed, 1);
+        // by-network-class mirrors the path label.
+        assert_eq!(s.by_network_class["direct"].direct, 2);
+        assert_eq!(s.by_network_class["relayed"].relayed, 1);
+        assert_eq!(s.by_network_class["lan"].lan, 1);
     }
 
     #[test]

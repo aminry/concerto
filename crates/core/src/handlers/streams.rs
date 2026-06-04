@@ -101,14 +101,19 @@ use async_trait::async_trait;
 use concerto_persist::SessionId as PersistSessionId;
 use concerto_proto::v1::streams_server::Streams as StreamsService;
 use concerto_proto::v1::{
-    event::Body as EventBody, session_event::Kind as SessionEventKind, AckOffsetRequest,
-    AgentExited, AgentMessage, AgentStarted, ApprovalResolved as ProtoApprovalResolved,
+    event::Body as EventBody, session_event::Kind as SessionEventKind,
+    transport_event::Kind as TransportEventKind, AckOffsetRequest, AgentExited, AgentMessage,
+    AgentStarted, ApprovalResolved as ProtoApprovalResolved,
     AwaitingApproval as ProtoAwaitingApproval, CheckpointCreated as ProtoCheckpointCreated,
-    Chip as ProtoChip, Event, GapDetected, SessionEvent as ProtoSessionEvent,
-    SessionIoChunk as ProtoSessionIoChunk, SubscribeRequest, ToolCall as ProtoToolCall,
+    Chip as ProtoChip, ClientKind as ProtoClientKind, Event, GapDetected,
+    NatSuccessChanged as ProtoNatSuccessChanged, RelaySwitched as ProtoRelaySwitched,
+    SessionClosed as ProtoSessionClosed, SessionEvent as ProtoSessionEvent,
+    SessionIoChunk as ProtoSessionIoChunk, SessionOpened as ProtoSessionOpened, SubscribeRequest,
+    ToolCall as ProtoToolCall, TransportEvent as ProtoTransportEvent, TransportPath,
     TurnComplete as ProtoTurnComplete, WorkareaEvent as ProtoWorkareaEvent,
     WorkspaceEvent as ProtoWorkspaceEvent,
 };
+use concerto_transport::{ClientKind, ConnectionPath, TransportTelemetry};
 use futures::Stream;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
@@ -149,6 +154,13 @@ pub enum Subject {
     /// in the trailing segment (`suggestion.events.<workarea_id>`);
     /// `None` means "every workarea".
     SuggestionEvents(Option<String>),
+    /// Task 216 — `transport.events`. The Iroh transport lifecycle events
+    /// (`session_opened` / `session_closed` / `relay_switched` /
+    /// `nat_success_changed`, `design/11 §5.3`). Producer is the
+    /// transport's telemetry broadcast (wired via
+    /// [`StreamsHandler::with_transport_events`]); absent when no remote
+    /// transport is attached (the subject then yields no events).
+    TransportEvents,
 }
 
 /// How a [`SubjectBuffer`] bounds its ring: by event count (most
@@ -382,6 +394,13 @@ pub struct StreamsHandler {
     /// `INVALID_ARGUMENT` (the subject is parsable but no producer is
     /// attached).
     suggestions: Option<SuggestionEngineHandle>,
+    /// Optional transport telemetry source (Task 216). The Iroh
+    /// transport's `subscribe_telemetry()` broadcast, wired via
+    /// [`Self::with_transport_events`] (Task 217). When `None` (no remote
+    /// transport attached), the `transport.events` subject is valid but
+    /// produces no events (an empty live stream) — the honest
+    /// "co-located Core has no remote sessions" answer.
+    transport_events: Option<broadcast::Sender<TransportTelemetry>>,
     /// Per-subject ring-buffer + offset + ack state, keyed by the
     /// canonical subject string. Replaces the V0.1 bare offset map; the
     /// offset counter now lives inside each [`SubjectBuffer`].
@@ -401,6 +420,7 @@ impl StreamsHandler {
             workspaces,
             workareas,
             suggestions: None,
+            transport_events: None,
             buffers: Arc::new(Mutex::new(HashMap::new())),
             next_subscriber_id: Arc::new(AtomicU64::new(0)),
         }
@@ -411,6 +431,18 @@ impl StreamsHandler {
     /// construction time (the api_server builder uses this pattern).
     pub fn with_suggestions(mut self, suggestions: SuggestionEngineHandle) -> Self {
         self.suggestions = Some(suggestions);
+        self
+    }
+
+    /// Attach the Iroh transport's telemetry broadcast (Task 216) so the
+    /// `transport.events` subject has a producer. Wired by Task 217's
+    /// `TransportHandle` from `IrohTransport::subscribe_telemetry()`'s
+    /// underlying sender. Returns `self` for chaining.
+    pub fn with_transport_events(
+        mut self,
+        transport_events: broadcast::Sender<TransportTelemetry>,
+    ) -> Self {
+        self.transport_events = Some(transport_events);
         self
     }
 
@@ -478,6 +510,25 @@ impl StreamsHandler {
                     })
                 });
                 Ok((Vec::new(), Box::pin(live)))
+            }
+            Subject::TransportEvents => {
+                // Task 216: map the transport's lifecycle telemetry into
+                // `Event { TransportEvent }`. When no transport is attached
+                // the subject is valid but yields nothing (an empty live
+                // stream that never produces) — a co-located Core has no
+                // remote sessions to report.
+                match &self.transport_events {
+                    Some(tx) => {
+                        let rx = tx.subscribe();
+                        let live = BroadcastStream::new(rx)
+                            .filter_map(|item| item.ok().map(map_transport_event));
+                        Ok((Vec::new(), Box::pin(live)))
+                    }
+                    None => {
+                        let empty = futures::stream::pending::<Event>();
+                        Ok((Vec::new(), Box::pin(empty)))
+                    }
+                }
             }
         }
     }
@@ -813,6 +864,8 @@ pub fn parse_subject(s: &str) -> Result<Subject, Status> {
     match s {
         "workspace.events" => Ok(Subject::WorkspaceEvents),
         "workarea.events" => Ok(Subject::WorkareaEvents),
+        // Task 216: the transport lifecycle subject (`design/11 §5.3`).
+        "transport.events" => Ok(Subject::TransportEvents),
         _ => Err(invalid_subject(s)),
     }
 }
@@ -975,6 +1028,61 @@ fn map_workspace_event(ev: WorkspaceEvent) -> Event {
     }
 }
 
+/// Map a transport-layer [`TransportTelemetry`] event (`design/11 §5.3`,
+/// Task 216) into a wire [`Event`] carrying the `TransportEvent` oneof arm
+/// (`Event.body.transport = 16`). The `offset` is left 0; the per-subject
+/// pump stamps it. D1: there is NO `transport.proto` — this rides the
+/// `streams.proto` `Event` oneof.
+fn map_transport_event(ev: TransportTelemetry) -> Event {
+    let kind = match ev {
+        TransportTelemetry::SessionOpened {
+            device_id,
+            path,
+            client_kind,
+        } => TransportEventKind::SessionOpened(ProtoSessionOpened {
+            device_id: device_id.0,
+            path: map_path(path) as i32,
+            client_kind: map_client_kind(client_kind) as i32,
+        }),
+        TransportTelemetry::SessionClosed { device_id } => {
+            TransportEventKind::SessionClosed(ProtoSessionClosed {
+                device_id: device_id.0,
+            })
+        }
+        TransportTelemetry::RelaySwitched { relay_url } => {
+            TransportEventKind::RelaySwitched(ProtoRelaySwitched { relay_url })
+        }
+        TransportTelemetry::NatSuccessChanged { direct_percent } => {
+            TransportEventKind::NatSuccessChanged(ProtoNatSuccessChanged { direct_percent })
+        }
+    };
+    Event {
+        offset: 0,
+        at: Some(now_ts()),
+        body: Some(EventBody::Transport(ProtoTransportEvent {
+            kind: Some(kind),
+        })),
+    }
+}
+
+/// Map the transport [`ConnectionPath`] to the proto [`TransportPath`].
+fn map_path(path: ConnectionPath) -> TransportPath {
+    match path {
+        ConnectionPath::Direct => TransportPath::Direct,
+        ConnectionPath::Relayed => TransportPath::Relayed,
+        ConnectionPath::Lan => TransportPath::Lan,
+    }
+}
+
+/// Map the transport [`ClientKind`] to the proto [`ProtoClientKind`].
+fn map_client_kind(kind: ClientKind) -> ProtoClientKind {
+    match kind {
+        ClientKind::DesktopSplitHost => ProtoClientKind::DesktopSplitHost,
+        ClientKind::Mobile => ProtoClientKind::Mobile,
+        ClientKind::Web => ProtoClientKind::Web,
+    }
+}
+
 fn map_suggestion_event(chip: Chip) -> Event {
     Event {
         offset: 0,
@@ -1065,6 +1173,37 @@ mod tests {
         let e = parse_subject("nope.bad").unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument);
         assert!(e.message().contains("streams.unknown_subject"));
+    }
+
+    #[test]
+    fn parse_transport_events_ok() {
+        // Task 216: the transport lifecycle subject.
+        assert_eq!(
+            parse_subject("transport.events").unwrap(),
+            Subject::TransportEvents
+        );
+    }
+
+    #[test]
+    fn map_transport_event_carries_the_frozen_oneof_arm() {
+        // Task 216: the TransportTelemetry → Event{Transport(..)} mapping lands
+        // on the FROZEN `Event.body.transport = 16` arm with the right kind.
+        let ev = map_transport_event(TransportTelemetry::SessionOpened {
+            device_id: concerto_transport::DeviceId("d".into()),
+            path: ConnectionPath::Relayed,
+            client_kind: ClientKind::DesktopSplitHost,
+        });
+        match ev.body {
+            Some(EventBody::Transport(te)) => match te.kind {
+                Some(TransportEventKind::SessionOpened(so)) => {
+                    assert_eq!(so.device_id, "d");
+                    assert_eq!(so.path, TransportPath::Relayed as i32);
+                    assert_eq!(so.client_kind, ProtoClientKind::DesktopSplitHost as i32);
+                }
+                other => panic!("expected SessionOpened, got {other:?}"),
+            },
+            other => panic!("expected Transport body, got {other:?}"),
+        }
     }
 
     #[test]

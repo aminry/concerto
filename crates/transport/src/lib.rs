@@ -46,10 +46,12 @@ pub mod state;
 // concerto_transport::{..}` (217's façade + the clients import from here). The
 // canonical declarations live in `api`; this re-exports them at the root.
 pub use api::{
-    classify_path, connect_channel, direct_endpoint_addr, ActiveSession, ApiDispatcher, ChannelTag,
-    ConnectionPath, DeviceId, DiscoveredCore, IrohConnector, IrohDuplex, IrohTransport,
-    MdnsBrowser, MdnsConfig, MdnsResponder, NatStats, NoiseDuplex, PairingListener, RelayInfo,
-    TransportConfig, TransportState, WakeupHint, ALPN, MAX_MESSAGE_SIZE, SERVICE_TYPE, TXT_CAPS,
-    TXT_CORE_PUBKEY, TXT_ENDPOINT_ID, TXT_VERSION,
+    classify_path, connect_channel, direct_endpoint_addr, nat_success_is_material,
+    network_class_for, ActiveSession, ApiDispatcher, ChannelTag, ClientKind, ConnectionPath,
+    DeviceId, DiscoveredCore, IrohConnector, IrohDuplex, IrohTransport, MdnsBrowser, MdnsConfig,
+    MdnsResponder, NatStats, NetworkStats, NoiseDuplex, PairingListener, RelayInfo,
+    TransportConfig, TransportState, TransportTelemetry, WakeupHint, ALPN, MAX_MESSAGE_SIZE,
+    NAT_SUCCESS_DELTA_PCT, NAT_SUCCESS_PRD_LINE_PCT, SERVICE_TYPE, TXT_CAPS, TXT_CORE_PUBKEY,
+    TXT_ENDPOINT_ID, TXT_VERSION,
 };
 pub use error::{Result, TransportError};

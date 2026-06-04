@@ -72,17 +72,17 @@ Make the Core's Iroh transport **survive a client's network change** (Wi-Fi→LT
 7. `scripts/smoke.sh` → unchanged (the smoke Core is co-located/UDS; Iroh telemetry/migration is the remote path). Exits 0.
 
 ## Definition of Done
-- [ ] `streams.proto` gains the `TransportEvent` message + `Event.body` oneof arm at the next free field number above Task 202's `GapDetected` (coordinated, no collision); NO `transport.proto`
-- [ ] `TransportEvent.kind` carries `SessionOpened`/`RelaySwitched`/`NatSuccessChanged` (+`SessionClosed` if folded) per §5.3
-- [ ] `NatStats` extended with a by-client-kind breakdown ({ desktop-split-host, mobile, web }); §4 field names preserved
-- [ ] Path-change handling: a migration updates `path`/`last_seen` + re-classifies, does **not** drop the session or emit `session_closed`; only a true close removes it
-- [ ] Reconnect-after-true-drop replays from offset via Task 202's ring buffer (seam, not re-implemented)
-- [ ] `nat_success_changed` debounced/threshold-gated; threshold a named constant
-- [ ] `nat_stats` surfaced via Runtime/Devices (D1); no new service
-- [ ] Tier-2 tests (forced path-change survives, bucket increments, threshold event, true-drop seam, proto round-trip) pass; the real-migration / real-NAT-% Tier-3 lines stated in Verification
-- [ ] Verification commands pass; smoke unchanged (exits 0); interfaces regenerated + committed
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
-- [ ] Single commit with the message below
+- [x] `streams.proto` gains the `TransportEvent` message + `Event.body` oneof arm at the next free field number above Task 202's `GapDetected` (coordinated, no collision); NO `transport.proto`
+- [x] `TransportEvent.kind` carries `SessionOpened`/`RelaySwitched`/`NatSuccessChanged` (+`SessionClosed` if folded) per §5.3
+- [x] `NatStats` extended with a by-client-kind breakdown ({ desktop-split-host, mobile, web }); §4 field names preserved
+- [x] Path-change handling: a migration updates `path`/`last_seen` + re-classifies, does **not** drop the session or emit `session_closed`; only a true close removes it
+- [x] Reconnect-after-true-drop replays from offset via Task 202's ring buffer (seam, not re-implemented)
+- [x] `nat_success_changed` debounced/threshold-gated; threshold a named constant
+- [x] `nat_stats` surfaced via Runtime/Devices (D1); no new service
+- [x] Tier-2 tests (forced path-change survives, bucket increments, threshold event, true-drop seam, proto round-trip) pass; the real-migration / real-NAT-% Tier-3 lines stated in Verification
+- [x] Verification commands pass; smoke unchanged (exits 0); interfaces regenerated + committed
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/proto/proto/concerto/v1/streams.proto` (modified — `TransportEvent` + oneof arm; coordinate field number with Task 202)
@@ -109,6 +109,16 @@ change; real LTE migration + real-NAT direct-% are Tier-3.
 Refs: tasks/v1.0/216-quic-migration-telemetry.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- `TransportEvent` field number assigned (+ the Task 202 `GapDetected` number it sits above) / `ClientKind` value set + where the kind is sourced / `NatStats` by-kind shape as frozen / `nat_success_changed` threshold constant / `nat_stats` RPC home chosen (Runtime vs Devices) / migration-vs-disconnect classification approach / Tier-3 lines deferred (real migration, real-NAT %) / Open questions / Deliberate debt / Smoke-gate state (unchanged)
+## Handoff Notes (filled in when finishing)
+- **Drift from plan:** None of substance. Two small, in-`Outputs` additions beyond the literal proto/handler edits, both flagged here: (a) `crates/proto/proto/concerto/v1/runtime.proto` was edited (the `nat_stats` home — Runtime — needed the `GetNatStats` RPC + `NatStats`/`NetworkStats` messages); it imports `concerto/v1/streams.proto` for the `ClientKind` enum (the by-kind map key is the enum's canonical name string, since a proto map key cannot be an enum). The task `Outputs` named `runtime.rs`; the matching `.proto` is the implied wire side and is the `nat_stats` D1 home — flagged, not silent. (b) The `TransportEvent` proto arm + `TransportPath`/`ClientKind`/`SessionOpened`/`SessionClosed`/`RelaySwitched`/`NatSuccessChanged` messages all live in `streams.proto` per D1. No `transport.proto` was created.
+  - **`TransportEvent` field number:** `Event.body.transport = 16` — the next free number above Task 202's merged `gap_detected = 15` (verified against the live `streams.proto`; V0.1 oneof tops at `suggestion = 14`). Append-only, FROZEN, never moves. `TransportEvent.kind` oneof = `session_opened = 1` / `session_closed = 2` (folded in per §5.3, it is broadcast too) / `relay_switched = 3` / `nat_success_changed = 4`.
+  - **`ClientKind` value set + source:** `{ DesktopSplitHost, Mobile, Web }` (proto `CLIENT_KIND_DESKTOP_SPLIT_HOST/MOBILE/WEB`, `*_UNSPECIFIED = 0`). The Rust enum is `concerto_transport::ClientKind` (proto-free in the transport leaf). **Source:** known at session establishment from the device/connect metadata (`design/11 §3.1`). At the raw Iroh accept boundary the device cert (which carries the precise kind) is only resolved later inside the gRPC auth layer (Task 210), so V1.0 attributes the over-Iroh accept path to `DesktopSplitHost` by default and exposes a typed seam `IrohTransport::record_session_open(device_id, conn, client_kind)` so 210/217 can carry the precise kind once resolved. `web` arrives via the WSS bridge (Task 215), not this accept loop.
+  - **`NatStats` by-kind shape (FROZEN):** `NatStats { direct_today, relayed_today, lan_today, by_network_class: HashMap<String, NetworkStats>, by_client_kind: HashMap<ClientKind, NetworkStats> }` where `NetworkStats { direct, relayed, lan }`. `§4` canonical names (`direct_today`/`relayed_today`/`by_network_class`) preserved; `lan_today` + `by_client_kind` are the V1.0 additions. On the wire (`runtime.proto`) both maps are `map<string, NetworkStats>`; the by-client-kind map is keyed on `ClientKind::as_key()` (the proto enum value name).
+  - **`nat_success_changed` threshold:** named const `NAT_SUCCESS_DELTA_PCT = 5` (percentage points), plus a crossing of `NAT_SUCCESS_PRD_LINE_PCT = 70` (PRD §22.3 line) — either fires it. `nat_success_is_material(prev, now)` is the predicate; debounced via `TransportState.last_nat_percent`. Simple hysteresis, not a stats engine.
+  - **`nat_stats` RPC home (FROZEN):** **Runtime** — `Runtime.GetNatStats(Empty) → NatStats`, alongside `GetServerCapabilities` (the existing transport/runtime read path, Task 201). NOT a new service (D1), NOT Devices. Surfaced via a `NatStatsSource` trait on `RuntimeHandler` (default `NoNatStats` = empty/0% for a co-located/UDS Core; Task 217 wires the live `IrohTransport` source).
+  - **Migration-vs-disconnect classification:** a path change is `IrohTransport::note_migration(device_id)` → `TransportState::note_path_change` → `ActiveSession::refresh_path()` (re-`classify_path` via `Connection::paths()`, update `path` + `last_seen`); the session stays in the map, NO `session_closed`, no new NAT count (already counted at open). A TRUE drop is the serve loop's `accept_bi` returning `Err` (peer closed) → session removed + `session_closed` emitted. QUIC connection-id preservation is native to Iroh/QUIC; the Core-side work is exactly to NOT treat a path change as a disconnect.
+- **Open questions for next task (217):** (1) Field number is `transport = 16`; the `NatStats`/`ClientKind` shape and the **Runtime** `nat_stats` home are as frozen above — 217's `TransportHandle` façade wraps `nat_stats()`, `subscribe_telemetry()`, `record_session_open()`, `note_migration()`, `record_session_close()` and supplies the `NatStatsSource` to `RuntimeHandler::with_nat_stats(..)` and the telemetry `broadcast::Sender` to `StreamsHandler::with_transport_events(..)`. (2) The precise per-session `ClientKind` at the Iroh accept boundary (currently defaulted to `DesktopSplitHost`) should be threaded from the Task-210 auth context through 217 via the typed `record_session_open` seam — until then split-host-desktop vs mobile are not distinguished on the raw accept path (web is, via 215). (3) `network_class` is currently the path-class label the Core can attest (`direct`/`relayed`/`lan`), not a client-reported NIC class (`wifi`/`cellular`/`ethernet`) — a richer client-reported class is a later task.
+- **Deliberate debt:** None (no `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code).
+- **Smoke-gate state:** unchanged — no new smoke check added; `scripts/smoke.sh` passes (exit 0, ~66s, all checks PASS).
+- **Tier-3 (deferred, manual phase-gate):** This Tier-2 loopback double does NOT cover a **real device migrating Wi-Fi↔LTE** across a real network, nor the **real-NAT direct-%** across diverse real NATs. Those are the Phase-2 manual checklist lines ("pair from a real remote network and confirm `nat_stats` direct-% on real NATs"; real Wi-Fi→LTE handoff) and the residual Tier-3 rows of `design/spikes/iroh-nat-findings.md` (symmetric↔symmetric, two residential ISPs, UDP-blocking ISP, real cellular handoff) — all physical, not reproducible on loopback.
 ```

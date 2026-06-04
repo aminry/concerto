@@ -19,12 +19,17 @@
 //!
 //! All error paths flow through [`crate::error_map::error_to_status`].
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use concerto_proto::v1::runtime_server::Runtime as RuntimeService;
-use concerto_proto::v1::{ResourceLimits, RuntimeStatus, ServerCapabilities, TransportKind};
+use concerto_proto::v1::{
+    NatStats as ProtoNatStats, NetworkStats as ProtoNetworkStats, ResourceLimits, RuntimeStatus,
+    ServerCapabilities, TransportKind,
+};
+use concerto_transport::NatStats as TransportNatStats;
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status};
 
@@ -46,6 +51,31 @@ const MAX_PAYLOAD_BYTES: u64 = 16 * 1024 * 1024;
 /// string is a breaking change for every client.
 const SCHEMA_VERSION: &str = "concerto.v1";
 
+/// The transport-side NAT telemetry source the `GetNatStats` RPC reads
+/// (Task 216, D1 — `nat_stats` surfaces on Runtime, not a new service).
+///
+/// Implemented by the live Iroh transport (via Task 217's `TransportHandle`
+/// façade over `concerto_transport::IrohTransport::nat_stats`) and supplied to
+/// the handler at construction. A co-located / UDS-only Core (no remote
+/// transport attached) uses [`NoNatStats`], which returns empty counters — the
+/// honest "no remote sessions yet" answer the Desktop badge renders as 0%.
+pub trait NatStatsSource: Send + Sync + 'static {
+    /// Snapshot the current per-client-kind + per-network-class NAT counters.
+    fn nat_stats(&self) -> TransportNatStats;
+}
+
+/// The default [`NatStatsSource`] for a Core with no remote transport attached:
+/// empty counters. `GetNatStats` returns all-zero stats (0% direct) rather than
+/// erroring, so the Desktop/Diagnostics read path is always answerable.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoNatStats;
+
+impl NatStatsSource for NoNatStats {
+    fn nat_stats(&self) -> TransportNatStats {
+        TransportNatStats::default()
+    }
+}
+
 /// Implements the generated `Runtime` trait from `concerto-proto`.
 ///
 /// Constructed by [`crate::api_server::ApiServerActor`] with handles
@@ -61,16 +91,31 @@ pub struct RuntimeHandler {
     /// until a consumer lands.
     #[allow(dead_code)]
     supervisor_view: SupervisorView,
+    /// The transport NAT-telemetry source the `GetNatStats` RPC reads (Task
+    /// 216, D1). Defaults to [`NoNatStats`] (empty) when no remote transport is
+    /// attached; Task 217 wires the live `IrohTransport` source here.
+    nat_stats: Arc<dyn NatStatsSource>,
 }
 
 impl RuntimeHandler {
     /// Build a new handler. `started_at` is the wall-clock instant
-    /// recorded by [`crate::runtime::Runtime::start`].
+    /// recorded by [`crate::runtime::Runtime::start`]. The NAT-stats source
+    /// defaults to [`NoNatStats`] (no remote transport); use
+    /// [`Self::with_nat_stats`] to attach the live transport source (Task 217).
     pub fn new(started_at: Arc<SystemTime>, supervisor_view: SupervisorView) -> Self {
         Self {
             started_at,
             supervisor_view,
+            nat_stats: Arc::new(NoNatStats),
         }
+    }
+
+    /// Attach a live [`NatStatsSource`] (Task 217's `TransportHandle`) so
+    /// `GetNatStats` returns real per-client-kind counters. Chains at
+    /// construction time (the api_server builder pattern).
+    pub fn with_nat_stats(mut self, source: Arc<dyn NatStatsSource>) -> Self {
+        self.nat_stats = source;
+        self
     }
 
     fn server_version() -> &'static str {
@@ -141,6 +186,52 @@ impl RuntimeService for RuntimeHandler {
             uptime_seconds,
         };
         Ok(Response::new(status))
+    }
+
+    #[tracing::instrument(skip_all, name = "Runtime::GetNatStats")]
+    async fn get_nat_stats(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<ProtoNatStats>, Status> {
+        // Snapshot the transport's per-client-kind + per-network-class counters
+        // (Task 216, D1). With no remote transport attached this is empty (0%
+        // direct) — never an error, so the Desktop badge / Diagnostics read path
+        // is always answerable.
+        Ok(Response::new(nat_stats_to_proto(
+            self.nat_stats.nat_stats(),
+        )))
+    }
+}
+
+/// Map the transport [`TransportNatStats`] to the proto [`ProtoNatStats`]
+/// (Task 216). Preserves the `design/11 §4` aggregate field names and projects
+/// both breakdown maps; the by-client-kind map is keyed on the `ClientKind`
+/// canonical name string (a proto map key cannot be an enum).
+fn nat_stats_to_proto(s: TransportNatStats) -> ProtoNatStats {
+    let by_network_class: HashMap<String, ProtoNetworkStats> = s
+        .by_network_class
+        .into_iter()
+        .map(|(k, v)| (k, network_stats_to_proto(v)))
+        .collect();
+    let by_client_kind: HashMap<String, ProtoNetworkStats> = s
+        .by_client_kind
+        .into_iter()
+        .map(|(k, v)| (k.as_key().to_string(), network_stats_to_proto(v)))
+        .collect();
+    ProtoNatStats {
+        direct_today: s.direct_today,
+        relayed_today: s.relayed_today,
+        lan_today: s.lan_today,
+        by_network_class,
+        by_client_kind,
+    }
+}
+
+fn network_stats_to_proto(v: concerto_transport::NetworkStats) -> ProtoNetworkStats {
+    ProtoNetworkStats {
+        direct: v.direct,
+        relayed: v.relayed,
+        lan: v.lan,
     }
 }
 

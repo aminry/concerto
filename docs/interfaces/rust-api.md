@@ -1137,6 +1137,32 @@ pub enum ConnectionPath {
 }
 ```
 
+### enum `ClientKind`
+
+```rust
+pub enum ClientKind {
+    /// Split-host Desktop (Tauri shell on a different machine), over Iroh.
+    DesktopSplitHost,
+    /// Mobile (iOS / Android via the RN Iroh native module), over Iroh.
+    Mobile,
+    /// Web (browser), reaching the Core via the WSS bridge (Task 215).
+    Web,
+}
+```
+
+### struct `NetworkStats`
+
+```rust
+pub struct NetworkStats {
+    /// Sessions that came up on a direct (hole-punched) path.
+    pub direct: u32,
+    /// Sessions that came up relayed.
+    pub relayed: u32,
+    /// Sessions that came up LAN-direct.
+    pub lan: u32,
+}
+```
+
 ### struct `NatStats`
 
 ```rust
@@ -1147,6 +1173,12 @@ pub struct NatStats {
     pub relayed_today: u32,
     /// Sessions that came up LAN-direct today.
     pub lan_today: u32,
+    /// Per-network-class counters (`design/11 §4` `by_network_class`). Key is a
+    /// coarse network label (`"wifi"` / `"cellular"` / `"ethernet"` / `"other"`).
+    pub by_network_class: HashMap<String, NetworkStats>,
+    /// Per-client-kind counters (`design/11 §2`). Keyed by [`ClientKind`] so the
+    /// split-host-desktop-vs-mobile direct-rate gap is visible.
+    pub by_client_kind: HashMap<ClientKind, NetworkStats>,
 }
 ```
 
@@ -1160,8 +1192,45 @@ pub struct ActiveSession {
     pub iroh_connection: Connection,
     /// The classified connection path, refreshed from Iroh's signal.
     pub path: ConnectionPath,
+    /// The kind of client this session belongs to (`design/11 §2`) — drives the
+    /// by-client-kind NAT breakdown. Known at session establishment.
+    pub client_kind: ClientKind,
     /// Last time a stream on this connection was seen (liveness / idle GC).
     pub last_seen: Instant,
+}
+```
+
+### enum `TransportTelemetry`
+
+```rust
+pub enum TransportTelemetry {
+    /// A device established a session (`transport.session_opened`).
+    SessionOpened {
+        /// The device id (the session key).
+        device_id: DeviceId,
+        /// The path the session came up on.
+        path: ConnectionPath,
+        /// The kind of client.
+        client_kind: ClientKind,
+    },
+    /// A device disconnected — a TRUE connection drop, NOT a path migration
+    /// (`transport.session_closed`). Migration updates `path` in place and does
+    /// NOT emit this (`design/11 §3.7`, §7.4 — the FROZEN migration contract).
+    SessionClosed {
+        /// The device id whose session dropped.
+        device_id: DeviceId,
+    },
+    /// The relay URL the Core registers with changed (`transport.relay_switched`).
+    RelaySwitched {
+        /// The new relay URL; empty under `disable_remote` / no relay.
+        relay_url: String,
+    },
+    /// The rolling 1-hour direct-% materially changed (`transport.nat_success_changed`).
+    /// Debounced (see [`NAT_SUCCESS_DELTA_PCT`] / the 70% PRD line).
+    NatSuccessChanged {
+        /// The new rolling direct-% (0..=100).
+        direct_percent: u32,
+    },
 }
 ```
 
@@ -1173,6 +1242,10 @@ pub struct TransportState {
     pub sessions: HashMap<DeviceId, ActiveSession>,
     /// Daily NAT-success counters (216 aggregates; 212 seeds).
     pub nat_stats: NatStats,
+    /// The last rolling direct-% the transport emitted a `NatSuccessChanged`
+    /// for, so the debounce ([`nat_success_is_material`]) is exact. `None` until
+    /// the first session (so the first session emits the initial rate).
+    pub last_nat_percent: Option<u32>,
 }
 ```
 
@@ -1291,6 +1364,13 @@ pub struct IrohTransport {
     /// re-announce; deregistered (mDNS goodbye) on [`IrohTransport::stop_mdns`]
     /// / drop.
     pub(crate) mdns: Arc<Mutex<Option<MdnsResponder>>>,
+    /// The transport-lifecycle telemetry broadcast (`design/11 §5.3`, Task 216).
+    /// The serve loop / relay switch publish [`TransportTelemetry`] here; the
+    /// Core subscribes (via [`IrohTransport::subscribe_telemetry`]) and maps each
+    /// into the `streams.proto` `Event { TransportEvent }` arm on the
+    /// `transport.events` subject. Held as a `broadcast::Sender` so it can be
+    /// published from spawned per-connection tasks with no receiver attached.
+    pub(crate) telemetry_tx: tokio::sync::broadcast::Sender<TransportTelemetry>,
     pub(crate) shutdown: CancellationToken,
 }
 ```
