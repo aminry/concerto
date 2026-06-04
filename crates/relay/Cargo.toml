@@ -30,6 +30,18 @@ iroh-relay = { workspace = true, features = ["server"] }
 # iroh/iroh-relay use; no new crypto C dep (also a transitive iroh-relay dep).
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
+# Task 215: the WSS↔Iroh bridge (`design/11 §3.4` Path B). `tokio-tungstenite`
+# is the async WebSocket server/client (binary frames pump 1:1 onto the Iroh bidi
+# stream); `tokio-rustls` terminates the browser's outer `wss://` TLS over the
+# same rustls/ring stack iroh uses; `rustls-pemfile` parses the operator's PEM
+# cert/key; `rcgen` mints the ephemeral self-signed cert for the loopback double
+# + dev fallback. `futures` gives the `Sink`/`Stream` split for the pump. All
+# rustls-backed (no native-tls/openssl) — Windows-lane friendly (Task 113).
+tokio-tungstenite = { workspace = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rcgen = "0.14"
+futures.workspace = true
+
 # Task 214: Prometheus metrics endpoint (`design/11 §6.3`). The `prometheus`
 # crate is a maintained, widely-deployed registry + text-exposition encoder
 # (Apache-2.0 OR MIT, already on the deny allow-list) — no exporter framework
@@ -62,6 +74,9 @@ futures = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 http = "1"
+# Task 215: the WSS-bridge double's client side — a tokio-tungstenite WSS client
+# over a rustls TLS connector trusting the bridge's self-signed cert.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 
 [build-dependencies]
 # Generates the trivial echo/firehose service the relay-route double drives over

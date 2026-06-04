@@ -69,24 +69,26 @@ Add the **WSS bridge** to the `concerto-relay` binary: a WebSocket-Secure listen
 7. `scripts/smoke.sh` → unchanged (the smoke Core is co-located/UDS; the WSS bridge is relay-side and not on the co-located happy path). Exits 0.
 
 ## Definition of Done
-- [ ] `WSS_LISTEN_ADDR` bound: set ⇒ WSS bridge listener up; unset ⇒ Iroh-only relay unchanged from Task 214
-- [ ] `/wss/<endpoint_id>` route parses the endpoint ID and upgrades; malformed IDs rejected pre-upgrade
-- [ ] Per-connection bridge opens **one** Iroh bidi stream through the relay's existing endpoint; registers/removes a `WssBridge` in `RelayState.wss_bridges`
-- [ ] Opaque bidirectional byte pump (WSS binary frames ↔ Iroh stream bytes), no parsing/decoding of frame contents
-- [ ] Ciphertext-only invariant enforced + property-tested; bridge logs/metrics expose only §3.9-permitted metadata
-- [ ] Clean teardown on either-side close/idle/error; no surviving bridge state
-- [ ] WSS server crate license cleared via `cargo deny check`; any new SPDX dated-ratified in `deny.toml`
-- [ ] Verification commands pass; smoke unchanged (exits 0); interfaces clean or regenerated
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
-- [ ] Single commit with the message below
+- [x] `WSS_LISTEN_ADDR` bound: set ⇒ WSS bridge listener up; unset ⇒ Iroh-only relay unchanged from Task 214
+- [x] `/wss/<endpoint_id>` route parses the endpoint ID and upgrades; malformed IDs rejected pre-upgrade
+- [x] Per-connection bridge opens **one** Iroh bidi stream through the relay's existing endpoint; registers/removes a `WssBridge` in `RelayState.wss_bridges`
+- [x] Opaque bidirectional byte pump (WSS binary frames ↔ Iroh stream bytes), no parsing/decoding of frame contents
+- [x] Ciphertext-only invariant enforced + property-tested; bridge logs/metrics expose only §3.9-permitted metadata
+- [x] Clean teardown on either-side close/idle/error; no surviving bridge state
+- [x] WSS server crate license cleared via `cargo deny check`; any new SPDX dated-ratified in `deny.toml`
+- [x] Verification commands pass; smoke unchanged (exits 0); interfaces clean or regenerated
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code (deliberate ones in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
-- `crates/relay/src/` (modified/new — the WSS bridge listener + per-connection pump + `wss_bridges` wiring; module placement matches Task 214's layout)
-- `crates/relay/Cargo.toml` (modified — WSS server + rustls TLS deps)
-- `Cargo.toml` (modified only if the WSS server dep is pinned in `[workspace.dependencies]`)
-- `deny.toml` (modified only if a new SPDX needs dated ratification)
-- `crates/relay/tests/wss_bridge.rs` (new — loopback round-trip + ciphertext-only + routing + teardown tests)
-- `docs/interfaces/rust-api.md` (regenerated only if `crates/relay/src/api.rs` gained a public type)
+- `crates/relay/src/wss.rs` (**new** — the WSS bridge listener + per-connection opaque pump + `wss_bridges` wiring; new module in Task 214's layout)
+- `crates/relay/src/api.rs` (modified — extended `WssBridge` {bridge_id, endpoint_id, peer_addr}; new `WssBridgeServer`/`WssBridgeMetrics`/`WssTlsConfig` decls + `WSS_PATH_PREFIX`/`MAX_ENDPOINT_ID_LEN` consts)
+- `crates/relay/src/lib.rs` (modified — `pub mod wss;` + re-exports), `crates/relay/src/main.rs` (modified — bind `WSS_LISTEN_ADDR` → spawn the bridge; `WSS_TLS_CERT_PATH`/`WSS_TLS_KEY_PATH` + self-signed fallback), `crates/relay/src/relay.rs` (modified — `Relay::start_wss_bridge` + `Relay::state`), `crates/relay/src/metrics.rs` (modified — FROZEN WSS metric names + `WssMetricsInner` + `RelayMetrics::wss_metrics`)
+- `crates/relay/Cargo.toml` (modified — `tokio-tungstenite` + `tokio-rustls` + `rcgen` + `futures`; dev-dep `tokio-rustls`)
+- `Cargo.toml` (modified — `[workspace.dependencies] tokio-tungstenite = "0.26"` rustls-backed, with rationale)
+- `deny.toml` (**NOT modified** — `tokio-tungstenite`/`tungstenite` are MIT, already allow-listed; no new SPDX. Avoided `rustls-pemfile` (RUSTSEC-2025-0134 unmaintained) by parsing PEM via `rustls-pki-types::PemObject`, so `cargo deny check` stays green with no edit.)
+- `crates/relay/tests/wss_bridge.rs` (new — loopback round-trip + ciphertext-only property + routing + teardown tests)
+- `docs/interfaces/rust-api.md` (regenerated — `api.rs` gained the public bridge types)
 
 ## Commit message
 ```
@@ -102,6 +104,112 @@ browser over a real network is Phase-5/Tier-3.
 Refs: tasks/v1.0/215-relay-wss-bridge.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / WSS server crate chosen + its license clearance / `WSS_LISTEN_ADDR` + `/wss/<endpoint_id>` framing as frozen / ciphertext-only test shape / regen-interfaces diff state / Tier-3 lines deferred to P5 (real browser, real-WAN-relayed) / Smoke-gate state (unchanged)
+## Handoff Notes (filled in when finishing)
+
+- **Drift from plan.**
+  - **"The relay's existing Iroh endpoint" doesn't exist as a dialable endpoint.**
+    `iroh-relay::Server` (Task 214's embed) is a relay-**protocol** server — it
+    forwards QUIC and assists hole-punch, but exposes **no client `iroh::Endpoint`**
+    to dial peers (`grep` confirms its only surface is `http_addr`/`metrics`/
+    `shutdown`/…). So the bridge stands up its **own** Iroh client `Endpoint`
+    configured `RelayMode::Custom(relay_url)` (the relay's own URL) and dials the
+    addressed Core **through the same relay** the Core registered with — exactly
+    the relay-route test's relay-forced model. This is still "one Iroh endpoint"
+    *for the bridge*, but it is a second endpoint *in the process* from the
+    iroh-relay server's perspective. Necessary, not optional — flagged here and in
+    `wss.rs`'s module doc.
+  - **WSS server crate.** `tokio-tungstenite = "0.26"` (rustls-backed,
+    `rustls-tls-webpki-roots`) over the relay's existing tokio runtime — the clean
+    framing surface (binary frames pump 1:1) the brief preferred; 214 did NOT stand
+    up a `hyper` server to hang an upgrade route on. TLS is **rustls 0.23 /
+    `tokio-rustls 0.26` / ring** (NOT native-tls/openssl), matching the Task-112
+    `reqwest`-rustls posture and keeping the Windows lane (Task 113) green. The
+    bridge terminates the browser's outer `wss://` TLS; the inner Noise IK keeps
+    the relay ciphertext-only.
+  - **PEM parsing.** Switched off `rustls-pemfile` (RUSTSEC-2025-0134 *unmaintained*
+    — `cargo deny` flagged it) to `rustls-pki-types::PemObject` (already in-tree via
+    rustls, the advisory's recommended replacement). No new dep, deny green.
+  - **Two additive env vars** for the WSS TLS material: `WSS_TLS_CERT_PATH` /
+    `WSS_TLS_KEY_PATH` (PEM). Both-unset ⇒ an ephemeral **self-signed** cert (dev /
+    loopback only — not browser-trusted; production supplies a real cert). The
+    FROZEN 214 env surface is unchanged; these are append-only.
+  - **WSS metrics added** under the FROZEN `concerto_relay_*` prefix (append-only,
+    per 214's Handoff): `concerto_relay_wss_bridges` (gauge, live bridges) +
+    `concerto_relay_wss_bytes_forwarded_total{direction="to_core"|"to_browser"}`
+    (counter vec, byte *counts* only). Registered into the same relay registry, so
+    they appear on the existing `/metrics` endpoint.
+  - **`WssBridge` struct extended** (append-only): `bridge_id` + `endpoint_id` +
+    `peer_addr` — all §3.9-permitted metadata, no payload/cert/structure.
+  - **New `Relay` methods:** `start_wss_bridge(WssTlsConfig) -> Option<WssBridgeServer>`
+    (returns `None` when `WSS_LISTEN_ADDR` unset) and `state()` (test-assert
+    `wss_bridges`). `WssBridgeServer::{start, local_addr, shutdown}`.
+
+- **`WSS_LISTEN_ADDR` + `/wss/<endpoint_id>` + framing — all FROZEN as implemented.**
+  Set ⇒ the bridge serves `wss://<host>/wss/<endpoint_id>`; unset ⇒ Iroh-only
+  relay, byte-for-byte unchanged from Task 214 (asserted: smoke `relay-route` +
+  all 214 relay tests still green). The path prefix is `WSS_PATH_PREFIX = "/wss/"`;
+  the `<endpoint_id>` tail (≤ `MAX_ENDPOINT_ID_LEN = 128`) is parsed to an
+  `iroh::EndpointId` **before** the upgrade, malformed/oversized → HTTP **400**
+  pre-upgrade. The pump is a transparent opaque byte copy: one **binary** WSS
+  message payload → exactly the bytes written to the Iroh `SendStream`, and each
+  Iroh `RecvStream` read → exactly one binary WSS frame. **One WSS connection ==
+  one Iroh bidi stream.** No relay-imposed envelope / length-prefix / re-framing.
+  The bridge writes the **raw** bidi stream — NO channel-tag byte, NO Noise (the
+  browser's encrypted gRPC payload already carries the transport's framing; the
+  relay must not interpose).
+
+- **Open questions for Task 521 (the web client that drives this bridge).**
+  - Build the URL as **`wss://<relay-host>/wss/<endpoint_id>`** — the `/wss/`
+    prefix + the 64-hex Iroh endpoint id, parsed by the relay to an `EndpointId`
+    pre-upgrade (a malformed id gets a 400, not an upgrade). FROZEN.
+  - Send your gRPC-over-Connect-Web bytes as **WebSocket BINARY frames** (text
+    frames carry no bridged payload). The relay copies your bytes verbatim onto
+    one Iroh bidi stream to the Core and back — it imposes **no envelope**, so the
+    Core sees exactly what your transport adapter emits. Establish **Noise IK
+    inside** the WSS stream with your device cert (`design/12 §3.4`); the relay is
+    ciphertext-only and validates nothing — the **Core** validates the cert.
+  - The relay's outer TLS may be a real operator cert (production) **or** a
+    self-signed dev cert (loopback). A real browser needs a browser-trusted cert on
+    the relay host; the Tier-2 double pins the self-signed cert in a custom root
+    store (not representative of a browser's trust path — a Tier-3 concern).
+
+- **Ciphertext-only test shape.** A 4 KiB **random opaque blob** (stands in for the
+  browser's Noise/gRPC ciphertext) round-trips browser→relay→Core→relay→browser
+  **byte-identical** through the in-process double; the pump's only input type is
+  `&[u8]` (it never deserializes a frame). The invariant test then scrapes the
+  relay's observable surface (`metrics_text()`) and asserts the §3.9-permitted
+  metadata is present (`concerto_relay_wss_bridges`, the byte counters) **and the
+  blob never appears** — a byte-count metric structurally cannot embed payload. A
+  code path that tried to decode the inner frame would have to introduce a non-
+  `&[u8]` derivation the pump does not have.
+
+- **Deliberate debt.** None deferred via `TODO`/`FIXME`/`unimplemented!`/`todo!`.
+  Scope-out items left for later tasks (all design-assigned, not debt): bandwidth
+  quotas / per-endpoint abuse caps for the WSS path (`§3.9` 1 Gbps / 50 GB/day —
+  the relay's `BANDWIDTH_CAP_PER_ENDPOINT` policy layer exists from 214 but is not
+  wired onto the WSS pump here; a relay-policy concern); Iroh-in-browser /
+  eliminating the bridge (**V2.0**, R-4); multi-region relay selection (**V1.5**,
+  R-6); the web **client** itself (**Tasks 519–522**).
+
+- **regen-interfaces diff state.** **Regenerated + committed.** `crates/relay/src/
+  api.rs` gained the public `WssBridgeServer` / `WssBridgeMetrics` / `WssTlsConfig`
+  decls and the extended `WssBridge`, so `docs/interfaces/rust-api.md` changed
+  (+37/−2); `git diff --exit-code docs/interfaces/` is clean **after** the commit.
+
+- **Tier-3 lines this Tier-2 double does NOT cover** (→ Phase-5 web client / the
+  Phase-2/Phase-5 manual checklist): a **real browser** establishing a **real
+  Noise IK** over a **real `wss://` connection across a real network** to a Core
+  **behind a real NAT**, served by a relay on **real infrastructure** (Fly.io
+  anycast) with a **browser-trusted TLS cert** — "open the web client on a borrowed
+  laptop … LAN-direct + relayed" (Tasks 519–522). It depends on the still-`PENDING`
+  real-WAN-relayed datapoint in `design/spikes/tonic-iroh-findings.md §5`. The
+  double proves the route + 1:1 framing + byte-identical forwarding + ciphertext-
+  only invariant + clean teardown **logic** hermetically over loopback; it does not
+  prove the **physics** (real RTT, real TLS trust, real NAT) nor a real browser's
+  WebSocket/Connect-Web behavior.
+
+- **Smoke-gate state.** **Unchanged.** No new smoke capability added (the WSS bridge
+  is relay-side and off the co-located/UDS happy path, per the task). `scripts/
+  smoke.sh` passes end-to-end (37 s, all prior caps incl. `relay-route` green);
+  `scripts/smoke.manifest` untouched.
 ```

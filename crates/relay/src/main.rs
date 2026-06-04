@@ -15,7 +15,16 @@ use concerto_relay::config::{
     ENV_BANDWIDTH_CAP_PER_ENDPOINT, ENV_MAX_ROUTES, ENV_PROMETHEUS_LISTEN_ADDR,
     ENV_RELAY_LISTEN_ADDR, ENV_WSS_LISTEN_ADDR,
 };
-use concerto_relay::{Relay, RelayConfig};
+use concerto_relay::{Relay, RelayConfig, RelayError, WssTlsConfig};
+
+/// Additive env var (Task 215): the PEM cert chain the WSS bridge terminates TLS
+/// with. Paired with [`ENV_WSS_TLS_KEY_PATH`]. Unset ⇒ an ephemeral self-signed
+/// cert is generated (dev / loopback only; production supplies a real cert).
+const ENV_WSS_TLS_CERT_PATH: &str = "WSS_TLS_CERT_PATH";
+/// Additive env var (Task 215): the PEM private key paired with the cert above.
+const ENV_WSS_TLS_KEY_PATH: &str = "WSS_TLS_KEY_PATH";
+/// SAN for the self-signed fallback cert when no operator cert is supplied.
+const WSS_SELF_SIGNED_SAN: &str = "localhost";
 
 /// Build flags beyond which there are none (Twelve-Factor strictness). We hand-
 /// roll `--help` / `--version` so the binary pulls no arg parser and stays env-
@@ -36,8 +45,12 @@ USAGE:
 ENVIRONMENT VARIABLES (design/11 §6.3):
     {ENV_RELAY_LISTEN_ADDR}             host:port for the iroh-relay HTTP server
                                   (the relay protocol endpoint). Default 0.0.0.0:80.
-    {ENV_WSS_LISTEN_ADDR}               host:port for the WSS bridge. RESERVED for
-                                  Task 215 — parsed/validated here, not yet served.
+    {ENV_WSS_LISTEN_ADDR}               host:port for the WSS<->Iroh bridge
+                                  (design/11 §3.4 Path B). Set ⇒ the bridge serves
+                                  wss://<host>/wss/<endpoint_id>; unset ⇒ Iroh-only.
+    {ENV_WSS_TLS_CERT_PATH}             PEM cert chain the WSS bridge terminates TLS
+                                  with. Unset ⇒ ephemeral self-signed (dev only).
+    {ENV_WSS_TLS_KEY_PATH}              PEM private key paired with the cert above.
     {ENV_MAX_ROUTES}                  max routing-table entries (a node handles
                                   10k-50k). Default 50000.
     {ENV_BANDWIDTH_CAP_PER_ENDPOINT}   max forwarded bytes per endpoint. Unset =
@@ -105,12 +118,58 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+
+        // WSS↔Iroh bridge (Task 215, `design/11 §3.4`): opt-in on the reserved
+        // `WSS_LISTEN_ADDR`. Unset ⇒ Iroh-only relay (unchanged from Task 214).
+        // Kept alive for the relay's lifetime; its background loop runs until the
+        // relay's shutdown token fires.
+        let _wss_bridge = match build_wss_tls() {
+            Ok(tls) => match relay.start_wss_bridge(tls).await {
+                Ok(Some(bridge)) => {
+                    tracing::info!(wss_listen = %bridge.local_addr(), "WSS bridge listening");
+                    Some(bridge)
+                }
+                Ok(None) => None, // WSS_LISTEN_ADDR unset — Iroh-only.
+                Err(e) => {
+                    eprintln!("error: starting WSS bridge: {e}");
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(e) => {
+                eprintln!("error: loading WSS TLS material: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+
         if let Err(e) = relay.run_until_signal().await {
             eprintln!("error: relay exited with error: {e}");
             return ExitCode::FAILURE;
         }
         ExitCode::SUCCESS
     })
+}
+
+/// Build the WSS bridge's TLS material (Task 215): the operator's PEM cert/key
+/// from `WSS_TLS_CERT_PATH` / `WSS_TLS_KEY_PATH` if both are set, otherwise an
+/// ephemeral self-signed pair (dev / loopback only — not browser-trusted). Only
+/// consulted when `WSS_LISTEN_ADDR` is set; cheap to build unconditionally.
+fn build_wss_tls() -> Result<WssTlsConfig, RelayError> {
+    let cert_path = std::env::var(ENV_WSS_TLS_CERT_PATH).ok();
+    let key_path = std::env::var(ENV_WSS_TLS_KEY_PATH).ok();
+    match (cert_path, key_path) {
+        (Some(cert), Some(key)) => {
+            let cert_pem = std::fs::read(&cert).map_err(|e| {
+                RelayError::Config(format!("{ENV_WSS_TLS_CERT_PATH}='{cert}': {e}"))
+            })?;
+            let key_pem = std::fs::read(&key)
+                .map_err(|e| RelayError::Config(format!("{ENV_WSS_TLS_KEY_PATH}='{key}': {e}")))?;
+            Ok(WssTlsConfig { cert_pem, key_pem })
+        }
+        (None, None) => WssTlsConfig::self_signed(WSS_SELF_SIGNED_SAN),
+        _ => Err(RelayError::Config(format!(
+            "{ENV_WSS_TLS_CERT_PATH} and {ENV_WSS_TLS_KEY_PATH} must be set together (or both unset for a self-signed dev cert)"
+        ))),
+    }
 }
 
 /// Initialize tracing from `RUST_LOG` (default `info`). iroh-relay emits WARNs

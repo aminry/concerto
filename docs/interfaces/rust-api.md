@@ -986,9 +986,44 @@ pub struct RelayState {
 
 ```rust
 pub struct WssBridge {
-    /// The bridge's identifier (the relay-side handle Task 215 keys the bridge
-    /// on).
+    /// The bridge's identifier (the relay-side handle the bridge is keyed on in
+    /// [`RelayState::wss_bridges`]). A fresh opaque id per browser connection.
     pub bridge_id: String,
+    /// The addressed Iroh endpoint id parsed from the `/wss/<endpoint_id>` path
+    /// (`design/11 §3.4`) — the Core this bridge forwards to. Routing metadata
+    /// (`design/11 §3.9`: "Iroh endpoint ID being addressed" is observable).
+    pub endpoint_id: String,
+    /// The source IP+port of the browser's WSS connection (`design/11 §3.9`:
+    /// "source IP of a connecting client" is observable — QUIC/TCP headers a
+    /// network observer sees anyway). Metadata only.
+    pub peer_addr: SocketAddr,
+}
+```
+
+### struct `WssTlsConfig`
+
+```rust
+pub struct WssTlsConfig {
+    /// The PEM-encoded certificate chain (leaf first).
+    pub cert_pem: Vec<u8>,
+    /// The PEM-encoded PKCS#8 private key.
+    pub key_pem: Vec<u8>,
+}
+```
+
+### struct `WssBridgeServer`
+
+```rust
+pub struct WssBridgeServer {
+    pub(crate) inner: crate::wss::WssBridgeInner,
+}
+```
+
+### struct `WssBridgeMetrics`
+
+```rust
+pub struct WssBridgeMetrics {
+    pub(crate) inner: crate::metrics::WssMetricsInner,
 }
 ```
 
