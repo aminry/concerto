@@ -229,9 +229,82 @@ impl ConnectionPath {
     }
 }
 
-/// Daily NAT-traversal counters (`design/11 §4`, §3.6). 212 increments these;
-/// **Task 216 owns the aggregation** (`by_network_class`,
-/// `transport.nat_success_changed`). FROZEN field layout so 216 reads it.
+/// The kind of client a session belongs to (`design/11 §2`). NAT-success is
+/// **broken out by this** so we can see whether split-host Desktops (mostly
+/// residential↔residential or residential↔cloud-VM) get worse direct rates than
+/// mobile (`design/11 §2` V1.0 note). **FROZEN value set** —
+/// { desktop-split-host, mobile, web } — and the closed enum the by-kind
+/// [`NatStats`] map keys on. The connecting client's kind is known at session
+/// establishment (the device/connect metadata, `design/11 §3.1`); web reaches
+/// the Core via the WSS bridge (Task 215) and counts as [`ClientKind::Web`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClientKind {
+    /// Split-host Desktop (Tauri shell on a different machine), over Iroh.
+    DesktopSplitHost,
+    /// Mobile (iOS / Android via the RN Iroh native module), over Iroh.
+    Mobile,
+    /// Web (browser), reaching the Core via the WSS bridge (Task 215).
+    Web,
+}
+
+impl ClientKind {
+    /// The canonical name string used as the by-client-kind map key on the wire
+    /// (`NatStats.by_client_kind`) — the `ClientKind` proto enum value name. A
+    /// proto map key cannot be an enum, so the Core keys the proto map on this.
+    /// **FROZEN strings.**
+    pub fn as_key(self) -> &'static str {
+        match self {
+            ClientKind::DesktopSplitHost => "CLIENT_KIND_DESKTOP_SPLIT_HOST",
+            ClientKind::Mobile => "CLIENT_KIND_MOBILE",
+            ClientKind::Web => "CLIENT_KIND_WEB",
+        }
+    }
+}
+
+/// Per-bucket NAT-traversal counters (`design/11 §4`): how many sessions in this
+/// bucket came up direct / relayed / lan. The aggregate [`NatStats`] holds one
+/// implicitly; the `by_network_class` + `by_client_kind` maps hold one per key.
+/// **FROZEN field layout** — the Core maps this 1:1 to the `NetworkStats` proto.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NetworkStats {
+    /// Sessions that came up on a direct (hole-punched) path.
+    pub direct: u32,
+    /// Sessions that came up relayed.
+    pub relayed: u32,
+    /// Sessions that came up LAN-direct.
+    pub lan: u32,
+}
+
+impl NetworkStats {
+    /// Increment the counter for one session's path.
+    pub fn record(&mut self, path: ConnectionPath) {
+        match path {
+            ConnectionPath::Direct => self.direct = self.direct.saturating_add(1),
+            ConnectionPath::Relayed => self.relayed = self.relayed.saturating_add(1),
+            ConnectionPath::Lan => self.lan = self.lan.saturating_add(1),
+        }
+    }
+
+    /// Direct + LAN sessions (the "did not need a relay" numerator for the
+    /// direct-% used by `nat_success_changed`).
+    pub fn direct_or_lan(&self) -> u32 {
+        self.direct.saturating_add(self.lan)
+    }
+
+    /// Total sessions counted in this bucket.
+    pub fn total(&self) -> u32 {
+        self.direct
+            .saturating_add(self.relayed)
+            .saturating_add(self.lan)
+    }
+}
+
+/// Daily NAT-traversal counters (`design/11 §4`, §3.6), broken out **by network
+/// class and by client kind** (Task 216). Keeps the `design/11 §4` canonical
+/// field names (`direct_today` / `relayed_today` / `by_network_class`) and adds
+/// the V1.0 by-client-kind split (`design/11 §2`). **FROZEN shape** — the Core's
+/// `GetNatStats` Runtime RPC (D1) maps this 1:1 to the `NatStats` proto the
+/// Desktop badge + Diagnostics percentage read.
 #[derive(Debug, Clone, Default)]
 pub struct NatStats {
     /// Sessions that came up on a direct (hole-punched) path today.
@@ -240,16 +313,48 @@ pub struct NatStats {
     pub relayed_today: u32,
     /// Sessions that came up LAN-direct today.
     pub lan_today: u32,
+    /// Per-network-class counters (`design/11 §4` `by_network_class`). Key is a
+    /// coarse network label (`"wifi"` / `"cellular"` / `"ethernet"` / `"other"`).
+    pub by_network_class: HashMap<String, NetworkStats>,
+    /// Per-client-kind counters (`design/11 §2`). Keyed by [`ClientKind`] so the
+    /// split-host-desktop-vs-mobile direct-rate gap is visible.
+    pub by_client_kind: HashMap<ClientKind, NetworkStats>,
 }
 
 impl NatStats {
-    /// Increment the counter for a newly-established session's path.
-    pub fn record(&mut self, path: ConnectionPath) {
+    /// Increment the counters for a newly-established session's path, attributing
+    /// it to its `network_class` and `client_kind` buckets (`design/11 §3.6,
+    /// §2`). The aggregate `*_today` counters and both maps advance together.
+    pub fn record(&mut self, path: ConnectionPath, network_class: &str, client_kind: ClientKind) {
         match path {
             ConnectionPath::Direct => self.direct_today = self.direct_today.saturating_add(1),
             ConnectionPath::Relayed => self.relayed_today = self.relayed_today.saturating_add(1),
             ConnectionPath::Lan => self.lan_today = self.lan_today.saturating_add(1),
         }
+        self.by_network_class
+            .entry(network_class.to_string())
+            .or_default()
+            .record(path);
+        self.by_client_kind
+            .entry(client_kind)
+            .or_default()
+            .record(path);
+    }
+
+    /// The rolling direct-connection percentage (0..=100) across all sessions
+    /// today: `(direct + lan) / total`. The numerator counts both hole-punched
+    /// and LAN-direct as "did not need a relay" (`design/11 §3.6` — the badge is
+    /// direct-vs-via-relay). Zero sessions → 0%.
+    pub fn direct_percent(&self) -> u32 {
+        let total = self
+            .direct_today
+            .saturating_add(self.relayed_today)
+            .saturating_add(self.lan_today);
+        if total == 0 {
+            return 0;
+        }
+        let direct = self.direct_today.saturating_add(self.lan_today);
+        ((u64::from(direct) * 100) / u64::from(total)) as u32
     }
 }
 
@@ -264,30 +369,118 @@ pub struct ActiveSession {
     pub iroh_connection: Connection,
     /// The classified connection path, refreshed from Iroh's signal.
     pub path: ConnectionPath,
+    /// The kind of client this session belongs to (`design/11 §2`) — drives the
+    /// by-client-kind NAT breakdown. Known at session establishment.
+    pub client_kind: ClientKind,
     /// Last time a stream on this connection was seen (liveness / idle GC).
     pub last_seen: Instant,
 }
 
 impl ActiveSession {
     /// Build a session from a freshly-accepted/-opened Iroh connection,
-    /// classifying its path now.
-    pub fn new(device_id: DeviceId, iroh_connection: Connection) -> Self {
+    /// classifying its path now and attributing it to `client_kind`.
+    pub fn new(device_id: DeviceId, iroh_connection: Connection, client_kind: ClientKind) -> Self {
         let path = classify_path(&iroh_connection);
         Self {
             device_id,
             iroh_connection,
             path,
+            client_kind,
             last_seen: Instant::now(),
         }
     }
 
     /// Re-classify [`Self::path`] from the connection's current selected path
-    /// (216 calls this as paths migrate). Returns the new path.
+    /// (216 calls this as paths migrate — the migration contract, `design/11
+    /// §3.7`). Returns the new path. A path change here updates the session in
+    /// place; it does **NOT** close it (only a true connection drop does).
     pub fn refresh_path(&mut self) -> ConnectionPath {
         self.path = classify_path(&self.iroh_connection);
         self.last_seen = Instant::now();
         self.path
     }
+
+    /// The coarse network class of this session's current path (`design/11
+    /// §3.6`), used as the `by_network_class` key. The transport cannot read the
+    /// client's NIC, so it classifies by the path it observes: a relayed path is
+    /// `"cellular"`-ish from the Core's view only as `"relayed"`; the honest
+    /// label is the path class. V1.0 maps Direct→`"direct"`, Relayed→`"relayed"`,
+    /// Lan→`"lan"` — the network-class dimension the Core can actually attest.
+    /// (A richer client-reported class is a later task; noted in Handoff.)
+    pub fn network_class(&self) -> &'static str {
+        network_class_for(self.path)
+    }
+}
+
+/// The coarse `by_network_class` key for a path (`design/11 §3.6, §4`). The Core
+/// labels by the path it can attest (it cannot see the client's NIC), so the
+/// class mirrors the path: `direct` / `relayed` / `lan`. FROZEN key strings.
+pub fn network_class_for(path: ConnectionPath) -> &'static str {
+    match path {
+        ConnectionPath::Direct => "direct",
+        ConnectionPath::Relayed => "relayed",
+        ConnectionPath::Lan => "lan",
+    }
+}
+
+/// A proto-free transport-lifecycle telemetry event (`design/11 §5.3`). The
+/// transport broadcasts these as it observes sessions open/close, the relay
+/// switch, and the rolling NAT-success rate move; the Core ([`crate::api`]'s
+/// consumer in `concerto-core`) maps each into the `streams.proto`
+/// `Event { TransportEvent }` arm (D1: no `transport.proto`) and fans it out on
+/// the `transport.events` subject. Kept proto-free so the transport stays a thin
+/// leaf (no `concerto-proto` dep). **FROZEN** — the Core's mapper matches on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportTelemetry {
+    /// A device established a session (`transport.session_opened`).
+    SessionOpened {
+        /// The device id (the session key).
+        device_id: DeviceId,
+        /// The path the session came up on.
+        path: ConnectionPath,
+        /// The kind of client.
+        client_kind: ClientKind,
+    },
+    /// A device disconnected — a TRUE connection drop, NOT a path migration
+    /// (`transport.session_closed`). Migration updates `path` in place and does
+    /// NOT emit this (`design/11 §3.7`, §7.4 — the FROZEN migration contract).
+    SessionClosed {
+        /// The device id whose session dropped.
+        device_id: DeviceId,
+    },
+    /// The relay URL the Core registers with changed (`transport.relay_switched`).
+    RelaySwitched {
+        /// The new relay URL; empty under `disable_remote` / no relay.
+        relay_url: String,
+    },
+    /// The rolling 1-hour direct-% materially changed (`transport.nat_success_changed`).
+    /// Debounced (see [`NAT_SUCCESS_DELTA_PCT`] / the 70% PRD line).
+    NatSuccessChanged {
+        /// The new rolling direct-% (0..=100).
+        direct_percent: u32,
+    },
+}
+
+/// The debounce threshold for [`TransportTelemetry::NatSuccessChanged`]
+/// (`design/11 §5.3`, §3.6): emit only when the rolling direct-% moves by **≥
+/// this many percentage points** since the last emission, OR when it crosses the
+/// PRD §22.3 70% direct line in either direction. A named constant per the task's
+/// "don't gold-plate a statistics engine" note — a simple hysteresis, not a stats
+/// engine. **FROZEN.**
+pub const NAT_SUCCESS_DELTA_PCT: u32 = 5;
+
+/// The PRD §22.3 target the [`TransportTelemetry::NatSuccessChanged`] debounce
+/// also fires on crossing (`design/11 §3.6`): > 70% direct. **FROZEN.**
+pub const NAT_SUCCESS_PRD_LINE_PCT: u32 = 70;
+
+/// Whether a direct-% change from `prev` to `now` is "material" enough to emit a
+/// [`TransportTelemetry::NatSuccessChanged`] (`design/11 §5.3` debounce): a move
+/// of ≥ [`NAT_SUCCESS_DELTA_PCT`] points, or a crossing of the
+/// [`NAT_SUCCESS_PRD_LINE_PCT`] line.
+pub fn nat_success_is_material(prev: u32, now: u32) -> bool {
+    let delta = prev.abs_diff(now);
+    let crossed_line = (prev <= NAT_SUCCESS_PRD_LINE_PCT) != (now <= NAT_SUCCESS_PRD_LINE_PCT);
+    delta >= NAT_SUCCESS_DELTA_PCT || crossed_line
 }
 
 /// The per-Core transport view (`design/11 §4`): the live sessions + the NAT
@@ -300,6 +493,10 @@ pub struct TransportState {
     pub sessions: HashMap<DeviceId, ActiveSession>,
     /// Daily NAT-success counters (216 aggregates; 212 seeds).
     pub nat_stats: NatStats,
+    /// The last rolling direct-% the transport emitted a `NatSuccessChanged`
+    /// for, so the debounce ([`nat_success_is_material`]) is exact. `None` until
+    /// the first session (so the first session emits the initial rate).
+    pub last_nat_percent: Option<u32>,
 }
 
 impl TransportState {
@@ -308,14 +505,35 @@ impl TransportState {
         Self::default()
     }
 
-    /// Record (or replace) a session and bump the NAT counter for its path.
+    /// Record (or replace) a session and bump the NAT counter for its path,
+    /// network class, and client kind.
     pub fn insert_session(&mut self, session: ActiveSession) {
-        self.nat_stats.record(session.path);
+        self.nat_stats
+            .record(session.path, session.network_class(), session.client_kind);
         self.sessions.insert(session.device_id.clone(), session);
     }
 
+    /// Apply a client **path change** (the migration contract, `design/11 §3.7`,
+    /// §7.4): re-classify the live session's path in place. This does **NOT**
+    /// remove the session or count a new NAT outcome — a migration is one
+    /// session, already counted at open; only its `path` (and `last_seen`)
+    /// update. Returns the new path, or `None` if no such session is live.
+    ///
+    /// The QUIC connection-id is preserved by Iroh/QUIC natively across the path
+    /// change; the Core-side work is exactly to NOT treat this as a disconnect.
+    pub fn note_path_change(&mut self, device_id: &DeviceId) -> Option<ConnectionPath> {
+        self.sessions.get_mut(device_id).map(|s| s.refresh_path())
+    }
+
+    /// Whether a session for `device_id` is currently live (a migration leaves it
+    /// live; a true drop removes it). The seam the §5.3 events promise.
+    pub fn has_session(&self, device_id: &DeviceId) -> bool {
+        self.sessions.contains_key(device_id)
+    }
+
     /// Remove every session for `device_id`, closing each Iroh connection
-    /// (`design/12 §7.3`). Idempotent.
+    /// (`design/12 §7.3`). Idempotent. This is a TRUE drop (revocation /
+    /// disconnect), the only path that ends a session — NOT a migration.
     pub fn close_sessions_for_device(&mut self, device_id: &DeviceId) {
         if let Some(session) = self.sessions.remove(device_id) {
             session
@@ -490,5 +708,12 @@ pub struct IrohTransport {
     /// re-announce; deregistered (mDNS goodbye) on [`IrohTransport::stop_mdns`]
     /// / drop.
     pub(crate) mdns: Arc<Mutex<Option<MdnsResponder>>>,
+    /// The transport-lifecycle telemetry broadcast (`design/11 §5.3`, Task 216).
+    /// The serve loop / relay switch publish [`TransportTelemetry`] here; the
+    /// Core subscribes (via [`IrohTransport::subscribe_telemetry`]) and maps each
+    /// into the `streams.proto` `Event { TransportEvent }` arm on the
+    /// `transport.events` subject. Held as a `broadcast::Sender` so it can be
+    /// published from spawned per-connection tasks with no receiver attached.
+    pub(crate) telemetry_tx: tokio::sync::broadcast::Sender<TransportTelemetry>,
     pub(crate) shutdown: CancellationToken,
 }

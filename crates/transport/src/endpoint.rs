@@ -37,8 +37,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapter;
 use crate::api::{
-    ApiDispatcher, ChannelTag, DeviceId, IrohConnector, IrohDuplex, IrohTransport, MdnsConfig,
-    PairingListener, RelayInfo, TransportConfig, TransportState, WakeupHint,
+    nat_success_is_material, ApiDispatcher, ChannelTag, ClientKind, ConnectionPath, DeviceId,
+    IrohConnector, IrohDuplex, IrohTransport, MdnsConfig, PairingListener, RelayInfo,
+    TransportConfig, TransportState, TransportTelemetry, WakeupHint,
 };
 use crate::error::{Result, TransportError};
 
@@ -50,6 +51,12 @@ pub const ALPN: &[u8] = b"concerto/transport/1";
 const RELAY_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 /// Cap on the exponential relay backoff.
 const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// Capacity of the transport-lifecycle telemetry broadcast (`design/11 §5.3`,
+/// Task 216). Generous so a momentarily-slow Core subscriber (the
+/// `transport.events` pump) does not lag; lagging maps to end-of-stream, which
+/// the Core's pump tolerates (a missed lifecycle event is recoverable from
+/// `nat_stats`).
+const TELEMETRY_BROADCAST_CAP: usize = 256;
 
 impl PairingListener {
     /// Construct a listener bound to `token_hash` over `rx` (only the owning
@@ -90,6 +97,8 @@ impl IrohTransport {
         };
 
         let (wakeup_tx, wakeup_rx) = mpsc::unbounded_channel();
+        let (telemetry_tx, _telemetry_rx) =
+            tokio::sync::broadcast::channel(TELEMETRY_BROADCAST_CAP);
 
         let transport = Self {
             endpoint,
@@ -101,6 +110,7 @@ impl IrohTransport {
             wakeup_tx,
             wakeup_rx: Arc::new(Mutex::new(Some(wakeup_rx))),
             mdns: Arc::new(Mutex::new(None)),
+            telemetry_tx,
             shutdown: CancellationToken::new(),
         };
 
@@ -205,9 +215,98 @@ impl IrohTransport {
                 "switch_relay refused: disable_remote=true (LAN-only)".into(),
             ));
         }
-        let mut relay = self.relay.lock().expect("relay lock");
-        relay.url = Some(url);
+        {
+            let mut relay = self.relay.lock().expect("relay lock");
+            relay.url = Some(url.clone());
+        }
+        // `transport.relay_switched` (`design/11 §5.3`).
+        let _ = self
+            .telemetry_tx
+            .send(TransportTelemetry::RelaySwitched { relay_url: url });
         Ok(())
+    }
+
+    /// Subscribe to the transport-lifecycle telemetry broadcast (`design/11
+    /// §5.3`, Task 216). The Core drives this into the `transport.events`
+    /// Streams subject (mapping each [`TransportTelemetry`] into the
+    /// `streams.proto` `Event { TransportEvent }` arm — D1, no `transport.proto`).
+    /// Task 217's façade re-exposes this for the Phase-6 Diagnostics consumer.
+    pub fn subscribe_telemetry(&self) -> tokio::sync::broadcast::Receiver<TransportTelemetry> {
+        self.telemetry_tx.subscribe()
+    }
+
+    /// Record a newly-established session and emit `transport.session_opened`
+    /// plus, if the rolling direct-% moved materially, `transport.nat_success_changed`
+    /// (`design/11 §5.3`, §3.6). The serve loop calls this on accept; a typed
+    /// client kind is supplied by the caller (it is known from the connect /
+    /// device metadata, `design/11 §3.1`). Returns the classified path.
+    ///
+    /// This is the single seam where a session-open both updates the NAT
+    /// counters (by network class + client kind) and broadcasts the two §5.3
+    /// events; keeping it on the transport lets the loopback double drive it
+    /// directly without a live network.
+    pub fn record_session_open(
+        &self,
+        device_id: DeviceId,
+        conn: Connection,
+        client_kind: ClientKind,
+    ) -> ConnectionPath {
+        let session = crate::api::ActiveSession::new(device_id.clone(), conn, client_kind);
+        let path = session.path;
+        let nat_changed = {
+            let mut st = self.state.lock().expect("state lock");
+            st.insert_session(session);
+            let now = st.nat_stats.direct_percent();
+            match st.last_nat_percent {
+                Some(prev) if !nat_success_is_material(prev, now) => None,
+                _ => {
+                    st.last_nat_percent = Some(now);
+                    Some(now)
+                }
+            }
+        };
+        let _ = self.telemetry_tx.send(TransportTelemetry::SessionOpened {
+            device_id,
+            path,
+            client_kind,
+        });
+        if let Some(direct_percent) = nat_changed {
+            let _ = self
+                .telemetry_tx
+                .send(TransportTelemetry::NatSuccessChanged { direct_percent });
+        }
+        path
+    }
+
+    /// Apply a client **path change / migration** to a live session (`design/11
+    /// §3.7`, §7.4): re-classify its path in place. Does **NOT** close the
+    /// session or emit `session_closed` — only a true drop does (the FROZEN
+    /// migration contract: subscribers survive the ~1-3s blip). Returns the new
+    /// path, or `None` if no such session is live. No telemetry event is emitted
+    /// for a same-path migration; the path field updates so `nat_stats` /
+    /// `session_paths` reflect it.
+    pub fn note_migration(&self, device_id: &DeviceId) -> Option<ConnectionPath> {
+        self.state
+            .lock()
+            .expect("state lock")
+            .note_path_change(device_id)
+    }
+
+    /// Record a TRUE session drop (NOT a migration): remove the session and emit
+    /// `transport.session_closed` (`design/11 §5.3`). The client reconnects and
+    /// replays missed events from offset via the Task-202 ring buffer (this task
+    /// does not re-implement replay — it asserts the seam). Idempotent: a no-op
+    /// (and no event) when no session is live for `device_id`.
+    pub fn record_session_close(&self, device_id: &DeviceId) {
+        let was_live = {
+            let mut st = self.state.lock().expect("state lock");
+            st.sessions.remove(device_id).is_some()
+        };
+        if was_live {
+            let _ = self.telemetry_tx.send(TransportTelemetry::SessionClosed {
+                device_id: device_id.clone(),
+            });
+        }
     }
 
     /// Open a pairing listener gated on `token_hash` (`design/11 §5.1`, Task 217
@@ -282,13 +381,21 @@ impl IrohTransport {
                     let core_static = self.core_static.clone();
                     let state = self.state.clone();
                     let pairing_tx = self.pairing_tx.clone();
+                    let telemetry_tx = self.telemetry_tx.clone();
                     let sd = shutdown.clone();
                     tokio::spawn(async move {
                         match incoming.await {
                             Ok(conn) => {
-                                if let Err(err) =
-                                    serve_conn(conn, dispatcher, core_static, state, pairing_tx, sd)
-                                        .await
+                                if let Err(err) = serve_conn(
+                                    conn,
+                                    dispatcher,
+                                    core_static,
+                                    state,
+                                    pairing_tx,
+                                    telemetry_tx,
+                                    sd,
+                                )
+                                .await
                                 {
                                     tracing::warn!(%err, "iroh connection server error");
                                 }
@@ -363,6 +470,7 @@ async fn serve_conn<D: ApiDispatcher>(
     core_static: Arc<concerto_identity::NoiseStatic>,
     state: Arc<Mutex<TransportState>>,
     pairing_tx: Arc<Mutex<Option<([u8; 32], mpsc::Sender<IrohDuplex>)>>>,
+    telemetry_tx: tokio::sync::broadcast::Sender<TransportTelemetry>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     // The transport keys its registry on the remote Iroh endpoint id so
@@ -371,13 +479,43 @@ async fn serve_conn<D: ApiDispatcher>(
     // auth layer, not at the transport boundary).
     let remote = conn.remote_id();
     let device_key = DeviceId(remote.to_string());
-    {
-        let mut st = state.lock().expect("state lock");
-        st.insert_session(crate::api::ActiveSession::new(
-            device_key.clone(),
-            conn.clone(),
-        ));
-    }
+    // The connecting client's kind is known from the connect/device metadata
+    // (`design/11 §3.1, §2`). At the *raw transport boundary* the device cert
+    // (which carries the kind) is only resolved later inside the gRPC auth layer
+    // (Task 210); a non-browser Iroh caller is a split-host Desktop or a Mobile,
+    // both over Iroh. V1.0 attributes the over-Iroh accept path to
+    // `DesktopSplitHost` (the default Iroh caller) and lets the typed seam
+    // [`IrohTransport::record_session_open`] carry the precise kind when 210/217
+    // resolve it; `web` arrives via the WSS bridge (Task 215), not this loop.
+    // Recorded here so the open path emits `session_opened` + the NAT counters
+    // regardless of who drives it.
+    let client_kind = ClientKind::DesktopSplitHost;
+    let path = {
+        let session = crate::api::ActiveSession::new(device_key.clone(), conn.clone(), client_kind);
+        let path = session.path;
+        let nat_changed = {
+            let mut st = state.lock().expect("state lock");
+            st.insert_session(session);
+            let now = st.nat_stats.direct_percent();
+            match st.last_nat_percent {
+                Some(prev) if !nat_success_is_material(prev, now) => None,
+                _ => {
+                    st.last_nat_percent = Some(now);
+                    Some(now)
+                }
+            }
+        };
+        let _ = telemetry_tx.send(TransportTelemetry::SessionOpened {
+            device_id: device_key.clone(),
+            path,
+            client_kind,
+        });
+        if let Some(direct_percent) = nat_changed {
+            let _ = telemetry_tx.send(TransportTelemetry::NatSuccessChanged { direct_percent });
+        }
+        path
+    };
+    let _ = path;
 
     let result = loop {
         let (send, recv) = tokio::select! {
@@ -442,11 +580,23 @@ async fn serve_conn<D: ApiDispatcher>(
         }
     };
 
-    state
+    // The accept_bi loop ended because the connection actually closed (peer
+    // disconnect / shutdown) — a TRUE drop, NOT a path migration. Remove the
+    // session and emit `transport.session_closed` (`design/11 §5.3`). A
+    // migration never reaches here: it is a path change on a *live* connection,
+    // handled by `note_migration` without tearing the loop down. The client
+    // reconnects + replays from offset via the Task-202 ring buffer.
+    let was_live = state
         .lock()
         .expect("state lock")
         .sessions
-        .remove(&device_key);
+        .remove(&device_key)
+        .is_some();
+    if was_live {
+        let _ = telemetry_tx.send(TransportTelemetry::SessionClosed {
+            device_id: device_key.clone(),
+        });
+    }
     result
 }
 

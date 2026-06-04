@@ -5,6 +5,13 @@
 // omits `optional_streams`, `default_stream_buffer`, and `ReloadConfig`
 // (full set in design/10 §4.2 / §5.1); they may be added later at higher
 // field numbers without breaking the wire.
+//
+// Task 216 (V1.0, design/11 §3.6, D1) adds the `GetNatStats` RPC + its
+// `NatStats` / `NetworkStats` messages — the per-client-kind +
+// per-network-class NAT-traversal telemetry the Desktop direct/via-relay
+// badge and the Settings→Diagnostics percentage read. D1: `nat_stats`
+// surfaces via the Runtime service (NOT a new service); the import below
+// pulls `ClientKind` from streams.proto (where the transport events live).
 
 syntax = "proto3";
 
@@ -12,6 +19,7 @@ package concerto.v1;
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
+import "concerto/v1/streams.proto";
 
 enum TransportKind {
   TRANSPORT_KIND_UNSPECIFIED = 0;
@@ -41,7 +49,49 @@ message RuntimeStatus {
   uint64 uptime_seconds = 3;
 }
 
+// Task 216 (design/11 §3.6, §4): per-day NAT-traversal counters split by
+// outcome (direct / relayed / lan). One instance is the aggregate; the maps
+// in `NatStats` carry the same shape keyed by network class / client kind.
+message NetworkStats {
+  // Sessions that came up on a direct (hole-punched) path.
+  uint32 direct = 1;
+  // Sessions that came up relayed (hole-punch fell back).
+  uint32 relayed = 2;
+  // Sessions that came up LAN-direct (no relay).
+  uint32 lan = 3;
+}
+
+// Task 216 (design/11 §4, §3.6): the Core-side NAT-traversal telemetry,
+// FROZEN. Keeps the §4 canonical field names (`direct_today` /
+// `relayed_today` / `by_network_class`) and adds the V1.0 by-client-kind
+// breakdown (design/11 §2) so the Desktop/Diagnostics can see whether
+// split-host desktops get worse direct rates than mobile. The Desktop
+// direct/via-relay badge + the "Direct connections this week: 82%"
+// percentage (design/11 §3.6) consume this.
+message NatStats {
+  // Total sessions that came up direct today.
+  uint32 direct_today = 1;
+  // Total sessions that came up relayed today.
+  uint32 relayed_today = 2;
+  // Total sessions that came up LAN-direct today.
+  uint32 lan_today = 3;
+  // Per-network-class counters (design/11 §4 `by_network_class`). The key is
+  // a coarse network label (e.g. "wifi" / "cellular" / "ethernet"); V1.0
+  // populates what the transport can observe and leaves room to grow.
+  map<string, NetworkStats> by_network_class = 4;
+  // Per-client-kind counters (design/11 §2). The key is the `ClientKind`
+  // enum value name (`CLIENT_KIND_DESKTOP_SPLIT_HOST` / `CLIENT_KIND_MOBILE`
+  // / `CLIENT_KIND_WEB`) — a proto map key cannot be an enum, so the enum's
+  // canonical name string is used.
+  map<string, NetworkStats> by_client_kind = 5;
+}
+
 service Runtime {
   rpc GetServerCapabilities(google.protobuf.Empty) returns (ServerCapabilities);
   rpc GetStatus(google.protobuf.Empty) returns (RuntimeStatus);
+  // Task 216 (design/11 §3.6, D1): the per-client-kind + per-network-class
+  // NAT-traversal telemetry. Surfaces here on Runtime (the transport/runtime
+  // read path) rather than a new service. Returns empty counters when no
+  // transport is attached (co-located / UDS-only Core).
+  rpc GetNatStats(google.protobuf.Empty) returns (NatStats);
 }
