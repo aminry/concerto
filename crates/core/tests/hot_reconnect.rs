@@ -222,7 +222,12 @@ fn adopts_surviving_host_after_supervisor_restart() {
             let saw_marker = wait_for_event(
                 &mut rx_a,
                 |ev| matches!(ev, AgentEvent::Message { content, .. } if content.contains("MARKER1")),
-                Duration::from_secs(10),
+                // Generous: this waits on a real agent-host `echo` subprocess
+                // over a PTY; under full `cargo test --workspace` load on a
+                // 2-core CI runner the child can be CPU-starved for tens of
+                // seconds, which flaked the old 10s budget. 60s only ever
+                // fires on a genuine hang.
+                Duration::from_secs(60),
             )
             .await;
             assert!(saw_marker, "expected MARKER1 from supervisor A");
@@ -295,7 +300,8 @@ fn adopts_surviving_host_after_supervisor_restart() {
         // reading once and racing the read pump (the previous
         // `== "running"` read was flaky for exactly that reason).
         let row_b = {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            // Generous (CI subprocess-starvation patience, as above).
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
             loop {
                 let row = concerto_persist::sessions::get(persistence.readers(), &session_id)
                     .await
