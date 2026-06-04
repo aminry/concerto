@@ -12,8 +12,10 @@ import { useEffect, useRef } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AppLayout } from "./components/AppLayout";
+import { ConnectCorePicker } from "./components/ConnectCorePicker";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
+import { PairCoreModal } from "./components/PairCoreModal";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { AutoUpdateToast, FirstRunClaudeToast } from "./components/Toast";
 import { useThemeController } from "./hooks/useTheme";
@@ -45,6 +47,8 @@ function App(): JSX.Element {
         <NewProjectModal />
         <NewWorkspaceModal />
         <SettingsPanel />
+        <ConnectCorePicker />
+        <PairCoreModal />
         <FirstRunClaudeToast />
         <AutoUpdateToast />
       </div>
