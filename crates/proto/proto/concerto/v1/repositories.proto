@@ -15,6 +15,11 @@
 // `EstimateRepoSize(EstimateRepoSizeRequest) → SizeReport` probe RPC after
 // `ListByProject` and adds `clone_strategy = 5` + `with_sparse = 6` to
 // `AddRepoRequest`. All existing RPCs + field numbers are unchanged.
+//
+// Task 302 (V1.0, design/02 §3.2/§5.1) appends the per-(workarea, repo)
+// `SetCones(SetConesRequest) → SetConesResponse` RPC after `EstimateRepoSize`
+// (cone-mode + sparse-index always). All existing RPCs + field numbers are
+// unchanged.
 
 syntax = "proto3";
 
@@ -119,9 +124,31 @@ message SizeReport {
   bool recommend_sparse = 5;
 }
 
+// Inputs for `Repositories.SetCones` (Task 302, design/02 §3.2/§5.1).
+// Sets the per-(workarea, repo) sparse cone: the Repo Manager applies the
+// cone to the on-disk worktree (cone-mode + `--sparse-index` always) and
+// persists it to `workarea_repos.sparse_cones_json`. `cone_paths` are
+// forward-slash, repo-root-relative directory paths; an empty list cones
+// the repo down to just its top-level files. A path absent from the repo's
+// HEAD tree is rejected with INVALID_ARGUMENT and nothing is half-applied
+// (design/02 §8).
+message SetConesRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  repeated string cone_paths = 3;
+}
+
+// Result of `Repositories.SetCones` (Task 302). Echoes back the cone paths
+// that are now active for the (workarea, repo) — the same set the worktree
+// was materialized to and that was persisted to `sparse_cones_json`.
+message SetConesResponse {
+  repeated string cone_paths = 1;
+}
+
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
   rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
+  rpc SetCones(SetConesRequest) returns (SetConesResponse);
 }

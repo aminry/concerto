@@ -12,11 +12,11 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use concerto_gix_wrap::{CloneProgressEvent, CloneStrategy};
-use concerto_persist::RepositoryId;
+use concerto_persist::{RepositoryId, WorkareaId};
 use concerto_proto::v1::repositories_server::Repositories as RepositoriesService;
 use concerto_proto::v1::{
     AddRepoRequest, CloneProgress, CloneRequest, EstimateRepoSizeRequest, ListRepositoriesRequest,
-    ListRepositoriesResponse, Repository, SizeReport,
+    ListRepositoriesResponse, Repository, SetConesRequest, SetConesResponse, SizeReport,
 };
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -100,6 +100,35 @@ impl RepositoriesService for RepositoriesHandler {
             // recommended (design/02 §12 R-1).
             recommended_strategy: report.recommended.as_str().to_string(),
             recommend_sparse: report.recommend_sparse,
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Repositories::SetCones")]
+    async fn set_cones(
+        &self,
+        request: Request<SetConesRequest>,
+    ) -> Result<Response<SetConesResponse>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        let workarea = WorkareaId(req.workarea_id);
+        let repo = RepositoryId(req.repository_id);
+        // Task 302: apply + persist the cone. A bad cone path surfaces as
+        // `Error::Git` from `sparse_set`'s pre-apply probe, which
+        // `error_to_status` maps to INVALID_ARGUMENT; nothing is
+        // half-applied.
+        self.repo_manager
+            .set_workarea_repo_cones(&workarea, &repo, &req.cone_paths)
+            .await
+            .map_err(error_to_status)?;
+        // Echo back the applied cone set (the same paths now materialized +
+        // persisted).
+        Ok(Response::new(SetConesResponse {
+            cone_paths: req.cone_paths,
         }))
     }
 

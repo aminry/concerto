@@ -82,17 +82,17 @@ Tier 1. The `rust` §5.3 set.
 **Tier-1 scope + what it does NOT cover.** CI proves the sparse lifecycle + inheritance + force-cone on small `file://` fixtures with known dir trees. It does **not** cover the real 2M-file monorepo cone latency (that is Task 303's bench + the Phase-3 Tier-3 line "sparse+blobless clone a real >10 GB monorepo and confirm <30 s p50"). The `sparse-cone-clone` smoke check proves the *capability wires end-to-end over the live UDS Core*, not the perf bar.
 
 ## Definition of Done
-- [ ] Six `gix-wrap` sparse helpers (cone-mode + `--sparse-index` always); non-cone path never invoked
-- [ ] `set_workarea_repo_cones` applies + persists via `update_workarea_repo_cones`; `sparse_cones_json` is now written (was never written before)
-- [ ] Three-layer inheritance resolver (repo → workspace-default → workarea) as a pure, table-tested function; the nested `settings_json.cone_defaults` shape FROZEN
-- [ ] `§8` correctness: bad cone path cleanly rejected (no partial write); pre-existing non-cone config force-set to cone + audit-logged
-- [ ] `repositories.cone_defaults_json` added to the SELECT + `Repository` struct
-- [ ] `SetCones` RPC appended; no existing field numbers renumbered
-- [ ] `sparse-cone-clone` smoke capability added + green; manifest updated
-- [ ] All Verification commands pass on a clean checkout; interfaces regenerated
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code (deliberate seams in Handoff)
-- [ ] No files outside Outputs modified
-- [ ] Single commit with the message below
+- [x] Six `gix-wrap` sparse helpers (cone-mode + `--sparse-index` always); non-cone path never invoked
+- [x] `set_workarea_repo_cones` applies + persists via `update_workarea_repo_cones`; `sparse_cones_json` is now written (was never written before)
+- [x] Three-layer inheritance resolver (repo → workspace-default → workarea) as a pure, table-tested function; the nested `settings_json.cone_defaults` shape FROZEN
+- [x] `§8` correctness: bad cone path cleanly rejected (no partial write); pre-existing non-cone config force-set to cone + audit-logged
+- [x] `repositories.cone_defaults_json` added to the SELECT + `Repository` struct
+- [x] `SetCones` RPC appended; no existing field numbers renumbered
+- [x] `sparse-cone-clone` smoke capability added + green; manifest updated
+- [x] All Verification commands pass on a clean checkout; interfaces regenerated
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code (deliberate seams in Handoff)
+- [x] No files outside Outputs modified
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/gix-wrap/src/api.rs` (modified — sparse helpers + `ConePath`) and/or `crates/gix-wrap/src/sparse.rs` (new submodule, re-exported via `lib.rs`/`api.rs`)
@@ -123,4 +123,7 @@ Refs: tasks/v1.0/302-sparse-cone-lifecycle.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state —
+- **Drift from plan:** (1) The `sparse_cones_json` round-trip test landed in a **new** `crates/persist/tests/workarea_repo_cones.rs` (not in the original Outputs, which only named the gix-wrap + core test files). Verification step 3 requires `cargo test -p concerto-persist workarea_repo` to pass a round-trip; a persist integration test was the cleanest home (the `cones.rs` resolver is pure and lives in core, the persist writer needs a real `SqlitePool`). Added to effective Outputs. (2) `crates/persist/Cargo.toml` gained `serde_json.workspace = true` — `update_workarea_repo_cones` serializes the FROZEN flat array shape; it was NOT previously a `concerto-persist` dep (it was a `concerto-core` pin). No new *workspace* pin (already in the tree), cargo-deny-clean. Added to effective Outputs. (3) `crates/core/src/audit/event.rs` (new `AuditKind::SparseConfigForcedToCone` variant + `as_str` arm), `crates/core/src/boot.rs` (rebind `repo_handle` with `.with_audit(...)`), `crates/core/src/repo_manager/mod.rs` (`pub mod cones`), and three existing call sites that construct `NewWorkareaRepo` (`crates/core/src/workspace_manager/workarea.rs`, `crates/core/tests/files_service.rs`, `crates/core/tests/vcs_gh_cli.rs`) all needed the new `sparse_cones_json` field under the workspace compile gate — mechanical, added to effective Outputs. (4) **Bug found + fixed via the smoke gate:** the §8 HEAD-tree probe (`probe_cone_paths_exist`) ran `git ls-tree -d HEAD <cone>` with the caller's trailing slash (`a/`), which `ls-tree` matches against NOTHING — so a *valid* directory cone passed as `a/` (the form the smoke-client + git's cone syntax use) was wrongly rejected as INVALID_ARGUMENT. Fixed by trimming a trailing `/` (in addition to the existing leading-`/` trim) before the probe; added a trailing-slash regression case to `sparse_cone.rs`. (5) `rust-api.md` regen does NOT list the gix-wrap sparse helpers because `regen-interfaces.sh` only scrapes `crates/*/src/api.rs`; the sparse surface lives in `sparse.rs` (re-exported via `lib.rs`). This matches the established behavior for Task 29's `status.rs`/`diff.rs` (also absent from rust-api.md) — not new drift. proto.md correctly gained `SetCones`/`SetConesRequest`/`SetConesResponse`; rust-api.md gained the persist struct field changes.
+- **Open questions for next task:** (1) **303** consumes the `--sparse-index` reapply this task wires (every cone change calls `sparse_reapply_index`); its `< 100 ms status` bench leans on the collapsed-directory sparse index the smoke check asserts (`ls-files --sparse` shows `b/`/`c/` as directory entries). The real 2M-file monorepo cone latency is the Phase-3 Tier-3 line — not provable in CI here. (2) **306/307** own multi-repo workarea create: they call `RepoManager::resolve_for_workarea_repo(...)` (the three-layer resolver wired here) to seed each repo's initial cone, then `set_workarea_repo_cones`, then `insert_workarea_repo` with the resolved `sparse_cones_json` (the single-repo V0.1 create path in `workarea.rs` still seeds `empty_cones()` — left for 306/307 to swap to the resolver). (3) The `with_sparse` clone flag (301) still does NOT thread a sparse `--no-checkout` *clone*; 302 applies cone-mode per-(workarea, repo) on the **worktree** (`git worktree add` produces a checked-out worktree, then `set_workarea_repo_cones` cones it down). The repo-level clone path remains non-sparse — the per-workarea worktree is where sparsity lives, matching `design/02 §3.2`. (4) The `repo.size_warning` broadcast subject (301's deferral) is still un-wired (audit-line only); orthogonal to this task.
+- **Deliberate debt:** None. No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code. The single-repo create path seeding `empty_cones()` rather than the resolver output is not debt — it is correct V0.1 single-repo behavior (no workspace/repo cone defaults exist to inherit yet); 306/307 swap it when they wire the multi-repo loop + the resolver call, per the inline comment.
+- **Smoke-gate state:** **NEW capability `sparse-cone-clone` added + GREEN.** Registered in `scripts/smoke.manifest` after `project-repo-clone`. Full `scripts/smoke.sh` run PASSED end-to-end (70s, all checks) — `PASS sparse-cone-clone` confirmed: blobless+sparse add → clone → create workspace+workarea → `SetCones a/` → assert `sparse-checkout list` reports `a`, `a/` materialized, `b/`+`c/` collapsed, and the sparse index is active (`ls-files --sparse` shows `b/`/`c/` directory entries). SKIPs cleanly when git lacks the `sparse-checkout` subcommand. `cargo deny check` green (no new workspace pins).

@@ -1,6 +1,6 @@
-//! `smoke-client add-repo --project-id <id> --url <url>` — calls
-//! `Repositories.AddRepository`. The repo is named `"smoke-repo"`
-//! (a fixed name in V0.1 since the smoke gate only adds one).
+//! `smoke-client add-repo --project-id <id> --url <url> [--clone-strategy <s>]
+//! [--with-sparse]` — calls `Repositories.AddRepository`. The repo is named
+//! `"smoke-repo"` (a fixed name in V0.1 since the smoke gate only adds one).
 //! Prints the new repository id to stdout.
 
 use std::path::Path;
@@ -11,7 +11,13 @@ use concerto_proto::v1::AddRepoRequest;
 use super::RPC_TIMEOUT;
 use crate::connect::connect_to_socket;
 
-pub async fn run(socket: &Path, project_id: &str, url: &str) -> Result<(), String> {
+pub async fn run(
+    socket: &Path,
+    project_id: &str,
+    url: &str,
+    clone_strategy: &str,
+    with_sparse: bool,
+) -> Result<(), String> {
     if project_id.is_empty() {
         return Err("add-repo: --project-id must be non-empty".to_string());
     }
@@ -29,10 +35,13 @@ pub async fn run(socket: &Path, project_id: &str, url: &str) -> Result<(), Strin
             name: "smoke-repo".to_string(),
             url: url.to_string(),
             default_branch: "main".to_string(),
-            // Task 301 added clone_strategy/with_sparse. Leaving them at
-            // their defaults (empty → Full) preserves the existing
-            // `project-repo-clone` smoke check's full-clone behaviour.
-            ..Default::default()
+            // Task 301 added clone_strategy/with_sparse. Empty
+            // clone_strategy → Full (preserves the existing
+            // `project-repo-clone` smoke check). Task 302's
+            // `sparse-cone-clone` check passes `blobless` + `--with-sparse`
+            // so the worktree lands empty for the cone-set step.
+            clone_strategy: clone_strategy.to_string(),
+            with_sparse,
         }),
     )
     .await

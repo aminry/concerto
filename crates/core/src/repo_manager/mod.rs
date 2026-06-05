@@ -15,6 +15,7 @@
 //! (304), and the cone-level size telemetry (305) remain follow-ons.
 
 pub mod actor;
+pub mod cones;
 pub mod fsmonitor;
 mod repo_state;
 

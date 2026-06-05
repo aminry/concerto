@@ -123,6 +123,13 @@ pub enum AuditKind {
     RepositoryAdded,
     RepositoryCloned,
     FsmonitorRestarted,
+    /// A repository arrived with a non-cone-mode sparse-checkout config
+    /// (`core.sparseCheckoutCone=false`) and the Repo Manager force-set it
+    /// to cone mode (Task 302, `design/02 §8` — "Non-cone-mode sparse
+    /// config (pre-existing repo) → force-set to true on add, document in
+    /// audit log"). The non-cone path is a known-buggy path we never
+    /// expose. Emitted by `RepoManager::set_workarea_repo_cones`.
+    SparseConfigForcedToCone,
     ScheduleFired,
     ScheduleSuppressed,
     DestructiveCommandIntercepted,
@@ -167,6 +174,7 @@ impl AuditKind {
             AuditKind::RepositoryAdded => "repository_added",
             AuditKind::RepositoryCloned => "repository_cloned",
             AuditKind::FsmonitorRestarted => "fsmonitor_restarted",
+            AuditKind::SparseConfigForcedToCone => "sparse_config_forced_to_cone",
             AuditKind::ScheduleFired => "schedule_fired",
             AuditKind::ScheduleSuppressed => "schedule_suppressed",
             AuditKind::DestructiveCommandIntercepted => "destructive_command_intercepted",

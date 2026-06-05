@@ -63,7 +63,8 @@ pub async fn insert(conn: &mut SqliteConnection, repo: NewRepository) -> Result<
 pub async fn get(pool: &SqlitePool, id: &RepositoryId) -> Result<Option<Repository>> {
     let row = sqlx::query(
         "SELECT id, project_id, name, url, local_path,
-                clone_strategy, default_branch, last_fetch_at, fs_monitor_pid
+                clone_strategy, default_branch, cone_defaults_json,
+                last_fetch_at, fs_monitor_pid
          FROM repositories WHERE id = ?",
     )
     .bind(&id.0)
@@ -78,7 +79,8 @@ pub async fn get(pool: &SqlitePool, id: &RepositoryId) -> Result<Option<Reposito
 pub async fn list_by_project(pool: &SqlitePool, project_id: &str) -> Result<Vec<Repository>> {
     let rows = sqlx::query(
         "SELECT id, project_id, name, url, local_path,
-                clone_strategy, default_branch, last_fetch_at, fs_monitor_pid
+                clone_strategy, default_branch, cone_defaults_json,
+                last_fetch_at, fs_monitor_pid
          FROM repositories WHERE project_id = ? ORDER BY name",
     )
     .bind(project_id)
@@ -94,7 +96,8 @@ pub async fn list_by_project(pool: &SqlitePool, project_id: &str) -> Result<Vec<
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Repository>> {
     let rows = sqlx::query(
         "SELECT id, project_id, name, url, local_path,
-                clone_strategy, default_branch, last_fetch_at, fs_monitor_pid
+                clone_strategy, default_branch, cone_defaults_json,
+                last_fetch_at, fs_monitor_pid
          FROM repositories ORDER BY id",
     )
     .fetch_all(pool)
@@ -145,6 +148,10 @@ fn row_to_repository(row: sqlx::sqlite::SqliteRow) -> Repository {
         local_path: row.get::<String, _>("local_path"),
         clone_strategy: row.get::<String, _>("clone_strategy"),
         default_branch: row.get::<String, _>("default_branch"),
+        // Task 302: the repository-level cone-defaults layer (a flat
+        // `["<cone_path>", …]` JSON array, migration 0001 default `'[]'`).
+        // The three-layer resolver reads this as the least-specific layer.
+        cone_defaults_json: row.get::<String, _>("cone_defaults_json"),
         last_fetch_at: row.get::<Option<i64>, _>("last_fetch_at"),
         fs_monitor_pid: row.get::<Option<i64>, _>("fs_monitor_pid"),
     }

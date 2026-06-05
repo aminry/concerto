@@ -125,6 +125,8 @@ async fn seed_workarea(persist: &Persistence) -> (WorkareaId, RepositoryId) {
             repository_id: repo_id.clone(),
             worktree_path: "/tmp/wa/repo".into(),
             branch_override: None,
+            // Task 302: default-empty cone set.
+            sparse_cones_json: NewWorkareaRepo::empty_cones(),
         },
     )
     .await

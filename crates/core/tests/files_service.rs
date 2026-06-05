@@ -170,6 +170,8 @@ async fn setup() -> Fixture {
                 repository_id: repo_id.clone(),
                 worktree_path: repo_worktree.to_string_lossy().into_owned(),
                 branch_override: None,
+                // Task 302: default-empty cone set.
+                sparse_cones_json: NewWorkareaRepo::empty_cones(),
             },
         )
         .await

@@ -14,6 +14,12 @@
 core-boot
 persistence-integrity
 project-repo-clone
+# Task 302: blobless+sparse clone + per-(workarea, repo) cone-set + status
+# assertion. Self-contained (seeds its own project/repo/workspace/workarea);
+# placed after project-repo-clone only because it needs the Repo Manager +
+# Workspace/Workarea services exercised. SKIPs cleanly when git lacks
+# sparse-checkout.
+sparse-cone-clone
 workspace-workarea
 echo-session
 streams-subscribe

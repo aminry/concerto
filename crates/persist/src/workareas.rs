@@ -80,20 +80,86 @@ pub async fn insert(conn: &mut SqliteConnection, wa: NewWorkarea) -> Result<Work
 ///
 /// V0.1 ships single-repo workareas so callers invoke this once per
 /// create; V1.0's multi-repo path will loop.
+///
+/// Task 302: this now writes `sparse_cones_json` explicitly (V0.1 omitted
+/// it, relying on the SQL default) so a caller can seed an initial
+/// resolved cone set at create time. Pass [`NewWorkareaRepo::empty_cones`]
+/// (`"[]"`) for the default-empty cone.
 pub async fn insert_workarea_repo(conn: &mut SqliteConnection, row: NewWorkareaRepo) -> Result<()> {
     sqlx::query(
         "INSERT INTO workarea_repos (
-            workarea_id, repository_id, worktree_path, branch_override
-         ) VALUES (?, ?, ?, ?)",
+            workarea_id, repository_id, worktree_path, branch_override, sparse_cones_json
+         ) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&row.workarea_id.0)
     .bind(&row.repository_id.0)
     .bind(&row.worktree_path)
     .bind(&row.branch_override)
+    .bind(&row.sparse_cones_json)
     .execute(conn)
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
     Ok(())
+}
+
+/// Overwrite the `sparse_cones_json` column on the `workarea_repos`
+/// junction row for `(workarea, repository)` (Task 302, `design/02
+/// §3.2`/§5.1).
+///
+/// `cones` is the resolved per-(workarea, repo) cone set; it is serialized
+/// to the FROZEN flat JSON `["<cone_path>", …]` shape. The
+/// [`crate::repo_manager`]-side `RepoManager::set_workarea_repo_cones`
+/// (Core) calls this after applying the cone to the on-disk worktree so
+/// the DB and the worktree stay in agreement — this is the writer that
+/// closes the "`sparse_cones_json` is never written" gap.
+///
+/// A no-op when no junction row exists for the pair (UPDATE matches zero
+/// rows); the caller is responsible for ensuring the pair exists.
+pub async fn update_workarea_repo_cones(
+    conn: &mut SqliteConnection,
+    workarea_id: &WorkareaId,
+    repository_id: &crate::api::RepositoryId,
+    cones: &[String],
+) -> Result<()> {
+    // Serialize to the FROZEN flat JSON array shape. `serde_json` is a
+    // workspace pin in `concerto-persist`.
+    let json = serde_json::to_string(cones)
+        .map_err(|e| Error::Internal(format!("serialize sparse_cones_json: {e}")))?;
+    sqlx::query(
+        "UPDATE workarea_repos SET sparse_cones_json = ?
+         WHERE workarea_id = ? AND repository_id = ?",
+    )
+    .bind(&json)
+    .bind(&workarea_id.0)
+    .bind(&repository_id.0)
+    .execute(conn)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+/// Read the raw `sparse_cones_json` string for a `(workarea, repository)`
+/// junction row (Task 302). Returns `None` when no row exists.
+///
+/// Returns the raw JSON string (the FROZEN flat `["<cone_path>", …]`
+/// shape) — the caller deserializes. Used by the three-layer cone resolver
+/// (the most-specific layer) and by `set_workarea_repo_cones` to round-trip
+/// the persisted cone.
+pub async fn get_workarea_repo_cones(
+    pool: &SqlitePool,
+    workarea_id: &WorkareaId,
+    repository_id: &crate::api::RepositoryId,
+) -> Result<Option<String>> {
+    let row = sqlx::query(
+        "SELECT sparse_cones_json FROM workarea_repos
+         WHERE workarea_id = ? AND repository_id = ?",
+    )
+    .bind(&workarea_id.0)
+    .bind(&repository_id.0)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(row.map(|r| r.get::<String, _>("sparse_cones_json")))
 }
 
 /// Update the `status` column on a `workareas` row.

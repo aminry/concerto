@@ -38,12 +38,26 @@
 //! - [`api::estimate_repo_size`] — pre-clone size probe → [`api::SizeReport`]
 //!   implementing the `design/02 §3.5` size→strategy heuristic.
 //!
-//! Sparse-checkout init/set remains Task 302; idle blob prewarm remains
-//! Task 304.
+//! Task 302 adds the sparse-checkout + cone + sparse-index lifecycle;
+//! signatures frozen (`design/00 §6.3`: cone-mode mandatory, sparse-index
+//! always-on):
+//!
+//! - [`sparse::sparse_init_cone`] — `sparse-checkout init --cone --sparse-index`.
+//! - [`sparse::sparse_set`] — replace the cone (`set --sparse-index`, bad
+//!   paths rejected) + reapply.
+//! - [`sparse::sparse_add`] — add to the cone + reapply.
+//! - [`sparse::sparse_reapply_index`] — `reapply --sparse-index`.
+//! - [`sparse::sparse_disable`] — `sparse-checkout disable` (full materialize).
+//! - [`sparse::is_cone_mode`] / [`sparse::force_cone_mode`] — the `design/02
+//!   §8` non-cone-force path.
+//!
+//! Idle blob prewarm remains Task 304; cone-level size telemetry remains
+//! Task 305.
 
 pub mod api;
 pub mod cmd;
 pub mod diff;
+pub mod sparse;
 pub mod status;
 
 pub use api::{
@@ -51,6 +65,11 @@ pub use api::{
     hard_reset, is_fsmonitor_alive, list_branches, ref_exists, register_maintenance,
     rev_parse_head, start_fsmonitor, stop_fsmonitor, update_ref, worktree_add, BranchRef,
     CloneProgressEvent, CloneStrategy, FetchReport, ProgressSink, SizeReport,
+};
+// Task 302 sparse lifecycle surface.
+pub use sparse::{
+    force_cone_mode, is_cone_mode, sparse_add, sparse_disable, sparse_init_cone, sparse_list,
+    sparse_reapply_index, sparse_set, ConePath,
 };
 // Task 29 hot-path surface — status + diff against HEAD / a branch.
 pub use diff::{diff_head, diff_to_main, DiffHunk, DiffKind, DiffPayload, FileDiff};
