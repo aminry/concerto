@@ -455,6 +455,9 @@ async fn run_uds(
         pairing,
         device_manager,
         auth_issuer,
+        // The UDS path has no remote transport: keep the handler's `NoNatStats`
+        // default (empty counters). The Iroh serve path supplies `Some(..)`.
+        nat_stats: None,
     };
     let builder = add_core_services(
         Server::builder().layer(tonic::service::interceptor(auth_interceptor)),
@@ -515,6 +518,11 @@ pub struct CoreServiceSet {
     pub pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     pub device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
     pub auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
+    /// The live NAT-telemetry source the `Runtime.GetNatStats` RPC reads (Task
+    /// 216/217.5). `Some(IrohNatStatsSource(transport))` on the Iroh serve path
+    /// so the booted transport's real counters surface; `None` on the UDS path
+    /// (no remote transport), where the handler keeps `NoNatStats` (empty).
+    pub nat_stats: Option<Arc<dyn crate::handlers::runtime::NatStatsSource>>,
 }
 
 impl CoreServiceSet {
@@ -544,6 +552,7 @@ impl CoreServiceSet {
             pairing: None,
             device_manager: None,
             auth_issuer: None,
+            nat_stats: None,
         }
     }
 }
@@ -600,9 +609,19 @@ where
         pairing,
         device_manager,
         auth_issuer: _auth_issuer,
+        nat_stats,
     } = services;
 
-    let runtime_service = RuntimeServer::new(RuntimeHandler::new(started_at, supervisor_view));
+    // Build the Runtime handler, attaching the live transport-backed NAT-stats
+    // source only when present (the Iroh serve path). With `None` (the UDS path)
+    // the handler keeps its `NoNatStats` default — `GetNatStats` stays answerable
+    // with empty counters and UDS behavior is unchanged (Task 216/217.5).
+    let runtime_handler = RuntimeHandler::new(started_at, supervisor_view);
+    let runtime_handler = match nat_stats {
+        Some(source) => runtime_handler.with_nat_stats(source),
+        None => runtime_handler,
+    };
+    let runtime_service = RuntimeServer::new(runtime_handler);
     let mut builder = server.add_service(runtime_service);
 
     if let Some(persistence) = persistence {

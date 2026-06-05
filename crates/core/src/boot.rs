@@ -833,6 +833,12 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
             pairing: pairing_coordinator.clone(),
             device_manager: device_manager.clone(),
             auth_issuer: auth_issuer.clone(),
+            // Wire the live Iroh transport as the Runtime NatStatsSource so
+            // `GetNatStats` over the Iroh path reports the transport's real
+            // per-session counters (Task 216's deferred surfacing; 217.5 boot).
+            nat_stats: Some(Arc::new(crate::handlers::runtime::IrohNatStatsSource(
+                Arc::clone(&iroh.transport),
+            ))),
         };
 
         // The serve loop: `serve_iroh` runs the transport's accept loop (its own

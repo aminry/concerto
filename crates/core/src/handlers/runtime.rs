@@ -76,6 +76,20 @@ impl NatStatsSource for NoNatStats {
     }
 }
 
+/// The live [`NatStatsSource`] backed by a booted [`concerto_transport::IrohTransport`]
+/// (closes Task 216's deferred surfacing — Task 217.5 boot wiring). Delegates to the
+/// transport's **synchronous** `nat_stats()` snapshot so `GetNatStats` over the Iroh
+/// path reports the real per-client-kind + per-network-class counters the transport
+/// aggregates as sessions open. Attached only on the Iroh serve path (`boot.rs`); the
+/// UDS path, which has no remote transport, keeps [`NoNatStats`].
+pub struct IrohNatStatsSource(pub Arc<concerto_transport::IrohTransport>);
+
+impl NatStatsSource for IrohNatStatsSource {
+    fn nat_stats(&self) -> TransportNatStats {
+        self.0.nat_stats()
+    }
+}
+
 /// Implements the generated `Runtime` trait from `concerto-proto`.
 ///
 /// Constructed by [`crate::api_server::ApiServerActor`] with handles

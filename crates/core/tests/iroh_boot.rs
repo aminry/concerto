@@ -263,6 +263,30 @@ async fn boot_pairs_over_iroh_then_authenticated_rpc_then_revoke_severs() {
         "the fingerprint-keyed session is registered before revoke"
     );
 
+    // --- GetNatStats surfaces the LIVE transport's counters ----------------
+    // Task 216 added `Runtime.GetNatStats` + the `NatStatsSource` trait but left
+    // the live Iroh transport unwired, so it always returned all-zero. Now boot
+    // attaches `IrohNatStatsSource(transport)` on the Iroh serve path. With one
+    // session recorded above (`record_session_open` incremented exactly one of
+    // direct/relayed/lan_today), `GetNatStats` over the Iroh channel must report
+    // that non-zero count — proving the wiring carries the transport's numbers,
+    // not `NoNatStats`'s zeros.
+    let nat = tokio::time::timeout(Duration::from_secs(10), runtime_client.get_nat_stats(()))
+        .await
+        .expect("nat stats rpc did not stall")
+        .expect("get_nat_stats")
+        .into_inner();
+    let total_today = nat.direct_today + nat.relayed_today + nat.lan_today;
+    assert!(
+        total_today >= 1,
+        "GetNatStats must surface the live transport's recorded session \
+         (direct={} relayed={} lan={}); the IrohNatStatsSource wiring is missing \
+         if this is all-zero",
+        nat.direct_today,
+        nat.relayed_today,
+        nat.lan_today
+    );
+
     // Revoke over the authenticated Iroh channel → real DeviceManager →
     // IrohSessionCloser → IrohTransport::close_sessions_for_device.
     let mut devices_client = DevicesClient::with_interceptor(channel, attach_cert);
