@@ -327,6 +327,9 @@ where
                     name: req.name,
                     url: req.url,
                     default_branch: req.default_branch,
+                    // Task 301 added clone_strategy/with_sparse; empty → Full.
+                    // The New-Project dialog wires these in Task 322.
+                    ..Default::default()
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))

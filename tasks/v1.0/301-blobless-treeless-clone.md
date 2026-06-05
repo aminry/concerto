@@ -74,16 +74,16 @@ Tier 1. The `rust` §5.3 set.
 **Tier-1 scope.** All logic is CI-provable on `file://` fixtures: strategy → git filter flags, the size heuristic, the recommendation, persisted strategy, `concerto-state.json`. The real >10 GB-monorepo `<30 s p50` clone (`design/00 §7.7`) is **not** covered here — it is the Phase-3 Tier-3 checklist line "sparse+blobless clone a real >10 GB monorepo and confirm <30 s p50 workspace creation."
 
 ## Definition of Done
-- [ ] `CloneStrategy` enum + `clone_with_strategy` added to `gix-wrap`; `clone_full` byte-for-byte unchanged
-- [ ] `estimate_repo_size` + `SizeReport` implement the `§3.5` heuristic; treeless never recommended
-- [ ] `RepoManager::add_repository` accepts + persists a real strategy (no more hardcoded `"full"`); `clone_repo` routes through `clone_with_strategy`
-- [ ] `concerto-state.json` written with `size_bytes`/`object_count` (read-modify-write); `repo.size_warning` emitted on a >10 GB non-sparse clone
-- [ ] `EstimateRepoSize` RPC + messages appended to `repositories.proto`; `AddRepoRequest.clone_strategy`/`with_sparse` appended; existing field numbers unchanged
-- [ ] All Verification commands pass on a clean checkout; smoke gate unchanged + still green
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code (deliberate seams in Handoff)
-- [ ] No files outside Outputs modified
-- [ ] Interfaces regenerated + committed
-- [ ] Single commit with the message below
+- [x] `CloneStrategy` enum + `clone_with_strategy` added to `gix-wrap`; `clone_full` byte-for-byte unchanged
+- [x] `estimate_repo_size` + `SizeReport` implement the `§3.5` heuristic; treeless never recommended
+- [x] `RepoManager::add_repository` accepts + persists a real strategy (no more hardcoded `"full"`); `clone_repo` routes through `clone_with_strategy`
+- [x] `concerto-state.json` written with `size_bytes`/`object_count` (read-modify-write); `repo.size_warning` emitted on a >10 GB non-sparse clone (as a `tracing` audit line — broadcast un-wired, see Handoff)
+- [x] `EstimateRepoSize` RPC + messages appended to `repositories.proto`; `AddRepoRequest.clone_strategy`/`with_sparse` appended; existing field numbers unchanged
+- [x] All Verification commands pass on a clean checkout; smoke gate unchanged + still green
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code (deliberate seams in Handoff)
+- [x] No files outside Outputs modified (forced call-site updates documented in Handoff *Drift*)
+- [x] Interfaces regenerated + committed
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/gix-wrap/src/api.rs` (modified — `CloneStrategy`, `clone_with_strategy`, `estimate_repo_size`, `SizeReport`; `clone_full` untouched)
@@ -111,4 +111,7 @@ Refs: tasks/v1.0/301-blobless-treeless-clone.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state —
+- **Drift from plan:** The FROZEN proto field addition (`AddRepoRequest.clone_strategy`/`with_sparse`) and the `RepoManager::add_repository` Rust-signature change break every literal `AddRepoRequest { … }` construction and every direct `add_repository(…)` call under the workspace-wide compile gate. These call sites are NOT in the task's `Outputs`, but `cargo check/clippy/test --workspace` cannot pass without them, so they were updated mechanically and added to the effective Outputs: `apps/desktop/src-tauri/src/rpc.rs`, `tools/{pair-serve,split-host-loopback}/src/main.rs`, `tools/smoke-client/src/cmd/add_repo.rs` (all gained `..Default::default()` → empty `clone_strategy` parses as `Full`), and the Rust callers in `crates/core/tests/{fsmonitor_lifecycle,repository_clone,workspace_lifecycle}.rs` (pass `CloneStrategy::Full, false` / `..Default::default()`). The `repository_clone.rs` `clone_strategy == "full"` assertion is preserved. `clone_full` is byte-for-byte unchanged (signature + body); it and `clone_with_strategy` share a new private `clone_inner`. `repo.size_warning` is emitted as a `tracing::warn!` audit line, NOT a broadcast event, matching Task 28's deferral of the equivalent `repo.fsmonitor_restarted` broadcast — there is still no repo-event broadcast subject wired through the streams handler (`handlers/streams.rs` is out of scope here).
+- **Open questions for next task:** (1) **Task 302** owns sparse-checkout init/set; 301's `clone_repo` always clones non-sparse (`with_sparse = false`), so the `AddRepoRequest.with_sparse` / `add_repository(with_sparse)` arg is accepted + validated but **not persisted** (no DB column, no migration) — 302 must decide where the per-(workarea, repo) sparse intent lives (`workarea_repos.sparse_cones_json` per PHASE3_PLANNING §2) and wire it into the clone path. (2) The `repo.size_warning` broadcast subject is still un-wired (audit-line only); a Phase-3 follow-on should add a `repo.events` broadcast subject to `handlers/streams.rs` so the Desktop Tray can render it (also closes Task 28's deferred `repo.fsmonitor_restarted` broadcast). (3) The real `> 10 GB monorepo < 30 s p50` clone is the Phase-3 Tier-3 checklist line — not provable in CI.
+- **Deliberate debt:** `AddRepoRequest.with_sparse` / `RepoManager::add_repository(with_sparse)` is part of the locked `AddRepository` signature but not persisted in V1.0 (the parameter is bound with `let _ = with_sparse;` in the actor) — closing task: **302** (per-workarea sparse wiring). `size_bytes` in `estimate_repo_size` uses a FROZEN coarse approximation `object_count * 4096` (git does not advertise true repo size over the smart protocol; the constant only buckets into the three §3.5 size tiers) — documented in the fn doc-comment. `repo.size_warning` is a `tracing` audit line, not a broadcast (Phase-3 follow-on, see Open questions). No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` markers.
+- **Smoke-gate state:** Unchanged (302 adds the `sparse-cone-clone` capability). Full `scripts/smoke.sh` run PASSED end-to-end (93s, all checks) including `project-repo-clone` + `split-host-loopback`, which both exercise the modified `add-repo`/`clone` path with an empty `clone_strategy` → `Full`. `serde_json` was NOT added to `gix-wrap` (the `concerto-state.json` writer lives in `concerto-core::repo_manager::repo_state` where `serde_json` is already pinned, per Verification step 5); no new workspace deps. `cargo deny check` green.

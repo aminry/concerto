@@ -20,12 +20,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
-use concerto_gix_wrap as gixw;
+use concerto_gix_wrap::{self as gixw, CloneStrategy, SizeReport};
 use concerto_persist::{NewRepository, Persistence, Repository, RepositoryId};
 use tokio::sync::Mutex;
 
-use crate::repo_manager::fsmonitor;
+use crate::repo_manager::{fsmonitor, repo_state};
 use crate::supervisor::{Actor, ActorContext};
+
+/// The `> 10 GB` non-sparse threshold that triggers a `repo.size_warning`
+/// (`design/02 §5.3`). Matches the `estimate_repo_size` tier boundary.
+const SIZE_WARNING_THRESHOLD_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Config for the actor's `run` loop. V0.1 carries the on-disk repo
 /// root (default `<data_dir>/repos/`); future tasks (28, fsmonitor)
@@ -88,17 +92,33 @@ impl RepoManager {
         Arc::clone(&self.persistence)
     }
 
-    /// Persist a new `repositories` row.
+    /// Persist a new `repositories` row with a real clone [`CloneStrategy`]
+    /// (Task 301).
     ///
     /// `default_branch` falls back to `"main"` when empty. The on-disk
-    /// path is `<repos_root>/<id>/` (`design/02 §4`).
+    /// path is `<repos_root>/<id>/` (`design/02 §4`). The chosen strategy
+    /// is written into the `repositories.clone_strategy` column verbatim
+    /// (`full | blobless | treeless`) — V0.1's hardcoded `"full"` is gone.
+    ///
+    /// `with_sparse` is the recommendation's "Blobless + Sparse" intent.
+    /// V1.0 has no per-repo column for it — the actual sparse-checkout
+    /// init/set is per-(workarea, repo) and owned by **Task 302** (which
+    /// reads cones from `workarea_repos.sparse_cones_json`). 301 accepts +
+    /// validates the flag for the locked `AddRepository` signature but does
+    /// not persist it; see this task's Handoff *Deliberate debt*.
     pub async fn add_repository(
         &self,
         project_id: &str,
         name: &str,
         url: &str,
         default_branch: &str,
+        strategy: CloneStrategy,
+        with_sparse: bool,
     ) -> Result<Repository> {
+        // `with_sparse` is part of the locked signature; Task 302 wires the
+        // real per-workarea sparse setup. Bind it so the parameter is not a
+        // dead arg and the intent is greppable for 302.
+        let _ = with_sparse;
         let id = RepositoryId(uuid::Uuid::now_v7().to_string());
         let local_path = self.repos_root.join(id.as_str());
         let default_branch = if default_branch.is_empty() {
@@ -106,15 +126,15 @@ impl RepoManager {
         } else {
             default_branch.to_string()
         };
+        let strategy_str = strategy.as_str().to_string();
         let row = NewRepository {
             id: id.clone(),
             project_id: project_id.to_string(),
             name: name.to_string(),
             url: url.to_string(),
             local_path: local_path.to_string_lossy().into_owned(),
-            // V0.1 ships full clone only (design/02 §2). Sparse +
-            // blobless land at V1.0 (Task 28+).
-            clone_strategy: "full".to_string(),
+            // Task 301: persist the real strategy (design/02 §2/§3.1).
+            clone_strategy: strategy_str.clone(),
             default_branch: default_branch.clone(),
         };
         let mut writer = self.persistence.writer().await;
@@ -125,13 +145,24 @@ impl RepoManager {
             name: name.to_string(),
             url: url.to_string(),
             local_path: local_path.to_string_lossy().into_owned(),
-            clone_strategy: "full".to_string(),
+            clone_strategy: strategy_str,
             default_branch,
             last_fetch_at: None,
             // No daemon recorded until `clone_repo` finishes and the
             // post-clone fsmonitor bring-up persists a PID (Task 28).
             fs_monitor_pid: None,
         })
+    }
+
+    /// Probe a git `url`'s size and recommend a [`CloneStrategy`] BEFORE
+    /// adding the repo (Task 301, `design/02 §3.5`/`§7.1`).
+    ///
+    /// Thin pass-through to [`gixw::estimate_repo_size`]; the per-add /
+    /// explicit-RPC probe must never touch the Core boot path. A probe
+    /// failure (private repo, offline) propagates as [`Error::Git`] — the
+    /// caller falls back to a manual strategy pick.
+    pub async fn estimate_size(&self, url: &str) -> Result<SizeReport> {
+        gixw::estimate_repo_size(url).await
     }
 
     /// Look up a repository by id.
@@ -160,14 +191,25 @@ impl RepoManager {
             .clone()
     }
 
-    /// Full clone of the repository identified by `id`.
+    /// Clone the repository identified by `id` using its persisted
+    /// [`CloneStrategy`] (Task 301).
     ///
     /// Named `clone_repo` rather than `clone` so it doesn't shadow the
     /// `Clone::clone` blanket impl (the type derives `Clone`).
     ///
+    /// Reads the row's `clone_strategy` column (`full | blobless |
+    /// treeless`) and routes through [`gixw::clone_with_strategy`] instead
+    /// of the V0.1 hardcoded `clone_full`. The clone is non-sparse here:
+    /// per-(workarea, repo) sparse setup is **Task 302**, so a `with_sparse`
+    /// flag at add-time is not threaded into this path in V1.0 (see the
+    /// task Handoff). An unrecognized stored strategy is an [`Error::Git`].
+    ///
     /// Locks the per-repo mutex for the duration. Two clones of
     /// different repos can proceed in parallel; two clones of the same
-    /// repo serialize. On success updates `last_fetch_at` to "now".
+    /// repo serialize. On success: updates `last_fetch_at`, writes
+    /// `size_bytes`/`object_count` to the repo-local `concerto-state.json`
+    /// (`design/02 §4`), and emits `repo.size_warning` when a `> 10 GB`
+    /// repo was cloned non-sparse (`design/02 §5.3`).
     pub async fn clone_repo(
         &self,
         id: &RepositoryId,
@@ -177,11 +219,15 @@ impl RepoManager {
             .get(id)
             .await?
             .ok_or_else(|| Error::Internal(format!("repository {id} not found")))?;
+        let strategy: CloneStrategy = row.clone_strategy.parse()?;
         let lock = self.write_lock_for(id).await;
         let _guard = lock.lock().await;
 
         let dest = PathBuf::from(&row.local_path);
-        gixw::clone_full(&row.url, &dest, progress).await?;
+        // V1.0 (Task 301): route through the strategy-aware clone. Sparse
+        // checkout (the `--sparse --no-checkout` flags) is Task 302's job,
+        // so this path always clones non-sparse (`with_sparse = false`).
+        gixw::clone_with_strategy(&row.url, &dest, strategy, false, progress).await?;
 
         // Task 28 — post-clone bring-up:
         //   1. Apply the four locked `git config` performance keys.
@@ -191,6 +237,37 @@ impl RepoManager {
         // to fail on unsupported filesystems and disable gracefully per
         // `design/02 §8`.
         let fs_monitor_pid = fsmonitor::bring_up_after_clone(&dest).await;
+
+        // Task 301: measure the on-disk object DB post-clone (`git
+        // count-objects -v`) and persist it to the repo-local
+        // `concerto-state.json` (read-modify-write so future fields, e.g.
+        // 304's `prefetch_cursor`, are preserved). Best-effort — a state
+        // write failure must not fail the clone.
+        let (size_bytes, object_count) = match measure_object_db(&dest).await {
+            Ok(measured) => measured,
+            Err(e) => {
+                tracing::debug!(repo_id = %id, error = %e, "count-objects probe failed; recording zeros");
+                (0, 0)
+            }
+        };
+        if let Err(e) = repo_state::record_size(&dest, size_bytes, object_count).await {
+            tracing::warn!(repo_id = %id, error = %e, "failed to write concerto-state.json");
+        }
+
+        // Task 301: `repo.size_warning` (design/02 §5.3) — a > 10 GB repo
+        // cloned non-sparse should prompt the user toward sparse. There is
+        // no repo-event broadcast subject wired through the streams handler
+        // yet (Task 28 deferred the equivalent `repo.fsmonitor_restarted`
+        // broadcast to a Phase-3 follow-on for the same reason); emit the
+        // same `tracing` audit-line shape until that channel lands.
+        if size_bytes > SIZE_WARNING_THRESHOLD_BYTES {
+            tracing::warn!(
+                repo_id = %id,
+                size_bytes,
+                strategy = %strategy,
+                "repo.size_warning: repository exceeds 10 GB and was cloned non-sparse; recommend sparse checkout"
+            );
+        }
 
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -206,6 +283,39 @@ impl RepoManager {
         .await?;
         Ok(())
     }
+}
+
+/// Measure a freshly-cloned repo's object DB via `git count-objects -v`
+/// (Task 301). Returns `(size_bytes, object_count)`.
+///
+/// `git count-objects -v` reports loose + packed counts and a `size-pack`
+/// (in KiB). We use `count + in-pack` for the object total and
+/// `(size + size-pack) * 1024` for the byte total — the on-disk footprint
+/// of `.git/objects`. A blobless clone's lazy blobs are intentionally not
+/// counted (they aren't on disk yet); `concerto-state.json` records the
+/// actual materialized size.
+async fn measure_object_db(dest: &std::path::Path) -> Result<(u64, u64)> {
+    let out = concerto_gix_wrap::cmd::run(&["count-objects", "-v"], dest).await?;
+    let mut count: u64 = 0;
+    let mut in_pack: u64 = 0;
+    let mut size_kib: u64 = 0;
+    let mut size_pack_kib: u64 = 0;
+    for line in out.stdout.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().parse::<u64>().unwrap_or(0);
+        match key.trim() {
+            "count" => count = value,
+            "in-pack" => in_pack = value,
+            "size" => size_kib = value,
+            "size-pack" => size_pack_kib = value,
+            _ => {}
+        }
+    }
+    let object_count = count.saturating_add(in_pack);
+    let size_bytes = size_kib.saturating_add(size_pack_kib).saturating_mul(1024);
+    Ok((size_bytes, object_count))
 }
 
 /// Supervised actor wrapper. Holds the shared [`RepoManager`] handle.

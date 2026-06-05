@@ -29,6 +29,10 @@ pub async fn run(socket: &Path, project_id: &str, url: &str) -> Result<(), Strin
             name: "smoke-repo".to_string(),
             url: url.to_string(),
             default_branch: "main".to_string(),
+            // Task 301 added clone_strategy/with_sparse. Leaving them at
+            // their defaults (empty → Full) preserves the existing
+            // `project-repo-clone` smoke check's full-clone behaviour.
+            ..Default::default()
         }),
     )
     .await

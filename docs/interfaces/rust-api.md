@@ -243,6 +243,36 @@ pub struct FetchReport {
 }
 ```
 
+### enum `CloneStrategy`
+
+```rust
+pub enum CloneStrategy {
+    Full,
+    Blobless,
+    Treeless,
+}
+```
+
+### struct `SizeReport`
+
+```rust
+pub struct SizeReport {
+    /// Estimated total on-disk size of the remote's object database, in
+    /// bytes. See [`estimate_repo_size`]'s doc-comment for the (FROZEN)
+    /// approximation used when the remote does not advertise a true size.
+    pub size_bytes: u64,
+    /// Estimated reachable object count from the default branch HEAD.
+    pub object_count: u64,
+    /// Number of `refs/heads/*` branches advertised by `git ls-remote`.
+    pub branch_count: u32,
+    /// The strategy recommended by the `design/02 §3.5` heuristic.
+    pub recommended: CloneStrategy,
+    /// Whether the recommendation pairs the strategy with sparse checkout
+    /// (the `> 10 GB → Blobless + Sparse` tier).
+    pub recommend_sparse: bool,
+}
+```
+
 ## `crates/identity/src/api.rs`
 
 ### struct `KeyPair`

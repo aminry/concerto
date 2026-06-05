@@ -55,6 +55,8 @@ async fn register_repo(core: &CoreUnderTest, project_id: &str, name: &str) -> St
             // a valid `repositories` row whose project_id matches.
             url: format!("file:///tmp/{name}"),
             default_branch: "main".to_string(),
+            // Task 301 added clone_strategy/with_sparse; empty → Full.
+            ..Default::default()
         })
         .await
         .expect("AddRepository")

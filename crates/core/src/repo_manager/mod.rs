@@ -8,10 +8,14 @@
 //! - `clone(repo_id, progress)` — locks the per-repo mutex, runs a full
 //!   clone via `concerto-gix-wrap`, updates `last_fetch_at` on success.
 //!
-//! Fsmonitor, maintenance, sparse cones, prewarm, and repo-size
-//! auto-recommendation are V1.0 (Task 28+).
+//! Fsmonitor + maintenance landed in Task 28. Task 301 (V1.0) adds the
+//! real clone strategies (full / blobless / treeless), the pre-clone
+//! repo-size → strategy recommendation, and the durable repo-local
+//! `concerto-state.json` (`repo_state`). Sparse cones (302), prewarm
+//! (304), and the cone-level size telemetry (305) remain follow-ons.
 
 pub mod actor;
 pub mod fsmonitor;
+mod repo_state;
 
 pub use actor::{RepoManager, RepoManagerActor, RepoManagerConfig};

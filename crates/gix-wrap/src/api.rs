@@ -87,6 +87,100 @@ pub struct FetchReport {
     pub updated: bool,
 }
 
+/// Clone strategy (Task 301, `design/02 §2`/`§3.1`).
+///
+/// Serializes to the existing `repositories.clone_strategy` TEXT values
+/// (`full | blobless | treeless`, migration 0001) via [`Self::as_str`] /
+/// [`std::str::FromStr`] / [`std::fmt::Display`]. An unknown string is a
+/// hard error ([`Error::Git`]), never a silent fall-back to `Full`.
+///
+/// Filter-flag mapping (applied by [`clone_with_strategy`]):
+/// - `Full` → no `--filter`
+/// - `Blobless` → `--filter=blob:none` (commits + trees on disk, blobs lazy)
+/// - `Treeless` → `--filter=tree:0` (commits on disk, trees + blobs lazy)
+///
+/// `Treeless` is hidden from every UI/recommendation surface for V1.0
+/// (`design/02 §12 R-1`); it is reachable only when a caller passes it
+/// explicitly. The size→strategy recommendation in [`estimate_repo_size`]
+/// never returns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CloneStrategy {
+    Full,
+    Blobless,
+    Treeless,
+}
+
+impl CloneStrategy {
+    /// Lowercase SQL/wire form — exactly the values the
+    /// `repositories.clone_strategy` column accepts.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CloneStrategy::Full => "full",
+            CloneStrategy::Blobless => "blobless",
+            CloneStrategy::Treeless => "treeless",
+        }
+    }
+
+    /// The `--filter=…` argument for this strategy, or `None` for `Full`.
+    fn filter_arg(self) -> Option<&'static str> {
+        match self {
+            CloneStrategy::Full => None,
+            CloneStrategy::Blobless => Some("--filter=blob:none"),
+            CloneStrategy::Treeless => Some("--filter=tree:0"),
+        }
+    }
+}
+
+impl std::str::FromStr for CloneStrategy {
+    type Err = Error;
+
+    /// Parse a `repositories.clone_strategy` TEXT value. An empty string
+    /// maps to `Full` so V0.1 wire callers (who never set the field) keep
+    /// their full-clone behaviour; any other unrecognized value is an
+    /// `Error::Git` rather than a silent default.
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "" | "full" => Ok(CloneStrategy::Full),
+            "blobless" => Ok(CloneStrategy::Blobless),
+            "treeless" => Ok(CloneStrategy::Treeless),
+            other => Err(Error::Git(format!(
+                "unknown clone strategy {other:?} (expected one of: full, blobless, treeless)"
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for CloneStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Result of [`estimate_repo_size`] — the repo-level pre-clone probe.
+///
+/// Mirrors the on-wire `concerto.v1.SizeReport` shape (Task 301 lock). The
+/// caller (the New-Project dialog, via the `EstimateRepoSize` RPC) renders
+/// `recommended` + `recommend_sparse` and lets the user override.
+///
+/// `recommended` is one of `Full` / `Blobless` — `Treeless` is never
+/// recommended (`design/02 §12 R-1`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SizeReport {
+    /// Estimated total on-disk size of the remote's object database, in
+    /// bytes. See [`estimate_repo_size`]'s doc-comment for the (FROZEN)
+    /// approximation used when the remote does not advertise a true size.
+    pub size_bytes: u64,
+    /// Estimated reachable object count from the default branch HEAD.
+    pub object_count: u64,
+    /// Number of `refs/heads/*` branches advertised by `git ls-remote`.
+    pub branch_count: u32,
+    /// The strategy recommended by the `design/02 §3.5` heuristic.
+    pub recommended: CloneStrategy,
+    /// Whether the recommendation pairs the strategy with sparse checkout
+    /// (the `> 10 GB → Blobless + Sparse` tier).
+    pub recommend_sparse: bool,
+}
+
 /// Full clone of `url` into `dest`.
 ///
 /// Wraps `git clone <url> <dest>`. Progress is streamed to `progress`
@@ -98,7 +192,60 @@ pub struct FetchReport {
 ///
 /// `GIT_TERMINAL_PROMPT=0` is set on the subprocess env so missing
 /// credentials surface as a clean error instead of blocking on `tty`.
+///
+/// Task 301: the body now delegates to the private [`clone_inner`] (shared
+/// with [`clone_with_strategy`]); the public signature and observable
+/// behaviour are unchanged.
 pub async fn clone_full(url: &str, dest: &Path, progress: Option<ProgressSink>) -> Result<()> {
+    let dest_str = dest.to_string_lossy().into_owned();
+    let args = vec!["clone", "--progress", url, dest_str.as_str()];
+    clone_inner(args, dest, progress).await
+}
+
+/// Clone `url` into `dest` with an explicit [`CloneStrategy`] and optional
+/// sparse-checkout flags (Task 301, `design/02 §3.1`/`§7.1`).
+///
+/// Filter flags follow [`CloneStrategy::filter_arg`]:
+/// `Blobless → --filter=blob:none`, `Treeless → --filter=tree:0`,
+/// `Full → ` (none). When `with_sparse` is set the clone also gets
+/// `--sparse --no-checkout` so the worktree lands empty — **Task 302**
+/// runs `git sparse-checkout init --cone` + `set` into it; 301 only emits
+/// the flags. `--progress` is always appended (the stderr parser keys off
+/// it) and `GIT_TERMINAL_PROMPT=0` is inherited from [`cmd`].
+///
+/// `clone_full` is the `Full` + non-sparse case; this fn does not delegate
+/// to it (both share the private [`clone_inner`] plumbing) so `clone_full`
+/// stays byte-for-byte unchanged for back-compat.
+pub async fn clone_with_strategy(
+    url: &str,
+    dest: &Path,
+    strategy: CloneStrategy,
+    with_sparse: bool,
+    progress: Option<ProgressSink>,
+) -> Result<()> {
+    let dest_str = dest.to_string_lossy().into_owned();
+    let mut args = vec!["clone", "--progress"];
+    if let Some(filter) = strategy.filter_arg() {
+        args.push(filter);
+    }
+    if with_sparse {
+        // Empty worktree for Task 302's `sparse-checkout init --cone` to
+        // populate (per the §7.1 first-time-clone sequence diagram).
+        args.push("--sparse");
+        args.push("--no-checkout");
+    }
+    args.push(url);
+    args.push(dest_str.as_str());
+    clone_inner(args, dest, progress).await
+}
+
+/// Shared clone plumbing for [`clone_full`] + [`clone_with_strategy`].
+///
+/// `args` is the full `git` argument vector (including the leading
+/// `"clone"`). Progress, when supplied, is parsed off stderr and a
+/// synthetic terminal `done` event is sent after a clean exit — identical
+/// to the V0.1 `clone_full` behaviour this factored out.
+async fn clone_inner(args: Vec<&str>, dest: &Path, progress: Option<ProgressSink>) -> Result<()> {
     // `git clone` accepts the destination as an argument; the working
     // directory must exist for the spawn but we tolerate `dest` not
     // existing yet — git creates it.
@@ -108,9 +255,6 @@ pub async fn clone_full(url: &str, dest: &Path, progress: Option<ProgressSink>) 
             .map_err(|e| Error::Git(format!("create_dir_all({}): {e}", parent.display())))?;
     }
     let cwd = dest.parent().unwrap_or(Path::new("."));
-
-    let dest_str = dest.to_string_lossy().into_owned();
-    let args = &["clone", "--progress", url, dest_str.as_str()];
 
     if let Some(sink) = progress {
         // Bounded raw-line channel between the subprocess drain and the
@@ -134,14 +278,113 @@ pub async fn clone_full(url: &str, dest: &Path, progress: Option<ProgressSink>) 
             });
         });
 
-        let result = cmd::run_streaming(args, cwd, raw_tx).await;
+        let result = cmd::run_streaming(&args, cwd, raw_tx).await;
         // Drop the raw_tx (held inside run_streaming) closes the channel;
         // wait for the parser task to drain before returning.
         let _ = parser_handle.await;
         result.map(|_| ())
     } else {
-        cmd::run(args, cwd).await.map(|_| ())
+        cmd::run(&args, cwd).await.map(|_| ())
     }
+}
+
+/// Repo-level pre-clone size probe (Task 301, `design/02 §3.5`/`§7.1`).
+///
+/// Runs two cheap network round-trips against `url`, never a full clone:
+///
+/// 1. `git ls-remote --heads <url>` — counts `refs/heads/*` branches
+///    (`branch_count`) and resolves the default-branch HEAD when
+///    `ls-remote --symref` advertises it (falls back to the first head).
+/// 2. A bare, blobless, single-branch, depth-bounded fetch into a throwaway
+///    temp dir (`git clone --filter=blob:none --bare --no-checkout
+///    --single-branch --depth=1`) followed by `git rev-list --objects
+///    --count --all` over what landed, to count commit + tree objects.
+///
+/// **FROZEN approximation:** a true remote byte count is not cheaply
+/// obtainable (git does not advertise repo size over the smart protocol),
+/// so `size_bytes` is estimated as
+/// `object_count * AVG_OBJECT_SIZE_BYTES` with `AVG_OBJECT_SIZE_BYTES =
+/// 4096`. This is deliberately coarse — its only job is to bucket the repo
+/// into the three `design/02 §3.5` size tiers; the real `< 30 s p50` clone
+/// number is the Phase-3 Tier-3 checklist's job. Callers needing a precise
+/// number measure post-clone via `git count-objects -v`.
+///
+/// The `design/02 §3.5` heuristic (FROZEN): `< 1 GB → Full`,
+/// `1–10 GB → Blobless`, `> 10 GB → Blobless + Sparse`. `Treeless` is
+/// never recommended (`§12 R-1`). A probe failure (private repo, offline)
+/// surfaces as [`Error::Git`] — the caller falls back to a manual strategy
+/// pick, never a default recommendation.
+pub async fn estimate_repo_size(url: &str) -> Result<SizeReport> {
+    // 1 GB / 10 GB tier boundaries, in bytes.
+    const ONE_GB: u64 = 1024 * 1024 * 1024;
+    const TEN_GB: u64 = 10 * ONE_GB;
+    // FROZEN average-object-size constant for the byte estimate (see the
+    // fn doc-comment). Only used to bucket into the size tiers.
+    const AVG_OBJECT_SIZE_BYTES: u64 = 4096;
+
+    // --- branch count + default-branch ref (ls-remote, one round-trip) ---
+    let ls = cmd::run(&["ls-remote", "--symref", "--heads", url], Path::new(".")).await?;
+    let branch_count = ls
+        .stdout
+        .lines()
+        .filter(|l| l.contains("refs/heads/"))
+        .filter(|l| !l.trim_start().starts_with("ref:"))
+        .count() as u32;
+
+    // --- object count: cheap blobless bare probe into a temp dir ---
+    // `tempfile` is a dev-dep only; use a deterministic per-call dir under
+    // the OS temp root so the probe leaves nothing behind on the happy path.
+    let probe_dir = std::env::temp_dir().join(format!("concerto-size-probe-{}", uuid_v7_short()));
+    let probe_str = probe_dir.to_string_lossy().into_owned();
+
+    let object_count = {
+        let probe = async {
+            cmd::run(
+                &[
+                    "clone",
+                    "--filter=blob:none",
+                    "--bare",
+                    "--no-checkout",
+                    "--single-branch",
+                    "--depth=1",
+                    url,
+                    probe_str.as_str(),
+                ],
+                Path::new("."),
+            )
+            .await?;
+            let count_out =
+                cmd::run(&["rev-list", "--objects", "--count", "--all"], &probe_dir).await?;
+            count_out
+                .stdout
+                .trim()
+                .parse::<u64>()
+                .map_err(|e| Error::Git(format!("rev-list --count parse: {e}")))
+        }
+        .await;
+        // Best-effort cleanup regardless of probe success.
+        let _ = tokio::fs::remove_dir_all(&probe_dir).await;
+        probe?
+    };
+
+    let size_bytes = object_count.saturating_mul(AVG_OBJECT_SIZE_BYTES);
+
+    // --- design/02 §3.5 heuristic (FROZEN) ---
+    let (recommended, recommend_sparse) = if size_bytes < ONE_GB {
+        (CloneStrategy::Full, false)
+    } else if size_bytes <= TEN_GB {
+        (CloneStrategy::Blobless, false)
+    } else {
+        (CloneStrategy::Blobless, true)
+    };
+
+    Ok(SizeReport {
+        size_bytes,
+        object_count,
+        branch_count,
+        recommended,
+        recommend_sparse,
+    })
 }
 
 /// Incremental fetch on an existing repo at `repo_dir`.

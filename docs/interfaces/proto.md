@@ -396,6 +396,16 @@ message AddRepoRequest {
   // Optional explicit default branch. V0.1 accepts `"main"` as a fallback
   // when empty; later tasks may probe the remote.
   string default_branch = 4;
+  // Clone strategy (Task 301, design/02 §3.1). One of the lowercase
+  // `repositories.clone_strategy` TEXT values: `full | blobless | treeless`.
+  // Empty string parses as `full` (preserves V0.1 callers). An unrecognized
+  // value is rejected with INVALID_ARGUMENT.
+  string clone_strategy = 5;
+  // When true, append `--sparse --no-checkout` to the clone so the worktree
+  // lands empty for Task 302's `sparse-checkout init --cone` to populate.
+  // The size→strategy recommendation's "Blobless + Sparse" is
+  // `clone_strategy = "blobless"` + `with_sparse = true`.
+  bool with_sparse = 6;
 }
 ```
 
@@ -435,6 +445,26 @@ message ListRepositoriesResponse {
 }
 ```
 
+### message `EstimateRepoSizeRequest`
+
+```proto
+message EstimateRepoSizeRequest {
+  string url = 1;
+}
+```
+
+### message `SizeReport`
+
+```proto
+message SizeReport {
+  uint64 size_bytes = 1;
+  uint64 object_count = 2;
+  uint32 branch_count = 3;
+  string recommended_strategy = 4;
+  bool recommend_sparse = 5;
+}
+```
+
 ### service `Repositories`
 
 ```proto
@@ -442,6 +472,7 @@ service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
   rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+  rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
 }
 ```
 

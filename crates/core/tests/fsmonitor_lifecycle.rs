@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use concerto_core::repo_manager::fsmonitor::{self, ProbeOutcome, RestartHistory};
 use concerto_core::repo_manager::RepoManager;
+use concerto_gix_wrap::CloneStrategy;
 use concerto_persist::{Persistence, PersistenceConfig, RepositoryId};
 use tempfile::TempDir;
 use tokio::process::Command;
@@ -135,7 +136,14 @@ async fn clone_applies_perf_config() {
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository("p-perf", "fixture", &url, "main")
+        .add_repository(
+            "p-perf",
+            "fixture",
+            &url,
+            "main",
+            CloneStrategy::Full,
+            false,
+        )
         .await
         .expect("add_repository");
     manager
@@ -177,7 +185,14 @@ async fn clone_records_alive_fsmonitor_pid_when_supported() {
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository("p-fsmon", "fixture", &url, "main")
+        .add_repository(
+            "p-fsmon",
+            "fixture",
+            &url,
+            "main",
+            CloneStrategy::Full,
+            false,
+        )
         .await
         .expect("add_repository");
     manager
@@ -238,7 +253,14 @@ async fn probe_all_respects_disabled_flag() {
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository("p-probe", "fixture", &url, "main")
+        .add_repository(
+            "p-probe",
+            "fixture",
+            &url,
+            "main",
+            CloneStrategy::Full,
+            false,
+        )
         .await
         .expect("add_repository");
     // We don't need an on-disk clone for this test; the probe only
@@ -283,7 +305,14 @@ async fn probe_all_reports_alive_when_pid_is_live() {
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository("p-alive", "fixture", &url, "main")
+        .add_repository(
+            "p-alive",
+            "fixture",
+            &url,
+            "main",
+            CloneStrategy::Full,
+            false,
+        )
         .await
         .expect("add_repository");
     {
