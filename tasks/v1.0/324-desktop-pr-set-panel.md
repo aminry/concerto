@@ -1,0 +1,114 @@
+# Task 324 — Desktop: PR-set panel (replaces stub Checks/PR cards) + coordinated-merge UI
+
+| Field | Value |
+|---|---|
+| Phase | 3 |
+| Task type | web-ts |
+| Verification tier | 2 |
+| Size | medium (1–3d) — TS only (`apps/desktop/src`); no `src-tauri` Rust |
+| Depends on | 319, 320, 218 |
+| Touches subsystem(s) | 15 (Desktop Client), 13 (VCS Provider — client consumer), 03 (Workspace/Session Manager — client consumer) |
+| Smoke gate | unchanged |
+
+## Goal
+Replace the two stub Placeholder cards in `CodePrRegion.tsx` ("CI checks panel arrives in V1.0" / "Pull-request panel arrives with the GitHub surface") with the real **Level-2 Checks + PR panels** and add the **workarea-wide coordinated-merge UI** per `design/15 §3.4`. The Core surfaces are now live: Task 316 syncs check runs + review threads (streamed on `checks.<wa>.<repo>`), the V0.1 `Vcs` service exposes `GetChecks`/`GetPullRequest`/`CreatePullRequest`/`MergePullRequest` (frozen at Task 45), Task 319 added `merge_order` + `SetMergeOrder`, and Task 320 added the coordinated-merge loop on the `Workareas` service. This task (1) binds the **Checks panel** (`Vcs.GetChecks → CheckRun[]` + review-thread display, subscribing to `checks.<wa>.<repo>`) with status/conclusion → colour bands; (2) binds the **PR panel** (`GetPullRequest`/`CreatePullRequest`/`MergePullRequest`) — "Create PR" when none, "Mark ready / Merge / Open in browser" when one exists; (3) builds the **workarea-wide PR-set actions** above the Level-1 repo selector — "Create PRs for all dirty repos", "Merge workarea PR set" (**greyed if any repo's checks are red**), "Revert PR set" — bound to Task 320's `MergeWorkareaPrSet` (a `MergeProgress` stream) / `RevertWorkareaPrSet` and Task 319's `GetWorkareaPrSet` (ordered by `merge_order`) with **drag-to-reorder** writing `SetMergeOrder`; and (4) renders the pause-on-fail "Step N of M failed — auto-revert?" state from the merge stream (`design/03 §6.4`). After this task the user can drive a coordinated PR-set merge from the Desktop. The real coordinated merge against a live GitHub repo with a real webhook is the Tier-3 phase-checklist line; this task proves the panel + ordering + disable-on-red + pause-on-fail rendering against a mocked transport.
+
+## Inputs to read before starting
+- `design/15_Desktop_Client.md` §3.4 — the **Level-2 per-repo views** (`Diff` / `Checks` / `PR`) and the **workarea-wide actions above the Level-1 tabs**: "`Create PRs for all dirty repos`, `Merge workarea PR set` (greyed if any repo's checks are red), `Revert workarea PR set`." The PR view: "**Create PR** button if none exists; **Mark ready for review** / **Merge PR** / **Open in browser** if it does." The Checks view: "CI runs + deployments + review threads." This is the exact UI you build.
+- `design/15_Desktop_Client.md` §3.5 — review threads + the **"Resolve in agent"** affordance reuse the inline-comment-to-composer attachment shape. **The inline diff-comment composer attachment is Task 606 (Phase 6); this task's Checks panel lists review threads but the inline-diff comment layer + "Resolve in agent" attachment is out** (note the boundary). Render review threads read-only here.
+- `design/03_Workspace_Session_Manager.md` §3.9 (the **implicit per-workarea PR set** = all `pull_requests` rows for the workarea; no join table; merge plan = ordered `(repo, PR)` by `merge_order`), §6.4 (the coordinated-merge sequence diagram + "A failure mid-loop pauses the plan; the user sees **'Step N of M failed — auto-revert?'** UI on the workarea's PR set view"). This is the pause-on-fail state you render.
+- `design/13_VCS_Provider_Integration.md` §3.5 (PR-set merge protocol — implicit per workarea, `merge_order`, coordinated revert = reverse order), §3.4 / §3.6 (review threads **poll every 60 s while the Checks panel is viewed**; deployments poll 60 s), §5.3 (events: per-`(workarea, repo)` subject `checks.<workarea_id>.<repository_id>` carries `pr.check_run_updated` / `pr.thread_updated`; `pr_set.merge_step_completed`).
+- **PHASE3_PLANNING §4.5 (FROZEN — the contract you bind):** the coordinated-merge RPCs live on the **`Workareas`** service. Task 319: `GetWorkareaPrSet(WorkareaId) → PrSet`, `SetMergeOrder(SetMergeOrderRequest) → PrSet`. Task 320: `GetWorkareaMergePlan(WorkareaId) → MergePlan`, `MergeWorkareaPrSet(WorkareaId) → stream MergeProgress`, `RevertWorkareaPrSet(WorkareaId) → RevertReport`. Pause-on-fail surfaces via the `MergeProgress` stream ("Step N of M failed"). **324 binds these + the opaque `checks.<wa>.<repo>` frames.**
+- **PHASE3_PLANNING §2 (locked):** "VCS events on the wire — route on the existing broadcast + a `checks.<wa>.<repo>` subject with an **opaque payload — NO new `streams.proto` Event oneof arm**. 324 parses the opaque frame." So the Checks panel subscribes to `checks.<wa>.<repo>` via `start_stream` and parses the opaque body — there is no typed proto event arm to mirror.
+- `tasks/v1.0/319-pr-set-semantics.md` → "Public interface this task locks" — the `PullRequest.merge_order` field (proto field 15) + `SetMergeOrder` request shape + `GetWorkareaPrSet` ordered-by-`merge_order` response. **Mirror exactly.**
+- `tasks/v1.0/320-coordinated-merge-loop.md` → "Public interface this task locks" — the exact `MergeWorkareaPrSet` / `RevertWorkareaPrSet` / `GetWorkareaMergePlan` RPC names + the **`MergeProgress` / `MergeReport` / `RevertReport` / `MergeStep` message shapes** (step index, total, repo, status, the failed-step/auto-revert signal). **Mirror exactly — this is the load-bearing dependency; the panel cannot render pause-on-fail without 320's stream shape.**
+- `tasks/v1.0/316-review-thread-sync.md` → "Handoff Notes" — the review-thread payload shape on the `checks.<wa>.<repo>` opaque frame (and whether a `ListReviewThreads`-style read RPC exists or threads arrive only via the stream). Mirror what 316 froze.
+- `tasks/v1.0/218-desktop-dual-transport.md` → "Handoff Notes" — the **FROZEN `CoreClient` trait**: `dispatch` (→ `callRpc`) + `start_stream(subject, filter, sink)` (→ the desktop's `subscribe`/`useEventSubscription` bridge). The `MergeProgress` server-stream and the `checks.<wa>.<repo>` subscription both go through this; the renderer never speaks gRPC. Active Core implicit via `callRpc`.
+- `apps/desktop/src/components/center/CodePrRegion.tsx` (the two stub Placeholder cards to replace + where the Level-1 selector now lives after Task 322), `apps/desktop/src/components/RightRail.tsx` (hosts the `diff`/`checks`/`pr` tabs — decide whether they stay rail tabs or move per D8; see notes), `apps/desktop/src/api/client.ts` (the `RpcMethod` union + `start_stream`/`subscribe` plumbing to extend), `apps/desktop/src/hooks/{useDiff,useEventSubscription}.ts` (the per-repo query + live-subscription patterns to mirror for `useChecks`/`usePrSet`), `crates/proto/proto/concerto/v1/vcs.proto` (the **frozen** `PullRequest` fields 1–14, `CheckRun` {name, status, conclusion, details_url}, `GetChecksRequest`/`GetChecksResponse`, `CreatePrRequest`, `MergePrRequest`) + `crates/proto/proto/concerto/v1/workareas.proto` (`GetWorkareaPrSetResponse { repeated PullRequest pull_requests = 1; }`).
+
+## Scope — in
+**New `api/vcs.ts` (TS mirrors + bindings):**
+- Mirror `concerto.v1.PullRequest` (vcs.proto fields 1–14: `id`, `workarea_id`, `repository_id`, `provider`, `pr_number`, `base_ref`, `head_ref`, `state` ∈ {open|closed|merged|draft}, `title`, `body`, `url`, `head_sha`, `created_at`, `updated_at`) + the Task 319 `merge_order` field (15) and `CheckRun` (`name`, `status` ∈ {queued|in_progress|completed}, `conclusion` ∈ {success|failure|neutral|cancelled|timed_out|action_required|stale|skipped}, `details_url`). Bindings: `getPullRequest`, `createPullRequest`, `mergePullRequest`, `getChecks`, plus the `Workareas` PR-set bindings (`getWorkareaPrSet`, `setMergeOrder`, `getWorkareaMergePlan`, `revertWorkareaPrSet`) and the `mergeWorkareaPrSet` **stream** trigger (via `start_stream`/the desktop streaming command + a `MergeProgress` mirror from Task 320).
+
+**Checks panel (`CodePrRegion.tsx` `checks` sub-view):**
+- Replace the Placeholder with: `Vcs.GetChecks(repository_id, sha)` → `CheckRun[]` mapped to colour bands (success→green, failure/timed_out/cancelled→red, in_progress/queued→amber, neutral/skipped/stale→grey); the review-thread list (read-only, from 316's surface); subscribe to `checks.<wa>.<repo>` (opaque frame, parsed) to live-invalidate. Apply the **60 s poll cadence while the Checks panel is viewed** (`design/13 §3.4`) as a React Query `refetchInterval` gated on the panel being visible.
+
+**PR panel (`CodePrRegion.tsx` `pr` sub-view):**
+- Replace the Placeholder with: when the selected repo has no PR → a **Create PR** button (`CreatePullRequest`); when one exists → its status + **Merge PR** / **Open in browser** (the PR `url`) / **Mark ready** (if the wire supports it; otherwise note as a follow-on). Per-PR base/labels controls are out (note).
+
+**Workarea-wide PR-set actions (above the Level-1 selector):**
+- "Create PRs for all dirty repos", "Merge workarea PR set" (**disabled when any repo in the set has red checks** — read aggregated check state, not a single PR), "Revert workarea PR set". Bind `GetWorkareaPrSet` (ordered by `merge_order`) for the set; **drag-to-reorder** the PR rows writes `SetMergeOrder`. Drive the merge via `MergeWorkareaPrSet` (consume the `MergeProgress` stream) and render the running step + the pause-on-fail "Step N of M failed — auto-revert?" prompt (offering `RevertWorkareaPrSet`). Revert via `RevertWorkareaPrSet`.
+
+**Plumbing:** extend `RpcMethod` with the new method strings (`Vcs.GetChecks`, `Vcs.GetPullRequest`, `Vcs.CreatePullRequest`, `Vcs.MergePullRequest`, `Workareas.GetWorkareaPrSet`, `Workareas.SetMergeOrder`, `Workareas.GetWorkareaMergePlan`, `Workareas.RevertWorkareaPrSet`) — exact `Service.Rpc` spelling; the `MergeWorkareaPrSet` stream goes through the streaming command path. Add `useChecks` / `usePrSet` hooks. Add vitest tests (mock `invoke` + the stream).
+
+## Scope — out
+- The **inline diff-comment layer + "Resolve in agent" composer attachment** (`design/15 §3.5`) — **Task 606** (Phase 6). This task lists review threads read-only; it does not build the per-line comment affordance or the composer attachment.
+- The **Level-1 per-repo selector itself + the multi-repo `Workarea` surface** — **Task 322** (this task consumes the selected repo it provides; if 322 hasn't landed, fall back to the workarea's single repo and note it). The **New-Workspace multi-select / cone picker** is also 322.
+- The **"When a workspace is selected" cross-workarea PR-set summary slot** — **Task 323** owns the summary; this task fills the per-workarea PR-set panel inside the workarea view (323 may later bind this task's `getWorkareaPrSet` into its placeholder — note the seam).
+- Any **Rust** in `src-tauri` or Core — the `Vcs` service, the coordinated-merge loop, `merge_order`, and review-thread sync are upstream (313/316/319/320). This task is the **client consumer**; it mirrors frozen wire shapes, never defines them.
+- Per-PR base-branch / labels editing, deployments-tab detail beyond a list — V1.5+ polish (note any deferral).
+- Real coordinated PR-set merge against a real GitHub repo with a live webhook — **Tier-3** phase-checklist line.
+
+## Public interface this task locks
+- **TS (FROZEN):** the `apps/desktop/src/api/vcs.ts` binding surface + mirrors — `PullRequest` (fields 1–15 incl. `merge_order`), `CheckRun`, `MergeProgress`/`MergeReport`/`RevertReport`/`MergeStep` (mirroring Task 320's proto), `GetWorkareaPrSetResponse { pull_requests: PullRequest[] }`, and the binding functions (`getChecks`, `getPullRequest`, `createPullRequest`, `mergePullRequest`, `getWorkareaPrSet`, `setMergeOrder`, `getWorkareaMergePlan`, `revertWorkareaPrSet`, the `mergeWorkareaPrSet` stream trigger). All mirror upstream-frozen wire shapes; document which task froze each.
+- **TS (FROZEN):** the `RpcMethod` union members added in `api/client.ts` (the eight `Vcs.*` / `Workareas.*` method strings above) — spelling must match the Rust shell dispatch table exactly.
+- **TS/UI (FROZEN):** the `checks.<workarea_id>.<repository_id>` subscription subject string + the opaque-frame parse this task performs (PHASE3_PLANNING §2 — no proto Event arm; the parse is client-owned). Document the parsed fields.
+- This task **does not** lock any proto/SQL/Rust surface — every wire shape it binds is frozen upstream (vcs.proto Task 45 + 316; workareas.proto/merge RPCs 319/320). State that so a reviewer confirms no double-lock.
+
+## Implementation notes
+- **Mirror, don't invent — and 320 is the gate.** The `MergeProgress` stream shape (step index/total, repo, status, failed-step + auto-revert signal) is owned by Task 320; the panel's pause-on-fail rendering is impossible without it. This task is unblocked only once 320's handoff pins that shape. Same for 319's `SetMergeOrder` and 316's review-thread payload. Follow the upstream handoffs where they differ from this contract.
+- **Disable-on-red reads aggregated state.** "Merge workarea PR set" is greyed when *any* repo in the set has a red check — compute it from the union of every repo's `CheckRun` conclusions (a single PR being green is insufficient). Cache the per-repo check state in React Query keyed `["checks", workareaId, repositoryId]` and aggregate across the set.
+- **The `MergeProgress` server-stream.** Drive it through Task 218's `start_stream` / the desktop streaming command (the same path `Repositories.Clone` uses — see `cloneRepository`/`onCloneProgress` in `client.ts`, which forwards a server stream to a `concerto/<...>/<id>` event bus). Render each frame; on a failed-step frame, switch to the "Step N of M failed — auto-revert?" prompt and stop consuming; "auto-revert" calls `RevertWorkareaPrSet`. Tear the subscription down on unmount.
+- **Drag-to-reorder.** A lightweight reorder (HTML5 drag or pointer-based) on the PR-set rows; on drop, write the new order via `SetMergeOrder` and optimistically reorder, reconciling with the returned `PrSet`. Default order is insertion order (`merge_order` from 319); no dependency-graph inference (D7).
+- **D8 — right-rail vs center.** V0.1 hosts `checks`/`pr` as right-rail tabs (`RightRail.tsx`). The design wants them center-bottom Level-2. Like Task 322, **this task does not have to physically relocate the panels** — it replaces the stub bodies wherever they currently render and records the right-rail→center move as drift (shared with 322's D8 note). If 322 already moved the repo selector, render the Checks/PR panels in the same region; otherwise keep them as rail tabs. Keep the `RightRailTab` ids (`diff`/`checks`/`pr`) stable (persisted in `LAYOUT_STORAGE_KEY` + validated by `isRightRailTab`).
+- **`WorkareaId` wrapper shape.** `GetWorkareaPrSet`/the merge RPCs take a `WorkareaId` — the shell maps `{ value: workareaId }` (same as `GetSession`/`GetWorkarea`'s `{ id }` / `{ value }` convention; confirm the exact key against `workareas.ts`'s existing `getWorkarea`).
+- **Dispatch through `CoreClient` only.** No raw gRPC. `int64` fields (`pr_number`, `created_at`, `merge_order`) land as `number` (or string for large values) — confirm against `runtime.test.ts` conventions and the `sessions.ts` `[seconds, nanos]` precedent.
+- **Verification scripts already exist** (Task 218): `typecheck`/`lint`/`test`/`build` + `vitest`/`jsdom`/`@testing-library/react`. Write colocated `*.test.tsx`/`*.test.ts` mocking `invoke` + the stream event bus.
+- **Tier-2 double.** vitest + mocked `invoke` + a mocked `MergeProgress`/`checks.<wa>.<repo>` event stream. It proves: Checks colour-banding + live invalidation; PR Create/Merge/Open; PR-set ordering + drag-to-reorder → `SetMergeOrder`; disable-on-red aggregation; the `MergeProgress`-driven running/pause-on-fail/auto-revert rendering. It does **NOT** prove a real GitHub merge, real check-run webhooks, or real review-thread sync.
+
+## Verification
+**Tier 2.** Verification **overrides** the orchestrator's `web-ts` default to **`apps/desktop`** per PHASE3_PLANNING §7:
+1. `pnpm -C apps/desktop typecheck` → clean (the vcs mirrors + `RpcMethod` union extension type-check).
+2. `pnpm -C apps/desktop lint` → clean (aliased to `tsc --noEmit`).
+3. `pnpm -C apps/desktop test` → vitest green, including: Checks panel maps `CheckRun` status/conclusion to colour bands and live-invalidates on a mocked `checks.<wa>.<repo>` frame; PR panel shows Create when none / Merge+Open when one exists; the PR-set list orders by `merge_order` and drag-to-reorder calls `SetMergeOrder`; "Merge workarea PR set" is disabled when a mocked repo has a red check; a mocked `MergeProgress` stream drives the running-step UI and a failed-step frame renders "Step N of M failed — auto-revert?" with the revert wired to `RevertWorkareaPrSet`.
+4. `pnpm -C apps/desktop build` → `tsc --noEmit && vite build` clean.
+
+**Tier-2 double + what it does NOT cover.** The double is **vitest + mocked `invoke`/stream** (no Core; `apps/desktop` has no Playwright). It proves the PR-set panel + coordinated-merge UI logic (ordering, disable-on-red, pause-on-fail, auto-revert rendering). It does **NOT** cover a real coordinated PR-set merge against a real GitHub repo with a live webhook, real check-run sync, or real review-thread sync → **Phase-3 Tier-3 checklist** lines "run a coordinated PR-set merge against a real GitHub repo with a live webhook; confirm review threads sync."
+
+## Definition of Done
+- [ ] `api/vcs.ts` mirrors `PullRequest`(1–15)/`CheckRun`/`MergeProgress`/`MergeReport`/`RevertReport`/`GetWorkareaPrSetResponse` + the eight bindings (documented per upstream task that froze each)
+- [ ] Checks panel replaces the stub: `GetChecks → CheckRun[]` colour bands + read-only review threads + `checks.<wa>.<repo>` live subscription + 60 s poll-while-viewed
+- [ ] PR panel replaces the stub: Create PR when none / Merge + Open in browser when one exists
+- [ ] Workarea-wide actions: Create-PRs-for-all, Merge-PR-set (disabled on any red, aggregated), Revert-PR-set; PR-set ordered by `merge_order`; drag-to-reorder writes `SetMergeOrder`
+- [ ] Coordinated merge driven by `MergeWorkareaPrSet` stream; pause-on-fail "Step N of M failed — auto-revert?" rendered; auto-revert calls `RevertWorkareaPrSet`
+- [ ] `RpcMethod` union extended with exact method strings; `useChecks`/`usePrSet` hooks added; no proto/SQL/Rust locked by this task
+- [ ] All four `pnpm -C apps/desktop` commands pass; vitest covers the cases above; `RightRailTab` ids stable
+- [ ] No `TODO`/`FIXME` in new code (deliberate seams in Handoff); no files outside Outputs modified
+- [ ] Right-rail→center (D8) move recorded as drift in Handoff (shared with 322)
+- [ ] Single commit with the message below
+
+## Outputs
+- `apps/desktop/src/components/center/CodePrRegion.tsx` (modified — replace the `checks`/`pr` Placeholder cards with real panels + workarea-wide actions)
+- `apps/desktop/src/components/center/ChecksPanel.tsx` + `apps/desktop/src/components/center/PrPanel.tsx` + `apps/desktop/src/components/center/PrSetActions.tsx` (new — the three Level-2 / workarea-wide surfaces)
+- `apps/desktop/src/api/vcs.ts` (new — `PullRequest`/`CheckRun`/`MergeProgress` mirrors + the eight bindings + the merge-stream trigger)
+- `apps/desktop/src/api/client.ts` (modified — `RpcMethod` union: the `Vcs.*` + `Workareas.*` PR-set members)
+- `apps/desktop/src/hooks/useChecks.ts` + `apps/desktop/src/hooks/usePrSet.ts` + `apps/desktop/src/hooks/useMergeProgress.ts` (new — React Query + stream hooks)
+- `apps/desktop/src/components/RightRail.tsx` (modified — only if the panel mount/labels change; otherwise unchanged)
+- `apps/desktop/src/components/center/ChecksPanel.test.tsx` + `PrPanel.test.tsx` + `PrSetActions.test.tsx` + `apps/desktop/src/api/vcs.test.ts` (new — vitest)
+
+## Commit message
+```
+phase-3: desktop PR-set panel + coordinated-merge UI
+
+Replaces the stub Checks/PR cards with real Level-2 panels (Vcs.GetChecks
+colour bands + review threads; Create/Merge/Open PR) and adds the
+workarea-wide coordinated-merge UI per design/15 §3.4 — bound to Task 319
+SetMergeOrder (drag-to-reorder) + Task 320 MergeWorkareaPrSet stream with
+the pause-on-fail "Step N of M failed — auto-revert?" state. Dispatched
+through the Task 218 CoreClient.
+
+Refs: tasks/v1.0/324-desktop-pr-set-panel.md
+```
+
+## Handoff Notes (filled in when finishing)
+- Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state — —
