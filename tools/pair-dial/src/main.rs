@@ -316,11 +316,9 @@ async fn run() -> Result<(), String> {
         .await
         {
             Ok(Ok(_)) => {
-                return Err(
-                    "revoke teardown FAILED: a post-revoke RPC still succeeded \
+                return Err("revoke teardown FAILED: a post-revoke RPC still succeeded \
                      (session was NOT severed)"
-                        .to_string(),
-                )
+                    .to_string())
             }
             Ok(Err(e)) => println!(
                 "pair-dial: post-revoke RPC correctly FAILED (code={:?}) — session severed ✓",
