@@ -1091,6 +1091,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "concerto-pair-dial"
+version = "0.0.1"
+dependencies = [
+ "base64 0.22.1",
+ "blake2",
+ "concerto-identity",
+ "concerto-proto",
+ "concerto-transport",
+ "futures",
+ "getrandom 0.2.17",
+ "hex",
+ "iroh",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
+name = "concerto-pair-serve"
+version = "0.0.1"
+dependencies = [
+ "base64 0.22.1",
+ "concerto-core",
+ "concerto-proto",
+ "concerto-transport",
+ "futures",
+ "hex",
+ "hyper-util",
+ "iroh",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tonic",
+ "tower 0.5.3",
+ "uuid",
+]
+
+[[package]]
 name = "concerto-persist"
 version = "0.0.1"
 dependencies = [

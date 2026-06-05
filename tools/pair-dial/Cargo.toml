@@ -1,0 +1,43 @@
+[package]
+name = "concerto-pair-dial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Cross-machine pairing verification tool (client/dial side). Decodes a pair-serve connect-blob, reconstructs the relay-bearing server EndpointAddr, pairs over the 0x03 channel, opens the Noise-IK API channel, and runs an IROH unary + GetNatStats + Files round-trip. Dev/test tooling. Deliberately MINIMAL deps (no concerto-core) so it builds on a 2 GB box."
+
+# pair-dial is the client half of the two-process cross-machine Iroh pairing
+# verification. It deliberately depends only on the transport + identity + proto
+# leaf crates (NOT concerto-core / keychain), so it builds on a small box (a
+# 1-vCPU / 2 GB Ubuntu droplet) without pulling the whole Core + sqlx + keyring
+# stack onto it. It inlines the `concerto-device-cert` metadata key + the base64
+# cert encoding to keep that promise.
+[[bin]]
+name = "pair-dial"
+path = "src/main.rs"
+
+[dependencies]
+# The Iroh transport surface: connect_channel / ALPN / IrohDuplex / ChannelTag /
+# write_channel_tag.
+concerto-transport = { path = "../../crates/transport" }
+# Device keypair, Noise XX handshake (pairing), Noise static (IK).
+concerto-identity = { path = "../../crates/identity" }
+# The gRPC clients (Runtime / Files) + the proto messages driven over Iroh.
+concerto-proto = { path = "../../crates/proto" }
+# Iroh client endpoint + EndpointAddr reconstruction (relay url + direct addrs).
+iroh = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+prost = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util", "sync"] }
+futures = { workspace = true }
+# BLAKE2b-256 for the Files upload finalize digest + the download round-trip
+# check (same `blake2` the Core handler + the split-host driver use).
+blake2 = { workspace = true }
+# Decode the base64(JSON) connect-blob.
+base64 = "0.22"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# Random device seed + pairing nonce per dial.
+getrandom = { workspace = true }
+hex = "0.4"

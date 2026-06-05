@@ -25,6 +25,12 @@ members = [
     # Noise IK. Run by scripts/smoke.d/97-split-host-loopback.sh (macOS-only at
     # runtime; builds on every lane).
     "tools/split-host-loopback",
+    # Cross-machine pairing verification tools (dev/test, not shipped product).
+    # `pair-serve` (Core side, macOS-only at runtime) + `pair-dial` (client side,
+    # MINIMAL deps so it builds on a small box) split `tools/split-host-loopback`
+    # into a two-process, relay-capable, cross-machine Iroh pairing flow.
+    "tools/pair-serve",
+    "tools/pair-dial",
     # Task 17: shared integration-test harness. Dev-deps-only crate —
     # callers pin it as a `[dev-dependencies]` path entry. Lives in the
     # workspace so `cargo test --workspace` builds its self-tests but
