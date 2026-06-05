@@ -50,10 +50,10 @@ pub mod state;
 // canonical declarations live in `api`; this re-exports them at the root.
 pub use api::{
     classify_path, connect_channel, direct_endpoint_addr, nat_success_is_material,
-    network_class_for, ActiveSession, ApiDispatcher, ChannelTag, ClientKind, ConnectionPath,
-    DeviceId, DiscoveredCore, IrohConnector, IrohDuplex, IrohTransport, MdnsBrowser, MdnsConfig,
-    MdnsResponder, NatStats, NetworkStats, NoiseDuplex, PairingListener, RelayInfo,
-    TransportConfig, TransportHandle, TransportState, TransportTelemetry, WakeupHint,
+    network_class_for, ActiveSession, ApiDispatcher, AuthObserver, ChannelTag, ClientKind,
+    ConnectionPath, DeviceId, DiscoveredCore, IrohConnector, IrohDuplex, IrohTransport,
+    MdnsBrowser, MdnsConfig, MdnsResponder, NatStats, NetworkStats, NoiseDuplex, PairingListener,
+    RelayInfo, TransportConfig, TransportHandle, TransportState, TransportTelemetry, WakeupHint,
     WakeupPayload, ALPN, MAX_MESSAGE_SIZE, NAT_SUCCESS_DELTA_PCT, NAT_SUCCESS_PRD_LINE_PCT,
     SERVICE_TYPE, TXT_CAPS, TXT_CORE_PUBKEY, TXT_ENDPOINT_ID, TXT_VERSION,
 };

@@ -37,8 +37,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapter;
 use crate::api::{
-    nat_success_is_material, ApiDispatcher, ChannelTag, ClientKind, ConnectionPath, DeviceId,
-    IrohConnector, IrohDuplex, IrohTransport, MdnsConfig, PairingListener, RelayInfo,
+    nat_success_is_material, ApiDispatcher, AuthObserver, ChannelTag, ClientKind, ConnectionPath,
+    DeviceId, IrohConnector, IrohDuplex, IrohTransport, MdnsConfig, PairingListener, RelayInfo,
     TransportConfig, TransportState, TransportTelemetry, WakeupHint,
 };
 use crate::error::{Result, TransportError};
@@ -339,6 +339,21 @@ impl IrohTransport {
         self.wakeup_rx.lock().expect("wakeup lock").take()
     }
 
+    /// Re-key a naturally-accepted session from its accept-time Iroh
+    /// endpoint-id key onto the device **fingerprint** the gRPC auth layer
+    /// validated (Task 217.5). Additive seam (not one of the frozen nine): the
+    /// serve loop calls this once per connection, the instant the first
+    /// authenticated request reports the fingerprint via the [`AuthObserver`],
+    /// so [`Self::close_sessions_for_device`] (keyed by fingerprint) severs the
+    /// device's live session on revoke. Idempotent + a no-op when no session is
+    /// live under `from`. Returns whether a re-key happened.
+    pub fn rekey_session(&self, from: &DeviceId, to: &DeviceId) -> bool {
+        self.state
+            .lock()
+            .expect("state lock")
+            .rekey_session(from, to)
+    }
+
     /// Close every open session for `device_id` (`design/12 §7.3`, the Task-209
     /// `SessionCloser` seam Task 217 satisfies). FROZEN signature.
     pub fn close_sessions_for_device(&self, device_id: &DeviceId) {
@@ -517,6 +532,32 @@ async fn serve_conn<D: ApiDispatcher>(
     };
     let _ = path;
 
+    // The session was just registered under the peer's Iroh endpoint id — the
+    // only id known at this raw boundary. The device's cert *fingerprint* is
+    // resolved later, per request, inside the gRPC auth interceptor (Task 210).
+    // Build a per-connection `AuthObserver` the dispatcher feeds that fingerprint
+    // into on the first authenticated request; its closure re-keys the live
+    // session from the endpoint-id key onto the fingerprint (Task 217.5) so
+    // `close_sessions_for_device` (keyed by fingerprint) severs a revoked
+    // device's naturally-accepted session. `current_key` tracks which key the
+    // session lives under so the teardown below removes the right entry, whether
+    // or not the re-key fired. Fire-once is enforced inside `AuthObserver`.
+    let current_key = Arc::new(Mutex::new(device_key.clone()));
+    let observer = {
+        let state = state.clone();
+        let current_key = current_key.clone();
+        AuthObserver::new(move |fingerprint: &DeviceId| {
+            let mut key = current_key.lock().expect("current-key lock");
+            if state
+                .lock()
+                .expect("state lock")
+                .rekey_session(&key, fingerprint)
+            {
+                *key = fingerprint.clone();
+            }
+        })
+    };
+
     let result = loop {
         let (send, recv) = tokio::select! {
             _ = shutdown.cancelled() => break Ok(()),
@@ -543,6 +584,7 @@ async fn serve_conn<D: ApiDispatcher>(
                 // later without changing the demux contract.
                 let dispatcher = dispatcher.clone();
                 let core_static = core_static.clone();
+                let observer = observer.clone();
                 let label = if tag == ChannelTag::Api {
                     "api"
                 } else {
@@ -551,7 +593,9 @@ async fn serve_conn<D: ApiDispatcher>(
                 tokio::spawn(async move {
                     match adapter::handshake_responder(duplex, &core_static).await {
                         Ok(noise) => {
-                            if let Err(err) = dispatcher.serve_connection(noise).await {
+                            if let Err(err) =
+                                dispatcher.serve_connection_observed(noise, observer).await
+                            {
                                 tracing::debug!(%err, channel = label, "iroh: serve_connection ended");
                             }
                         }
@@ -586,15 +630,21 @@ async fn serve_conn<D: ApiDispatcher>(
     // migration never reaches here: it is a path change on a *live* connection,
     // handled by `note_migration` without tearing the loop down. The client
     // reconnects + replays from offset via the Task-202 ring buffer.
+    //
+    // Remove under whichever key the session currently lives on: the
+    // accept-time endpoint id, or — if an authenticated request re-keyed it —
+    // the device fingerprint (Task 217.5). `current_key` was updated in lockstep
+    // by the `AuthObserver` re-key closure.
+    let close_key = current_key.lock().expect("current-key lock").clone();
     let was_live = state
         .lock()
         .expect("state lock")
         .sessions
-        .remove(&device_key)
+        .remove(&close_key)
         .is_some();
     if was_live {
         let _ = telemetry_tx.send(TransportTelemetry::SessionClosed {
-            device_id: device_key.clone(),
+            device_id: close_key,
         });
     }
     result

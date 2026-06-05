@@ -1314,6 +1314,42 @@ pub trait ApiDispatcher: Send + Sync + 'static {
         &self,
         io: NoiseDuplex,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<(), TransportError>> + Send>>;
+
+    /// Serve one gRPC connection like [`Self::serve_connection`], but with a
+    /// per-connection [`AuthObserver`] the dispatcher's auth layer reports the
+    /// validated device **fingerprint** into once it knows it (Task 217.5).
+    ///
+    /// This is the **additive** seam that closes the deferred fingerprint↔session
+    /// binding: at the raw transport boundary the serve loop only knows the
+    /// peer's Iroh endpoint id, so it keys the accept-time session on that; the
+    /// device's cert fingerprint is resolved later, per request, inside the
+    /// Core's gRPC auth interceptor. By threading this observer into that
+    /// interceptor, the serve loop learns the fingerprint on the first
+    /// authenticated request and re-keys the live session onto it
+    /// ([`IrohTransport::rekey_session`]) so
+    /// [`IrohTransport::close_sessions_for_device`] (keyed by fingerprint) severs
+    /// a revoked device's naturally-accepted session.
+    ///
+    /// The **default** implementation ignores the observer and delegates to
+    /// [`Self::serve_connection`], so existing dispatchers (the loopback doubles)
+    /// keep their endpoint-id-keyed sessions unchanged. The Core's real Iroh
+    /// dispatcher overrides this to feed the observer from its auth interceptor.
+    fn serve_connection_observed(
+        &self,
+        io: NoiseDuplex,
+        observer: AuthObserver,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<(), TransportError>> + Send>> {
+        let _ = observer;
+        self.serve_connection(io)
+    }
+}
+```
+
+### struct `AuthObserver`
+
+```rust
+pub struct AuthObserver {
+    inner: Arc<AuthObserverInner>,
 }
 ```
 
