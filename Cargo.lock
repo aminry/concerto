@@ -1160,6 +1160,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "concerto-split-host-loopback"
+version = "0.0.1"
+dependencies = [
+ "blake2",
+ "concerto-core",
+ "concerto-identity",
+ "concerto-proto",
+ "concerto-transport",
+ "futures",
+ "iroh",
+ "sqlx",
+ "tokio",
+ "tonic",
+ "uuid",
+]
+
+[[package]]
 name = "concerto-test-harness"
 version = "0.0.1"
 dependencies = [

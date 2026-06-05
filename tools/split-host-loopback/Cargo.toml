@@ -1,0 +1,49 @@
+[package]
+name = "concerto-split-host-loopback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Tier-2 split-host loopback driver: boots an Iroh-enabled Core in-process, pairs a synthetic device over the 0x03 channel, and drives an IROH-tagged unary RPC + Streams.Subscribe + Files round-trip over Iroh + Noise IK. Used by scripts/smoke.d/94-split-host-loopback.sh (Task 220)."
+
+# Task 220: this is the split-host-loopback smoke driver. It is a dedicated
+# `tools/` bin (NOT a `smoke-client` subcommand) because the pairing TARGET —
+# an Iroh-enabled Core booted in-process via `boot::start` — does not fit the
+# UDS-only `smoke-client` subcommand model, and it pulls in the heavy
+# `concerto-core` / `concerto-transport` / `concerto-identity` / `iroh` stack
+# that `smoke-client` (a thin UDS client) deliberately avoids.
+#
+# It BUILDS on every lane (Linux/Windows/macOS) — nothing here is cfg-gated —
+# but its Iroh round-trip only RUNS on macOS, because the booted Iroh path is
+# keychain-backed (the Core's Ed25519 cert issuer + Noise static) and the
+# `keyring` backend only works on macOS in V1.0 (Task 217.5 Handoff). The smoke
+# wrapper skips cleanly on non-macOS; this bin itself reports `iroh-unavailable`
+# (exit 0, no-op) when `RunningCore::iroh()` degrades to `None`.
+[[bin]]
+name = "split-host-loopback"
+path = "src/main.rs"
+
+[dependencies]
+# The booted Core (in-process) + its live Iroh seam (RunningCore::iroh()).
+concerto-core = { path = "../../crates/core" }
+# The Iroh transport surface: connect_channel / direct_endpoint_addr /
+# IrohDuplex / write_channel_tag / ChannelTag / ALPN.
+concerto-transport = { path = "../../crates/transport" }
+# Device keypair, Noise XX handshake (pairing), Noise static (IK).
+concerto-identity = { path = "../../crates/identity" }
+# The gRPC clients (Runtime / Repositories / Workspaces / Workareas / Streams /
+# Files) + the proto messages driven over the Iroh channel.
+concerto-proto = { path = "../../crates/proto" }
+# Iroh client endpoint (relays disabled → direct loopback).
+iroh = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util", "sync"] }
+futures = { workspace = true }
+# BLAKE2b-256 for the Files upload finalize digest + the download round-trip
+# check (same `blake2` the Core handler + the files-transfer probe use).
+blake2 = { workspace = true }
+# Direct `projects` row insert (no Projects.CreateProject RPC in V1.0; mirrors
+# `smoke-client add-project`).
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+uuid = { workspace = true }

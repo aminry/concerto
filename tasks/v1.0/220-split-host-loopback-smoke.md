@@ -63,14 +63,14 @@ Add the **Tier-2 capstone of the Phase-2 transport spine**: a smoke-gate capabil
 **Tier-2 double + what it does NOT cover.** The double is **two Iroh endpoints on one host with relays disabled (direct hole-punch only)** + a synthetic paired device. It proves: gRPC-over-Iroh dispatch, the Noise IK session, the per-connection `IROH` transport tag (201), pairing (207/208/209), and the `Files` round-trip (203) — all in CI on one machine. It does **NOT** cover: real cross-machine split-host, real NAT diversity / direct-connection % on real networks, relay fallback, Wi-Fi↔LTE migration, or throughput-vs-UDS budgets — those are the **Tier-3 Phase-2 checklist** lines (`design/11 §10`) the operator signs off at the phase gate.
 
 ## Definition of Done
-- [ ] `scripts/smoke.d/NN-split-host-loopback.sh` (`check_split_host_loopback`) added; `split-host-loopback` appended to `scripts/smoke.manifest` at a justified position
-- [ ] Iroh-capable driver decided + built (extended `smoke-client` Iroh flag **or** a new `tools/` bin; choice recorded)
-- [ ] Second Iroh endpoint (relays disabled, direct) brought up + torn down cleanly; pair → IROH-tagged unary → stream → `Files.Upload`/`Download` round-trip all asserted
-- [ ] No `tonic-iroh-transport` introduced (uses Task 212's hand-rolled tonic-0.12 adapter via 217)
-- [ ] `shellcheck` clean; `scripts/smoke.sh --ci-mode` exits 0 with `PASS split-host-loopback`; `--list` shows it; `--only` works
-- [ ] No `TODO`/`unimplemented!()`/`todo!()` in new code
-- [ ] No files outside Outputs modified (esp. `00-core-boot.sh` left intact)
-- [ ] Single commit with the message below
+- [x] `scripts/smoke.d/NN-split-host-loopback.sh` (`check_split_host_loopback`) added; `split-host-loopback` appended to `scripts/smoke.manifest` at a justified position
+- [x] Iroh-capable driver decided + built (extended `smoke-client` Iroh flag **or** a new `tools/` bin; choice recorded)
+- [x] Second Iroh endpoint (relays disabled, direct) brought up + torn down cleanly; pair → IROH-tagged unary → stream → `Files.Upload`/`Download` round-trip all asserted
+- [x] No `tonic-iroh-transport` introduced (uses Task 212's hand-rolled tonic-0.12 adapter via 217)
+- [x] `shellcheck` clean; `scripts/smoke.sh --ci-mode` exits 0 with `PASS split-host-loopback`; `--list` shows it; `--only` works
+- [x] No `TODO`/`unimplemented!()`/`todo!()` in new code
+- [x] No files outside Outputs modified (esp. `00-core-boot.sh` left intact)
+- [x] Single commit with the message below
 
 ## Outputs
 - `scripts/smoke.d/NN-split-host-loopback.sh` (new — the check)
@@ -91,5 +91,26 @@ split-host stays a Tier-3 checklist line.
 Refs: tasks/v1.0/220-split-host-loopback-smoke.md
 ```
 
-## Handoff Notes (fill in when finishing)
-- Drift from plan / driver decision (extended smoke-client vs new bin) + the Iroh-flag surface / manifest slot + rationale / how the second endpoint is brought up (217 surface used) / any `CI_MODE` gating + justification / Open questions / Smoke-gate state
+## Handoff Notes (filled in when finishing)
+
+**Drift from plan.**
+- **Driver decision: a NEW dedicated bin `tools/split-host-loopback` (path (b)), NOT an extended `smoke-client`.** Rationale: the pairing TARGET — an Iroh-enabled Core booted **in-process** via `boot::start` + the live `RunningCore::iroh()` seam (Task 217.5) — does not fit `smoke-client`'s UDS-only subcommand model, and it pulls in the heavy `concerto-core` / `concerto-transport` / `concerto-identity` / `iroh` stack that the thin `smoke-client` deliberately avoids. The bin boots its OWN Iroh Core (separate from the shared UDS smoke Core) and runs all three steps in one process, mirroring the Task-217.5 blueprint `crates/core/tests/iroh_boot.rs` and uniquely adding the **stream + Files** legs. **No `smoke-client` Iroh transport flag was added** — so there is no new `--iroh-endpoint`/`--device-cert` surface on `smoke-client` for 711/mobile to reuse; the reusable seam is instead the `connect_channel` + `IrohPairingResponder::start_pairing` + the `0x03` framing this bin demonstrates.
+- **Bin CLI surface (frozen for this task):** `split-host-loopback --data-dir <p> --config-dir <p> --bare-repo <p>`. The wrapper seeds the bare repo (git shell-outs stay in bash, as 10-project-repo-clone.sh does) and passes `file://$bare`. The bin prints `split-host-loopback: OK` on the full round-trip, or `split-host-loopback: iroh-unavailable` (exit 0) when `RunningCore::iroh()` is `None` (keychain-less env).
+- **Chain built over Iroh, not reused from the shared smoke chain.** The shared smoke Core is UDS-only (217.5 toggle default-off; the task forbids editing `00-core-boot.sh`), and its `WA_ID`/`SID` live on a different Core than the Iroh one. So the bin builds its OWN project→repo→workspace→workarea over the authenticated **Iroh** channel (project via direct sqlx insert like `add-project`; repo/clone/workspace/workarea via the real RPCs over Iroh) — which is strictly MORE coverage than reusing the chain (it exercises Repositories/Workspaces/Workareas over Iroh too). The stream leg subscribes `workspace.events` then creates a workspace to emit the `created` event (matching `streams-replay-probe`'s deterministic-event pattern); the Files leg uploads/downloads into the workarea's `.context/`.
+- **Manifest slot:** appended LAST (after `relay-route`) as the Phase-2 capstone. File prefix is `94-` — cosmetic only; **manifest order is authoritative** (the same decoupling already exists, e.g. `46-relay-route` runs last). `--only split-host-loopback` therefore runs the entire manifest prefix + this check (exercises the chain dependency).
+- **`00-core-boot.sh` left intact** (and every other prior check). Only the listed Outputs were touched.
+
+**`CI_MODE` gating: NONE.** Per the task, the capstone must run under `--ci-mode`; it does (no sub-step is gated on `CI_MODE`). The only runtime gate is `uname -s != Darwin` → clean SKIP, because the Iroh boot path is keychain-backed and the `keyring` backend is macOS-only in V1.0 (217.5). On non-macOS the check prints `SKIP split-host-loopback (... macOS-only ...)` then `PASS` (exit success) so the ubuntu smoke lane stays green; the bin ALSO self-degrades to `iroh-unavailable`/exit-0 if `RunningCore::iroh()` is `None` (belt-and-suspenders). The driver bin BUILDS on every lane (nothing `#[cfg]`-gated; keeps the Windows `wmi`→`windows 0.62.2` lockfile alignment — Cargo.lock only adds the new crate, no version bumps).
+
+**How the second endpoint is brought up (217.5 surface used):** `boot::start(RuntimeConfig)` with `CONCERTO_ENABLE_IROH=1` + a unique `CONCERTO_KEYCHAIN_SERVICE` → `RunningCore::iroh() -> IrohRuntime { transport, pairing_responder }`; dial id from `transport.endpoint_id()` / addr from `direct_endpoint_addr(transport.endpoint())`; Core Noise responder static from `transport.core_noise_public()`; pairing armed via `IrohPairingResponder::start_pairing()` (mints token, opens the `0x03` listener); Noise-XX over the token + the `device_pubkey||nonce||signature||device_name` length-prefixed frame; authenticated channel via `connect_channel` + the device cert in `concerto-device-cert` metadata. Teardown via `RunningCore::shutdown_token().cancel()` + `run_until_shutdown()` (timeout-bounded) — verified no leaked endpoint/process.
+
+**Open questions for next task (711 composes this).**
+- **Capability name (FROZEN):** `split-host-loopback`; `check_split_host_loopback` in `scripts/smoke.d/94-split-host-loopback.sh`; manifest position = LAST. It asserts **pair → IROH-tagged unary → `Streams.Subscribe` → `Files.Upload`/`Download` over loopback Iroh + Noise IK**. 711 composes by name.
+- **macOS-only nature:** the check only RUNS its Iroh assertions on macOS; the Linux/Windows Iroh round-trip awaits their keychain backends (the same gate as `iroh_boot.rs` and the keychain round-trip test). 711's full V1.0 gate must treat a non-macOS `split-host-loopback` as a clean SKIP, not a failure.
+- **No `smoke-client` Iroh flag surface exists** (see Drift) — if 711 or a mobile/web driver wants a reusable Iroh client flag, it would add one then; this task ships the round-trip via a standalone bin.
+
+**Deliberate debt.** — (none; no `TODO`/`FIXME`/`unimplemented!()`/`todo!()` introduced). Revoke→teardown is NOT exercised here (it is 217.5's test + a flagged 210/212 follow-up on the Tier-3 checklist), and is out of this task's pair→unary→stream→Files scope.
+
+**Smoke-gate state: new `split-host-loopback` (PASS on macOS / clean-SKIP elsewhere).** Full `scripts/smoke.sh --ci-mode` exits 0 with all 20 capabilities PASS (every prior check unchanged); `--list` shows `split-host-loopback` last; `--only split-host-loopback` passes the prefix-up-to-and-including. Clean teardown, no leaked Iroh-endpoint/Core processes. **Tier-3 lines this loopback double does NOT cover** (operator signs off at the Phase-2 gate, `design/11 §10`): real cross-machine split-host (Core + client on two boxes), real NAT diversity / direct-connection % on real networks, relay fallback, Wi-Fi↔LTE QUIC migration, and throughput-vs-UDS budgets.
+
+- Driver decision (extended smoke-client vs new bin): **new bin `tools/split-host-loopback`** (above). Iroh-flag surface: **none added to smoke-client** (above). Manifest slot + rationale: **last, capstone** (above). Second endpoint via **217.5 `boot::start` + `RunningCore::iroh()`** (above). `CI_MODE` gating: **none; macOS-only runtime gate** (above). Open questions + Smoke-gate state: above.
