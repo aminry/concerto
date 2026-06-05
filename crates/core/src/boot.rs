@@ -253,6 +253,13 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         "audit writer ready"
     );
 
+    // Task 302: attach the audit writer to the Repo Manager handle so the
+    // §8 force-non-cone-to-cone path can emit a typed audit event. The
+    // handle is rebound here (the audit writer only exists now); every
+    // downstream clone of `repo_handle` (the gRPC service, the workarea
+    // manager) picks up the audited handle.
+    let repo_handle = repo_handle.with_audit(audit_writer.clone());
+
     // Task 206: establish the Core's Ed25519 identity (`design/12 §3.1`).
     // Runs AFTER the audit writer (so a first-launch generation can emit
     // `CoreIdentityCreated`) and is constructed here so the issuer's signing

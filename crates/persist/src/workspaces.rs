@@ -162,6 +162,45 @@ pub async fn list_repos(
         .collect())
 }
 
+/// Read the raw `workspaces.settings_json` string for `id` (Task 302).
+/// Returns `None` when the workspace row does not exist.
+///
+/// The workspace-level sparse-cone defaults layer lives *inside* this JSON
+/// under a `cone_defaults` key as a `{ "<repository_id>": ["<cone_path>",
+/// …] }` map (the FROZEN nested shape, `PHASE3_PLANNING §2`) — there is no
+/// dedicated column. The three-layer cone resolver reads this layer; the
+/// `cone_defaults` extraction itself is a pure function in
+/// `concerto-core::repo_manager::cones` (this layer stays dumb storage).
+pub async fn get_settings_json(pool: &SqlitePool, id: &WorkspaceId) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT settings_json FROM workspaces WHERE id = ?")
+        .bind(&id.0)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(row.map(|r| r.get::<String, _>("settings_json")))
+}
+
+/// Overwrite `workspaces.settings_json` for `id` with `payload` (Task 302).
+///
+/// `payload` is a JSON object the caller has already serialized. Callers
+/// mutating the `cone_defaults` key must read-modify-write (via
+/// [`get_settings_json`]) so they never clobber other settings keys
+/// (`permission_mode` overrides, etc.). Mirrors
+/// [`crate::workareas::set_settings_json`].
+pub async fn set_settings_json(
+    conn: &mut SqliteConnection,
+    id: &WorkspaceId,
+    payload: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE workspaces SET settings_json = ? WHERE id = ?")
+        .bind(payload)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 /// True iff the provided sqlx error wraps SQLite's
 /// `SQLITE_CONSTRAINT_UNIQUE` (extended code `2067`). The workspace
 /// manager uses this to drive its slug auto-suffix retry.

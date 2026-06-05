@@ -325,6 +325,11 @@ impl WorkareaManager {
                             repository_id: repo.id.clone(),
                             worktree_path: worktree_path_str.clone(),
                             branch_override: None,
+                            // Task 302: the single-repo V0.1 create path seeds
+                            // the default-empty cone (`"[]"`). The multi-repo
+                            // create path (306/307) will resolve + seed the
+                            // three-layer inherited cone here instead.
+                            sparse_cones_json: NewWorkareaRepo::empty_cones(),
                         },
                     )
                     .await?;

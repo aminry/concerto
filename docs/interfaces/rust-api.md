@@ -534,6 +534,9 @@ pub struct Repository {
     pub local_path: String,
     pub clone_strategy: String,
     pub default_branch: String,
+    /// Repository-level sparse-cone defaults, a JSON `["<cone_path>", …]`
+    /// array (Task 302, `design/02 §3.2`). Defaults to `"[]"`.
+    pub cone_defaults_json: String,
     pub last_fetch_at: Option<i64>,
     /// PID of the `git fsmonitor--daemon` process supervising this repo,
     /// or `None` when no daemon is recorded. Task 28 writes this via
@@ -647,6 +650,10 @@ pub struct NewWorkareaRepo {
     pub repository_id: RepositoryId,
     pub worktree_path: String,
     pub branch_override: Option<String>,
+    /// Initial per-(workarea, repo) cone set as a JSON array string
+    /// (Task 302). Use [`NewWorkareaRepo::empty_cones`] for the `'[]'`
+    /// default.
+    pub sparse_cones_json: String,
 }
 ```
 

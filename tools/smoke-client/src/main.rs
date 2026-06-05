@@ -80,11 +80,31 @@ enum Command {
         project_id: String,
         #[arg(long)]
         url: String,
+        /// Task 301 clone strategy: `full | blobless | treeless` (empty →
+        /// full). The `sparse-cone-clone` smoke check passes `blobless`.
+        #[arg(long, default_value = "")]
+        clone_strategy: String,
+        /// Task 301: append `--sparse --no-checkout` so the worktree lands
+        /// empty for Task 302's cone-set to populate.
+        #[arg(long, default_value_t = false)]
+        with_sparse: bool,
     },
     /// Call `Repositories.Clone` and drain the progress stream.
     Clone {
         #[arg(long)]
         repo_id: String,
+    },
+    /// Task 302: call `Repositories.SetCones` for a (workarea, repo) and
+    /// print one applied cone path per line. Pass `--cone <path>` once per
+    /// cone directory (repeatable); an empty set cones to top-level files.
+    SetCones {
+        #[arg(long)]
+        workarea: String,
+        #[arg(long)]
+        repo: String,
+        /// Repeatable cone path (repo-root-relative, forward-slash).
+        #[arg(long = "cone")]
+        cone: Vec<String>,
     },
     /// Call `Workspaces.CreateWorkspace` and print the workspace id.
     NewWorkspace {
@@ -251,13 +271,26 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
             cmd::caps::run(&socket).await
         }
         Command::AddProject { name } => cmd::add_project::run(&name).await,
-        Command::AddRepo { project_id, url } => {
+        Command::AddRepo {
+            project_id,
+            url,
+            clone_strategy,
+            with_sparse,
+        } => {
             let socket = require_socket(cli.socket)?;
-            cmd::add_repo::run(&socket, &project_id, &url).await
+            cmd::add_repo::run(&socket, &project_id, &url, &clone_strategy, with_sparse).await
         }
         Command::Clone { repo_id } => {
             let socket = require_socket(cli.socket)?;
             cmd::clone::run(&socket, &repo_id).await
+        }
+        Command::SetCones {
+            workarea,
+            repo,
+            cone,
+        } => {
+            let socket = require_socket(cli.socket)?;
+            cmd::set_cones::run(&socket, &workarea, &repo, &cone).await
         }
         Command::NewWorkspace {
             project_id,

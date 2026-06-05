@@ -23,6 +23,7 @@ pub mod list_skills;
 pub mod new_workarea;
 pub mod new_workspace;
 pub mod send_message;
+pub mod set_cones;
 pub mod set_perm_mode;
 pub mod start_session;
 pub mod stop_session;

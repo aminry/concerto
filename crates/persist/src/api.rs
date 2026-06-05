@@ -313,10 +313,14 @@ pub struct NewRepository {
     pub default_branch: String,
 }
 
-/// Row-shaped projection of a `repositories` row. V0.1 omits
-/// `cone_defaults_json` — it's written by a V1.0 sparse + cones task.
+/// Row-shaped projection of a `repositories` row.
+///
 /// `fs_monitor_pid` is populated by Task 28 (fsmonitor supervisor); a
 /// `None` (or `Some(0)`) value means no daemon is recorded for the repo.
+/// `cone_defaults_json` is the repository-level sparse-cone defaults layer
+/// (Task 302) — a flat `["<cone_path>", …]` JSON array (migration 0001
+/// default `'[]'`); the three-layer cone resolver reads it as the
+/// least-specific layer (repo → workspace-default → workarea).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
     pub id: RepositoryId,
@@ -326,6 +330,9 @@ pub struct Repository {
     pub local_path: String,
     pub clone_strategy: String,
     pub default_branch: String,
+    /// Repository-level sparse-cone defaults, a JSON `["<cone_path>", …]`
+    /// array (Task 302, `design/02 §3.2`). Defaults to `"[]"`.
+    pub cone_defaults_json: String,
     pub last_fetch_at: Option<i64>,
     /// PID of the `git fsmonitor--daemon` process supervising this repo,
     /// or `None` when no daemon is recorded. Task 28 writes this via
@@ -494,12 +501,29 @@ pub struct NewWorkarea {
 /// `worktree_path` is `<worktree_root>/<repo.name>` — i.e. each repo's
 /// worktree sits one directory below the workarea root, alongside the
 /// `.context/` skeleton.
+///
+/// `sparse_cones_json` is the per-(workarea, repo) sparse-cone set as a
+/// JSON `["<cone_path>", …]` array (Task 302). The migration-0001 column
+/// default is `'[]'`; callers that have a resolved initial cone (the
+/// three-layer inheritance resolver) pass it here, others pass
+/// [`NewWorkareaRepo::empty_cones`] / `"[]".to_string()`.
 #[derive(Debug, Clone)]
 pub struct NewWorkareaRepo {
     pub workarea_id: WorkareaId,
     pub repository_id: RepositoryId,
     pub worktree_path: String,
     pub branch_override: Option<String>,
+    /// Initial per-(workarea, repo) cone set as a JSON array string
+    /// (Task 302). Use [`NewWorkareaRepo::empty_cones`] for the `'[]'`
+    /// default.
+    pub sparse_cones_json: String,
+}
+
+impl NewWorkareaRepo {
+    /// The empty-cone-set JSON literal (`"[]"`) — the migration default.
+    pub fn empty_cones() -> String {
+        "[]".to_string()
+    }
 }
 
 /// Row-shaped projection of a `workareas` row. V0.1 omits

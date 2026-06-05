@@ -20,6 +20,10 @@ concerto-error = { path = "../error" }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 tokio = { workspace = true, features = ["sync", "fs", "rt", "macros"] }
 tracing.workspace = true
+# Task 302: serialize the FROZEN flat `["<cone_path>", …]` JSON shape for
+# `workarea_repos.sparse_cones_json`. Workspace pin already in the dep tree
+# via `concerto-core`; cargo-deny-clean (no new workspace pin).
+serde_json.workspace = true
 # `home` for `home::home_dir()`; matches `crates/core/src/logging.rs`'s pattern.
 # The task originally said `dirs::data_dir()`, but `dirs` pulls in MPL-2.0
 # `option-ext` (banned by design/00 §6.11). See Task 05 / Task 08 Handoff.

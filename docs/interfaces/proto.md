@@ -465,6 +465,24 @@ message SizeReport {
 }
 ```
 
+### message `SetConesRequest`
+
+```proto
+message SetConesRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  repeated string cone_paths = 3;
+}
+```
+
+### message `SetConesResponse`
+
+```proto
+message SetConesResponse {
+  repeated string cone_paths = 1;
+}
+```
+
 ### service `Repositories`
 
 ```proto
@@ -473,6 +491,7 @@ service Repositories {
   rpc Clone(CloneRequest) returns (stream CloneProgress);
   rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
+  rpc SetCones(SetConesRequest) returns (SetConesResponse);
 }
 ```
 

@@ -20,11 +20,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
-use concerto_gix_wrap::{self as gixw, CloneStrategy, SizeReport};
-use concerto_persist::{NewRepository, Persistence, Repository, RepositoryId};
+use concerto_gix_wrap::{self as gixw, CloneStrategy, ConePath, SizeReport};
+use concerto_persist::{NewRepository, Persistence, Repository, RepositoryId, WorkareaId};
 use tokio::sync::Mutex;
 
-use crate::repo_manager::{fsmonitor, repo_state};
+use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditWriter, EntityKind};
+use crate::repo_manager::{cones, fsmonitor, repo_state};
 use crate::supervisor::{Actor, ActorContext};
 
 /// The `> 10 GB` non-sparse threshold that triggers a `repo.size_warning`
@@ -61,6 +62,11 @@ pub struct RepoManager {
     /// by `RepoManagerActor::run` so a flaky daemon's restart count
     /// crosses both surfaces.
     fsmonitor_history: Arc<Mutex<HashMap<RepositoryId, fsmonitor::RestartHistory>>>,
+    /// Task 302 audit writer. `None` in tests that don't care about audit
+    /// emission; `Some` in production (wired in `boot.rs`). When `Some`,
+    /// the `§8` force-non-cone-to-cone path appends a typed
+    /// [`AuditKind::SparseConfigForcedToCone`] event.
+    audit: Option<AuditWriter>,
 }
 
 impl RepoManager {
@@ -73,7 +79,17 @@ impl RepoManager {
             repos_root,
             write_locks: Arc::new(Mutex::new(HashMap::new())),
             fsmonitor_history: Arc::new(Mutex::new(HashMap::new())),
+            audit: None,
         }
+    }
+
+    /// Attach a Task 44 [`AuditWriter`] so the Task 302 `§8`
+    /// force-non-cone-to-cone path emits a typed audit event. Production
+    /// wires this in `boot.rs`; tests can leave `audit = None`. Mirrors
+    /// `WorkspaceManager::with_audit`.
+    pub fn with_audit(mut self, audit: AuditWriter) -> Self {
+        self.audit = Some(audit);
+        self
     }
 
     /// Cloneable handle to the per-repo fsmonitor restart history. The
@@ -147,6 +163,11 @@ impl RepoManager {
             local_path: local_path.to_string_lossy().into_owned(),
             clone_strategy: strategy_str,
             default_branch,
+            // Task 302: a freshly-added repo has the SQL default (`'[]'`)
+            // for its cone-defaults layer; the user sets repo-level
+            // defaults later (Desktop, Task 322). Mirror the column default
+            // here so the returned row matches what was just inserted.
+            cone_defaults_json: "[]".to_string(),
             last_fetch_at: None,
             // No daemon recorded until `clone_repo` finishes and the
             // post-clone fsmonitor bring-up persists a PID (Task 28).
@@ -282,6 +303,181 @@ impl RepoManager {
         )
         .await?;
         Ok(())
+    }
+
+    /// Set the sparse cone for a `(workarea, repo)` pair, applying it to the
+    /// on-disk worktree AND persisting it to `workarea_repos.sparse_cones_json`
+    /// (Task 302, `design/02 §3.2`/§5.1).
+    ///
+    /// Sequence:
+    /// 1. Resolve the `(workarea, repo)` worktree path from
+    ///    `workarea_repos.worktree_path`. Missing pair → [`Error::Internal`]
+    ///    (the handler maps it to a clear status).
+    /// 2. **`§8` correctness:** if the worktree's `core.sparseCheckoutCone`
+    ///    is `false` (a manually-cloned non-cone sparse config), force it to
+    ///    `true` and emit an [`AuditKind::SparseConfigForcedToCone`] audit
+    ///    event. The non-cone path is never invoked.
+    /// 3. `sparse_init_cone` (idempotent) to ensure cone-mode + sparse-index
+    ///    are on.
+    /// 4. `sparse_set` — replaces the cone with `cones`, **rejecting any
+    ///    cone path absent from `HEAD`** with a clean [`Error::Git`] (so the
+    ///    handler returns `INVALID_ARGUMENT`) BEFORE applying — nothing is
+    ///    half-applied. `sparse_set` reapplies `--sparse-index` internally.
+    /// 5. Persist the cone via
+    ///    [`concerto_persist::workareas::update_workarea_repo_cones`] — the
+    ///    writer that closes the "`sparse_cones_json` never written" gap.
+    ///
+    /// When `cones` is empty the resolver is **not** consulted — an explicit
+    /// empty set means "cone down to top-level files only" (a legitimate
+    /// choice). Callers wanting inheritance pass the
+    /// [`cones::resolve_cones`] output (306/307 do this at workarea create);
+    /// `resolve_for_workarea_repo` exposes that resolution for them.
+    ///
+    /// Bad cone path → returns before any persist; the on-disk worktree is
+    /// left at its prior cone (git rejects the set atomically once the probe
+    /// fails, since the probe runs before `git sparse-checkout set` is
+    /// invoked).
+    pub async fn set_workarea_repo_cones(
+        &self,
+        workarea: &WorkareaId,
+        repo: &RepositoryId,
+        cones: &[ConePath],
+    ) -> Result<()> {
+        // 1. Resolve the per-(workarea, repo) worktree path.
+        let worktree = concerto_persist::workareas::get_workarea_repo_worktree_path(
+            self.persistence.readers(),
+            workarea,
+            repo,
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::Internal(format!(
+                "no workarea_repos row for workarea {workarea} + repository {repo}"
+            ))
+        })?;
+        let worktree = PathBuf::from(worktree);
+
+        // Serialize cone ops for this repo behind the per-repo write lock so
+        // two concurrent SetCones for the same repo can't interleave git
+        // sparse-checkout mutations.
+        let lock = self.write_lock_for(repo).await;
+        let _guard = lock.lock().await;
+
+        // 2. §8 correctness: force a pre-existing non-cone sparse config to
+        // cone mode + audit. `is_cone_mode` returns false both for a
+        // non-cone sparse config AND for a worktree that never enabled
+        // sparse-checkout; forcing the key true in the latter case is
+        // harmless (init below sets it anyway), but we only emit the audit
+        // event + log line when sparse-checkout was actually active in a
+        // non-cone configuration, to avoid noise on a plain full clone.
+        if !gixw::is_cone_mode(&worktree).await? {
+            // Probe whether sparse-checkout is enabled at all
+            // (`core.sparseCheckout`); only a *non-cone sparse* config is the
+            // §8 failure mode worth auditing.
+            let sparse_enabled = sparse_checkout_enabled(&worktree).await;
+            gixw::force_cone_mode(&worktree).await?;
+            if sparse_enabled {
+                tracing::warn!(
+                    workarea = %workarea,
+                    repo = %repo,
+                    worktree = %worktree.display(),
+                    "forced non-cone sparse config to cone mode (design/02 §8)"
+                );
+                self.emit_force_cone_audit(repo, &worktree);
+            }
+        }
+
+        // 3. Ensure cone-mode + sparse-index are initialized (idempotent).
+        gixw::sparse_init_cone(&worktree).await?;
+
+        // 4. Apply the cone (validates bad paths first, reapplies
+        // --sparse-index). A bad path returns Err here, before any persist.
+        gixw::sparse_set(&worktree, cones).await?;
+
+        // 5. Persist — the writer that closes the "sparse_cones_json never
+        // written" gap.
+        let mut writer = self.persistence.writer().await;
+        concerto_persist::workareas::update_workarea_repo_cones(&mut writer, workarea, repo, cones)
+            .await?;
+        Ok(())
+    }
+
+    /// Resolve the effective cone set for a `(workarea, repo)` from the three
+    /// inheritance layers (Task 302, `design/02 §3.2`) — repository
+    /// `cone_defaults_json` → workspace `settings_json.cone_defaults[repo]`
+    /// → workarea `sparse_cones_json`, most-specific wins.
+    ///
+    /// Reads the three raw JSON strings from persistence and delegates the
+    /// precedence logic to the pure [`cones::resolve_cones`]. The
+    /// workarea-create path (306/307) calls this to seed the resolved cone;
+    /// `set_workarea_repo_cones` callers that want inheritance pass its
+    /// output as `cones`.
+    ///
+    /// Returns an [`Error::Internal`] when the repo row or the workspace
+    /// owning `workarea` cannot be found.
+    pub async fn resolve_for_workarea_repo(
+        &self,
+        workspace_id: &concerto_persist::WorkspaceId,
+        workarea: &WorkareaId,
+        repo: &RepositoryId,
+    ) -> Result<Vec<ConePath>> {
+        let readers = self.persistence.readers();
+
+        let repo_row = concerto_persist::repositories::get(readers, repo)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("repository {repo} not found")))?;
+
+        let ws_settings = concerto_persist::workspaces::get_settings_json(readers, workspace_id)
+            .await?
+            // A missing workspace settings row → an empty object so the
+            // resolver simply skips the workspace layer.
+            .unwrap_or_else(|| "{}".to_string());
+
+        let wa_cones =
+            concerto_persist::workareas::get_workarea_repo_cones(readers, workarea, repo)
+                .await?
+                // No junction row yet → an empty-array string so the
+                // workarea layer is "present but empty" only if a row
+                // exists; absence means fall through.
+                .unwrap_or_else(|| "null".to_string());
+
+        Ok(cones::resolve_cones(
+            &repo_row.cone_defaults_json,
+            &ws_settings,
+            &wa_cones,
+            repo.as_str(),
+        ))
+    }
+
+    /// Emit the `§8` "forced non-cone sparse config to cone mode" audit
+    /// event (Task 302). No-op when no [`AuditWriter`] is attached.
+    fn emit_force_cone_audit(&self, repo: &RepositoryId, worktree: &std::path::Path) {
+        if let Some(audit) = &self.audit {
+            audit.append(
+                AuditEvent::new(AuditKind::SparseConfigForcedToCone, AuditActor::System)
+                    .with_subject(EntityKind::Repository, repo.as_str())
+                    .with_details(serde_json::json!({
+                        "worktree": worktree.display().to_string(),
+                        "reason": "core.sparseCheckoutCone was false on a sparse worktree",
+                    })),
+            );
+        }
+    }
+}
+
+/// True iff `core.sparseCheckout` is enabled at `worktree` (Task 302). Used
+/// to distinguish the `§8` non-cone-sparse failure mode (audit-worthy) from
+/// a plain full clone with no sparse config (force the key silently). A
+/// read failure (unset key) is treated as "not sparse".
+async fn sparse_checkout_enabled(worktree: &std::path::Path) -> bool {
+    match concerto_gix_wrap::cmd::run(
+        &["config", "--get", "--bool", "core.sparseCheckout"],
+        worktree,
+    )
+    .await
+    {
+        Ok(out) => out.stdout.trim() == "true",
+        Err(_) => false,
     }
 }
 
