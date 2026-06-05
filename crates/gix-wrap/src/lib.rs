@@ -29,7 +29,17 @@
 //! - [`diff::diff_head`] — worktree-vs-HEAD diff as a [`diff::DiffPayload`].
 //! - [`diff::diff_to_main`] — worktree-vs-`<branch>` diff.
 //!
-//! Sparse-checkout and blobless / treeless clones remain V1.0.
+//! Task 301 adds the V1.0 clone-strategy surface; signatures frozen:
+//!
+//! - [`api::CloneStrategy`] — `Full | Blobless | Treeless`, serializing to
+//!   the `repositories.clone_strategy` TEXT values.
+//! - [`api::clone_with_strategy`] — clone with an explicit strategy +
+//!   optional `--sparse --no-checkout` flags (`clone_full` is untouched).
+//! - [`api::estimate_repo_size`] — pre-clone size probe → [`api::SizeReport`]
+//!   implementing the `design/02 §3.5` size→strategy heuristic.
+//!
+//! Sparse-checkout init/set remains Task 302; idle blob prewarm remains
+//! Task 304.
 
 pub mod api;
 pub mod cmd;
@@ -37,10 +47,10 @@ pub mod diff;
 pub mod status;
 
 pub use api::{
-    apply_perf_config, clone_full, commit_index, fetch, hard_reset, is_fsmonitor_alive,
-    list_branches, ref_exists, register_maintenance, rev_parse_head, start_fsmonitor,
-    stop_fsmonitor, update_ref, worktree_add, BranchRef, CloneProgressEvent, FetchReport,
-    ProgressSink,
+    apply_perf_config, clone_full, clone_with_strategy, commit_index, estimate_repo_size, fetch,
+    hard_reset, is_fsmonitor_alive, list_branches, ref_exists, register_maintenance,
+    rev_parse_head, start_fsmonitor, stop_fsmonitor, update_ref, worktree_add, BranchRef,
+    CloneProgressEvent, CloneStrategy, FetchReport, ProgressSink, SizeReport,
 };
 // Task 29 hot-path surface — status + diff against HEAD / a branch.
 pub use diff::{diff_head, diff_to_main, DiffHunk, DiffKind, DiffPayload, FileDiff};

@@ -110,6 +110,9 @@ async fn add_repository_and_clone_file_url() {
             name: "fixture".to_string(),
             url: url.clone(),
             default_branch: "main".to_string(),
+            // Task 301 added clone_strategy/with_sparse; empty → Full, so
+            // the `clone_strategy == "full"` assertion below still holds.
+            ..Default::default()
         })
         .await
         .expect("AddRepository")
@@ -198,6 +201,8 @@ async fn concurrent_clones_of_same_repo_serialize() {
             name: "fixture2".to_string(),
             url,
             default_branch: "main".to_string(),
+            // Task 301 added clone_strategy/with_sparse; empty → Full.
+            ..Default::default()
         })
         .await
         .expect("AddRepository")

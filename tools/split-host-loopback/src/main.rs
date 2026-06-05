@@ -312,6 +312,8 @@ async fn run() -> Result<(), String> {
             name: "split-host-repo".to_string(),
             url: format!("file://{}", args.bare_repo),
             default_branch: "main".to_string(),
+            // Task 301 added clone_strategy/with_sparse; empty → Full.
+            ..Default::default()
         }),
     )
     .await?

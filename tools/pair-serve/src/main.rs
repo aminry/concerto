@@ -292,6 +292,8 @@ async fn seed_chain(socket_path: &Path, data_dir: &Path, bare_repo: &str) -> Res
             name: "pair-serve-repo".to_string(),
             url: format!("file://{bare_repo}"),
             default_branch: "main".to_string(),
+            // Task 301 added clone_strategy/with_sparse; empty → Full.
+            ..Default::default()
         }),
     )
     .await?

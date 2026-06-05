@@ -10,6 +10,11 @@
 // Field numbers in this file are FROZEN as of Task 18; Task 25 adds the
 // read-side `ListByProject` RPC + accompanying request / response messages
 // without re-numbering the existing fields.
+//
+// Task 301 (V1.0, design/02 §3.5/§7.1) appends the pre-clone
+// `EstimateRepoSize(EstimateRepoSizeRequest) → SizeReport` probe RPC after
+// `ListByProject` and adds `clone_strategy = 5` + `with_sparse = 6` to
+// `AddRepoRequest`. All existing RPCs + field numbers are unchanged.
 
 syntax = "proto3";
 
@@ -43,6 +48,16 @@ message AddRepoRequest {
   // Optional explicit default branch. V0.1 accepts `"main"` as a fallback
   // when empty; later tasks may probe the remote.
   string default_branch = 4;
+  // Clone strategy (Task 301, design/02 §3.1). One of the lowercase
+  // `repositories.clone_strategy` TEXT values: `full | blobless | treeless`.
+  // Empty string parses as `full` (preserves V0.1 callers). An unrecognized
+  // value is rejected with INVALID_ARGUMENT.
+  string clone_strategy = 5;
+  // When true, append `--sparse --no-checkout` to the clone so the worktree
+  // lands empty for Task 302's `sparse-checkout init --cone` to populate.
+  // The size→strategy recommendation's "Blobless + Sparse" is
+  // `clone_strategy = "blobless"` + `with_sparse = true`.
+  bool with_sparse = 6;
 }
 
 // Inputs for `Repositories.Clone`. The repository must already exist (via
@@ -79,8 +94,34 @@ message ListRepositoriesResponse {
   repeated Repository repositories = 1;
 }
 
+// Inputs for `Repositories.EstimateRepoSize` (Task 301). The repo-level
+// pre-clone probe: a caller passes a git URL *before* `AddRepository` and
+// gets back a `SizeReport` carrying the design/02 §3.5 strategy
+// recommendation. Distinct from Task 305's cone-level `EstimateConeSize`
+// (which probes the git index of an already-cloned repo).
+message EstimateRepoSizeRequest {
+  string url = 1;
+}
+
+// Result of `Repositories.EstimateRepoSize` (Task 301). The estimator runs
+// `git ls-remote --heads` (branch + ref count) plus a cheap blobless object
+// probe, then applies the design/02 §3.5 heuristic
+// (`< 1 GB → full`, `1–10 GB → blobless`, `> 10 GB → blobless + sparse`).
+// `recommended_strategy` is one of `full | blobless` — treeless is NEVER
+// recommended (design/02 §12 R-1). `recommend_sparse` is the cone-picker
+// hint for the > 10 GB tier. A failed probe surfaces as a gRPC error; the
+// caller falls back to a manual strategy pick (no default recommendation).
+message SizeReport {
+  uint64 size_bytes = 1;
+  uint64 object_count = 2;
+  uint32 branch_count = 3;
+  string recommended_strategy = 4;
+  bool recommend_sparse = 5;
+}
+
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
   rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+  rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
 }

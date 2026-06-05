@@ -8,14 +8,15 @@
 //! emits them.
 
 use std::pin::Pin;
+use std::str::FromStr;
 
 use async_trait::async_trait;
-use concerto_gix_wrap::CloneProgressEvent;
+use concerto_gix_wrap::{CloneProgressEvent, CloneStrategy};
 use concerto_persist::RepositoryId;
 use concerto_proto::v1::repositories_server::Repositories as RepositoriesService;
 use concerto_proto::v1::{
-    AddRepoRequest, CloneProgress, CloneRequest, ListRepositoriesRequest, ListRepositoriesResponse,
-    Repository,
+    AddRepoRequest, CloneProgress, CloneRequest, EstimateRepoSizeRequest, ListRepositoriesRequest,
+    ListRepositoriesResponse, Repository, SizeReport,
 };
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -57,12 +58,49 @@ impl RepositoriesService for RepositoriesHandler {
         if req.url.is_empty() {
             return Err(Status::invalid_argument("url is required"));
         }
+        // Task 301: parse the wire `clone_strategy` (empty → Full, preserving
+        // V0.1 callers). An unrecognized value is INVALID_ARGUMENT, never a
+        // silent Full.
+        let strategy = CloneStrategy::from_str(&req.clone_strategy)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let row = self
             .repo_manager
-            .add_repository(&req.project_id, &req.name, &req.url, &req.default_branch)
+            .add_repository(
+                &req.project_id,
+                &req.name,
+                &req.url,
+                &req.default_branch,
+                strategy,
+                req.with_sparse,
+            )
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(repository_to_proto(row)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Repositories::EstimateRepoSize")]
+    async fn estimate_repo_size(
+        &self,
+        request: Request<EstimateRepoSizeRequest>,
+    ) -> Result<Response<SizeReport>, Status> {
+        let req = request.into_inner();
+        if req.url.is_empty() {
+            return Err(Status::invalid_argument("url is required"));
+        }
+        let report = self
+            .repo_manager
+            .estimate_size(&req.url)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(SizeReport {
+            size_bytes: report.size_bytes,
+            object_count: report.object_count,
+            branch_count: report.branch_count,
+            // `recommended` is one of full|blobless — treeless is never
+            // recommended (design/02 §12 R-1).
+            recommended_strategy: report.recommended.as_str().to_string(),
+            recommend_sparse: report.recommend_sparse,
+        }))
     }
 
     /// Streaming response type for `Repositories.Clone`.
