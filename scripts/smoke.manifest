@@ -30,3 +30,10 @@ connect-web-bridge
 transport-loopback
 mdns-discovery
 relay-route
+# Task 220: the Phase-2 capstone. Runs LAST — it boots its own Iroh-enabled
+# Core (separate from the shared UDS smoke Core) + a synthetic paired device,
+# and drives pair → IROH-tagged unary → Streams.Subscribe → Files up/down over
+# two loopback Iroh endpoints (relays off). macOS-only at runtime; SKIPs cleanly
+# on the ubuntu lane. (File prefix 94 is cosmetic; manifest order is authoritative,
+# same as 46-relay-route running late.)
+split-host-loopback
