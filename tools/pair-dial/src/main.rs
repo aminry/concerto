@@ -91,23 +91,29 @@ struct ConnectBlob {
 struct Args {
     blob: String,
     relays: bool,
+    revoke_self: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut blob = None;
     let mut relays = true;
+    let mut revoke_self = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--blob" => blob = Some(next(&mut it, "--blob")?),
             "--relays" => relays = true,
             "--no-relays" => relays = false,
+            // After the round-trip, RevokeDevice(self) and prove the server
+            // severs this session (a follow-up RPC must fail).
+            "--revoke-self" => revoke_self = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
     Ok(Args {
         blob: blob.ok_or("missing --blob <base64-blob>")?,
         relays,
+        revoke_self,
     })
 }
 
@@ -261,9 +267,70 @@ async fn run() -> Result<(), String> {
     println!("pair-dial: Files round-trip OK");
 
     // (5) optional — Streams.Subscribe(workspace.events) just opens --------
-    match stream_opens(channel, &attach_cert).await {
+    match stream_opens(channel.clone(), &attach_cert).await {
         Ok(()) => println!("pair-dial: stream Streams.Subscribe(workspace.events) opened"),
         Err(e) => println!("pair-dial: stream step skipped ({e})"),
+    }
+
+    // (6) optional — RevokeDevice(self) → the Core severs THIS session ------
+    // The real teardown path end-to-end over the network: this device revokes
+    // its OWN device row over the authenticated channel; the Core's
+    // DeviceManager marks it revoked and the IrohSessionCloser tears the live
+    // Iroh session down (fingerprint→DeviceId). Proof = a follow-up RPC over
+    // the same channel MUST fail (connection severed and/or cert now revoked).
+    if args.revoke_self {
+        use concerto_proto::v1::devices_client::DevicesClient;
+        use concerto_proto::v1::RevokeDeviceRequest;
+        let device_id_hex: String = concerto_identity::device_id(&device_pubkey)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        println!("pair-dial: revoking self (device_id={device_id_hex}) ...");
+        let mut devices = DevicesClient::with_interceptor(channel.clone(), attach_cert.call());
+        // The revoke handler severs THIS very connection, so the RPC itself may
+        // return Ok OR a transport error (self-severance mid-response). Either
+        // outcome is acceptable — the load-bearing proof is the follow-up RPC.
+        match tokio::time::timeout(
+            STEP_TIMEOUT,
+            devices.revoke_device(RevokeDeviceRequest {
+                device_id: device_id_hex,
+            }),
+        )
+        .await
+        {
+            Ok(Ok(_)) => println!("pair-dial: RevokeDevice(self) returned Ok"),
+            Ok(Err(e)) => println!(
+                "pair-dial: RevokeDevice(self) connection self-severed (code={:?})",
+                e.code()
+            ),
+            Err(_) => println!("pair-dial: RevokeDevice(self) timed out (likely self-severed)"),
+        }
+        // Give the SessionCloser a beat, then a follow-up RPC over the SAME
+        // channel MUST fail — that is the teardown proof.
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        let mut runtime_after = RuntimeClient::with_interceptor(channel, attach_cert.call());
+        match tokio::time::timeout(
+            Duration::from_secs(15),
+            runtime_after.get_server_capabilities(()),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                return Err(
+                    "revoke teardown FAILED: a post-revoke RPC still succeeded \
+                     (session was NOT severed)"
+                        .to_string(),
+                )
+            }
+            Ok(Err(e)) => println!(
+                "pair-dial: post-revoke RPC correctly FAILED (code={:?}) — session severed ✓",
+                e.code()
+            ),
+            Err(_) => {
+                println!("pair-dial: post-revoke RPC timed out — session severed / unreachable ✓")
+            }
+        }
+        println!("pair-dial: revoke→teardown demonstrated over the live network ✓");
     }
 
     Ok(())
