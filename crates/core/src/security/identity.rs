@@ -132,6 +132,62 @@ pub async fn load_or_create_core_identity(
     }
 }
 
+/// Read (or generate + persist) the Core's **X25519 Noise static private key**
+/// — the responder static the Iroh transport presents on every Noise IK session
+/// (`design/11 §3.1`, `design/12 §3.1`, Task 217.5).
+///
+/// This is **distinct** from the Ed25519 signing identity
+/// ([`load_or_create_core_identity`]): the transport owns its own long-lived
+/// Noise static so the Core keeps a stable Noise public key across reboots (the
+/// QR's responder static). It is stored in the same OS keychain under a separate
+/// slot ([`SecretKind::CoreNoiseStaticPrivateKey`]) as the lowercase-hex of the
+/// 32 raw private bytes — the **FROZEN** storage location + encoding (a re-encode
+/// would orphan an existing Core's stable Noise public key, breaking any QR a
+/// client already cached). 32 bytes → 64 hex chars.
+///
+/// Returns the raw 32-byte private key the caller hands to
+/// [`concerto_transport::IrohTransport::start`] (which derives the public half
+/// deterministically via `NoiseStatic::from_private`). A keychain access failure
+/// is surfaced as [`Error::Secrets`]; the boot path treats it as best-effort (it
+/// only matters when the Iroh listener is enabled).
+pub async fn load_or_create_core_noise_static(secrets: &Secrets) -> Result<[u8; 32]> {
+    match secrets.get(SecretKind::CoreNoiseStaticPrivateKey).await? {
+        Some(stored) => {
+            let private = decode_noise_static(stored.expose())?;
+            tracing::info!("core Noise static loaded from keychain");
+            Ok(private)
+        }
+        None => {
+            // First launch with Iroh enabled: generate 32 random bytes (a valid
+            // X25519 scalar input — the transport derives the public half), store
+            // their hex, and return them. `generate_seed` is just a CSPRNG draw of
+            // 32 bytes, reused here for the X25519 private (not an Ed25519 seed).
+            let private = concerto_identity::generate_seed()
+                .map_err(|e| Error::Internal(format!("core noise static generation: {e}")))?;
+            secrets
+                .set(
+                    SecretKind::CoreNoiseStaticPrivateKey,
+                    SecretValue::new(hex::encode(private)),
+                )
+                .await?;
+            tracing::info!("core Noise static generated and stored (first launch)");
+            Ok(private)
+        }
+    }
+}
+
+/// FROZEN decoding: hex → 32-byte X25519 Noise static private key.
+fn decode_noise_static(private_hex: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(private_hex.trim())
+        .map_err(|e| Error::Internal(format!("core noise static is not valid hex: {e}")))?;
+    bytes.as_slice().try_into().map_err(|_| {
+        Error::Internal(format!(
+            "core noise static has wrong length: {} bytes (expected 32)",
+            bytes.len()
+        ))
+    })
+}
+
 /// FROZEN decoding: hex → 32-byte seed → [`KeyPair`].
 fn decode_seed(seed_hex: &str) -> Result<KeyPair> {
     let bytes = hex::decode(seed_hex.trim())
@@ -182,6 +238,29 @@ mod tests {
     fn decode_rejects_bad_hex_and_wrong_length() {
         assert!(decode_seed("nothex!!").is_err());
         assert!(decode_seed("aabb").is_err()); // valid hex, too short
+    }
+
+    #[test]
+    fn noise_static_encoding_is_64_hex_chars_and_roundtrips() {
+        let private = [9u8; 32];
+        let encoded = hex::encode(private);
+        assert_eq!(encoded.len(), 64, "32-byte X25519 private → 64 hex chars");
+        assert_eq!(decode_noise_static(&encoded).expect("decode"), private);
+        // The transport derives a stable public half from these bytes.
+        let pub_a = concerto_identity::NoiseStatic::from_private(private)
+            .unwrap()
+            .public();
+        let pub_b =
+            concerto_identity::NoiseStatic::from_private(decode_noise_static(&encoded).unwrap())
+                .unwrap()
+                .public();
+        assert_eq!(pub_a, pub_b, "the stored private rebuilds the same public");
+    }
+
+    #[test]
+    fn noise_static_decode_rejects_bad_hex_and_wrong_length() {
+        assert!(decode_noise_static("nothex!!").is_err());
+        assert!(decode_noise_static("aabb").is_err()); // valid hex, too short
     }
 
     #[test]

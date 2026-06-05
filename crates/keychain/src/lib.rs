@@ -40,6 +40,7 @@ impl SecretKind {
             SecretKind::GithubPat => "vcs.github.pat".to_string(),
             SecretKind::DevicePairingKey => "device.pairing_key".to_string(),
             SecretKind::CoreIdentityPrivateKey => "identity.core_private_key".to_string(),
+            SecretKind::CoreNoiseStaticPrivateKey => "identity.core_noise_static".to_string(),
             SecretKind::PushExpoApiKey => "push.expo_api_key".to_string(),
         }
     }
@@ -272,6 +273,14 @@ mod account_strings {
         assert_eq!(
             SecretKind::CoreIdentityPrivateKey.to_account_string(),
             "identity.core_private_key"
+        );
+    }
+
+    #[test]
+    fn core_noise_static_private_key() {
+        assert_eq!(
+            SecretKind::CoreNoiseStaticPrivateKey.to_account_string(),
+            "identity.core_noise_static"
         );
     }
 

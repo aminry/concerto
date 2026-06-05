@@ -26,6 +26,62 @@ use crate::workspace_manager::{
 };
 use concerto_error::Result;
 
+/// The **FROZEN** opt-in environment toggle that enables the Iroh transport
+/// listener at boot (Task 217.5). **Default OFF** in V1.0: when unset (or not a
+/// truthy value) a booted Core listens only on its UDS, byte-identical to the
+/// pre-217.5 behaviour, so the existing smoke suite is unchanged. Task 220's
+/// split-host smoke flips this on. Operators script against this exact spelling.
+///
+/// Truthy values (case-insensitive): `1`, `true`, `yes`, `on`. Anything else
+/// (including unset) leaves the listener off.
+pub const ENABLE_IROH_ENV: &str = "CONCERTO_ENABLE_IROH";
+
+/// Whether the Iroh listener is enabled via [`ENABLE_IROH_ENV`].
+fn iroh_listener_enabled() -> bool {
+    match std::env::var(ENABLE_IROH_ENV) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// The live Iroh-transport seam a booted Core exposes (Task 217.5). Held by
+/// [`RunningCore`] when the listener is enabled so the split-host smoke driver
+/// (Task 220) + the Tier-2 loopback test can dial the endpoint, drive a pairing,
+/// and observe revoke teardown. `None` when the Iroh listener is off (the
+/// default).
+pub struct IrohRuntime {
+    /// The live transport (the endpoint + session registry). Clients dial
+    /// [`IrohTransport::endpoint_id`]; the Core's Noise responder static is
+    /// [`IrohTransport::core_noise_public`].
+    pub transport: Arc<concerto_transport::IrohTransport>,
+    /// The Core-side Noise-XX pairing responder over the `0x03` channel.
+    pub pairing_responder: Arc<crate::security::iroh_pairing::IrohPairingResponder>,
+}
+
+/// The live [`SessionCloser`](crate::security::devices::SessionCloser) backed by
+/// the Iroh transport (Task 217.5) — replaces `NoopSessionCloser` so
+/// `DeviceManager::revoke_device` actually severs the revoked device's open Iroh
+/// sessions (the 209/210/212 revoke→teardown contract, `design/12 §7.3`).
+///
+/// 209's FROZEN `SessionCloser::close_sessions_for_device` takes the raw 32-byte
+/// cert fingerprint; we feed it through the transport's FROZEN
+/// `From<[u8; 32]>` → [`concerto_transport::DeviceId`] (lowercase-hex of the
+/// fingerprint) and call [`IrohTransport::close_sessions_for_device`]. Sync +
+/// non-blocking, as the trait requires.
+struct IrohSessionCloser {
+    transport: Arc<concerto_transport::IrohTransport>,
+}
+
+impl crate::security::devices::SessionCloser for IrohSessionCloser {
+    fn close_sessions_for_device(&self, device_id: [u8; 32]) {
+        let id = concerto_transport::DeviceId::from(device_id);
+        self.transport.close_sessions_for_device(&id);
+    }
+}
+
 /// Outcome of [`start`]. Mirrors [`StartOutcome`] so callers can react
 /// to the single-instance guard (the embedded desktop path falls back
 /// to dialing the live daemon on `AlreadyRunning`).
@@ -46,12 +102,25 @@ pub enum BootOutcome {
 pub struct RunningCore {
     runtime: Runtime,
     socket_path: PathBuf,
+    /// The live Iroh-transport seam (Task 217.5), `Some` only when the
+    /// [`ENABLE_IROH_ENV`] opt-in is set at boot. Lets the split-host smoke +
+    /// the Tier-2 loopback test dial the endpoint and drive pairing/revoke.
+    iroh: Option<IrohRuntime>,
 }
 
 impl RunningCore {
     /// The UDS path the gRPC server bound. Clients dial this.
     pub fn socket_path(&self) -> &std::path::Path {
         &self.socket_path
+    }
+
+    /// The live Iroh-transport seam, present only when the Iroh listener was
+    /// enabled at boot ([`ENABLE_IROH_ENV`]). Clients discover the dialable
+    /// endpoint id via [`concerto_transport::IrohTransport::endpoint_id`] and the
+    /// Core's Noise responder static via
+    /// [`concerto_transport::IrohTransport::core_noise_public`].
+    pub fn iroh(&self) -> Option<&IrohRuntime> {
+        self.iroh.as_ref()
     }
 
     /// A clone of the runtime's shutdown token. Cancel it to trigger an
@@ -69,6 +138,46 @@ impl RunningCore {
         tracing::info!("concerto-core stopped");
         Ok(())
     }
+}
+
+/// Best-effort keychain timeout for the Core Noise static load (Task 206
+/// pattern): a keychain that blocks (e.g. a headless macOS runner with no GUI to
+/// answer a Keychain Access prompt) must not hang boot — we bound the access and
+/// degrade to "Iroh off" on timeout.
+const NOISE_STATIC_KEYCHAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Build + start the live [`concerto_transport::IrohTransport`] (Task 217.5).
+/// Loads/creates the Core's persistent X25519 Noise static from the keychain
+/// (timeout-bounded), then binds the endpoint per `remote_disabled` (LAN-only
+/// when set). The serve loop is **not** started here — the caller spawns
+/// `serve_iroh` over the returned transport.
+async fn build_iroh_transport(
+    secrets: &concerto_keychain::Secrets,
+    remote_disabled: bool,
+) -> Result<Arc<concerto_transport::IrohTransport>> {
+    let noise_private = match tokio::time::timeout(
+        NOISE_STATIC_KEYCHAIN_TIMEOUT,
+        crate::security::identity::load_or_create_core_noise_static(secrets),
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(concerto_error::Error::Internal(
+                "core noise static keychain access timed out".into(),
+            ))
+        }
+    };
+
+    let config = concerto_transport::TransportConfig {
+        relay_url: None,
+        disable_remote: remote_disabled,
+        direct_addr: None,
+    };
+    let transport = concerto_transport::IrohTransport::start(config, noise_private)
+        .await
+        .map_err(|e| concerto_error::Error::Internal(format!("iroh transport start: {e}")))?;
+    Ok(Arc::new(transport))
 }
 
 /// Boot Core: resolve config, start the runtime, and spawn every
@@ -174,12 +283,34 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     // issuer reads, so a `RevokeDevice` insert is observed by the next
     // `validate` (Task 206) with no DB round-trip.
     //
-    // The `SessionCloser` seam is a `NoopSessionCloser` for now: a co-located
-    // UDS Core has no remote device streams to sever. Task 217's
-    // `TransportHandle` replaces this one-liner with the real Iroh stream
-    // teardown.
-    let session_closer: Arc<dyn crate::security::devices::SessionCloser> =
-        Arc::new(crate::security::devices::NoopSessionCloser);
+    // Task 217.5: decide whether to bring up the Iroh transport listener. It is
+    // opt-in (`CONCERTO_ENABLE_IROH`, default OFF) so the default UDS-only boot —
+    // and every existing smoke capability — is byte-unchanged; Task 220's
+    // split-host smoke flips it on. When on, the listener also honours managed
+    // policy: `managed.json.disable_remote` (Task 211) puts the endpoint in
+    // LAN-only mode (no relay, LAN connections only; mDNS unaffected).
+    let iroh_enabled = iroh_listener_enabled();
+    let remote_disabled = crate::security::managed::load_managed_policy(config_dir.as_path())
+        .map(|p| p.remote_disabled())
+        .unwrap_or(false);
+    if iroh_enabled {
+        tracing::info!(
+            remote_disabled,
+            "iroh transport listener enabled ({ENABLE_IROH_ENV})"
+        );
+    }
+
+    // The `SessionCloser` seam: `NoopSessionCloser` when the Iroh listener is off
+    // (a co-located UDS Core has no remote device streams to sever), replaced by
+    // the live [`IrohSessionCloser`] (backed by the transport) when it is on, so
+    // `DeviceManager::revoke_device` actually severs the revoked device's open
+    // Iroh sessions (Task 217.5, `design/12 §7.3`).
+    //
+    // The live Iroh runtime (transport + pairing responder) is built inside the
+    // identity arm below (it needs the Core's Noise static from the keychain) and
+    // captured here so the post-gRPC-server spawn block can drive `serve_iroh` +
+    // the pairing accept loop.
+    let mut iroh_runtime: Option<IrohRuntime> = None;
     #[allow(clippy::type_complexity)]
     let identity_subsystems: Option<(
         Arc<crate::security::pairing::PairingCoordinator>,
@@ -230,17 +361,67 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                         core_pubkey,
                         revoked_set.clone(),
                     );
-                    // LAN endpoint / relay hint are supplied by the
-                    // transport layer (Task 212/213/214); empty here until
-                    // those land — the QR carries no endpoint yet and the
-                    // pairing exchange is transport-agnostic.
-                    let coordinator = crate::security::pairing::PairingCoordinator::new(
+
+                    // Task 217.5: bring up the Iroh transport (config-gated). It
+                    // needs the Core's persistent X25519 Noise static (distinct
+                    // from the Ed25519 identity above) — load/create it from the
+                    // keychain, best-effort + timeout-bounded so a keychain-less /
+                    // headless env degrades to "Iroh off" rather than hanging
+                    // (Task 206 pattern). On success we get the live transport, its
+                    // dialable LAN endpoint id (fed to the coordinator's QR hint),
+                    // and the live `SessionCloser`.
+                    let (session_closer, lan_endpoint, transport_for_runtime): (
+                        Arc<dyn crate::security::devices::SessionCloser>,
+                        String,
+                        Option<Arc<concerto_transport::IrohTransport>>,
+                    ) = if iroh_enabled {
+                        match build_iroh_transport(&secrets, remote_disabled).await {
+                            Ok(transport) => {
+                                let endpoint_id = transport.endpoint_id().to_string();
+                                tracing::info!(
+                                    iroh_endpoint_id = %endpoint_id,
+                                    core_noise_public = %hex::encode(transport.core_noise_public()),
+                                    "iroh transport up; clients dial this endpoint id"
+                                );
+                                let closer: Arc<dyn crate::security::devices::SessionCloser> =
+                                    Arc::new(IrohSessionCloser {
+                                        transport: Arc::clone(&transport),
+                                    });
+                                (closer, endpoint_id, Some(transport))
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "iroh transport failed to start; falling back to UDS-only \
+                                     (no remote pairing this boot)"
+                                );
+                                (
+                                    Arc::new(crate::security::devices::NoopSessionCloser),
+                                    String::new(),
+                                    None,
+                                )
+                            }
+                        }
+                    } else {
+                        (
+                            Arc::new(crate::security::devices::NoopSessionCloser),
+                            String::new(),
+                            None,
+                        )
+                    };
+
+                    // `lan_endpoint` carries the live Iroh endpoint id into the QR
+                    // payload (the FROZEN `PairingChallenge.lan_endpoint` carrier)
+                    // so a client `StartPairing` learns where to dial; `relay_hint`
+                    // stays empty (relay path is Task 214/215). Empty when the Iroh
+                    // listener is off — pairing is transport-agnostic.
+                    let coordinator = Arc::new(crate::security::pairing::PairingCoordinator::new(
                         core_issuer,
                         Arc::clone(&persistence),
                         audit_writer.clone(),
+                        lan_endpoint,
                         String::new(),
-                        String::new(),
-                    );
+                    ));
                     // Task 209: the device manager shares the SAME revoked-set
                     // handle the issuer above reads, plus the `SessionCloser`
                     // seam, so a revoke severs the device everywhere.
@@ -251,12 +432,29 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                         audit_writer.clone(),
                         Arc::clone(&session_closer),
                     );
+                    // Task 217.5: when the transport is live, build the Core-side
+                    // Noise-XX pairing responder over it and stash the runtime so
+                    // the post-server block spawns `serve_iroh` + the pairing
+                    // accept loop.
+                    if let Some(transport) = transport_for_runtime {
+                        let pairing_responder =
+                            Arc::new(crate::security::iroh_pairing::IrohPairingResponder::new(
+                                Arc::clone(&transport),
+                                Arc::clone(&coordinator),
+                                runtime.shutdown_token(),
+                            ));
+                        iroh_runtime = Some(IrohRuntime {
+                            transport,
+                            pairing_responder,
+                        });
+                    }
                     tracing::info!(
                         core_pubkey = %core_pubkey_hex,
                         first_launch,
+                        iroh_enabled,
                         "core device-cert issuer + pairing coordinator + device manager constructed"
                     );
-                    Some((Arc::new(coordinator), Arc::new(device_manager), auth_issuer))
+                    Some((coordinator, Arc::new(device_manager), auth_issuer))
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -603,10 +801,74 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         )
         .await?;
 
+    // Task 217.5: spawn the Iroh transport serve loop + the Core-side pairing
+    // responder, when the listener is enabled. Runs AFTER the gRPC server spawn
+    // (so the shared handler set exists) and AFTER the revoked-set mirror above
+    // (so pairing/auth is never reachable before a previously-revoked device is
+    // re-rejected — the boot-ordering invariant). Both are tied to the runtime
+    // shutdown token so they tear down cleanly with the rest of Core (no leaked
+    // endpoint). The endpoint was bound at `build_iroh_transport`; here we attach
+    // the shared dispatcher + the `0x03` accept loop.
+    if let Some(iroh) = &iroh_runtime {
+        let shutdown = runtime.shutdown_token();
+
+        // The IDENTICAL handler set the UDS path serves, tagged `IROH` by the
+        // dispatcher's interceptor (Task 201/210). Built from the same handles —
+        // one source of truth, no per-transport handler branching.
+        let services = crate::api_server::CoreServiceSet {
+            started_at: Arc::clone(&started_at),
+            supervisor_view: supervisor_view.clone(),
+            repo_manager: Some(repo_handle.clone()),
+            workspace_manager: Some(workspace_handle.clone()),
+            workarea_manager: Some(workarea_handle.clone()),
+            #[cfg(unix)]
+            agent_supervisor: Some(agent_supervisor_handle.clone()),
+            persistence: Some(Arc::clone(&persistence)),
+            #[cfg(unix)]
+            scheduler: Some(scheduler_handle.clone()),
+            skills_registry: Some(skills_handle.clone()),
+            #[cfg(unix)]
+            suggestions: Some(suggestions_handle.clone()),
+            vcs: Some(vcs_handle.clone()),
+            pairing: pairing_coordinator.clone(),
+            device_manager: device_manager.clone(),
+            auth_issuer: auth_issuer.clone(),
+        };
+
+        // The serve loop: `serve_iroh` runs the transport's accept loop (its own
+        // internal `select!` on the transport's shutdown token), handing every API
+        // stream to the shared dispatcher. A watcher task translates the runtime
+        // shutdown token into `transport.stop()` (which cancels that internal
+        // token + closes the endpoint cleanly — no leaked endpoint).
+        let serve_transport = Arc::clone(&iroh.transport);
+        let stop_transport = Arc::clone(&iroh.transport);
+        let stop_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            stop_shutdown.cancelled().await;
+            stop_transport.stop();
+        });
+        tokio::spawn(async move {
+            if let Err(e) = crate::api_server::serve_iroh(serve_transport, services).await {
+                tracing::warn!(error = %e, "iroh serve loop ended with error");
+            }
+        });
+
+        // The pairing responder is armed on demand: each `StartPairing` (via
+        // `IrohPairingResponder::start_pairing`, the seam Task 220's runtime
+        // pairing-start path drives) opens the `0x03` listener for that token +
+        // spawns its accept task (tied to the same shutdown token). Nothing to
+        // spawn standing here — the responder is held in `iroh_runtime` ready to
+        // arm.
+        let _ = &iroh.pairing_responder;
+
+        tracing::info!("iroh serve loop spawned; pairing responder armed-on-demand");
+    }
+
     tracing::info!("concerto-core ready");
 
     Ok(BootOutcome::Started(RunningCore {
         runtime,
         socket_path,
+        iroh: iroh_runtime,
     }))
 }

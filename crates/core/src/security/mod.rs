@@ -21,6 +21,7 @@ pub mod auth;
 pub mod destructive;
 pub mod devices;
 pub mod identity;
+pub mod iroh_pairing;
 pub mod managed;
 pub mod pairing;
 pub mod path_policy;
