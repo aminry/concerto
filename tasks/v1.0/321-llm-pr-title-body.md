@@ -1,0 +1,116 @@
+# Task 321 — LLM-Composed PR Title/Body (on by default, 2 s deterministic fallback is the live path)
+
+| Field | Value |
+|---|---|
+| Phase | 3 |
+| Task type | rust |
+| Verification tier | 1 |
+| Size | small (≤4h) |
+| Depends on | 313, 312, 310 |
+| Touches subsystem(s) | 13 (VCS Provider Integration), 04 (Agent Supervisor — `compose_action_prompt`), 03 (Workspace/Session Manager) |
+| Smoke gate | unchanged |
+
+## Goal
+Make `CreatePullRequest` fill in a real PR title + body instead of relying on the caller to supply them, **reusing Task 312's `OneShotLlm` seam + `compose_action_prompt` — adding no new LLM machinery**. Today `VcsHandle::create_pr` takes `title`/`body` as caller-supplied strings (`crates/core/src/vcs/actor.rs`); there is no composition step, no project opt-out, no PR-template read, and no Concerto footer. Per `design/13 §3.4` + `R-4`, PR composition is **on by default** with a **2 s deterministic fallback**, and per `PHASE3_PLANNING §1 D1` the deterministic fallback **is the live path in Phase 3** (the pluggable LLM provider is wired in P4/412 and judged there). This task adds a `compose_pr(workarea, repo, context) -> (title, body)` step to the PR-create flow that: (1) routes through `compose_action_prompt(ActionKind::PrCreate, repo_id, base_prompt)` (312/`design/04 §3.13`, reading the repo's resolved `action_prefs` via 310); (2) calls `OneShotLlm::suggest` with a 2 s timeout when a provider is configured; (3) **always** falls back to the deterministic composer (`DeterministicOneShot` — title from composer + branch, body from the last user message) on no-provider/failure/timeout; (4) reads `.github/pull_request_template.md` when present; (5) always appends the footer "Created from Concerto · workarea `<name>` · agent `<kind>`" with a deep link. After this task, PR creation never blocks on or breaks because of the LLM, the deterministic path is fully CI-provable, and the live-LLM path becomes real in P4 without touching this code.
+
+## Inputs to read before starting
+- `tasks/v1.0/PHASE3_PLANNING.md` — **AUTHORITATIVE.** §1 **D1** ("**Deterministic fallback is the LIVE path in P3.** The Maestro/one-shot-LLM delegate is an *unwired trait seam*. Tasks stay Tier-1 but each states: 'Tier-1 covers the deterministic path; the live-LLM path is wired in P4 (412) and judged at that phase gate.'"); §2 row 312/321 ("**312 owns** `crates/core/src/llm/oneshot.rs`: the `OneShotLlm` trait + a `DeterministicOneShot` impl (LIVE) + `compose_action_prompt`. **321 reuses** it for PR title/body — adds no new LLM machinery."); §4.4 (the **FROZEN-by-312** `OneShotLlm` seam this task consumes — `trait OneShotLlm { async fn suggest(&self, req: OneShotRequest) -> Result<String> }` + `DeterministicOneShot` (the live P3 impl: template title/body for PRs) + `compose_action_prompt(action, prefs, context)` reading 310's resolved `action_prefs`); §6 (the refined deps: **321 also depends on 312** (the seam) **and 310** (the resolved `action_prefs` + the `0011` `repositories.action_prefs_json` column)).
+- `design/13_VCS_Provider_Integration.md` §3.4 (the exact PR-create fill-in sequence: read context → **call 08 to compose title+body, on by default, opt-out per project in Repository Settings → PR Defaults, falls back to deterministic title (composer + branch) and body (last user message) if no provider or call fails/times out (2 s)** → read `.github/pull_request_template.md` → push branch → call create-PR API → persist + emit → return URL; **"The body always includes a footer 'Created from Concerto · workarea bach · agent claude-4.7' with a deep link"**), §12 **R-4** ("LLM-composed PR titles/bodies — **Default ON; opt-out per project** … Falls back to deterministic title (composer + branch) and body (last user message) if no LLM provider or the call fails/times out (2 s)").
+- `design/04_Agent_Supervisor.md` §3.13 (the `compose_action_prompt(action, repo_id, base_prompt) -> String` helper + the `ActionKind` set incl. **`pr_create` — "Prepended to the PR-body generation prompt"** — and the `repositories.action_prefs_json` schema; the checked-in `.concerto/action_prefs.toml` override; "prefs do not bleed across repos" for multi-repo workareas; `managed.json` may pin/cap a field), §2 V1.0 row ("agent name-suggestion mode (one-shot, called by 03 for branch rename)" — the same one-shot family 312 implements).
+- `crates/core/src/llm/oneshot.rs` — **Task 312's module** (does not exist on `main` until 312 lands). Read 312's Handoff for the exact `OneShotLlm` trait + `OneShotRequest`/`OneShotResponse` shape, the `DeterministicOneShot` impl, and `compose_action_prompt`'s signature + how it reads 310's resolved `action_prefs`. **312 is a hard dependency — do not start until its Handoff is readable.** If 312's seam differs from `PHASE3_PLANNING §4.4`, follow 312's Handoff.
+- `crates/core/src/vcs/actor.rs` — `VcsHandle::create_pr(workarea_id, repository_id, base_ref, head_ref, title, body) -> Result<PullRequest>` (the V0.1 surface; `title`/`body` currently caller-supplied). **Task 313 reshapes `create_pr` to the `design/13 §5.1` `create_pr(req: CreatePrRequest) -> Result<PullRequest>` shape** — read 313's Handoff for the post-313 signature; 321 inserts the composition step into that flow (or wraps it in `WorkareaManager::create_pr_for_repo`, `design/03 §5.1` — decide the call site, see Implementation notes).
+- `crates/core/src/vcs/gh_cli.rs` — `create_pr(gh, repo, head, base, title, body)` (uses title/body args; V0.1 GitHub-via-CLI). The composition feeds these. Note the never-log-subprocess-output discipline.
+- `crates/core/src/workspace_manager/workarea.rs` — the `WorkareaManager` (holds `persistence`; can resolve the workarea's composer name, branch, repos, and the last user message for the deterministic body) — the natural home for `create_pr_for_repo` / the compose step if PR-create is driven workarea-side.
+- `crates/persist/src/repositories.rs` — `repositories.action_prefs_json` (the `0011` column **Task 310** adds; `compose_action_prompt` reads it via 310's resolver). Confirm 310 added it before relying on it.
+- `tasks/v1.0/312-branch-rename-hook.md` → "Handoff Notes" — **the seam owner.** The `OneShotLlm` trait + `DeterministicOneShot` + `compose_action_prompt` + the `crates/core/src/llm/oneshot.rs` module + how the deterministic impl is selected when no provider is configured. **321 reuses ALL of this; it builds none of it.**
+- `tasks/v1.0/313-vcs-provider-github.md` → "Handoff Notes" — the post-313 `create_pr`/`CreatePrRequest` shape + the PR-template read seam (if 313 added one).
+- `tasks/v1.0/310-settings-precedence-resolver.md` → "Handoff Notes" — the resolved `action_prefs` surface `compose_action_prompt` consumes (the `0011` `action_prefs_json` local-DB layer + checked-in `.concerto/action_prefs.toml`).
+
+## Scope — in
+- **The `compose_pr` step** (in the PR-create flow — `WorkareaManager::create_pr_for_repo` or a `VcsHandle` helper, per the call-site decision):
+  - Resolve composition context: workarea composer name + branch name, the repo's recent commits / change summary, the last user message (`design/13 §3.4` step 1).
+  - Build the base prompt and route it through `compose_action_prompt(ActionKind::PrCreate, repo_id, base_prompt)` (312/`design/04 §3.13`) so the repo's resolved `action_prefs.pr_create` preference is injected (per-repo; prefs do not bleed across repos in a multi-repo workarea).
+  - If a `OneShotLlm` provider is configured AND the project has **not** opted out (`projects.settings_json` / `repositories.settings_json` PR-defaults `pr_compose` flag, default **on**): call `OneShotLlm::suggest` with a **2 s timeout**. On `Ok(text)` within budget → parse into `(title, body)`.
+  - **Always** fall back to `DeterministicOneShot` (312's live impl) on: no provider configured, opt-out, error, or 2 s timeout → deterministic title (`<composer> · <branch>` style per `design/13 §3.4`) + body (last user message). The fallback is the live P3 path.
+  - Read `.github/pull_request_template.md` from the repo worktree when present and fold it into the body (deterministic merge: template + composed body, per `design/13 §3.4` step 3).
+  - Append the footer "Created from Concerto · workarea `<name>` · agent `<kind>`" with a deep link, **always** (composed or fallback).
+  - Feed the resulting `(title, body)` into the existing `create_pr` → persist → emit path. `create_pr` may still accept explicit `title`/`body` (caller override wins); when empty, `compose_pr` fills them.
+- **The opt-out flag:** read a PR-compose opt-out from project/repo settings (default **on**) via 310's resolver (or `projects.settings_json` directly if 310's resolver does not yet expose it — note the choice). FREEZE the key name (`pr_compose`).
+- **Tests (Tier 1):** deterministic-path title+body when no provider (the live P3 path); 2 s timeout → fallback (inject a `OneShotLlm` stub that sleeps > 2 s, assert the deterministic output + that the call did not block past ~2 s); provider-error → fallback; opt-out → fallback even with a provider; `action_prefs.pr_create` injection appears in the prompt passed to `OneShotLlm::suggest` (assert via a recording stub); `.github/pull_request_template.md` present → folded into body; footer always appended (composed + fallback); caller-supplied non-empty title/body → used verbatim (compose skipped).
+
+## Scope — out
+- **The `OneShotLlm` trait, `DeterministicOneShot`, `compose_action_prompt`, the `llm/oneshot.rs` module** — Task 312 owns all of it. 321 reuses; it adds **no new LLM machinery** (this is the load-bearing `D1` constraint).
+- **The pluggable LLM provider (Claude/Codex/Gemini CLI / Direct API), the daily budget, inert-on-exhaust** — Task 412 (P4). In P3 the provider is an **unwired seam**; the deterministic fallback is the live path. 321 must gracefully use the fallback whenever no provider/budget is present.
+- **Maestro/08 delegation** — `design/13 §3.4` step 2 says "call 08," but Maestro is P4 (after P3). 321 must **not** call into a Maestro that doesn't exist; it uses 312's standalone `OneShotLlm` seam, which P4 later backs with the real provider.
+- **The `repositories.action_prefs_json` column + the settings-precedence resolver** — Task 310 (`0011`). 321 reads the resolved prefs through 312's `compose_action_prompt`; it adds no migration.
+- **The `VcsProvider`/octocrab `create_pr` mechanics + the PR-template-read seam** — Task 313. 321 inserts composition ahead of 313's create call.
+- **Branch-rename one-shot** — Task 312 (the sibling consumer of the same seam). 321 is PR-title/body only.
+- **The Desktop "Create PR" UI / PR-defaults settings panel** — a later Desktop task; 321 ships the Core composition + the opt-out key it reads.
+
+## Public interface this task locks
+- **`ActionKind::PrCreate` usage (CONSUMES 312/`design/04 §3.13`):** 321 does **not** define `ActionKind` (312 owns it); it uses the `PrCreate` variant. (Stated here so a reviewer confirms 321 locks nothing in the LLM seam — it only consumes.)
+- **The compose entry point (FROZEN signature, in the PR-create flow):** `compose_pr(&self, ctx: PrComposeContext) -> (String, String)` returning `(title, body)`, where `PrComposeContext { workarea_id, repository_id, composer, branch, last_user_message, change_summary }`. Total wall-clock bounded by the **2 s** LLM timeout + the (instant) deterministic fallback.
+- **The opt-out key (FROZEN):** `pr_compose` in project/repo PR-defaults settings (JSON `bool`, default `true` / on; absent ⇒ on). No migration.
+- **The footer (FROZEN format):** `Created from Concerto · workarea <name> · agent <kind>` + a deep link, appended to **every** PR body (composed or fallback).
+- **The contract (FROZEN):** PR creation **never** fails or blocks because of the LLM — the 2 s timeout + the always-available deterministic fallback are a hard guarantee. The deterministic fallback is the **live** P3 path; the LLM-quality path is wired in P4 (412) and judged at that phase gate.
+
+## Implementation notes
+- **Reuse is the whole task.** `D1` and `PHASE3_PLANNING §2`'s 312/321 row are explicit: 312 builds `OneShotLlm` + `DeterministicOneShot` + `compose_action_prompt`; 321 *calls* them. If you find yourself writing a trait, a provider, or a prompt-template engine, stop — that belongs in 312 (or is P4/412). 321 wires the existing seam into the PR-create flow plus the template read + footer.
+- **The 2 s timeout is a hard contract.** Wrap the `OneShotLlm::suggest` call in `tokio::time::timeout(Duration::from_secs(2), ...)`; on `Err(Elapsed)` or any provider error, fall straight to `DeterministicOneShot`. Test it with a stub that sleeps > 2 s and assert (a) the deterministic output is returned and (b) the path returned in roughly 2 s, not the stub's sleep duration.
+- **Deterministic is the live path.** Because no provider is configured in P3, the *normal* run is the fallback. Make the deterministic title/body genuinely useful (composer + branch → a readable title; last user message → a body), not a placeholder — this is what ships in P3 and is what the Phase-3 Tier-3 checklist's "create a PR" line exercises. State the `D1` sentence verbatim in the Verification section.
+- **`compose_action_prompt` is a pure string assembler (no LLM).** It reads 310's resolved `action_prefs` and prepends the `pr_create` pref to the base prompt. It runs **regardless** of whether the LLM path or the fallback is taken — but in P3 its output only matters when a provider exists (P4). Still route through it now so the wiring is correct and tested (assert the pref appears in the prompt handed to a recording `OneShotLlm` stub).
+- **Caller override.** Keep `create_pr` accepting explicit `title`/`body`; when both are non-empty, skip composition (the agent/UI supplied them). When empty, compose. This preserves the V0.1 caller contract while adding the default-on composition.
+- **PR template + footer are deterministic.** The `.github/pull_request_template.md` read (from the repo worktree) and the footer append happen **after** composition/fallback and are pure string ops — no LLM. Multi-repo workareas read each repo's own template (no bleed).
+- **Call-site decision.** PR-create is workarea-aware (composer/branch/last-message all live workarea-side). Driving `compose_pr` from `WorkareaManager::create_pr_for_repo` (`design/03 §5.1`) keeps the context resolution local; alternatively a `VcsHandle` helper takes a pre-resolved `PrComposeContext`. Pick one, note it, and keep `VcsHandle::create_pr` as the thin GitHub call.
+- **Cross-platform:** pure Core logic + a worktree file read (`tokio::fs`); builds on the Windows/Linux CI lanes (Task 113). No `std::os::unix`.
+- Regen: if the PR-create proto/`CreatePrRequest` gains a field (e.g. a `compose: bool`), run `./scripts/regen-interfaces.sh` and commit; if composition is purely internal, no proto change.
+
+## Verification
+**Tier 1.** Type `rust`; commands per `README §5.3`.
+> **Tier note (`D1`):** Tier-1 covers the **deterministic** PR-compose path + the 2 s timeout/fallback contract — the live P3 path. The live-LLM-quality path is wired in P4 (412) and judged at that phase gate; it is **not** gated here.
+1. `cargo check --workspace` clean.
+2. `cargo clippy --workspace --all-targets -- -D warnings` clean.
+3. `cargo test -p concerto-core pr_compose` → deterministic title+body (no provider), 2 s-timeout→fallback (stub sleeps > 2 s; assert fallback output + ~2 s wall clock), provider-error→fallback, opt-out→fallback, `action_prefs.pr_create` injected into the prompt (recording stub), `.github/pull_request_template.md` folded into body, footer always appended, caller-override-used-verbatim all pass.
+4. `cargo test --workspace --no-fail-fast` → all pass.
+5. `cargo deny check` → green (no new workspace pins — the LLM seam is 312's; 321 adds none).
+6. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit any regen (only if a proto/public-type changed; composition may be internal-only).
+7. `scripts/smoke.sh` → **unchanged** gate (PR creation against real GitHub is Tier-3; the deterministic compose has unit coverage, not a smoke capability).
+
+## Definition of Done
+- [ ] `compose_pr` added to the PR-create flow, reusing 312's `OneShotLlm` + `DeterministicOneShot` + `compose_action_prompt` (no new LLM machinery)
+- [ ] LLM path called with a 2 s timeout; **always** falls back to the deterministic composer on no-provider/opt-out/error/timeout (the live P3 path)
+- [ ] `compose_action_prompt(ActionKind::PrCreate, repo_id, …)` routes the repo's resolved `action_prefs.pr_create` (310) into the prompt; no cross-repo bleed
+- [ ] `.github/pull_request_template.md` folded into the body when present; footer "Created from Concerto · workarea `<name>` · agent `<kind>`" + deep link appended to every body
+- [ ] `pr_compose` opt-out key (default on) read via settings; caller-supplied non-empty title/body used verbatim (compose skipped)
+- [ ] No migration; no new LLM trait/provider; the live-LLM path deferred to P4/412 (stated in Verification per `D1`)
+- [ ] Tier-1 tests pass; `cargo deny` green; interfaces regenerated only if a contract changed
+- [ ] Builds on the Windows/Linux CI lanes; no `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code
+- [ ] No files outside Outputs modified; smoke gate unchanged (still green)
+- [ ] Single commit with the message below
+
+## Outputs
+- `crates/core/src/workspace_manager/workarea.rs` (modified — `create_pr_for_repo` / `compose_pr` + `PrComposeContext`; OR a `VcsHandle` helper per the call-site decision)
+- `crates/core/src/vcs/actor.rs` (modified — `create_pr` consumes composed `(title, body)` when caller-supplied are empty; thin GitHub call preserved)
+- `crates/core/src/vcs/pr_compose.rs` (new — the deterministic composer + template-fold + footer + the `OneShotLlm`-with-2s-timeout orchestration reusing 312's seam) *(or inline in `workarea.rs` if smaller — note the choice)*
+- `crates/persist/src/projects.rs` / `repositories.rs` (modified only if the `pr_compose` opt-out read needs a settings accessor; else read via 310's resolver)
+- `crates/core/tests/pr_compose.rs` (new — Tier-1 tests)
+- `docs/interfaces/proto.md` (regenerated only if `CreatePrRequest`/PR proto changed)
+
+## Commit message
+```
+phase-3: LLM-composed PR title/body (deterministic fallback is live)
+
+Adds a compose_pr step to PR creation reusing Task 312's OneShotLlm +
+compose_action_prompt (no new LLM machinery): on-by-default, 2s timeout,
+always falls back to the deterministic composer (composer+branch title,
+last-message body) — the live P3 path per D1. Folds in the repo PR
+template + the Concerto footer. The live-LLM path is wired in P4/412.
+
+Refs: tasks/v1.0/321-llm-pr-title-body.md
+```
+
+## Handoff Notes (filled in when finishing)
+- Drift from plan — —
+- Open questions for next task — —
+- Deliberate debt — —
+- Smoke-gate state — —

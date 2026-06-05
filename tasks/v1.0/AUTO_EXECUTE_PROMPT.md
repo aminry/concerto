@@ -42,9 +42,11 @@ Next task = the lowest-numbered `tasks/v1.0/Pss-<slug>.md` **in Phase {PHASE}** 
 - `git checkout -b task-NNN-<slug>`.
 - Read the task file. Note its **`Task type`** and **`Verification tier`** — they decide which commands you re-run in Step 4.
 
-### Step 3 — Dispatch the sub-agent
+### Step 3 — Dispatch the task lead
 
-Dispatch one fresh isolated sub-agent. Prompt = the contents of `tasks/v1.0/PROMPT_TEMPLATE.md` from the `---` markers, `{TASK_PATH}` replaced by `tasks/v1.0/NNN-<slug>.md`, verbatim. Tell it it's on branch `task-NNN-<slug>` and its work becomes a PR against `main`. **No parallel sub-agents** — tasks are sequential within a phase (deps in the inventory).
+Dispatch one fresh isolated sub-agent as the **task lead**. Prompt = the contents of `tasks/v1.0/PROMPT_TEMPLATE.md` from the `---` markers, `{TASK_PATH}` replaced by `tasks/v1.0/NNN-<slug>.md`, verbatim. Tell it it's on branch `task-NNN-<slug>` and its work becomes a PR against `main`.
+
+**Tasks stay sequential across the phase** — the inventory `deps` are real; never start task `N+1` before task `N` is merged (you, the orchestrator, dispatch exactly one task lead at a time). **But the lead MAY build its single task with multiple helper sub-agents in parallel** to go faster (proto + handler + tests concurrently, per-file UI work, an explore→implement→review split) — see `PROMPT_TEMPLATE.md` → *Parallel build*. Fan-out is the lead's choice and is invisible to you: the lead still returns **one coherent commit**, stays within `Outputs`, runs the full tier verification on the integrated result, and fills the `Handoff Notes`. You validate the result (Step 4), not the team shape.
 
 ### Step 4 — Validate (type- and tier-aware)
 

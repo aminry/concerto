@@ -1,0 +1,114 @@
+# Task 322 — Desktop: multi-repo workspace UI + per-workarea repo selector + sparse-cone picker
+
+| Field | Value |
+|---|---|
+| Phase | 3 |
+| Task type | web-ts |
+| Verification tier | 2 |
+| Size | medium (1–3d) — TS only (`apps/desktop/src`); no `src-tauri` Rust |
+| Depends on | 302, 306, 218 |
+| Touches subsystem(s) | 15 (Desktop Client), 02 (Repository Manager — client consumer), 03 (Workspace/Session Manager — client consumer) |
+| Smoke gate | unchanged |
+
+## Goal
+Make the Desktop multi-repo aware. Today the renderer is hard single-repo in three places: `NewWorkspaceModal.tsx` forces a single `<select>` repo (`repositoryIds: [repositoryId]`), `CodePrRegion.tsx` fakes the workarea's repo as `reposQuery.data.repositories[0]` (the *project's* first repo, with a non-interactive "Repo:" button), and workarea creation (`WorkspaceDetail.tsx`'s `createWorkarea(workspaceId)`) carries no cones. This task (1) makes **New Workspace** a multi-select over 1..N repos (Task 306 relaxed the Core's single-repo guard); (2) replaces the fake repo button with a real **Level-1 per-repo selector** carrying per-repo status dots per `design/15 §3.4`, sourced from the multi-repo workarea surface 306/307 expose; and (3) adds a **sparse-cone picker** at workarea-create that, per repo, lets the user enter cone paths and calls `Repositories.EstimateConeSize → ConeStats` (Task 305) for live `(file_count, disk_size)` feedback, rejecting non-existent cone paths inline, then writes the chosen cones through `createWorkarea`. All new server data lives in React Query; only the active-repo *selection* lands in Zustand. After this task a user can create a workspace spanning several repos from a monorepo and size each repo's cone before materializing the workarea — the multi-X unlock `design/03 §3.2`/`design/02 §3.2` describe. The real >10 GB-monorepo clone latency stays a Tier-3 phase-checklist line; this task proves the UI/data logic against a mocked transport.
+
+## Inputs to read before starting
+- `design/15_Desktop_Client.md` §3.4 — the **two-level Code & PRs region**: *Level 1 — Repo selector:* one tab per repo in the workarea with a per-repo status dot (`repo · N files · CI green/pending`); *Level 2 — per-repo Diff/Checks/PR*. **This task owns the Level-1 repo dimension only** (the Level-2 Checks/PR panels are Task 324; the Diff view already exists). The §3.4 ASCII diagram shows `Repo tabs ─ Level 1` above `Within selected repo ─ Level 2 tabs`. Read it as the IA you are building toward. **Decision D8 (PHASE3_PLANNING §1):** V0.1 shipped Code & PRs as flat *right-rail* tabs (`RightRail.tsx`: `diff`/`checks`/`pr`); the design wants them **center-bottom**. This task introduces the **repo dimension** the center IA needs but does **not** itself move the panels out of the right rail — **record the right-rail→center move as drift in this task's Handoff** (per D8) and leave the physical relocation to a follow-on; the repo selector must work wherever `CodePrRegion` currently renders.
+- `design/15_Desktop_Client.md` §3.4 "When a workspace is selected" — the workspace summary the multi-select feeds into is built by **Task 323**, not here; this task only widens the create flow + the per-repo selector inside the workarea view.
+- `design/03_Workspace_Session_Manager.md` §3.2 (a workspace declares 1..N repos; cones are per-(workarea, repo); workspace per-repo cone defaults), §3.3/§6.2 (workarea create writes a worktree per repo and applies the resolved cones), §12 R-2 (the three-layer cone inheritance `repositories.cone_defaults_json → workspace cone defaults → workarea_repos.sparse_cones_json`). **The picker is per-(workarea, repo) and edits the bottom layer** — show the inherited defaults as the pre-filled value, let the user override.
+- `design/02_Repository_Manager.md` §3.2 (cone-mode sparse, plan-mode `suggest_cones` **is Maestro/P4 — do NOT build auto-suggestion here**, only the manual picker), §3.5 (size→strategy: `>10 GB → Blobless + Sparse with cone picker` — the picker you are wiring), §5.1 (`list_paths_in_cone(repo, cones) → ConeStats` = file count + disk-size estimate), §5.2 (`EstimateConeSize(EstimateRequest) → ConeStats` RPC), §8 / the §error table (a bad cone path is a clean rejection, not a panic — surface it inline).
+- `tasks/v1.0/302-sparse-cone-lifecycle.md` → "Handoff Notes" + "Public interface this task locks" — the cone storage shape, the inheritance resolver, and **the `Workareas.SetWorkareaCones` (or equivalent) RPC + the `CreateWorkareaRequest` cones field 302/306/307 froze.** **Mirror those wire shapes exactly; do not invent them.** If 302's create-time cone surface differs from this contract, follow 302's handoff and note the reconciliation.
+- `tasks/v1.0/305-cone-stats-suggest-seam.md` → "Public interface this task locks" — `EstimateConeSize` request/response field names + `ConeStats` (`uint64 file_count = 1; uint64 disk_size_bytes = 2;` per PHASE3_PLANNING §4.6). Mirror exactly.
+- `tasks/v1.0/306-multi-repo-workspaces.md` → "Handoff Notes" — the relaxed `CreateWorkspaceRequest` semantics (multi-repo accepted; **0 repos still rejected at create** per `design/03 §8`) and **whatever multi-repo workarea surface 306/307 expose** (a `repository_ids: string[]` field on `Workarea`, a `repos: WorkareaRepo[]` list, or a new `Workareas.ListWorkareaRepos` RPC). **This is the load-bearing dependency — the per-repo selector binds whatever 306/307 froze.**
+- `tasks/v1.0/218-desktop-dual-transport.md` → "Handoff Notes" — the **FROZEN `CoreClient` trait** every RPC dispatches through (`callRpc` → `commands.rs` → `CoreClient`); the renderer never speaks gRPC. The `['cores']` React-Query / `useCoresStore` server-canonical-vs-UI-selection convention is the pattern any new selection state follows. `transport_kind` typing already exists in `runtime.ts` — **no remote-mode branching is needed in this task** (the active Core is implicit via `callRpc`).
+- `apps/desktop/src/components/NewWorkspaceModal.tsx`, `apps/desktop/src/components/center/CodePrRegion.tsx`, `apps/desktop/src/components/WorkspaceDetail.tsx` (the `createWorkarea` call site), `apps/desktop/src/api/{workspaces,workareas,repositories}.ts`, `apps/desktop/src/hooks/{useWorkareas,useDiff}.ts`, `apps/desktop/src/state/useUiStore.ts` — the exact components/bindings/store you extend (see Implementation notes for what is added vs modified).
+
+## Scope — in
+**New Workspace multi-select (`NewWorkspaceModal.tsx`):**
+- Replace the single-select `<select>` + `repositoryId: string` state with a multi-select over the project's repos (checkbox list or multi-select), producing `repositoryIds: string[]` (≥1). `createWorkspace` already accepts `repositoryIds: string[]` (Task 25) — only the form is single-repo. Submit gates on `name` non-empty **and ≥1 repo selected** (mirror the Core's 0-repo rejection).
+
+**Per-workarea repo selector + multi-repo `Workarea` mirror (`CodePrRegion.tsx`, `api/workareas.ts`):**
+- Add the multi-repo surface to `api/workareas.ts` — **mirror whatever 306/307 froze** (a `repository_ids: string[]`/`repos: WorkareaRepo[]` field on `Workarea`, or a new `listWorkareaRepos(workareaId)` binding + a `useWorkareaRepos` hook following `useWorkareas` conventions). Do not invent the shape.
+- Replace `reposQuery.data.repositories[0]` (the project-first-repo hack) with the workarea's real repo list. Render a **Level-1 repo selector**: one entry per repo in the workarea, each with a per-repo status dot (reuse `StatusDot` + the `workareaStatus.ts` palette; dirty/clean from the per-repo diff presence — full CI status dots are Task 324's job, so a clean/dirty/neutral dot here is sufficient). Selecting a repo drives which repo `DiffViewer` renders (today hard-wired to `repo?.id`).
+- Persist the active-repo selection in Zustand (UI-only), keyed so switching workareas doesn't leak a stale repo id.
+
+**Sparse-cone picker at workarea create (`WorkspaceDetail.tsx` + a new picker component + `api/workareas.ts` create path):**
+- On "+ New Workarea", surface a per-repo cone entry (a small modal/inline form): for each repo in the workspace, a cone-paths input pre-filled from the inherited workspace/repo defaults (read-only display of the inherited source is a nice-to-have, not required). As the user edits, debounce-call `EstimateConeSize` per repo and show live `(file_count, disk_size_bytes)`; a cone path the Core rejects surfaces inline ("path not found in repo").
+- Thread the chosen per-repo cones into `createWorkarea` via the cones field 302/306/307 added to `CreateWorkareaRequest` (mirror that shape). When no cones are entered, send empty so the Core applies the inherited defaults.
+- A new `api/cones.ts` (or an addition to `api/repositories.ts`) typed binding for `EstimateConeSize` + the `ConeStats` mirror; a `useConeEstimate` hook over it.
+
+**Plumbing:** extend the `RpcMethod` union in `api/client.ts` with the new method strings (`Repositories.EstimateConeSize`, plus the create-time cone RPC/field path 302/306 expose) — spelled **exactly** as the Rust shell dispatch table (`Service.Rpc`). Add vitest unit/component tests (mock `invoke`).
+
+## Scope — out
+- The **Checks/PR panels + coordinated-merge UI** that replace the stub cards — **Task 324** (this task leaves the `checks`/`pr` Placeholder cards untouched; it only fixes the repo dimension + Diff repo wiring).
+- The **"When a workspace is selected" summary view** (workarea list with status dots, "+ new workarea") + **multi-agent session tabs** — **Task 323** (`WorkspaceDetail.tsx`'s summary + `SessionRegion.tsx`). This task only adds the cone picker to the existing `createWorkarea` button.
+- **`suggest_cones` / Maestro-driven auto cone suggestion** — Maestro is P4 (Task 411 wires `suggest_cones`). Build **only the manual picker** here.
+- The physical **right-rail → center-region relocation** of Code & PRs (D8) — recorded as drift here; the relocation itself is a follow-on Desktop task. The repo selector must work in the current `CodePrRegion` mount.
+- Any **Rust** in `src-tauri` — the multi-repo `Workarea` surface, `EstimateConeSize`, and the create-time cone field are all upstream Rust (302/305/306/307). This task is the **client consumer**; it mirrors wire shapes, never defines them.
+- Real sparse+blobless clone latency on a >10 GB monorepo — **Tier-3** phase-checklist line ("sparse+blobless clone a real >10 GB monorepo, <30 s p50 workspace creation").
+
+## Public interface this task locks
+- **TS (FROZEN):** the `apps/desktop/src/api/cones.ts` binding surface — `estimateConeSize(repositoryId, conePaths) → ConeStats` and the `ConeStats` mirror `{ file_count: number; disk_size_bytes: number }` (mirroring Task 305's proto field names/numbers; `uint64` lands as `number` per the desktop serde convention — confirm against `runtime.test.ts`).
+- **TS (FROZEN):** the multi-repo additions to `apps/desktop/src/api/workareas.ts` — the `Workarea` repo-list field (or `WorkareaRepo`/`listWorkareaRepos` binding) **mirroring the 306/307 wire shape** (append-only; document which upstream shape it mirrors), and the cones argument on `createWorkarea(workspaceId, { cones, permissionMode })`.
+- **TS (FROZEN):** the new `RpcMethod` union members added in `api/client.ts` (`Repositories.EstimateConeSize` + the create-time cone method/field path) — string spelling must match the Rust shell dispatch table exactly.
+- **TS/UI (FROZEN):** the `useUiStore` selection key this task adds for the active workarea repo (e.g. `selectedRepoId: string | null`, reset on workarea switch). Persisted layout (`LAYOUT_STORAGE_KEY = "concerto.layout.v1"`) is **not** changed; if any selection is persisted, extend the loader with a safe fallback (mirror the `diffViewMode` pattern) — but active-repo selection is ephemeral and should NOT be persisted.
+
+## Implementation notes
+- **Mirror, don't invent.** The three upstream shapes (multi-repo `Workarea`, `EstimateConeSize`/`ConeStats`, create-time cones) are owned by 302/305/306/307. This task is unblocked only once those tasks' handoffs pin the wire shapes; until then the bindings have nothing to mirror. If you find a mismatch between this contract and an upstream handoff, **follow the handoff** and note it (the upstream Rust task is canonical for its own wire shape).
+- **Server-canonical vs UI state (`design/15 §3.3`).** Repo lists, `ConeStats`, the workarea repos — all React Query, keyed (`["workareaRepos", workareaId]`, `["coneEstimate", repositoryId, cones]`). The **only** Zustand addition is the active-repo *selection*; never duplicate server data into Zustand (the Task 218 convention).
+- **Reset selection on workarea switch.** `setSelectedWorkarea` already clears `activeSessionId`; the new `selectedRepoId` must clear the same way (extend `setSelectedWorkarea` in `useUiStore`) so selecting a new workarea doesn't render a repo id that belongs to the old one. Auto-select the workarea's first repo when none is selected (mirror `SessionRegion`'s first-session auto-select effect).
+- **Cone estimate UX.** Debounce the `EstimateConeSize` call (~300 ms) so each keystroke doesn't fire an RPC; show a spinner while in flight and the last good `(file_count, disk_size_bytes)` otherwise. A Core rejection of a cone path comes back as a `CoreClientError` `{kind,message}` — read `message` via `errorMessage` (it surfaces the design/02 §8 reject reason) and render it inline next to that repo's input; do not block the whole form on one bad repo.
+- **Inheritance display.** The picker's pre-filled value is the resolved inherited cones (302's resolver). The simplest correct approach: if 306/307's create surface returns the resolved defaults, pre-fill from there; otherwise leave the field empty (empty ⇒ "use defaults") and label it so the user knows empty inherits. Do not re-implement the three-layer resolver in TS — it's a Core concern.
+- **Dispatch through `CoreClient` only.** Every call is `callRpc(...)` → `commands.rs` → the active `CoreClient` (Task 218). No raw gRPC, no direct keychain/fs. The active Core is implicit; this task needs no per-Core or transport-kind branching.
+- **Verification scripts.** `apps/desktop/package.json` already has `typecheck`/`lint`/`test`/`build` + `vitest` + `jsdom` + `@testing-library/react` (added by Task 218). No script/devDep additions needed; write `*.test.tsx`/`*.test.ts` colocated, mocking `@tauri-apps/api`'s `invoke` (see `PairCoreModal.test.tsx`/`cores.test.ts` for the pattern).
+- **Tier-2 double.** vitest + mocked `invoke`/`callRpc` + `@testing-library/react`. It proves: multi-select → `repository_ids` payload; the per-repo selector renders N repos + drives `DiffViewer`'s `repositoryId`; the cone picker's debounced `EstimateConeSize` call + inline reject rendering + `createWorkarea` cones payload. It does **NOT** prove real cone/clone latency, real `ConeStats` numbers, or a real monorepo — those are the Tier-3 line.
+
+## Verification
+**Tier 2.** Verification **overrides** the orchestrator's `web-ts` default (which targets `apps/web`, nonexistent until Phase 5) to **`apps/desktop`** per PHASE3_PLANNING §7:
+1. `pnpm -C apps/desktop typecheck` → clean (`tsc --noEmit`; the new mirrors + bindings type-check, `RpcMethod` union extended).
+2. `pnpm -C apps/desktop lint` → clean (aliased to `tsc --noEmit` per Task 218).
+3. `pnpm -C apps/desktop test` → vitest green, including: `NewWorkspaceModal` submits `repository_ids` with ≥1 selected and disables submit on 0; `CodePrRegion` renders one selector entry per workarea repo and passes the selected repo's id to `DiffViewer`; the cone picker debounce-calls `EstimateConeSize` and renders `(file_count, disk_size_bytes)`; a mocked rejection renders the inline error and does not block other repos; `createWorkarea` carries the chosen cones.
+4. `pnpm -C apps/desktop build` → `tsc --noEmit && vite build` clean.
+
+**Tier-2 double + what it does NOT cover.** The double is **vitest + mocked `invoke`** (no Core, no Playwright — `apps/desktop` has no Playwright). It proves the UI/data logic above. It does **NOT** cover real `EstimateConeSize` numbers, real sparse+blobless clone latency, or real multi-repo worktree materialization on a >10 GB monorepo → **Phase-3 Tier-3 checklist** line "sparse+blobless clone a real >10 GB monorepo and confirm <30 s p50 workspace creation; create a multi-repo workspace."
+
+## Definition of Done
+- [ ] `NewWorkspaceModal.tsx` is a multi-select producing `repository_ids: string[]` (≥1); submit gates on ≥1 repo
+- [ ] `api/workareas.ts` mirrors the 306/307 multi-repo `Workarea` repo surface (documented as which upstream shape it mirrors); `createWorkarea` carries per-repo cones
+- [ ] `CodePrRegion.tsx` renders a real Level-1 per-repo selector (status dots) replacing `repositories[0]`; selection drives `DiffViewer`'s `repositoryId`
+- [ ] Sparse-cone picker on workarea create: per-repo cone input, debounced `EstimateConeSize → ConeStats` live feedback, inline reject of bad cone paths, cones threaded into `createWorkarea`
+- [ ] `api/cones.ts` binding + `ConeStats` mirror + `useConeEstimate` hook; `RpcMethod` union extended with exact method strings
+- [ ] Active-repo selection in Zustand only (reset on workarea switch); no server data duplicated into Zustand; `LAYOUT_STORAGE_KEY` unchanged
+- [ ] All four `pnpm -C apps/desktop` commands pass; vitest covers the cases above
+- [ ] No `TODO`/`FIXME` in new code (deliberate seams documented in Handoff); no files outside Outputs modified
+- [ ] Right-rail→center (D8) move recorded as drift in Handoff
+- [ ] Single commit with the message below
+
+## Outputs
+- `apps/desktop/src/components/NewWorkspaceModal.tsx` (modified — multi-select)
+- `apps/desktop/src/components/center/CodePrRegion.tsx` (modified — Level-1 repo selector, real workarea repos, selection-driven diff)
+- `apps/desktop/src/components/WorkspaceDetail.tsx` (modified — wire the cone picker into "+ New Workarea")
+- `apps/desktop/src/components/ConePicker.tsx` (new — the per-repo cone-paths picker with live `EstimateConeSize`)
+- `apps/desktop/src/api/cones.ts` (new — `estimateConeSize` + `ConeStats` mirror)
+- `apps/desktop/src/api/workareas.ts` (modified — multi-repo `Workarea` surface + `createWorkarea` cones arg)
+- `apps/desktop/src/api/client.ts` (modified — `RpcMethod` union: `Repositories.EstimateConeSize` + the create-time cone method)
+- `apps/desktop/src/hooks/useWorkareaRepos.ts` + `apps/desktop/src/hooks/useConeEstimate.ts` (new — React Query hooks)
+- `apps/desktop/src/state/useUiStore.ts` (modified — `selectedRepoId` selection, reset on workarea switch)
+- `apps/desktop/src/components/NewWorkspaceModal.test.tsx` + `apps/desktop/src/components/center/CodePrRegion.test.tsx` + `apps/desktop/src/components/ConePicker.test.tsx` + `apps/desktop/src/api/cones.test.ts` (new — vitest)
+
+## Commit message
+```
+phase-3: desktop multi-repo UI + sparse-cone picker
+
+Multi-select New Workspace (1..N repos, Task 306), a real Level-1
+per-repo selector replacing the repositories[0] hack (design/15 §3.4),
+and a per-(workarea,repo) sparse-cone picker driven by
+Repositories.EstimateConeSize → ConeStats (Task 305). All dispatched
+through the Task 218 CoreClient; server data in React Query.
+
+Refs: tasks/v1.0/322-desktop-multi-repo-ui.md
+```
+
+## Handoff Notes (filled in when finishing)
+- Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state — —

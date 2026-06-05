@@ -1,0 +1,138 @@
+# Task 320 — Coordinated Merge Loop (merge → wait_for_check_runs → continue / pause-on-fail) + Coordinated Revert
+
+| Field | Value |
+|---|---|
+| Phase | 3 |
+| Task type | rust |
+| Verification tier | 2 |
+| Size | medium (1–3d) |
+| Depends on | 318, 319, 313 |
+| Touches subsystem(s) | 03 (Workspace/Session Manager), 13 (VCS Provider Integration), 05 (Scheduler) |
+| Smoke gate | unchanged |
+
+## Goal
+Make a workarea's PR set a single, sequenced, shippable unit. Today a multi-repo workarea has a row per repo in `pull_requests` (Task 319 added `merge_order` to order them) and the VCS layer can merge one PR at a time (`VcsHandle::merge_pr`), but **nothing drives the ordered merge-then-wait-for-checks loop**, and there is no coordinated revert. This task implements `merge_workarea_pr_set`, `get_workarea_merge_plan`, and `revert_workarea_pr_set` on the **`WorkareaManager`** (`crates/core/src/workspace_manager/workarea.rs` — `design/03` owns the loop, NOT the VCS layer and NOT the Scheduler), and exposes them on the **`Workareas`** gRPC service next to the existing `GetWorkareaPrSet` (per `PHASE3_PLANNING §4.5 / D7`). The loop: load the PRs ordered by `merge_order` (319) → for each, `VcsHandle::merge_pr` (313) → `SchedulerHandle::wait_for_check_runs(repo, merge_sha, 10m)` (318) → pass = continue, fail/timeout = **PAUSE** the plan and surface the failed step (`Step N of M failed`) over the `MergeWorkareaPrSet` server-stream so the user can choose fix-then-resume or auto-revert. Coordinated revert walks the set in **reverse** `merge_order`, reverting each merged member (revert-commit by default; hard-reset only on explicit opt-in per `design/13 R-5`). After this task the Core can drive an end-to-end coordinated PR-set merge against a stub VCS in CI; Task 324 binds the stream + plan into the Desktop PR-set panel, and the real GitHub coordinated merge is the Phase-3 Tier-3 checklist line.
+
+## Inputs to read before starting
+- `tasks/v1.0/PHASE3_PLANNING.md` — **AUTHORITATIVE.** §1 **D7** (merge ownership: the loop lives on the `Workareas` gRPC service / `WorkareaManager`, not VCS, not Scheduler; `merge_order` default = insertion order, NO dependency-graph inference — that is `R-6`/V2.0); §1 **D2** (the one shared `wiremock`-backed `concerto-vcs/testkit` double built in 313 — 320 enables it as a dev-dep); §1 **D1** (no LLM in this task); §3 (migration reservation — 320 adds **NO migration**: it reads the `merge_order`/`external_id`/`repository_full_name` columns Task 319 added in `0014`); §4.5 (the **FROZEN** coordinated-merge RPC set this task owns — see Public interface); §2 row 318 (the required-checks set is a **caller parameter** that 320 supplies, defaulting to "all check-runs for the SHA reach a terminal conclusion"); §2 row 316/324 (VCS events route on the existing broadcast + an opaque `checks.<wa>.<repo>` subject — **NO new `streams.proto` `Event` oneof arm**; the oneof is frozen through field 16).
+- `design/13_VCS_Provider_Integration.md` §3.5 (the PR-set merge protocol — the exact loop pseudo-code: `for each PR in merge_order → merge_pull_request → wait_for_check_runs(repo, merge_commit_sha, 10m) → pass=continue / fail=pause + emit pr_set.merge_failed_step + surface auto-revert`; coordinated revert = reverse `merge_order`, `revert_pull_request` per member), §5.3 (the events: `pr_set.merge_step_completed` on `pr_set.events`; `pr.merged` / `pr.reverted` on broadcast), §7.2 (the merge sequence diagram — **the SHA passed to `wait_for_check_runs` is the POST-merge merge-commit SHA returned by `merge_pr`, not the PR `head_sha`**), §8 (failure modes: merge conflict → GH 405 → surface "resolve conflicts"; required reviewer not approved → surface as blocker), §12 R-5 (coordinated revert: revert-commit default, hard-reset opt-in only), §12 R-6 ("merge anyway despite CI red" allowed with typed warning + audit-log entry; `managed.json` can lock it out).
+- `design/03_Workspace_Session_Manager.md` §3.9 (per-workarea PR set is **implicit** — all `pull_requests` rows for the workarea, no join table; the merge plan is the ordered `(repo, PR)` tuple list derived from `merge_order`; coordinated merge invokes each in order, waits for checks via Scheduler `05 §3.9`, surfaces failures), §5.1 (the `WorkareaManager` API surface this task implements: `get_merge_plan(workarea) -> MergePlan`, `merge_workarea_pr_set(workarea) -> MergeReport`, `revert_workarea_pr_set(workarea) -> RevertReport`), §6.4 (the coordinated merge sequence diagram + "A failure mid-loop pauses the plan; the user sees 'Step N of M failed — auto-revert?' UI"), §12 R-6 (merge-anyway override + `managed.json` lockout).
+- `design/05_Scheduler.md` §3.9 (`wait_for_check_runs(repo, sha, timeout) -> ChecksOutcome`: poll + exponential backoff `1s,2s,4s,8s,16s,30s` cap, webhook-fast-path, resolve when all required checks conclusive or timeout), §7.4 (the consumed-by-03 sequence: `wait_for_check_runs(repo, sha, 10min) → ChecksOutcome { passed }`), §8 (timeout → `Timeout` outcome; **the caller (03) decides what to do** — so 320 owns the pause/revert decision, not the Scheduler).
+- `crates/core/src/workspace_manager/workarea.rs` — the `WorkareaManager` handle (where the three new methods live) + its `WorkareaEvent` broadcast (`Created`/`Archived`/`Restored` today — extend with the merge-progress/PR-set events), the existing `list_pr_set(workarea_id)` (the ordered-by-`merge_order` PR loader 319 left for you), `get(workarea_id)` (the existence check), and the `broadcast::Sender<WorkareaEvent>` `events` field + `subscribe()`.
+- `crates/core/src/vcs/actor.rs` — `VcsHandle::merge_pr(repository_id, pr_number, method) -> Result<()>` and `get_check_runs(repository_id, sha)`. **Task 313 reshapes this surface** — read its Handoff: after 313, `merge_pr` returns a `MergeReport` carrying the post-merge merge-commit SHA (the `design/13 §5.1` shape `merge_pr(id, method) -> MergeReport`), and `revert_pr(id) -> RevertReport` exists. 320 consumes 313's `VcsHandle`/`VcsProvider` surface; if 313 has not yet landed the `MergeReport`-with-SHA shape, that is a hard dependency — do not start until 313's Handoff is readable.
+- `crates/core/src/scheduler/actor.rs` — `SchedulerHandle::wait_for_check_runs(repo, sha, timeout, required) -> Result<ChecksOutcome>` (Task 318's primitive; read its Handoff for the exact signature + the `ChecksOutcome { passed, timed_out, runs }` shape + how the "required checks" parameter is supplied). 320 calls it with the **post-merge SHA** + a `required` policy of "all check-runs for the SHA terminal" (the `PHASE3_PLANNING §2` default).
+- `crates/core/src/boot.rs` — the wiring site (`WorkareaManagerActor::new` ~line 530–554; `scheduler_handle` ~line 607; `vcs_handle` ~line 726). The `WorkareaManager` currently holds `persistence` + `repo_manager` + (optionally) `agent_supervisor`; this task wires a `SchedulerHandle` + `VcsHandle` into it via new `with_scheduler(...)` / `with_vcs(...)` builder methods (mirror the existing `with_agent_supervisor` / `with_workarea_manager` pattern), populated at boot after both handles exist.
+- `crates/core/src/handlers/workareas.rs` — the `Workareas` gRPC handler. `get_workarea_pr_set` (line 217) is the sibling these RPCs sit next to. The `Clone` streaming handler in `crates/core/src/handlers/repositories.rs` is the **server-streaming pattern to mirror** for `MergeWorkareaPrSet` (a `tokio::sync::mpsc` channel + `ReceiverStream`, the loop runs on a spawned task feeding `MergeProgress` frames).
+- `crates/proto/proto/concerto/v1/workareas.proto` — where the new RPCs + messages append (the `Workareas` service ends at line 186; `Workarea` fields are FROZEN through field 10; `GetWorkareaPrSetResponse` exists). New messages get fresh top-level numbering; the new RPCs append to the service.
+- `tasks/v1.0/318-wait-for-check-runs.md` → "Handoff Notes" — the exact `wait_for_check_runs` signature + `ChecksOutcome` + how "required checks" is parameterized (poll-only Tier-1 path vs. webhook fast-path).
+- `tasks/v1.0/319-pr-set-semantics.md` → "Handoff Notes" — `merge_order` ordering, the `list_pr_set`/`GetWorkareaPrSet` ordering change, `SetMergeOrder`, and the `0014` migration (`merge_order` / `external_id` / `repository_full_name`).
+- `tasks/v1.0/313-vcs-provider-github.md` → "Handoff Notes" — the `VcsProvider`/`VcsHandle` surface (`merge_pr -> MergeReport`, `revert_pr -> RevertReport`, `MergeMethod`), the `concerto-vcs` crate name, and the `concerto-vcs/testkit` `wiremock`-backed `FakeGitHub` double.
+
+## Scope — in
+- **`WorkareaManager` (Rust, `crates/core/src/workspace_manager/workarea.rs`):**
+  - `get_workarea_merge_plan(&self, workarea_id) -> Result<MergePlan>` — load the PR set ordered by `merge_order` (reuse `list_pr_set`), resolve each member to a `(repository_id, repository_full_name, pr_number, head_sha, merge_order, state)` step, return the ordered plan (the read-only preview the UI + the merge loop share). Reject a non-existent workarea with `NotFound`.
+  - `merge_workarea_pr_set(&self, workarea_id, opts: MergeOpts, progress: ProgressSink) -> Result<MergeReport>` — the loop: for each member in `merge_order`: emit `MergeProgress::StepStarted { step, total, repo, pr_number }`; call `VcsHandle::merge_pr(pr_id, opts.method)` (capturing the **post-merge merge-commit SHA** from the returned `MergeReport`); call `SchedulerHandle::wait_for_check_runs(repo, merge_sha, opts.timeout (default 10m), required="all-terminal")`; on `passed` emit `MergeProgress::StepCompleted { step, ... }` + the `pr_set.merge_step_completed` broadcast and continue; on `fail`/`timeout` emit `MergeProgress::StepFailed { step, total, reason }` + `pr_set.merge_failed_step`, **pause** (stop the loop, return a `MergeReport` flagged `paused_at_step`), and do NOT auto-revert (the caller/UI picks fix-resume or revert). On all members merged, emit `MergeProgress::SetMerged` + the `pr.merged`/`pr_set.merged` broadcast.
+  - `revert_workarea_pr_set(&self, workarea_id, opts: RevertOpts) -> Result<RevertReport>` — walk the **merged** members in reverse `merge_order`, call `VcsHandle::revert_pr(pr_id)` per member (revert-commit by default; `opts.hard_reset` only when explicitly set, `design/13 R-5`); emit `pr.reverted` per member; return a `RevertReport` listing per-member outcome (reverted / skipped / failed).
+  - The **merge-anyway-despite-red** override (`design/03/13 R-6`): a `MergeOpts.allow_failing_checks` flag that, when set, treats a non-`passed` `ChecksOutcome` as a typed *warning* (audit-logged via the `WorkareaManager`'s existing audit seam) instead of a pause. `managed.json` may lock it out — gate the flag through the managed-policy read the manager already does for permission-mode (reuse, do not invent a new managed reader; the new `managed.json` field is `allowMergeWithFailingChecks` and is **declared** here as a one-line note for Task 211's frozen set — see Implementation notes).
+  - Wire `SchedulerHandle` + `VcsHandle` into `WorkareaManager` via `with_scheduler(...)` / `with_vcs(...)` builders; populate at boot.
+- **Events (`WorkareaEvent` broadcast + `pr_set.events` subject):**
+  - Extend `WorkareaEvent` with the PR-set lifecycle variants (`PrSetMergeStepCompleted`, `PrSetMergeFailedStep`, `PrSetMerged`, `PrReverted`) carrying the workarea id + step/repo metadata. These ride the **existing** `workarea.events` broadcast bridge AND a new `pr_set.events` subject (added to `parse_subject`/`Subject` in `handlers/streams.rs`) with an **opaque** JSON payload (NO new `Event` oneof arm — frozen through 16; reuse the existing `WorkareaEvent` proto message's `kind`/`workarea_id` string shape, or route the opaque frame the way 316's `checks.<wa>.<repo>` does). 324 parses these frames.
+- **gRPC (`Workareas` service, `crates/proto/proto/concerto/v1/workareas.proto` + `handlers/workareas.rs`):**
+  - `rpc GetWorkareaMergePlan(WorkareaId) returns (MergePlan);`
+  - `rpc MergeWorkareaPrSet(MergeWorkareaPrSetRequest) returns (stream MergeProgress);` (server-streaming; mirror the `Clone` streaming handler)
+  - `rpc RevertWorkareaPrSet(RevertWorkareaPrSetRequest) returns (RevertReport);`
+  - New messages: `MergePlan`, `MergeStep`, `MergeWorkareaPrSetRequest` (workarea id + method + timeout + `allow_failing_checks`), `MergeProgress` (a `oneof` of `StepStarted`/`StepCompleted`/`StepFailed`/`SetMerged`/`SetPaused`), `RevertWorkareaPrSetRequest` (workarea id + `hard_reset`), `RevertReport`, `RevertStep`. Append-only; FREEZE the field numbers (see Public interface).
+- **Tests (Tier 2, against the `concerto-vcs/testkit` double):** ordered-merge happy path (3 repos, all checks pass → `SetMerged`, members merged in `merge_order`); pause-on-fail (member 2's checks fail → loop stops at step 2, `StepFailed` emitted, members 3+ NOT merged); timeout (a check never resolves → `wait_for_check_runs` returns `Timeout` → pause); coordinated revert (reverse order, revert-commit default); `allow_failing_checks=true` → red checks become a warning + continue (and audit-logged); `managed.json` lockout → `allow_failing_checks` rejected with `PERMISSION_DENIED`/`policy.locked`; `get_workarea_merge_plan` returns the ordered plan; empty PR set → `MergeReport` with 0 steps (no error).
+
+## Scope — out
+- The **`wait_for_check_runs` primitive itself** — Task 318 owns the poll/backoff/webhook loop + `ChecksOutcome`. 320 only *calls* it.
+- The **`merge_order` schema / `SetMergeOrder` RPC / `GetWorkareaPrSet` ordering** — Task 319 (the `0014` migration + the ordering). 320 reads what 319 persists; it adds **no migration**.
+- The **`VcsProvider`/octocrab merge & revert mechanics** (`merge_pr`/`revert_pr` against GitHub, the `MergeReport`/`RevertReport` value types, the `concerto-vcs/testkit` double) — Task 313. 320 consumes them.
+- The **Desktop PR-set panel + coordinated-merge UI** (the "Step N of M failed — auto-revert?" surface, the merge-anyway confirm, the `merge_order` drag-reorder) — Task 324. 320 ships the Core loop + the stream + the plan it consumes; it builds no UI.
+- **Linear/Jira issue write-back on merge completion** — Task 320.5 (hung off this task's `pr_set.merged` completion). 320 does not touch issue trackers.
+- The **conflict-resolution agent turn** (`conflict_resolve` action when a merge conflicts) — out of V1.0's automated path; 320 surfaces the GH-405 conflict as a `StepFailed` reason and stops (the user resolves in the workarea), per `design/13 §8`.
+- **Real GitHub coordinated merge with a live webhook** — Tier-3 Phase-3 checklist; the Tier-2 double here is the in-process `concerto-vcs/testkit` `FakeGitHub` + a stubbed/scripted `wait_for_check_runs`.
+
+## Public interface this task locks
+- **gRPC `Workareas` service additions (FROZEN field numbers, `workareas.proto`):**
+  - `rpc GetWorkareaMergePlan(WorkareaId) returns (MergePlan);`
+  - `rpc MergeWorkareaPrSet(MergeWorkareaPrSetRequest) returns (stream MergeProgress);`
+  - `rpc RevertWorkareaPrSet(RevertWorkareaPrSetRequest) returns (RevertReport);`
+  - `message MergePlan { string workarea_id = 1; repeated MergeStep steps = 2; }`
+  - `message MergeStep { int32 step = 1; int32 total = 2; string repository_id = 3; string repository_full_name = 4; int64 pr_number = 5; string head_sha = 6; int64 merge_order = 7; string state = 8; }`
+  - `message MergeWorkareaPrSetRequest { string workarea_id = 1; string method = 2; uint64 timeout_secs = 3; bool allow_failing_checks = 4; }` (`method` ∈ `merge|squash|rebase`, empty ⇒ `merge`; `timeout_secs` 0 ⇒ default 600)
+  - `message MergeProgress { oneof event { MergeStepStarted step_started = 1; MergeStepCompleted step_completed = 2; MergeStepFailed step_failed = 3; MergeSetMerged set_merged = 4; MergeSetPaused set_paused = 5; } }` with `MergeStepStarted { int32 step = 1; int32 total = 2; string repository_full_name = 3; int64 pr_number = 4; }`, `MergeStepCompleted { int32 step = 1; int32 total = 2; string merge_sha = 3; }`, `MergeStepFailed { int32 step = 1; int32 total = 2; string reason = 3; FailureKind kind = 4; }`, `MergeSetMerged { int32 total = 1; }`, `MergeSetPaused { int32 paused_at_step = 1; int32 total = 2; string reason = 3; }`; `enum FailureKind { FAILURE_KIND_UNSPECIFIED = 0; FAILURE_KIND_CHECKS_FAILED = 1; FAILURE_KIND_CHECKS_TIMEOUT = 2; FAILURE_KIND_MERGE_CONFLICT = 3; FAILURE_KIND_MERGE_REJECTED = 4; }`.
+  - `message RevertWorkareaPrSetRequest { string workarea_id = 1; bool hard_reset = 2; }`
+  - `message RevertReport { string workarea_id = 1; repeated RevertStep steps = 2; }`, `message RevertStep { string repository_full_name = 1; int64 pr_number = 2; RevertOutcome outcome = 3; string detail = 4; }`, `enum RevertOutcome { REVERT_OUTCOME_UNSPECIFIED = 0; REVERT_OUTCOME_REVERTED = 1; REVERT_OUTCOME_SKIPPED = 2; REVERT_OUTCOME_FAILED = 3; }`.
+- **Rust `WorkareaManager` methods (FROZEN signatures):** `get_workarea_merge_plan(&self, &WorkareaId) -> Result<MergePlan>`, `merge_workarea_pr_set(&self, &WorkareaId, MergeOpts, ProgressSink) -> Result<MergeReport>`, `revert_workarea_pr_set(&self, &WorkareaId, RevertOpts) -> Result<RevertReport>`, plus the builders `with_scheduler(SchedulerHandle) -> Self` / `with_vcs(VcsHandle) -> Self`. `MergeOpts { method: MergeMethod, timeout: Duration, allow_failing_checks: bool }`, `RevertOpts { hard_reset: bool }`, `ProgressSink = mpsc::Sender<MergeProgress>` (or the `Arc<dyn Fn(...)>` forwarder the handler adapts).
+- **`WorkareaEvent` broadcast additions (FROZEN variant names):** `PrSetMergeStepCompleted`, `PrSetMergeFailedStep`, `PrSetMerged`, `PrReverted` (each carrying the workarea id + step/repo metadata). New `pr_set.events` subject in `parse_subject` (`Subject::PrSetEvents`), opaque payload, **no `Event` oneof arm**.
+- **Ownership contract (FROZEN):** the loop lives on `WorkareaManager` / the `Workareas` service (NOT `VcsHandle`, NOT `SchedulerHandle`). The SHA fed to `wait_for_check_runs` is the **post-merge merge-commit SHA** returned by `merge_pr`. Required-checks policy = "all check-runs for the SHA reach a terminal conclusion" (no branch-protection API read in V1.0).
+
+## Implementation notes
+- **Ownership is the load-bearing decision.** `design/13 §3.5` and `design/03 §6.4` both put the loop in 03 (Workspace/Workarea Mgr). A version that puts the loop in `VcsHandle` or the Scheduler contradicts the design and is wrong. `VcsHandle` does the *single* `merge_pr`/`revert_pr`; `SchedulerHandle` does the *single* `wait_for_check_runs`; `WorkareaManager` sequences them.
+- **The post-merge SHA.** `wait_for_check_runs` must wait on checks for the **merge commit** GitHub produced, not the PR head. 313's `MergeReport` must carry it; capture it from each `merge_pr` return and pass it straight into `wait_for_check_runs`. If 313's `MergeReport` does not yet carry the merge SHA, that is a Stop-and-ask for 313's author (it is required by `design/13 §7.2`).
+- **Server-streaming `MergeProgress`.** Mirror the `Clone` streaming handler in `handlers/repositories.rs`: the handler spawns the merge loop on a task that owns the `mpsc::Sender<MergeProgress>`; the handler returns the `ReceiverStream` immediately so the client sees frames live. The loop also publishes the matching `WorkareaEvent` on the broadcast so a *second* subscriber (the Maestro/Notifications later) sees the same transitions. Keep the stream the source of truth for the calling client; the broadcast is for everyone else.
+- **Pause is not revert.** On a failed/timed-out step the loop **stops** and returns a `MergeReport { paused_at_step: Some(n) }`; it does NOT auto-revert. Auto-revert is a *separate* user-initiated call to `RevertWorkareaPrSet` (the UI's "auto-revert?" button). This keeps the destructive action explicit (`design/03 §6.4`).
+- **Revert is reverse-order + member-aware.** Only members that actually merged are revertible; skip un-merged members (record `Skipped`). Revert-commit (`git revert` + a new PR, or octocrab revert) is the default; `hard_reset` is opt-in and rare (`design/13 R-5`). Surface per-member outcomes — a partial revert (one member's revert fails) must not abort the rest.
+- **Merge-anyway + managed.json (R-6).** Reuse the managed-policy read path the `WorkareaManager` already uses for permission-mode elevation (`update_workarea_permission_mode` reads `managed.json` from `config_dir`). The new field is `allowMergeWithFailingChecks` (camelCase per `D9`). **This is a new `managed.json` key beyond Task 211's frozen set** — do NOT silently add it to 211's parser; declare it as a one-line forward-note in this task's Handoff (and, if 310 has landed its settings resolver, route the read through 310's resolver instead). When the policy forbids it, reject `allow_failing_checks=true` with `PERMISSION_DENIED` + the `policy.locked` wire-code (mirror Task 32's `SetWorkareaBypassDestructiveGuard` rejection).
+- **The Tier-2 double.** Use the `concerto-vcs/testkit` `FakeGitHub` (313, `D2`) as a dev-dep for `merge_pr`/`revert_pr`, and drive `wait_for_check_runs` with a **scripted check-run sequence** (318's poll path against the same fake, or a stubbed `SchedulerHandle` returning a scripted `ChecksOutcome`). The double proves: ordering, pause-on-fail, timeout, reverse-order revert, the merge-anyway override, and the stream/broadcast emissions. It does **NOT** cover a real GitHub merge, a real merge-commit SHA, real check-run propagation latency, or a live webhook — those are the Tier-3 Phase-3 checklist line "run a coordinated PR-set merge against a real GitHub repo with a live webhook."
+- **No new migration.** 320 reads `merge_order`/`external_id`/`repository_full_name` (319's `0014`). Confirm the actual highest migration on `main` before relying on column names; if Phase-3 migration numbers shifted (per `PHASE3_PLANNING §3`'s author-check), the columns are still those names.
+- **Cross-platform:** pure Core logic (no `std::os::unix`); builds on the Windows/Linux CI lanes (Task 113). The `git revert` shell-out (if 313's revert is shell-based) must use the cross-platform `gix-wrap` `cmd::run` path.
+- Regen: new proto ⇒ `./scripts/regen-interfaces.sh` updates `docs/interfaces/proto.md`; commit it.
+
+**Parallel build hint:** the proto/messages + handler-stream plumbing (Outputs group A) and the `WorkareaManager` loop logic + tests against `testkit` (Outputs group B) are independent until the handler binds the loop to the stream — a lead can fan these out and integrate into one commit.
+
+## Verification
+**Tier 2.** Type `rust`; commands per `README §5.3` + the double.
+1. `cargo check --workspace` clean.
+2. `cargo clippy --workspace --all-targets -- -D warnings` clean.
+3. `cargo test -p concerto-core coordinated_merge` → ordered merge, pause-on-fail (members after the failed step NOT merged), timeout→pause, reverse-order coordinated revert (revert-commit default), `allow_failing_checks` warning+continue+audit, `managed.json` lockout→`PERMISSION_DENIED`, `get_workarea_merge_plan` ordering, empty-set no-op all pass — against the `concerto-vcs/testkit` `FakeGitHub` double + a scripted `wait_for_check_runs`.
+4. `cargo test --workspace --no-fail-fast` → all pass.
+5. `cargo deny check` → green (no new workspace pins; `concerto-vcs/testkit` is a dev-dep already vetted in 313).
+6. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit the regen (`proto.md` gains the three RPCs + the merge/revert messages).
+7. `scripts/smoke.sh` → **unchanged** gate (no new smoke capability; the coordinated merge needs a real PR set + VCS, which is Tier-3 — not in the co-located smoke).
+
+**Tier-2 double + what it does NOT cover.** The double is the in-process `concerto-vcs/testkit` `FakeGitHub` (merge/revert) + a scripted `ChecksOutcome` source for `wait_for_check_runs`. It proves ordering, pause/resume semantics, revert order, the override, and the stream/event emissions. It does **NOT** cover real GitHub merges, real merge-commit SHAs, real check-run timing, or a live webhook → the Tier-3 Phase-3 checklist line "run a coordinated PR-set merge against a real GitHub repo with a live webhook."
+
+## Definition of Done
+- [ ] `get_workarea_merge_plan` / `merge_workarea_pr_set` / `revert_workarea_pr_set` implemented on `WorkareaManager`; `SchedulerHandle` + `VcsHandle` wired in via `with_scheduler`/`with_vcs` at boot
+- [ ] The merge loop drives merge → `wait_for_check_runs(post-merge SHA, 10m, all-terminal)` → continue/pause; pause stops the loop without auto-reverting
+- [ ] Coordinated revert walks merged members in reverse `merge_order` (revert-commit default; `hard_reset` opt-in)
+- [ ] Merge-anyway override gated by `managed.json` (`allowMergeWithFailingChecks`); locked → `PERMISSION_DENIED`/`policy.locked` (new managed key flagged in Handoff)
+- [ ] `Workareas` service gains `GetWorkareaMergePlan` / `MergeWorkareaPrSet` (stream) / `RevertWorkareaPrSet` with FROZEN field numbers; the server-stream mirrors the `Clone` handler
+- [ ] `WorkareaEvent` gains the PR-set variants + the `pr_set.events` subject (opaque payload, NO new `Event` oneof arm)
+- [ ] No migration added (reads 319's `0014` columns)
+- [ ] Tests pass against the `concerto-vcs/testkit` double; `cargo deny` green; interfaces regenerated + committed
+- [ ] Builds on the Windows/Linux CI lanes; no `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code
+- [ ] No files outside Outputs modified; smoke gate unchanged (still green)
+- [ ] Single commit with the message below
+
+## Outputs
+- `crates/proto/proto/concerto/v1/workareas.proto` (modified — three RPCs + `MergePlan`/`MergeStep`/`MergeWorkareaPrSetRequest`/`MergeProgress`(+ inner)/`RevertWorkareaPrSetRequest`/`RevertReport`/`RevertStep` + `FailureKind`/`RevertOutcome` enums)
+- `crates/core/src/workspace_manager/workarea.rs` (modified — the three methods, `MergeOpts`/`RevertOpts`/`MergePlan`/`MergeReport`/`RevertReport` types, `with_scheduler`/`with_vcs` builders, new `WorkareaEvent` variants)
+- `crates/core/src/handlers/workareas.rs` (modified — `GetWorkareaMergePlan` / `MergeWorkareaPrSet` server-stream / `RevertWorkareaPrSet` handlers)
+- `crates/core/src/handlers/streams.rs` (modified — `Subject::PrSetEvents` + `pr_set.events` in `parse_subject` + the broadcast bridge)
+- `crates/core/src/boot.rs` (modified — wire `scheduler_handle` + `vcs_handle` into `WorkareaManager`)
+- `crates/core/Cargo.toml` (modified — `concerto-vcs` with `testkit` as a `[dev-dependencies]` feature)
+- `crates/core/tests/coordinated_merge.rs` (new — Tier-2 tests against the `testkit` double)
+- `docs/interfaces/proto.md` (regenerated)
+
+## Commit message
+```
+phase-3: coordinated PR-set merge loop + coordinated revert
+
+Adds merge_workarea_pr_set / get_workarea_merge_plan /
+revert_workarea_pr_set on the WorkareaManager + Workareas service:
+ordered merge -> wait_for_check_runs(post-merge SHA, 10m) ->
+continue/pause-on-fail over a MergeProgress stream; reverse-order
+revert (revert-commit default). Proven against the concerto-vcs
+testkit double; real GitHub merge is the Phase-3 Tier-3 line.
+
+Refs: tasks/v1.0/320-coordinated-merge-loop.md
+```
+
+## Handoff Notes (filled in when finishing)
+- Drift from plan — —
+- Open questions for next task — —
+- Deliberate debt — —
+- Smoke-gate state — —

@@ -42,6 +42,23 @@ You are executing **one** task from the Concerto **V1.0** build. Concerto is a l
 - **One commit per task.** Exact message from the task file. Don't amend, don't split, don't push, don't open a PR — the operator handles git remote ops.
 - **Don't modify prior tasks' files, the root `tasks/` (V0.1 history), or `design/`** — except a `doc`-type task whose `Outputs` explicitly lists a `design/` file (e.g. the embedded-mode retrofit). Drift is recorded in Handoff Notes.
 
+### Parallel build (optional — to go faster)
+
+You are the **task lead** and own the outcome, but you do not have to do all the work yourself. When this task has independent sub-parts, you MAY dispatch helper sub-agents to build them concurrently, then integrate. Good fan-out boundaries:
+
+- **By output file / module** — e.g. one helper writes the `.proto` (+ regen), another the handler, another the tests; or one helper per independent file for multi-file UI/web work. The task's `Outputs` list is your partition map.
+- **Explore → implement → review** — a helper maps the exact existing code to reuse (per `Inputs to read`) while you scaffold; a final helper reviews the assembled diff against `Verification` + `Definition of Done` before you commit.
+
+Rules that do **not** change with fan-out:
+
+- **You integrate and commit.** Helpers return code/edits/findings; the **lead** assembles the SINGLE commit with the task's exact message. Never let a helper push, branch, open a PR, or commit.
+- **Partition to avoid collisions.** Give each helper a **disjoint** set of files so two helpers never edit the same file; the lead owns the seams (shared types, the `mod.rs`/registration/`build.rs` lines, the migration).
+- **One source of truth for a shared interface.** If two sub-parts share a proto/SQL/Rust-trait/TS surface, lock that surface **first** (lead, or a single owning helper) and have the others consume it — never let two helpers invent the same type twice.
+- **Stay within `Outputs` and your tier.** The whole team is bound by the same `Scope`, `Outputs`, frozen `Public interface this task locks`, and `Verification tier`. A helper may not widen scope or downgrade the tier.
+- **Verify as a whole.** Run the full per-`Task type` tier verification on the **integrated** result (not per-helper). The task is not done until the assembled single commit passes everything.
+
+Small or tightly-coupled tasks don't need this — a lead working solo is fine. Use fan-out only when it actually saves wall-clock.
+
 ### When you finish
 
 1. Tick every `Definition of Done` box. If any is false, you're not done.

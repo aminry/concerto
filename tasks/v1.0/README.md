@@ -186,9 +186,11 @@ The hardest phase and the dependency root for all remote features. Heavy Tier-2 
 
 **Phase 2 manual checklist (Tier-3):** pair a real second machine over LAN (mDNS direct); pair from a real remote network and confirm `nat_stats` direct-% on real NATs; transfer a file both directions split-host; revoke a device and confirm <60 s stream teardown; confirm `disable_remote` truly disables remote.
 
-### Phase 3 — Multi-X, Monorepo & VCS (~24 tasks)
+### Phase 3 — Multi-X, Monorepo & VCS (~26 tasks)
 
 "The features that justify switching." Independent of the transport spine except where the Desktop UI consumes it; can proceed in parallel conceptually but executes sequentially.
+
+> **Phase-3 planning addendum:** the 2026-06-05 planning conversation locked nine decisions, a migration-number reservation table, and the cross-task frozen contracts in **`tasks/v1.0/PHASE3_PLANNING.md`** — read it before any Phase-3 task file. It added two inserts (315.0, 320.5, below).
 
 | Task | Goal | Deps | Tier | Type |
 |---|---|---|---|---|
@@ -203,16 +205,18 @@ The hardest phase and the dependency root for all remote features. Heavy Tier-2 
 | 309 | Files-to-copy symlink mode + `.worktreeinclude` (copy/symlink/exclude) | 307 | 1 | rust |
 | 310 | Three-layer settings precedence resolver (managed > checked-in > local DB > defaults) | — | 1 | rust |
 | 311 | `exclude_from_maestro` per-workarea toggle (schema + API) | 307 | 1 | rust |
-| 312 | Branch-rename hook (one-shot LLM via 04, cross-repo `git branch -m`) + `suggest_workarea_branch_name` | 307 | 1 | rust |
+| 312 | Branch-rename hook (one-shot LLM via 04, cross-repo `git branch -m`) + `suggest_workarea_branch_name` | 307, 310 | 1 | rust |
 | 313 | `VcsProvider` trait + octocrab `GitHubProvider` (default) + `GitHubProviderViaCli` (fallback) | — | 2 | rust |
 | 314 | GitHub App option + dual rate-limit pools + degraded cadence | 313 | 2 | rust |
-| 315 | Webhook receiver (HMAC verify, delivery-id idempotency) on Core via relay path | 313, 215 | 2 | rust |
+| 315.0 | Design amendment: relay→Core inbound-webhook framing on a new `0x04` Webhook channel (added 2026-06-05; precedes 315 like 200 preceded 201) | 215 | 3 | doc |
+| 315 | Webhook receiver (HMAC verify, delivery-id idempotency) on Core via relay path | 313, 215, 315.0 | 2 | rust |
 | 316 | Review-thread sync (GraphQL) + check-run/deploy aggregation | 313 | 2 | rust |
 | 317 | Native Linear + Jira clients (Atlassian OAuth in settings) | — | 2 | rust |
 | 318 | Scheduler `wait_for_check_runs` primitive (poll + backoff + webhook), consumed by PR-set merge | 315 | 1 | rust |
 | 319 | PR-set semantics: implicit per-workarea, `merge_order`, `GetPrSet` | 308, 313 | 1 | rust |
 | 320 | Coordinated merge loop (merge → wait_for_check_runs → continue/pause-on-fail) + coordinated revert | 318, 319 | 2 | rust |
-| 321 | LLM-composed PR title/body (on by default, 2s deterministic fallback) | 313 | 1 | rust |
+| 320.5 | Linear/Jira issue write-back on coordinated-merge completion (per-project opt-in; reuses 317's seam; added 2026-06-05 per decision D5) | 317, 320 | 2 | rust |
+| 321 | LLM-composed PR title/body (on by default, 2s deterministic fallback) | 313, 312, 310 | 1 | rust |
 | 322 | Desktop: multi-repo session UI + sparse-cone picker | 302, 306, 218 | 2 | web-ts |
 | 323 | Desktop: parallel workareas + multi-agent session tabs UI | 308, 218 | 2 | web-ts |
 | 324 | Desktop: PR-set panel (replaces stub Checks/PR cards) + coordinated merge UI | 320, 218 | 2 | web-ts |
@@ -389,7 +393,7 @@ Refs: tasks/v1.0/NNN-<slug>.md
 - Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state
 ```
 
-The orchestrator and per-task prompts are in `tasks/v1.0/AUTO_EXECUTE_PROMPT.md` and `tasks/v1.0/PROMPT_TEMPLATE.md` (V1.0 variants that branch on `Task type` and tier).
+The orchestrator and per-task prompts are in `tasks/v1.0/AUTO_EXECUTE_PROMPT.md` and `tasks/v1.0/PROMPT_TEMPLATE.md` (V1.0 variants that branch on `Task type` and tier). Tasks execute **sequentially** across a phase (the inventory `deps` are real), but a single task's **lead sub-agent may fan out helper sub-agents** to build independent sub-parts in parallel and integrate them into the one commit — see `PROMPT_TEMPLATE.md` → *Parallel build*.
 
 ---
 
