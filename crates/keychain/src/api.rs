@@ -47,6 +47,14 @@ pub enum SecretKind {
     /// Ed25519 private key for the Core's persistent identity (per
     /// design/00 §6.7).
     CoreIdentityPrivateKey,
+    /// X25519 Noise static **private** key for the Core's Iroh transport
+    /// (`design/11 §3.1`, `design/12 §3.1`, Task 217.5). Distinct from
+    /// [`SecretKind::CoreIdentityPrivateKey`] (the Ed25519 signing identity):
+    /// this is the Noise IK responder static the transport presents on every
+    /// Iroh session, persisted so the Core keeps a stable Noise public key
+    /// across reboots (the QR's responder static). Stored as the lowercase-hex
+    /// of the 32-byte X25519 private key, mirroring the Ed25519-seed encoding.
+    CoreNoiseStaticPrivateKey,
     /// API key for the Expo push notification service (V1.0; placeholder
     /// in V0.1).
     PushExpoApiKey,
