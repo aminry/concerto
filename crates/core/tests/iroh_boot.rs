@@ -17,20 +17,28 @@
 //! 3. **Authenticated IROH RPC** — the paired device dials the API channel,
 //!    presents its cert, and `GetServerCapabilities` reports
 //!    `transport_kind == IROH` (the Task-210 cert path ran).
-//! 4. **Revoke teardown** — `RevokeDevice` over that authenticated channel runs
-//!    the live `IrohSessionCloser`, severing the device's open Iroh session.
+//! 4. **Revoke teardown of a NATURALLY-accepted session** — the device's first
+//!    authenticated RPC makes the serve loop register its session and (Task
+//!    217.5) re-key it onto the device's cert **fingerprint** via the
+//!    `AuthObserver` the gRPC auth interceptor reports into; `RevokeDevice` over
+//!    that same channel then runs the live `IrohSessionCloser`, severing the
+//!    fingerprint-keyed session — with **no** manual `record_session_open`.
 //!
 //! What this double does **NOT** cover (→ Phase-2 Tier-3 manual checklist): real
 //! cross-machine split-host, real NAT/relay hole-punch, QUIC migration, or
 //! throughput budgets. Those are physical/external and signed off at the phase
 //! gate (`design/11 §10`).
 //!
-//! Note on the revoke proof: in a naturally-accepted Iroh session the transport
-//! keys the session on the peer's **Iroh endpoint id** (`serve_conn`), while the
-//! `SessionCloser` is handed the device's **cert fingerprint** — the
-//! fingerprint↔endpoint-id binding is a 210/212 follow-up (see the task Handoff).
-//! Here we register a fingerprint-keyed session on the live transport and prove
-//! the real `RevokeDevice → DeviceManager → IrohSessionCloser →
+//! Note on the revoke proof (Task 217.5 closed): the serve loop accepts a session
+//! keyed on the peer's **Iroh endpoint id** (`serve_conn`, the only id known at
+//! the raw boundary), then — once the gRPC auth layer validates the device cert —
+//! **re-keys it onto the device fingerprint** (`AuthObserver` →
+//! `IrohTransport::rekey_session`). So a naturally-accepted session ends up keyed
+//! exactly as `close_sessions_for_device` (handed the cert fingerprint) expects.
+//! This test proves the binding end-to-end: it asserts a fingerprint-keyed
+//! session appears after the first authenticated RPC (no manual
+//! `record_session_open`), then that the real
+//! `RevokeDevice → DeviceManager → IrohSessionCloser →
 //! IrohTransport::close_sessions_for_device` chain severs it.
 
 // macOS-gated (not just `unix`): the booted Iroh path depends end-to-end on the
@@ -56,8 +64,7 @@ use concerto_proto::v1::runtime_client::RuntimeClient;
 use concerto_proto::v1::{RevokeDeviceRequest, TransportKind};
 use concerto_transport::api::write_channel_tag;
 use concerto_transport::{
-    connect_channel, direct_endpoint_addr, ChannelTag, ClientKind, DeviceId, IrohDuplex,
-    IrohTransport, ALPN,
+    connect_channel, direct_endpoint_addr, ChannelTag, DeviceId, IrohDuplex, IrohTransport, ALPN,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -239,28 +246,38 @@ async fn boot_pairs_over_iroh_then_authenticated_rpc_then_revoke_severs() {
         "an authenticated request over the booted Iroh listener must report IROH"
     );
 
-    // --- Revoke teardown ---------------------------------------------------
-    // Register a fingerprint-keyed session on the live transport so the
-    // SessionCloser (fingerprint→DeviceId) has a session to sever (see the
-    // module note on the endpoint-id↔fingerprint binding follow-up). We use a
-    // fresh device->server connection as the session's underlying connection.
+    // --- Revoke teardown of the NATURALLY-accepted session -----------------
+    // The authenticated `get_server_capabilities` RPC above made the serve loop
+    // accept this connection's session AND re-key it onto the device's cert
+    // fingerprint via the `AuthObserver` the gRPC auth interceptor reported into
+    // (Task 217.5). We do NOT call `record_session_open` ourselves — the binding
+    // is entirely the serve loop's. The re-key happens inside the spawned
+    // per-stream serve task's interceptor, which can lag the RPC's return by a
+    // beat, so wait (bounded, fast) for the fingerprint-keyed session to appear.
     let fingerprint = derive_device_id(&device_pubkey);
     let session_device_id = DeviceId::from(fingerprint);
-    let session_conn = client_ep
-        .connect(server_addr, ALPN)
-        .await
-        .expect("session connect");
-    server_transport.record_session_open(
-        session_device_id.clone(),
-        session_conn,
-        ClientKind::DesktopSplitHost,
-    );
+    let mut bound = false;
+    for _ in 0..200 {
+        if server_transport
+            .session_paths()
+            .iter()
+            .any(|(id, _)| *id == session_device_id)
+        {
+            bound = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     assert!(
+        bound,
+        "the naturally-accepted session must be re-keyed onto the device \
+         fingerprint after the first authenticated RPC (Task 217.5 binding); \
+         live session keys: {:?}",
         server_transport
             .session_paths()
             .iter()
-            .any(|(id, _)| *id == session_device_id),
-        "the fingerprint-keyed session is registered before revoke"
+            .map(|(id, _)| id.as_str().to_string())
+            .collect::<Vec<_>>()
     );
 
     // --- GetNatStats surfaces the LIVE transport's counters ----------------
@@ -289,24 +306,56 @@ async fn boot_pairs_over_iroh_then_authenticated_rpc_then_revoke_severs() {
 
     // Revoke over the authenticated Iroh channel → real DeviceManager →
     // IrohSessionCloser → IrohTransport::close_sessions_for_device.
+    //
+    // The revoke RPC rides this SAME `channel` — and now that the natural
+    // session is bound to the device fingerprint (Task 217.5), step 3 of the
+    // revoke sequence (`close_sessions_for_device`, run inside the handler before
+    // it returns) severs THIS connection. So the RPC's own transport is torn down
+    // mid-flight: the client may see a clean `Ok` if the response raced out
+    // first, or a transport/`connection lost` error because the sever closed the
+    // socket the response would have travelled on. Either is correct — both mean
+    // the server ran the sever. We accept both and prove the sever by asserting
+    // the session is gone below. (A NOT-bound session would have left this
+    // connection alive and the RPC would always return `Ok`.)
     let mut devices_client = DevicesClient::with_interceptor(channel, attach_cert);
     let device_id_hex = hex::encode(fingerprint);
-    tokio::time::timeout(
+    let revoke_result = tokio::time::timeout(
         Duration::from_secs(10),
         devices_client.revoke_device(RevokeDeviceRequest {
             device_id: device_id_hex,
         }),
     )
     .await
-    .expect("revoke did not stall")
-    .expect("revoke_device");
+    .expect("revoke did not stall");
+    match &revoke_result {
+        Ok(_) => {}
+        Err(status) => assert_eq!(
+            status.code(),
+            tonic::Code::Unknown,
+            "the only acceptable revoke error is the self-severed transport \
+             (connection lost) caused by closing this very session; got: {status:?}"
+        ),
+    }
 
-    assert!(
-        !server_transport
+    // The SessionCloser runs inside the revoke handler; the close propagates
+    // through the transport synchronously, but allow a short bounded settle for
+    // any task hand-off before asserting the fingerprint-keyed session is gone.
+    let mut severed = false;
+    for _ in 0..200 {
+        if !server_transport
             .session_paths()
             .iter()
-            .any(|(id, _)| *id == session_device_id),
-        "revoke must sever the device's Iroh session (SessionCloser ran)"
+            .any(|(id, _)| *id == session_device_id)
+        {
+            severed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        severed,
+        "revoke must sever the device's naturally-accepted Iroh session \
+         (SessionCloser ran against the fingerprint-keyed session)"
     );
 
     // --- Clean shutdown (no leaked endpoint) ------------------------------

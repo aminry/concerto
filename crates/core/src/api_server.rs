@@ -731,6 +731,52 @@ impl concerto_transport::ApiDispatcher for IrohDispatcher {
                 > + Send,
         >,
     > {
+        // No observer: keep the connection on its accept-time endpoint-id key.
+        // Used by callers that do not need the fingerprint binding; the real
+        // serve loop drives `serve_connection_observed` (below) instead.
+        self.serve_with_observer(io, None)
+    }
+
+    /// Serve one Iroh gRPC connection AND report the validated device
+    /// **fingerprint** into `observer` on the first authenticated request, so the
+    /// transport's serve loop re-keys the naturally-accepted session from its
+    /// accept-time endpoint-id key onto the fingerprint (Task 217.5). This is the
+    /// seam that closes the deferred fingerprint↔session binding: `RevokeDevice`
+    /// keys `close_sessions_for_device` on the fingerprint, so without this the
+    /// revoked device's live session would not be severed.
+    fn serve_connection_observed(
+        &self,
+        io: concerto_transport::NoiseDuplex,
+        observer: concerto_transport::AuthObserver,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<(), concerto_transport::TransportError>,
+                > + Send,
+        >,
+    > {
+        self.serve_with_observer(io, Some(observer))
+    }
+}
+
+impl IrohDispatcher {
+    /// Shared body of [`ApiDispatcher::serve_connection`] /
+    /// [`ApiDispatcher::serve_connection_observed`]: build the SAME
+    /// `add_core_services` router the UDS path uses, with the `Iroh`-tagging auth
+    /// interceptor. When `observer` is `Some`, the interceptor additionally
+    /// reports the validated device fingerprint into it (fire-once) so the serve
+    /// loop binds the session to the fingerprint (Task 217.5).
+    fn serve_with_observer(
+        &self,
+        io: concerto_transport::NoiseDuplex,
+        observer: Option<concerto_transport::AuthObserver>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<(), concerto_transport::TransportError>,
+                > + Send,
+        >,
+    > {
         // Clone the service set so each connection gets a fresh router.
         let services = self.services.clone();
         Box::pin(async move {
@@ -748,7 +794,19 @@ impl concerto_transport::ApiDispatcher for IrohDispatcher {
             > {
                 req.extensions_mut()
                     .insert(ConnTransport(TransportKind::Iroh));
-                auth.authenticate(req)
+                let req = auth.authenticate(req)?;
+                // The cert path injected the authenticated `DeviceContext`
+                // (`device_id` IS the cert fingerprint). Report it to the
+                // per-connection observer so the serve loop re-keys this
+                // naturally-accepted session onto the fingerprint (Task 217.5).
+                // Fire-once is enforced inside `AuthObserver`, so doing this on
+                // every request is cheap and idempotent.
+                if let Some(observer) = observer.as_ref() {
+                    if let Some(ctx) = crate::security::auth::device_context(&req) {
+                        observer.observe(concerto_transport::DeviceId::from(ctx.device_id));
+                    }
+                }
+                Ok(req)
             };
 
             let builder = add_core_services(

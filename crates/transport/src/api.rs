@@ -552,6 +552,34 @@ impl TransportState {
         self.sessions.contains_key(device_id)
     }
 
+    /// Re-key the live session currently registered under `from` onto `to`,
+    /// preserving the same [`ActiveSession`] (same connection, path, client
+    /// kind, NAT attribution) — Task 217.5's fingerprint↔session binding.
+    ///
+    /// The serve loop registers a naturally-accepted session under the peer's
+    /// Iroh **endpoint id** at accept time (the only id known at the raw
+    /// boundary); once the gRPC auth layer validates the device cert it reports
+    /// the **fingerprint**, and this moves the session onto that key so
+    /// [`Self::close_sessions_for_device`] (keyed by fingerprint) can sever it.
+    /// No new NAT outcome is counted and no telemetry is emitted — it is the
+    /// *same* session under a more precise key. A no-op when no session is live
+    /// under `from`, or when `from == to`, or when a session is already keyed on
+    /// `to` (idempotent: a second authenticated request must not disturb it).
+    /// Returns whether a re-key happened.
+    pub fn rekey_session(&mut self, from: &DeviceId, to: &DeviceId) -> bool {
+        if from == to || self.sessions.contains_key(to) {
+            return false;
+        }
+        match self.sessions.remove(from) {
+            Some(mut session) => {
+                session.device_id = to.clone();
+                self.sessions.insert(to.clone(), session);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Remove every session for `device_id`, closing each Iroh connection
     /// (`design/12 §7.3`). Idempotent. This is a TRUE drop (revocation /
     /// disconnect), the only path that ends a session — NOT a migration.
@@ -642,6 +670,88 @@ pub trait ApiDispatcher: Send + Sync + 'static {
         &self,
         io: NoiseDuplex,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<(), TransportError>> + Send>>;
+
+    /// Serve one gRPC connection like [`Self::serve_connection`], but with a
+    /// per-connection [`AuthObserver`] the dispatcher's auth layer reports the
+    /// validated device **fingerprint** into once it knows it (Task 217.5).
+    ///
+    /// This is the **additive** seam that closes the deferred fingerprint↔session
+    /// binding: at the raw transport boundary the serve loop only knows the
+    /// peer's Iroh endpoint id, so it keys the accept-time session on that; the
+    /// device's cert fingerprint is resolved later, per request, inside the
+    /// Core's gRPC auth interceptor. By threading this observer into that
+    /// interceptor, the serve loop learns the fingerprint on the first
+    /// authenticated request and re-keys the live session onto it
+    /// ([`IrohTransport::rekey_session`]) so
+    /// [`IrohTransport::close_sessions_for_device`] (keyed by fingerprint) severs
+    /// a revoked device's naturally-accepted session.
+    ///
+    /// The **default** implementation ignores the observer and delegates to
+    /// [`Self::serve_connection`], so existing dispatchers (the loopback doubles)
+    /// keep their endpoint-id-keyed sessions unchanged. The Core's real Iroh
+    /// dispatcher overrides this to feed the observer from its auth interceptor.
+    fn serve_connection_observed(
+        &self,
+        io: NoiseDuplex,
+        observer: AuthObserver,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<(), TransportError>> + Send>> {
+        let _ = observer;
+        self.serve_connection(io)
+    }
+}
+
+/// A per-connection seam the Core's auth interceptor reports a validated device
+/// **fingerprint** into so the transport's serve loop can bind the
+/// naturally-accepted session to it (Task 217.5).
+///
+/// At the raw Iroh boundary the serve loop only knows the peer's endpoint id;
+/// the device cert (carrying the fingerprint) is validated later, per request,
+/// inside the gRPC auth interceptor (Task 210). One [`AuthObserver`] is created
+/// per accepted connection and handed to every API stream's
+/// [`ApiDispatcher::serve_connection_observed`]; the first authenticated request
+/// calls [`Self::observe`] with the fingerprint, which fires the serve loop's
+/// re-key exactly once (subsequent reports are no-ops). Cheaply clonable (an
+/// `Arc` inside); cloning shares the one fire-once slot.
+#[derive(Clone)]
+pub struct AuthObserver {
+    inner: Arc<AuthObserverInner>,
+}
+
+struct AuthObserverInner {
+    fired: std::sync::OnceLock<DeviceId>,
+    #[allow(clippy::type_complexity)]
+    on_observe: Box<dyn Fn(&DeviceId) + Send + Sync>,
+}
+
+impl AuthObserver {
+    /// Build an observer whose first [`Self::observe`] fires `on_observe` with
+    /// the reported fingerprint exactly once. The serve loop supplies a closure
+    /// that re-keys the live session ([`IrohTransport::rekey_session`]).
+    pub fn new(on_observe: impl Fn(&DeviceId) + Send + Sync + 'static) -> Self {
+        Self {
+            inner: Arc::new(AuthObserverInner {
+                fired: std::sync::OnceLock::new(),
+                on_observe: Box::new(on_observe),
+            }),
+        }
+    }
+
+    /// Report the validated device fingerprint. Idempotent: only the first call
+    /// for this connection fires the re-key closure; later calls (every
+    /// subsequent authenticated request on the same connection) are no-ops.
+    pub fn observe(&self, device_id: DeviceId) {
+        // `OnceLock::set` succeeds only for the first caller — exactly the
+        // fire-once gate we want, with no extra lock.
+        if self.inner.fired.set(device_id.clone()).is_ok() {
+            (self.inner.on_observe)(&device_id);
+        }
+    }
+
+    /// The fingerprint reported so far, if any (`None` until the first
+    /// authenticated request). Lets a caller/test inspect the binding.
+    pub fn observed(&self) -> Option<DeviceId> {
+        self.inner.fired.get().cloned()
+    }
 }
 
 /// Where the Core reaches its relay + an optional directly-supplied peer addr
