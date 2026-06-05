@@ -1,0 +1,46 @@
+[package]
+name = "concerto-pair-serve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Cross-machine pairing verification tool (Core side). Boots an Iroh-enabled Core, seeds a project/repo/workspace/workarea, arms a pairing, and prints a relay-bearing connect-blob a remote pair-dial peer dials. Dev/test tooling — not shipped product. Splits tools/split-host-loopback into a two-process, relay-capable, cross-machine flow."
+
+# pair-serve is the Core-side half of the two-process cross-machine Iroh pairing
+# verification (sibling of `tools/split-host-loopback`, which runs the whole flow
+# in one process on one host with relays disabled). It boots a real Iroh-enabled
+# Core, arms a pairing, and emits a relay-bearing connect-blob, then stays up for
+# the dial. Like split-host-loopback its booted Iroh path is keychain-backed, so
+# it only RUNS meaningfully on macOS (keyring backend), but it BUILDS on every
+# lane (nothing here is cfg-gated).
+[[bin]]
+name = "pair-serve"
+path = "src/main.rs"
+
+[dependencies]
+# The booted Core (in-process) + its live Iroh seam (RunningCore::iroh()).
+concerto-core = { path = "../../crates/core" }
+# The Iroh transport surface (IrohTransport::endpoint / core_noise_public).
+concerto-transport = { path = "../../crates/transport" }
+# The gRPC clients used to seed the repo -> workspace -> workarea chain over the
+# co-located UDS server (so the dial side has a real workarea_id).
+concerto-proto = { path = "../../crates/proto" }
+# Iroh's EndpointAddr / relay-url accessors (the relay-bearing server addr).
+iroh = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util", "sync", "signal", "net"] }
+futures = { workspace = true }
+# UDS dial helpers (seed the chain over the Core's co-located socket).
+tower = { workspace = true }
+hyper-util = { workspace = true }
+# Direct `projects` row insert (no Projects.CreateProject RPC in V1.0; mirrors
+# the split-host-loopback driver's seeding).
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+uuid = { workspace = true }
+# The connect-blob is base64(JSON). base64 0.22 + serde_json are already in the
+# build graph (this adds no new crate to compile).
+base64 = "0.22"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+hex = "0.4"
