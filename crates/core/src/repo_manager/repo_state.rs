@@ -99,9 +99,60 @@ pub(crate) async fn record_size(
     write(repo_local_path, &state).await
 }
 
+/// Read-modify-write the `prefetch_cursor` (the last prewarmed commit SHA)
+/// into the repo's state file (Task 304). Existing fields — Task 301's
+/// `size_bytes`/`object_count` and any unknown keys — are preserved.
+pub(crate) async fn record_prefetch_cursor(repo_local_path: &Path, commit: &str) -> Result<()> {
+    let mut state = read(repo_local_path).await?;
+    state.prefetch_cursor = Some(commit.to_string());
+    write(repo_local_path, &state).await
+}
+
+/// Read the current `prefetch_cursor`, or `None` when unset / the file is
+/// absent (Task 304). Used by the HEAD-update trigger to skip a prewarm
+/// when the cursor already matches the new HEAD.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn read_prefetch_cursor(repo_local_path: &Path) -> Result<Option<String>> {
+    Ok(read(repo_local_path).await?.prefetch_cursor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn record_prefetch_cursor_preserves_size_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        // Seed Task 301's size fields first.
+        record_size(repo, 5000, 12).await.unwrap();
+        // Then record a prefetch cursor (Task 304's read-modify-write).
+        record_prefetch_cursor(repo, "deadbeef").await.unwrap();
+
+        let state = read(repo).await.unwrap();
+        assert_eq!(state.prefetch_cursor.as_deref(), Some("deadbeef"));
+        // 301's fields must survive the 304 write.
+        assert_eq!(state.size_bytes, Some(5000));
+        assert_eq!(state.object_count, Some(12));
+
+        // Round-trip the reader.
+        assert_eq!(
+            read_prefetch_cursor(repo).await.unwrap().as_deref(),
+            Some("deadbeef")
+        );
+    }
+
+    #[tokio::test]
+    async fn record_size_after_cursor_preserves_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        record_prefetch_cursor(repo, "abc").await.unwrap();
+        // 301's writer must not clobber 304's cursor.
+        record_size(repo, 1, 2).await.unwrap();
+        let state = read(repo).await.unwrap();
+        assert_eq!(state.prefetch_cursor.as_deref(), Some("abc"));
+        assert_eq!(state.size_bytes, Some(1));
+    }
 
     #[tokio::test]
     async fn record_size_preserves_unknown_fields() {

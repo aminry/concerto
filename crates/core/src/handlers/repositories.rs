@@ -11,12 +11,13 @@ use std::pin::Pin;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use concerto_gix_wrap::{CloneProgressEvent, CloneStrategy};
+use concerto_gix_wrap::{CloneProgressEvent, CloneStrategy, PrewarmProgressEvent};
 use concerto_persist::{RepositoryId, WorkareaId};
 use concerto_proto::v1::repositories_server::Repositories as RepositoriesService;
 use concerto_proto::v1::{
     AddRepoRequest, CloneProgress, CloneRequest, EstimateRepoSizeRequest, ListRepositoriesRequest,
-    ListRepositoriesResponse, Repository, SetConesRequest, SetConesResponse, SizeReport,
+    ListRepositoriesResponse, PrewarmProgress, PrewarmRequest, Repository, SetConesRequest,
+    SetConesResponse, SizeReport,
 };
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -187,6 +188,73 @@ impl RepositoriesService for RepositoriesHandler {
         });
 
         let stream: Self::CloneStream = Box::pin(ReceiverStream::new(out_rx));
+        Ok(Response::new(stream))
+    }
+
+    /// Streaming response type for `Repositories.PrewarmBlobs` (Task 304).
+    type PrewarmBlobsStream =
+        Pin<Box<dyn Stream<Item = Result<PrewarmProgress, Status>> + Send + 'static>>;
+
+    #[tracing::instrument(skip_all, name = "Repositories::PrewarmBlobs")]
+    async fn prewarm_blobs(
+        &self,
+        request: Request<PrewarmRequest>,
+    ) -> Result<Response<Self::PrewarmBlobsStream>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        if req.commit.is_empty() {
+            return Err(Status::invalid_argument("commit is required"));
+        }
+        let id = RepositoryId(req.repository_id);
+
+        // Outbound stream → caller (mirrors the `Clone` streaming pattern).
+        let (out_tx, out_rx) = mpsc::channel::<Result<PrewarmProgress, Status>>(32);
+        // Internal progress channel: gix-wrap → adapter → out_tx.
+        let (ev_tx, mut ev_rx) = mpsc::channel::<PrewarmProgressEvent>(32);
+
+        // Forwarder: reshapes prewarm progress into gRPC `PrewarmProgress`.
+        let out_tx_for_forward = out_tx.clone();
+        let forward_handle = tokio::spawn(async move {
+            while let Some(ev) = ev_rx.recv().await {
+                let msg = PrewarmProgress {
+                    blobs_fetched: ev.blobs_fetched,
+                    blobs_total: ev.blobs_total,
+                    done: ev.done,
+                };
+                if out_tx_for_forward.send(Ok(msg)).await.is_err() {
+                    break; // client disconnected
+                }
+            }
+        });
+
+        // Kick the prewarm. The returned handle's CancellationToken fires on
+        // drop, so when the worker task below finishes (after the forwarder
+        // drains) the handle drops and any still-running fetch is cancelled —
+        // covering the client-disconnect case.
+        let manager = self.repo_manager.clone();
+        let out_tx_for_worker = out_tx;
+        tokio::spawn(async move {
+            let handle = match manager
+                .prewarm_blobs_streaming(&id, &req.cone_paths, &req.commit, ev_tx)
+                .await
+            {
+                Ok(h) => h,
+                Err(err) => {
+                    let _ = out_tx_for_worker.send(Err(error_to_status(err))).await;
+                    return;
+                }
+            };
+            // Wait for the prewarm job to finish, then drain the forwarder so
+            // the terminal `done` event reaches the client before the stream
+            // closes.
+            handle.join().await;
+            let _ = forward_handle.await;
+            // Dropping `out_tx_for_worker` terminates the client stream.
+        });
+
+        let stream: Self::PrewarmBlobsStream = Box::pin(ReceiverStream::new(out_rx));
         Ok(Response::new(stream))
     }
 

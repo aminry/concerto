@@ -273,6 +273,20 @@ pub struct SizeReport {
 }
 ```
 
+### struct `PrewarmProgressEvent`
+
+```rust
+pub struct PrewarmProgressEvent {
+    /// Blobs materialized so far (cumulative across cone chunks).
+    pub blobs_fetched: u64,
+    /// Total in-cone blob OIDs discovered at `commit`.
+    pub blobs_total: u64,
+    /// True on the terminal event after the last chunk is materialized
+    /// (or after a clean cancellation).
+    pub done: bool,
+}
+```
+
 ## `crates/identity/src/api.rs`
 
 ### struct `KeyPair`

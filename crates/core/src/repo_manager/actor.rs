@@ -20,12 +20,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
-use concerto_gix_wrap::{self as gixw, CloneStrategy, ConePath, SizeReport};
+use concerto_gix_wrap::{self as gixw, CloneStrategy, ConePath, PrewarmProgressEvent, SizeReport};
 use concerto_persist::{NewRepository, Persistence, Repository, RepositoryId, WorkareaId};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditWriter, EntityKind};
-use crate::repo_manager::{cones, fsmonitor, repo_state};
+use crate::repo_manager::prefetch::{BandwidthLimiter, PrewarmHandle, GLOBAL_PREWARM_CONCURRENCY};
+use crate::repo_manager::{cones, fsmonitor, prefetch, repo_state};
 use crate::supervisor::{Actor, ActorContext};
 
 /// The `> 10 GB` non-sparse threshold that triggers a `repo.size_warning`
@@ -67,6 +69,18 @@ pub struct RepoManager {
     /// the `§8` force-non-cone-to-cone path appends a typed
     /// [`AuditKind::SparseConfigForcedToCone`] event.
     audit: Option<AuditWriter>,
+    /// Task 304: global prewarm concurrency cap (`design/02 §6.1`). Shared
+    /// across clones so the 2-permit limit holds across all repos. A
+    /// prewarm job holds one permit for its whole fetch.
+    prewarm_sem: Arc<Semaphore>,
+    /// Task 304: per-repo bandwidth-cap seam (`design/02 §6.1`). Consulted
+    /// before each prewarm fetch; the real throttle is a follow-on.
+    bandwidth: BandwidthLimiter,
+    /// Task 304: injected idle/power/net signal bundle for the prewarm
+    /// scheduler (`PHASE3_PLANNING §2`). Defaults to the conservative
+    /// `never_prewarm` bundle; `boot.rs` injects the host bundle, and tests
+    /// inject deterministic mocks.
+    prewarm_signals: prefetch::PrewarmSignals,
 }
 
 impl RepoManager {
@@ -80,7 +94,31 @@ impl RepoManager {
             write_locks: Arc::new(Mutex::new(HashMap::new())),
             fsmonitor_history: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
+            prewarm_sem: Arc::new(Semaphore::new(GLOBAL_PREWARM_CONCURRENCY)),
+            bandwidth: BandwidthLimiter::new(),
+            prewarm_signals: prefetch::never_prewarm_signals(),
         }
+    }
+
+    /// Inject the prewarm scheduler's idle/power/net signal bundle (Task
+    /// 304). Production wires `prefetch::signals::host_signals()` in
+    /// `boot.rs`; tests inject a deterministic mock. Mirrors
+    /// [`with_audit`](Self::with_audit).
+    pub fn with_prewarm_signals(mut self, signals: prefetch::PrewarmSignals) -> Self {
+        self.prewarm_signals = signals;
+        self
+    }
+
+    /// The injected prewarm signal bundle (used by `RepoManagerActor::run`
+    /// to spawn the scheduler). Cloneable — closures are `Arc`-wrapped.
+    pub(crate) fn prewarm_signals(&self) -> prefetch::PrewarmSignals {
+        self.prewarm_signals.clone()
+    }
+
+    /// Test/inspection hook: how many times the per-repo bandwidth limiter
+    /// has been consulted on the prewarm path (`design/02 §6.1`).
+    pub fn bandwidth_consult_count(&self) -> u64 {
+        self.bandwidth.consult_count()
     }
 
     /// Attach a Task 44 [`AuditWriter`] so the Task 302 `§8`
@@ -303,6 +341,243 @@ impl RepoManager {
         )
         .await?;
         Ok(())
+    }
+
+    /// Pre-fetch the lazy blobs reachable in `cones` at `commit` for a
+    /// blobless clone (Task 304, `design/02 §3.3`/`§5.1`/`§6.3`). FROZEN
+    /// signature.
+    ///
+    /// Returns a [`PrewarmHandle`] carrying a [`CancellationToken`] + the
+    /// spawned [`tokio::task::JoinHandle`]; dropping/cancelling the handle
+    /// stops the fetch promptly (between cone chunks).
+    ///
+    /// Concurrency (`design/02 §6.1`), all held for the whole fetch:
+    /// 1. **global 2-concurrent** — acquire one [`Semaphore`] permit across
+    ///    all repos;
+    /// 2. **per-repo write lock** — serialize against a concurrent
+    ///    clone/fetch of the same repo;
+    /// 3. **per-repo bandwidth cap** — consult the [`BandwidthLimiter`].
+    ///
+    /// Emits `repo.prefetch_started` / `repo.prefetch_finished` (the
+    /// broadcast subject is not yet wired through the streams handler — see
+    /// the Task 302/301 `repo.*` precedent — so this emits the same
+    /// `tracing` audit-line shape the Tray will later render). On the
+    /// repo-local `concerto-state.json`, the prewarmed `commit` is recorded
+    /// as `prefetch_cursor` (read-modify-write so Task 301's
+    /// `size_bytes`/`object_count` are never clobbered).
+    pub async fn prewarm_blobs(
+        &self,
+        repo: &RepositoryId,
+        cones: &[ConePath],
+        commit: &str,
+    ) -> Result<PrewarmHandle> {
+        let row = self
+            .get(repo)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("repository {repo} not found")))?;
+        let repo_dir = PathBuf::from(&row.local_path);
+
+        let token = CancellationToken::new();
+        let task_token = token.clone();
+        let cancel_check_token = token.clone();
+        let sem = Arc::clone(&self.prewarm_sem);
+        let bandwidth = self.bandwidth.clone();
+        let write_lock = self.write_lock_for(repo).await;
+        let persistence = Arc::clone(&self.persistence);
+        let repo_id = repo.clone();
+        let cones = cones.to_vec();
+        let commit = commit.to_string();
+
+        let join = tokio::spawn(async move {
+            // 1. Global 2-concurrent cap (held for the whole fetch).
+            let _permit = match sem.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return, // semaphore closed → Core shutting down
+            };
+            // Cancelled while waiting for a permit?
+            if task_token.is_cancelled() {
+                return;
+            }
+            // 2. Per-repo write lock — serialize against clone/fetch.
+            let _guard = write_lock.lock().await;
+            // 3. Per-repo bandwidth cap (always consulted; real throttle TBD).
+            bandwidth.acquire().await;
+
+            tracing::info!(repo_id = %repo_id, commit = %commit, cones = cones.len(), "repo.prefetch_started");
+
+            let should_cancel = move || cancel_check_token.is_cancelled();
+            let progress: Option<tokio::sync::mpsc::Sender<PrewarmProgressEvent>> = None;
+            let result =
+                gixw::prewarm_blobs_in_cone(&repo_dir, &commit, &cones, should_cancel, progress)
+                    .await;
+
+            match result {
+                Ok(fetched) => {
+                    // Record the cursor only on a clean (non-cancelled) finish
+                    // so a cancelled partial fetch doesn't advance it.
+                    if !task_token.is_cancelled() {
+                        if let Err(e) = repo_state::record_prefetch_cursor(&repo_dir, &commit).await
+                        {
+                            tracing::warn!(repo_id = %repo_id, error = %e, "failed to record prefetch_cursor");
+                        }
+                    }
+                    tracing::info!(repo_id = %repo_id, blobs_fetched = fetched, cancelled = task_token.is_cancelled(), "repo.prefetch_finished");
+                }
+                Err(e) => {
+                    tracing::warn!(repo_id = %repo_id, error = %e, "repo.prefetch_finished: prewarm fetch failed");
+                }
+            }
+            let _ = persistence; // reserved for a future broadcast/audit emit
+        });
+
+        Ok(PrewarmHandle::new(token, join))
+    }
+
+    /// Prewarm with a live progress sink (the gRPC `PrewarmBlobs` streaming
+    /// handler, Task 304). Same concurrency discipline as [`prewarm_blobs`]
+    /// but forwards each [`PrewarmProgressEvent`] to `progress` so the
+    /// handler can reshape it onto the gRPC stream. Returns the
+    /// [`PrewarmHandle`] so the handler can cancel on client disconnect.
+    pub async fn prewarm_blobs_streaming(
+        &self,
+        repo: &RepositoryId,
+        cones: &[ConePath],
+        commit: &str,
+        progress: tokio::sync::mpsc::Sender<PrewarmProgressEvent>,
+    ) -> Result<PrewarmHandle> {
+        let row = self
+            .get(repo)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("repository {repo} not found")))?;
+        let repo_dir = PathBuf::from(&row.local_path);
+
+        let token = CancellationToken::new();
+        let task_token = token.clone();
+        let cancel_check_token = token.clone();
+        let sem = Arc::clone(&self.prewarm_sem);
+        let bandwidth = self.bandwidth.clone();
+        let write_lock = self.write_lock_for(repo).await;
+        let repo_id = repo.clone();
+        let cones = cones.to_vec();
+        let commit = commit.to_string();
+
+        let join = tokio::spawn(async move {
+            let _permit = match sem.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            if task_token.is_cancelled() {
+                return;
+            }
+            let _guard = write_lock.lock().await;
+            bandwidth.acquire().await;
+
+            tracing::info!(repo_id = %repo_id, commit = %commit, "repo.prefetch_started");
+            let should_cancel = move || cancel_check_token.is_cancelled();
+            match gixw::prewarm_blobs_in_cone(
+                &repo_dir,
+                &commit,
+                &cones,
+                should_cancel,
+                Some(progress),
+            )
+            .await
+            {
+                Ok(fetched) => {
+                    if !task_token.is_cancelled() {
+                        let _ = repo_state::record_prefetch_cursor(&repo_dir, &commit).await;
+                    }
+                    tracing::info!(repo_id = %repo_id, blobs_fetched = fetched, "repo.prefetch_finished");
+                }
+                Err(e) => {
+                    tracing::warn!(repo_id = %repo_id, error = %e, "repo.prefetch_finished: prewarm fetch failed");
+                }
+            }
+        });
+
+        Ok(PrewarmHandle::new(token, join))
+    }
+
+    /// Run one idle-scheduler prewarm pass (Task 304). Walks every blobless
+    /// repo, resolves its tracked-branch HEAD, and prewarms its whole-tree
+    /// cone at that HEAD; returns the spawned [`PrewarmHandle`]s so the
+    /// scheduler can cancel them all when `idle_signal` flips to active.
+    ///
+    /// "Which cones to walk" is owned by Task 302's resolver; the
+    /// background pass uses the empty-cone (= whole tracked tree) default
+    /// because a repo's *union* of workarea cones is the correct
+    /// background-prewarm scope and computing it per-workarea is the
+    /// Task-302-consuming follow-on. Each repo's prewarm is independently
+    /// gated by the global-2-concurrent semaphore inside `prewarm_blobs`.
+    pub async fn run_prewarm_pass(&self) -> Vec<PrewarmHandle> {
+        let repos = match concerto_persist::repositories::list_all(self.persistence.readers()).await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "prewarm pass: list_all failed");
+                return Vec::new();
+            }
+        };
+        let mut handles = Vec::new();
+        for repo in repos {
+            // Only blobless clones have lazy blobs worth prewarming.
+            if repo.clone_strategy != "blobless" {
+                continue;
+            }
+            let repo_dir = PathBuf::from(&repo.local_path);
+            let head = match gixw::rev_parse_head(&repo_dir).await {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::debug!(repo_id = %repo.id, error = %e, "prewarm pass: skip repo with no HEAD");
+                    continue;
+                }
+            };
+            match self.prewarm_blobs(&repo.id, &[], &head).await {
+                Ok(h) => handles.push(h),
+                Err(e) => {
+                    tracing::warn!(repo_id = %repo.id, error = %e, "prewarm pass: prewarm_blobs failed");
+                }
+            }
+        }
+        handles
+    }
+
+    /// Eager worktree-create trigger (Task 304, `design/02 §3.3` trigger 1,
+    /// default ON). After Task 302 sets a `(workarea, repo)` cone, the
+    /// workarea-create path calls this to prewarm the new cone @ HEAD.
+    /// Best-effort: returns the handle so the caller can track/cancel it,
+    /// or logs + returns `None` if the repo has no HEAD / no row yet.
+    ///
+    /// Non-blobless repos are skipped (their blobs are already on disk).
+    pub async fn prewarm_on_worktree_create(
+        &self,
+        repo: &RepositoryId,
+        cones: &[ConePath],
+    ) -> Option<PrewarmHandle> {
+        let row = self.get(repo).await.ok().flatten()?;
+        if row.clone_strategy != "blobless" {
+            return None;
+        }
+        let repo_dir = PathBuf::from(&row.local_path);
+        let head = gixw::rev_parse_head(&repo_dir).await.ok()?;
+        self.prewarm_blobs(repo, cones, &head).await.ok()
+    }
+
+    /// Eager HEAD-update trigger (Task 304, `design/02 §3.3` trigger 2,
+    /// default ON). When a repo's tracked branch advances to `new_head`,
+    /// prewarm the in-cone blobs at the new commit. Best-effort; non-blobless
+    /// repos are skipped.
+    pub async fn prewarm_on_head_update(
+        &self,
+        repo: &RepositoryId,
+        cones: &[ConePath],
+        new_head: &str,
+    ) -> Option<PrewarmHandle> {
+        let row = self.get(repo).await.ok().flatten()?;
+        if row.clone_strategy != "blobless" {
+            return None;
+        }
+        self.prewarm_blobs(repo, cones, new_head).await.ok()
     }
 
     /// Set the sparse cone for a `(workarea, repo)` pair, applying it to the
@@ -568,11 +843,24 @@ impl Actor for RepoManagerActor {
             ctx.shutdown.clone(),
         );
 
+        // Task 304: spawn the idle blob prewarm scheduler right next to the
+        // fsmonitor supervisor. It mirrors the supervisor's shape (a 30s
+        // interval loop + a CancellationToken) but is fully independent: it
+        // gates prewarm passes on the injected idle/power/net signals
+        // (`design/02 §6.3`). With the default `never_prewarm` signals it is
+        // inert; `boot.rs` injects the host bundle.
+        let prefetch_handle = prefetch::spawn_prefetch_scheduler(
+            self.handle.clone(),
+            self.handle.prewarm_signals(),
+            ctx.shutdown.clone(),
+        );
+
         ctx.shutdown.cancelled().await;
         tracing::debug!("RepoManager actor shutting down");
-        // The supervisor honours the cancellation token; aborting is
-        // safe as a backstop in case its tick() is mid-sleep.
+        // The supervisor + scheduler honour the cancellation token; aborting
+        // is a safe backstop in case a tick() is mid-sleep.
         supervisor_handle.abort();
+        prefetch_handle.abort();
         Ok(())
     }
 }
