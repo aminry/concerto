@@ -18,8 +18,14 @@ pub mod workarea;
 
 pub use actor::{
     WorkspaceEvent, WorkspaceManager, WorkspaceManagerActor, WorkspaceManagerConfig,
-    SINGLE_REPO_WIRE_CODE,
+    DUPLICATE_REPO_WIRE_CODE, NO_REPOS_WIRE_CODE,
 };
+// Task 306 retired `SINGLE_REPO_WIRE_CODE` as an active rejection but
+// keeps it defined for one release of client back-compat; re-export it
+// (allowing the deprecation) so existing string-matching clients still
+// resolve the symbol.
+#[allow(deprecated)]
+pub use actor::SINGLE_REPO_WIRE_CODE;
 pub use archive::ArchiveOpts;
 pub use composers::COMPOSERS;
 pub use fsm::{transition, WorkareaEvent as WorkareaFsmEvent, WorkareaState};
