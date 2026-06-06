@@ -349,6 +349,9 @@ CREATE INDEX idx_pull_requests_repo ON pull_requests(repository_id);
 CREATE INDEX idx_workspace_repos_position ON workspace_repos(workspace_id, position);
 ```
 
+## `crates/persist/migrations/0010_workareas_status_finished_partial.sql`
+
+
 ## `crates/persist/migrations/0012_vcs_credentials.sql`
 
 ```sql

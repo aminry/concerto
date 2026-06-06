@@ -31,7 +31,10 @@ message Workarea {
   string composer_name = 3;
   string branch_name = 4;
   string worktree_root = 5;
-  // status ∈ { created | active | running | awaiting | paused | archived | crashed }
+  // status ∈ { created | active | running | awaiting | paused | finished | partial | archived | crashed }
+  // (Task 307 widened the set with `finished` + `partial`; `partial` = a
+  // multi-repo workarea where >=1 repo's `git worktree add` failed.)
+  // Still a string (not promoted to an enum) per the message note above.
   string status = 6;
   optional PermissionMode permission_mode = 7;
   google.protobuf.Timestamp created_at = 8;

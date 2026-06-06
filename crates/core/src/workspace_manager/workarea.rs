@@ -98,6 +98,24 @@ pub enum WorkareaEvent {
     /// post-restore row (status reset to `"active"`, `permission_mode`
     /// reset to `NULL` per `design/03 §3.7`).
     Restored(Workarea),
+    /// Task 307: a workarea's `status` changed through the
+    /// [`WorkareaManager::transition_workarea`] FSM funnel (driven by
+    /// Agent Supervisor session events or a user pause/resume). Carries
+    /// the id and the from→to SQL status strings so subscribers (and the
+    /// audit log) see the transition without re-reading the row.
+    StatusChanged {
+        id: WorkareaId,
+        from: String,
+        to: String,
+    },
+    /// Task 307: a multi-repo `create_workarea` finished as `partial` —
+    /// ≥1 repo's `git worktree add` failed (`design/03 §8`). Carries the
+    /// workarea id + the `repository_id`s that failed so the UI/retry can
+    /// target exactly the unmaterialized repos.
+    PartialCreate {
+        id: WorkareaId,
+        failed_repository_ids: Vec<String>,
+    },
 }
 
 /// Cloneable handle to the Workarea Manager's shared state.
@@ -162,11 +180,43 @@ impl WorkareaManager {
     /// Probe every non-archived workarea; mark rows whose `worktree_root`
     /// directory is gone from disk as `'crashed'` (`design/03 §6.5`).
     ///
-    /// Called once at Core boot from `main.rs` so a Concerto reinstall
+    /// Called once at Core boot from `boot.rs` so a Concerto reinstall
     /// or `data_dir` wipe doesn't leave stale `active` rows pointing at
     /// non-existent worktrees. Returns the number of rows adopted.
+    ///
+    /// Task 307: the `→ crashed` transition routes through
+    /// [`Self::transition_workarea`] (the `AdoptCrashed` FSM event) so each
+    /// adoption audits + broadcasts `StatusChanged` like every other status
+    /// change. A workarea already in a state with no `AdoptCrashed` edge
+    /// (only `Archived` today) is skipped via the soft-reject path.
     pub async fn adopt_crashed_workareas(&self) -> Result<usize> {
-        crate::workspace_manager::archive::adopt_crashed_workareas(&self.persistence).await
+        let missing =
+            crate::workspace_manager::archive::list_missing_worktree_workareas(&self.persistence)
+                .await?;
+        let mut adopted = 0usize;
+        for id in missing {
+            match self
+                .transition_workarea(
+                    &id,
+                    crate::workspace_manager::fsm::WorkareaEvent::AdoptCrashed,
+                )
+                .await
+            {
+                Ok(_) => {
+                    adopted += 1;
+                    tracing::info!(workarea = %id, "adopted crashed workarea");
+                }
+                // Soft-reject (e.g. an already-`crashed` row whose state has
+                // no AdoptCrashed edge): not an error, just skip.
+                Err(Error::Policy(_)) => {}
+                Err(e) => tracing::warn!(
+                    workarea = %id,
+                    error = %e,
+                    "failed to mark workarea crashed during boot sweep"
+                ),
+            }
+        }
+        Ok(adopted)
     }
 
     /// Create a workarea.
@@ -183,12 +233,19 @@ impl WorkareaManager {
     ///    into `<worktree_root>/<repo.name>/`, append `.context/` to that
     ///    worktree's `.git/info/exclude`, and apply files-to-copy.
     /// 6. Persist `workareas` (status `"created"`) + one `workarea_repos`
-    ///    row per repo + transition to `"active"` in one transaction.
-    /// 7. Emit [`WorkareaEvent::Created`].
+    ///    row per **materialized** repo + transition to `"active"`
+    ///    (all repos succeeded) or `"partial"` (≥1 repo's worktree-add
+    ///    failed) in one transaction.
+    /// 7. Emit [`WorkareaEvent::Created`]; on a partial create also emit
+    ///    [`WorkareaEvent::PartialCreate`] with the failing repo ids.
     ///
-    /// Any per-repo `git worktree add` failure aborts the whole create
-    /// and removes every worktree built so far (the soft `partial`
-    /// path is Task 307).
+    /// Task 307: a per-repo `git worktree add` failure no longer aborts a
+    /// multi-repo create. The repos that succeeded are kept + persisted and
+    /// the workarea is stamped `partial` (`design/03 §8`); the failing repo
+    /// ids ride out on `workarea.events` for retry targeting. Only when
+    /// **no** repo materialized (the sole repo of a single-repo workarea
+    /// failed, or every repo failed) is the whole create aborted + cleaned
+    /// up (306's behavior for the case where `partial` is meaningless).
     pub async fn create_workarea(
         &self,
         workspace_id: &str,
@@ -301,25 +358,40 @@ impl WorkareaManager {
 
             // 3. For each repo (in position order): worktree add +
             //    exclude + files-to-copy. Track the per-repo worktree
-            //    paths so a per-repo failure (or a later UNIQUE collision)
-            //    can clean up every worktree built so far. A `git worktree
-            //    add` failure aborts the whole create (the soft `partial`
-            //    path is Task 307).
+            //    paths so a UNIQUE collision can clean up every worktree
+            //    built so far. Task 307: a per-repo failure no longer
+            //    aborts the whole multi-repo create — we record the
+            //    failing repo, KEEP the repos that succeeded, and stamp the
+            //    workarea `partial` (`design/03 §8`). Only when **no** repo
+            //    succeeded (e.g. a single-repo workarea whose sole repo
+            //    failed, or every repo failed) do we abort + clean up.
+            //    Indices into `repos` for the repos that fully materialized.
+            let mut ok_repo_idx: Vec<usize> = Vec::with_capacity(repos.len());
+            // (repo_local, worktree_dir) for the materialized worktrees —
+            // the collision-retry / abort cleanup list.
             let mut built: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(repos.len());
-            let mut worktree_setup_err: Option<Error> = None;
-            for repo in &repos {
+            // The repos whose `git worktree add` (or follow-on setup)
+            // failed — surfaced on `workarea.events` for retry targeting.
+            let mut failed_repo_ids: Vec<String> = Vec::new();
+            // The first error seen — propagated verbatim if we end up
+            // aborting (no repo succeeded).
+            let mut first_err: Option<Error> = None;
+
+            for (idx, repo) in repos.iter().enumerate() {
                 let repo_local = PathBuf::from(&repo.local_path);
                 let repo_worktree = worktree_root.join(&repo.name);
 
                 // 3a. Run `git worktree add` for this repo (the expensive
-                //     step). On failure, stop and abort the whole create.
+                //     step). On failure, record it and move to the next
+                //     repo (soft `partial` path).
                 if let Err(e) =
                     concerto_gix_wrap::worktree_add(&repo_local, &branch, &repo_worktree).await
                 {
-                    worktree_setup_err = Some(e);
-                    break;
+                    tracing::warn!(repo = %repo.id, error = %e, "worktree_add failed; marking repo for partial");
+                    failed_repo_ids.push(repo.id.0.clone());
+                    first_err.get_or_insert(e);
+                    continue;
                 }
-                built.push((repo_local.clone(), repo_worktree.clone()));
 
                 // 3b. Append `.context/` to this worktree's
                 //     `.git/info/exclude`. Each worktree owns its own
@@ -327,8 +399,13 @@ impl WorkareaManager {
                 //     file, so we resolve the real `info/` via git's
                 //     own layout.
                 if let Err(e) = append_context_to_git_exclude(&repo_worktree).await {
-                    worktree_setup_err = Some(e);
-                    break;
+                    tracing::warn!(repo = %repo.id, error = %e, "git exclude setup failed; marking repo for partial");
+                    failed_repo_ids.push(repo.id.0.clone());
+                    first_err.get_or_insert(e);
+                    // Best-effort: undo the half-built worktree for this repo
+                    // so a later retry starts clean.
+                    let _ = remove_worktree_best_effort(&repo_local, &repo_worktree).await;
+                    continue;
                 }
 
                 // 3c. Apply files-to-copy rules from this repo's
@@ -356,22 +433,40 @@ impl WorkareaManager {
                         );
                     }
                     Ok(Err(e)) | Err(e) => {
-                        worktree_setup_err = Some(e);
-                        break;
+                        tracing::warn!(repo = %repo.id, error = %e, "files_to_copy failed; marking repo for partial");
+                        failed_repo_ids.push(repo.id.0.clone());
+                        first_err.get_or_insert(e);
+                        let _ = remove_worktree_best_effort(&repo_local, &repo_worktree).await;
+                        continue;
                     }
                 }
+
+                // Fully materialized.
+                ok_repo_idx.push(idx);
+                built.push((repo_local.clone(), repo_worktree.clone()));
             }
 
-            // If any per-repo step failed, clean up every worktree built
-            // so far + the root, then propagate the error (whole-create
-            // abort; no `partial` — Task 307).
-            if let Some(e) = worktree_setup_err {
+            // If NO repo materialized, there is nothing to keep — abort
+            // and propagate the first error (single-repo failure, or every
+            // repo of a multi-repo create failed). Matches 306's
+            // whole-create abort for the only case where `partial` is
+            // meaningless.
+            if ok_repo_idx.is_empty() {
                 cleanup_worktrees(&built, &worktree_root).await;
-                return Err(e);
+                return Err(first_err.unwrap_or_else(|| {
+                    Error::Internal(
+                        "create_workarea: no repos materialized and no error recorded".into(),
+                    )
+                }));
             }
 
-            // 4. Persist row + one junction row per repo + status
-            //    transition in one tx.
+            // ≥1 repo succeeded. If any failed, this is a `partial`
+            // workarea (`design/03 §8`); otherwise `active`.
+            let is_partial = !failed_repo_ids.is_empty();
+            let final_status = if is_partial { "partial" } else { "active" };
+
+            // 4. Persist row + one junction row per **materialized** repo +
+            //    status transition in one tx.
             let id = WorkareaId(uuid::Uuid::now_v7().to_string());
             let worktree_root_str = worktree_root.to_string_lossy().into_owned();
 
@@ -391,8 +486,12 @@ impl WorkareaManager {
 
             match concerto_persist::workareas::insert(&mut tx, new_workarea).await {
                 Ok(_) => {
-                    // One `workarea_repos` row per repo (in position order).
-                    for repo in &repos {
+                    // One `workarea_repos` row per **materialized** repo (in
+                    // position order). Failed repos get no junction row —
+                    // their ids ride out on `WorkareaEvent::PartialCreate`
+                    // so a retry can re-`worktree add` and insert the row.
+                    for &idx in &ok_repo_idx {
+                        let repo = &repos[idx];
                         let repo_worktree = worktree_root.join(&repo.name);
                         concerto_persist::workareas::insert_workarea_repo(
                             &mut tx,
@@ -411,7 +510,7 @@ impl WorkareaManager {
                         )
                         .await?;
                     }
-                    concerto_persist::workareas::update_status(&mut tx, &id, "active").await?;
+                    concerto_persist::workareas::update_status(&mut tx, &id, final_status).await?;
                     // Stamp `files_to_copy_applied: true` onto the
                     // workarea's `settings_json` so a future re-run of
                     // the resolver short-circuits idempotently
@@ -422,13 +521,26 @@ impl WorkareaManager {
                         .await?;
                     tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
                     drop(writer);
+                    if is_partial {
+                        tracing::info!(
+                            audit.kind = "workarea_created_partial",
+                            audit.scope = "workarea",
+                            audit.workarea_id = %id,
+                            audit.failed_repos = failed_repo_ids.join(","),
+                            "workarea created partial (>=1 repo worktree-add failed)"
+                        );
+                        let _ = self.events.send(WorkareaEvent::PartialCreate {
+                            id: id.clone(),
+                            failed_repository_ids: failed_repo_ids.clone(),
+                        });
+                    }
                     break Workarea {
                         id,
                         workspace_id: ws_id.clone(),
                         composer_name: composer,
                         branch_name: branch,
                         worktree_root: worktree_root_str,
-                        status: "active".to_string(),
+                        status: final_status.to_string(),
                         permission_mode: permission_mode.clone(),
                         created_at: now_ms,
                         archived_at: None,
@@ -668,6 +780,255 @@ impl WorkareaManager {
         Ok(restored)
     }
 
+    /// Task 307: the single funnel for every workarea status change.
+    ///
+    /// Loads the current `status`, parses it to a [`WorkareaState`], applies
+    /// the pure [`fsm::transition`] graph, persists the new status via
+    /// [`workareas::update_status`], broadcasts
+    /// [`WorkareaEvent::StatusChanged`], and emits a `tracing::info!` audit
+    /// line. Returns the post-transition [`Workarea`] row.
+    ///
+    /// ## Error mapping
+    ///
+    /// An illegal `(state, event)` pair is **never** a panic: the FSM's
+    /// `Err(Validation(INVALID_TRANSITION_WIRE_CODE …))` is re-wrapped as a
+    /// typed [`Error::Policy`] (→ `Code::FailedPrecondition` over gRPC) that
+    /// preserves the wire-code prefix, and logged at debug. The
+    /// union-of-sessions derivation (`design/03 §3.1`) can re-apply the same
+    /// event, so idempotent no-op re-applies (e.g. a stray `SessionStarted`
+    /// on a `running` workarea) are expected and rejected softly, not fatal.
+    ///
+    /// A no-op transition where the FSM maps the state to itself (none today
+    /// except `Archived + Archive`) still writes + broadcasts so subscribers
+    /// see a consistent stream; the audit line records `from == to`.
+    pub async fn transition_workarea(
+        &self,
+        id: &WorkareaId,
+        event: crate::workspace_manager::fsm::WorkareaEvent,
+    ) -> Result<Workarea> {
+        use crate::workspace_manager::fsm;
+
+        let workarea = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {id} not found")))?;
+
+        let from = fsm::WorkareaState::from_sql(&workarea.status).ok_or_else(|| {
+            Error::Internal(format!(
+                "workarea {id} has an unrecognized status {:?} in the DB",
+                workarea.status
+            ))
+        })?;
+
+        let to = match fsm::transition(from, event) {
+            Ok(to) => to,
+            Err(Error::Validation(msg)) if msg.starts_with(fsm::INVALID_TRANSITION_WIRE_CODE) => {
+                tracing::debug!(
+                    workarea = %id,
+                    from = %from.as_sql(),
+                    ?event,
+                    "rejected illegal workarea transition (soft)"
+                );
+                // Preserve the wire-code prefix but surface as a typed
+                // FAILED_PRECONDITION rather than InvalidArgument: this is a
+                // state-machine precondition, not a malformed argument.
+                return Err(Error::Policy(msg));
+            }
+            Err(e) => return Err(e),
+        };
+
+        let from_sql = from.as_sql().to_string();
+        let to_sql = to.as_sql().to_string();
+
+        let mut writer = self.persistence.writer().await;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::workareas::update_status(&mut tx, id, &to_sql).await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        drop(writer);
+
+        tracing::info!(
+            audit.kind = "workarea_status_changed",
+            audit.scope = "workarea",
+            audit.workarea_id = %id,
+            audit.from = %from_sql,
+            audit.to = %to_sql,
+            audit.event = ?event,
+            "workarea status transition"
+        );
+
+        let _ = self.events.send(WorkareaEvent::StatusChanged {
+            id: id.clone(),
+            from: from_sql,
+            to: to_sql,
+        });
+
+        self.get(id)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("workarea {id} vanished mid-transition")))
+    }
+
+    /// Task 307: derive + apply a workarea transition from one Agent
+    /// Supervisor [`AgentEvent`] (`design/03 §3.1`: a workarea's effective
+    /// status is the union of its sessions' states).
+    ///
+    /// Maps the supervisor's event to the FSM event and funnels it through
+    /// [`Self::transition_workarea`]. `SessionFinished` only fires when **no
+    /// other** session on the workarea is still live (`sessions WHERE
+    /// workarea_id=? AND ended_at IS NULL` is empty) — with multi-session
+    /// (Task 308) this prevents a finishing session from prematurely marking
+    /// a workarea `finished` while a sibling session keeps running. Events
+    /// the FSM has no edge for from the current state are swallowed at debug
+    /// (the soft-reject path), so this is safe to call on every event.
+    #[cfg(unix)]
+    pub async fn apply_session_event(
+        &self,
+        workarea_id: &WorkareaId,
+        event: &crate::agent_supervisor::AgentEvent,
+    ) {
+        use crate::agent_supervisor::AgentEvent;
+        use crate::workspace_manager::fsm::WorkareaEvent as Fsm;
+
+        let fsm_event = match event {
+            AgentEvent::Started { .. } => Fsm::SessionStarted,
+            AgentEvent::AwaitingApproval { .. } => Fsm::SessionAwaiting,
+            AgentEvent::ApprovalResolved { .. } => Fsm::SessionResumed,
+            AgentEvent::Crashed { .. } => Fsm::SessionCrashed,
+            AgentEvent::Exited { .. } => {
+                // Union-of-sessions: only transition to `finished` once no
+                // session on this workarea is still live. The supervisor has
+                // already stamped this session's `ended_at` before emitting
+                // `Exited`, so an empty live set means the last one ended.
+                match concerto_persist::sessions::list_live_ids_by_workarea(
+                    self.persistence.readers(),
+                    workarea_id,
+                )
+                .await
+                {
+                    Ok(live) if live.is_empty() => Fsm::SessionFinished,
+                    Ok(_) => return,
+                    Err(e) => {
+                        tracing::warn!(
+                            workarea = %workarea_id,
+                            error = %e,
+                            "apply_session_event: live-session probe failed; skipping finish"
+                        );
+                        return;
+                    }
+                }
+            }
+            // Message / ToolCall / ToolResult / TurnComplete / ContextUsage /
+            // CheckpointCreated do not drive the workarea FSM.
+            _ => return,
+        };
+
+        match self.transition_workarea(workarea_id, fsm_event).await {
+            Ok(_) => {}
+            // Soft-rejects (FAILED_PRECONDITION) are expected: the same event
+            // may re-apply, or arrive in a state with no edge. Log at debug.
+            Err(Error::Policy(_)) => {}
+            Err(e) => tracing::warn!(
+                workarea = %workarea_id,
+                error = %e,
+                "apply_session_event: transition failed"
+            ),
+        }
+    }
+
+    /// Task 307: spawn the background pump that drives the workarea FSM
+    /// from Agent Supervisor session events.
+    ///
+    /// Mirrors the Suggestion Engine's `spawn_session_pump`
+    /// ([`crate::suggestions`]): a 1 s poll over live sessions
+    /// (`sessions WHERE ended_at IS NULL`) subscribes — once each — to every
+    /// session's [`AgentEvent`] broadcast (with replay so a fast-finishing
+    /// echo session's burst is not missed) and forwards each event into
+    /// [`Self::apply_session_event`]. After a session ends, a final poll
+    /// still observes the row until `ended_at` is set; the per-session pump
+    /// task exits when the broadcast channel closes.
+    ///
+    /// Run from `boot.rs` once the supervisor handle exists; cancelled when
+    /// the root `shutdown` token fires.
+    #[cfg(unix)]
+    pub fn spawn_session_fsm_pump(
+        &self,
+        supervisor: AgentSupervisorHandle,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) {
+        let handle = self.clone();
+        tokio::spawn(async move {
+            use concerto_persist::SessionId;
+            use std::collections::HashSet;
+
+            let mut attached: HashSet<SessionId> = HashSet::new();
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = tick.tick() => {
+                        let live = match list_all_live_sessions(&handle.persistence).await {
+                            Ok(rows) => rows,
+                            Err(e) => {
+                                tracing::debug!(error = %e, "workarea.fsm_pump: list failed");
+                                continue;
+                            }
+                        };
+                        for (workarea_id, session_id) in live {
+                            if !attached.insert(session_id.clone()) {
+                                continue;
+                            }
+                            let Some((replay, mut rx)) =
+                                supervisor.subscribe_events_with_replay(&session_id).await
+                            else {
+                                // Session vanished between poll + subscribe;
+                                // forget it so a later tick can retry.
+                                attached.remove(&session_id);
+                                continue;
+                            };
+                            // Replay the buffered burst first so a session
+                            // that started + finished between two ticks still
+                            // drives `running` → `finished`.
+                            for ev in replay {
+                                handle.apply_session_event(&workarea_id, &ev).await;
+                            }
+                            let pump = handle.clone();
+                            let wid = workarea_id.clone();
+                            tokio::spawn(async move {
+                                while let Ok(ev) = rx.recv().await {
+                                    pump.apply_session_event(&wid, &ev).await;
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+            tracing::debug!("workarea.fsm_pump exited");
+        });
+    }
+
+    /// Task 307: hard-pause a workarea (`design/03 R-9`). Stops every live
+    /// session via the Agent Supervisor, then funnels `Pause` through
+    /// [`Self::transition_workarea`] → `paused`.
+    pub async fn pause_workarea(&self, id: &WorkareaId) -> Result<Workarea> {
+        // Ensure the workarea exists before stopping sessions (404 maps
+        // cleanly; stop_live_sessions is a best-effort no-op otherwise).
+        if self.get(id).await?.is_none() {
+            return Err(Error::NotFound(format!("workarea {id} not found")));
+        }
+        self.stop_live_sessions(id).await;
+        self.transition_workarea(id, crate::workspace_manager::fsm::WorkareaEvent::Pause)
+            .await
+    }
+
+    /// Task 307: resume a paused workarea (`design/03 R-9`). Funnels
+    /// `Resume` through [`Self::transition_workarea`] → `active`. Cold-resume
+    /// of the actual sessions is the user's next action (start/restart), not
+    /// automatic.
+    pub async fn resume_workarea(&self, id: &WorkareaId) -> Result<Workarea> {
+        self.transition_workarea(id, crate::workspace_manager::fsm::WorkareaEvent::Resume)
+            .await
+    }
+
     /// Best-effort: ask the Agent Supervisor to stop every session whose
     /// `ended_at IS NULL` for `workarea_id`. Errors are logged and
     /// swallowed — the archive cascade owns the eventual DB state via
@@ -882,6 +1243,29 @@ fn allocate_composer(used: &std::collections::HashSet<String>) -> Option<String>
         }
     }
     None
+}
+
+/// Every live session as `(workarea_id, session_id)` (`ended_at IS NULL`).
+/// Used by the Task-307 FSM pump to find sessions to subscribe to. Reads
+/// the read-only pool so it does not contend with writers.
+#[cfg(unix)]
+async fn list_all_live_sessions(
+    persistence: &Arc<Persistence>,
+) -> Result<Vec<(WorkareaId, concerto_persist::SessionId)>> {
+    use sqlx::Row as _;
+    let rows = sqlx::query("SELECT id, workarea_id FROM sessions WHERE ended_at IS NULL")
+        .fetch_all(persistence.readers())
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                WorkareaId(r.get::<String, _>("workarea_id")),
+                concerto_persist::SessionId(r.get::<String, _>("id")),
+            )
+        })
+        .collect())
 }
 
 fn validate_permission_mode(mode: &str) -> Result<()> {

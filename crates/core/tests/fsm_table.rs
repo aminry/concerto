@@ -51,6 +51,16 @@ fn expected(state: WorkareaState, event: WorkareaEvent) -> Option<WorkareaState>
         (Finished, Archive) => Some(Archived),
         (Finished, AdoptCrashed) => Some(Crashed),
 
+        // From Partial (Task 307: multi-repo workarea with ≥1 failed
+        // worktree-add). No `Session*` event PRODUCES Partial — it is
+        // stamped inside `create_workarea` like Active. From Partial a
+        // session can start, a retry-success resumes to Active, and
+        // Archive/AdoptCrashed behave normally.
+        (Partial, SessionStarted) => Some(Running),
+        (Partial, SessionResumed) => Some(Active),
+        (Partial, Archive) => Some(Archived),
+        (Partial, AdoptCrashed) => Some(Crashed),
+
         // From Crashed.
         (Crashed, SessionStarted) => Some(Running),
         (Crashed, Archive) => Some(Archived),
@@ -98,17 +108,46 @@ fn every_pair_matches_expected_table() {
             }
         }
     }
-    // Cardinality sanity: 8 states × 10 events = 80 pairs.
-    assert_eq!(legal + illegal, 80, "must cover every (state, event) pair");
+    // Cardinality sanity: 9 states × 10 events = 90 pairs (Task 307 adds
+    // the `Partial` state).
+    assert_eq!(legal + illegal, 90, "must cover every (state, event) pair");
     // Sanity: the design's `§3.1` graph allows a small number of legal
     // transitions; if this number changes accidentally (e.g. a typo
     // gives an event a new edge), the test surfaces it.
     // 4 (Active) + 6 (Running) + 6 (Awaiting) + 3 (Paused) + 3 (Finished)
-    // + 2 (Crashed) + 1 (Created) + 2 (Archived) = 27 legal pairs.
+    // + 4 (Partial) + 2 (Crashed) + 1 (Created) + 2 (Archived) = 31 legal.
     assert_eq!(
-        legal, 27,
+        legal, 31,
         "legal transition count drifted; review the table"
     );
+}
+
+#[test]
+fn no_session_event_produces_partial() {
+    // Task 307: `Partial` is reachable ONLY via `create_workarea` (it is
+    // stamped like `Active`). No `(state, Session*) -> Partial` edge may
+    // exist — the FSM must never land a workarea in `partial` from a live
+    // session event.
+    use WorkareaEvent::*;
+    let session_events = [
+        SessionStarted,
+        SessionAwaiting,
+        SessionResumed,
+        SessionFinished,
+        SessionCrashed,
+    ];
+    for &state in &WorkareaState::ALL {
+        for &event in &session_events {
+            if let Ok(next) = transition(state, event) {
+                assert_ne!(
+                    next,
+                    WorkareaState::Partial,
+                    "no session event may produce Partial; \
+                     transition({state:?}, {event:?}) -> Partial"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -133,6 +172,7 @@ fn sql_form_is_stable() {
         (WorkareaState::Awaiting, "awaiting"),
         (WorkareaState::Paused, "paused"),
         (WorkareaState::Finished, "finished"),
+        (WorkareaState::Partial, "partial"),
         (WorkareaState::Crashed, "crashed"),
         (WorkareaState::Archived, "archived"),
     ];

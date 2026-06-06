@@ -1105,6 +1105,11 @@ fn map_workarea_event(ev: WorkareaEvent) -> Event {
         WorkareaEvent::Created(wa) => (wa.id.to_string(), "created".to_string()),
         WorkareaEvent::Archived(id) => (id.to_string(), "archived".to_string()),
         WorkareaEvent::Restored(wa) => (wa.id.to_string(), "restored".to_string()),
+        // Task 307: the FSM funnel broadcasts the new status as the
+        // `kind` (`status:<to>`) so existing clients keep parsing the
+        // opaque `kind` string without a proto change.
+        WorkareaEvent::StatusChanged { id, to, .. } => (id.to_string(), format!("status:{to}")),
+        WorkareaEvent::PartialCreate { id, .. } => (id.to_string(), "partial".to_string()),
     };
     Event {
         offset: 0,
