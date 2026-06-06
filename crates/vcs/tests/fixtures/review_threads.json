@@ -1,0 +1,33 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "RT_kwDOABCD1",
+              "isResolved": false,
+              "path": "src/main.rs",
+              "comments": {
+                "nodes": [
+                  { "author": { "login": "octocat" }, "body": "This nil check is missing." },
+                  { "author": { "login": "hubber" }, "body": "Good catch, will fix." }
+                ]
+              }
+            },
+            {
+              "id": "RT_kwDOABCD2",
+              "isResolved": true,
+              "path": null,
+              "comments": {
+                "nodes": [
+                  { "author": { "login": "octocat" }, "body": "Overall LGTM." }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

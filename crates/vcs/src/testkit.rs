@@ -146,6 +146,48 @@ impl FakeGitHub {
             .await;
     }
 
+    /// Mount a `POST /graphql` → JSON response (status 200), the GitHub GraphQL
+    /// review-thread query/mutation double (Task 316). When a test needs to
+    /// distinguish the query from the mutation, use
+    /// [`FakeGitHub::mount_graphql_matching`] instead (body substring match).
+    pub async fn mount_graphql(&self, body: serde_json::Value) {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mount a `POST /graphql` whose request body contains `needle` → JSON
+    /// `body` (Task 316). Lets one fake serve the review-thread query and the
+    /// `resolveReviewThread` mutation distinctly (match on `"reviewThreads"`
+    /// vs `"resolveReviewThread"`). wiremock matches the most-recently-mounted
+    /// matcher first, so mount the more specific needle last.
+    pub async fn mount_graphql_matching(&self, needle: &str, body: serde_json::Value) {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(wiremock::matchers::body_string_contains(needle))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Count the `POST /graphql` requests the fake has served (Task 316's
+    /// cache-hit assertion: a cached read makes NO second GraphQL call).
+    pub async fn graphql_request_count(&self) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .map(|reqs| {
+                reqs.iter()
+                    .filter(|r| {
+                        r.method == wiremock::http::Method::POST && r.url.path() == "/graphql"
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// Mount a `GET <path>` → `403` with `X-RateLimit-Remaining: 0` (the
     /// `design/13 §8` exhaustion row). Task 314 asserts the call fails with the
     /// typed `RateLimited{reset_at}` error.

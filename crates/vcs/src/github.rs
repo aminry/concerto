@@ -22,9 +22,10 @@
 //! — see [`GitHubProvider::last_rate_limit_headers`], which the dispatcher reads
 //! into [`RateLimitPools`](crate::RateLimitPools).
 //!
-//! The GraphQL methods (`list_review_threads`/`resolve_thread`) are
-//! signature-frozen stubs returning [`unimplemented_err`] — Task 316 fills them.
-//! `revert_pr` is likewise a frozen stub (the revert-commit-by-default mechanics
+//! The GraphQL methods (`list_review_threads`/`resolve_thread`) are implemented
+//! (Task 316) by POSTing hand-rolled queries to `<base>/graphql` through the
+//! same header-capturing `request_json` path (see [`crate::github_graphql`]).
+//! `revert_pr` is still a frozen stub (the revert-commit-by-default mechanics
 //! land with the coordinated-merge loop, Task 320).
 
 use std::sync::{Arc, Mutex};
@@ -35,6 +36,10 @@ use http_body_util::BodyExt;
 use serde::Deserialize;
 use url::Url;
 
+use crate::github_graphql::{
+    resolve_thread_body, review_threads_body, split_repo_full_name, ResolveThreadResponse,
+    ReviewThreadsResponse,
+};
 use crate::provider::{
     unimplemented_err, CheckRun, CreatePrRequest, Deployment, Issue, MergeMethod, MergeReport,
     ProviderPrId, PullRequest, RevertReport, ReviewThread, ThreadId, VcsProvider,
@@ -500,6 +505,12 @@ struct GhDeployment {
 }
 
 #[derive(Debug, Deserialize)]
+struct GhDeploymentStatus {
+    #[serde(default)]
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct GhLabel {
     name: String,
 }
@@ -590,35 +601,97 @@ impl VcsProvider for GitHubProvider {
         ))
     }
 
-    async fn list_review_threads(&self, _id: ProviderPrId) -> Result<Vec<ReviewThread>> {
-        // GraphQL — signature frozen; Task 316 supplies the query.
-        Err(unimplemented_err(
-            "GitHubProvider::list_review_threads (GraphQL; filled by Task 316)",
-        ))
+    async fn list_review_threads(&self, id: ProviderPrId) -> Result<Vec<ReviewThread>> {
+        // GraphQL — review threads are GraphQL-only on GitHub (`design/13 §3.6`).
+        // POST one query to `/graphql` through the same header-capturing path
+        // the REST methods use (so it bills Task 314's rate-limit pool).
+        let (owner, name) = split_repo_full_name(&id.repo_full_name).ok_or_else(|| {
+            Error::Validation(format!(
+                "list_review_threads: repo `{}` is not owner/repo",
+                id.repo_full_name
+            ))
+        })?;
+        let body = review_threads_body(owner, name, id.number);
+        let resp: ReviewThreadsResponse = self
+            .request_json(http::Method::POST, "/graphql", Some(body))
+            .await?;
+        if let Some(errors) = resp.errors {
+            if let Some(first) = errors.into_iter().next() {
+                return Err(Error::Vcs(format!(
+                    "github graphql (review threads): {}",
+                    first.message
+                )));
+            }
+        }
+        let nodes = resp
+            .data
+            .and_then(|d| d.repository)
+            .and_then(|r| r.pull_request)
+            .and_then(|p| p.review_threads)
+            .map(|c| c.nodes)
+            .unwrap_or_default();
+        Ok(nodes.into_iter().map(|n| n.into_review_thread()).collect())
     }
 
-    async fn resolve_thread(&self, _id: ThreadId) -> Result<()> {
-        Err(unimplemented_err(
-            "GitHubProvider::resolve_thread (GraphQL; filled by Task 316)",
-        ))
+    async fn resolve_thread(&self, id: ThreadId) -> Result<()> {
+        // The `resolveReviewThread` GraphQL mutation (`design/13 §3.6`).
+        let body = resolve_thread_body(&id.0);
+        let resp: ResolveThreadResponse = self
+            .request_json(http::Method::POST, "/graphql", Some(body))
+            .await?;
+        if let Some(errors) = resp.errors {
+            if let Some(first) = errors.into_iter().next() {
+                return Err(Error::Vcs(format!(
+                    "github graphql (resolve thread): {}",
+                    first.message
+                )));
+            }
+        }
+        // Confirm the server reports the thread resolved; a missing payload or a
+        // still-unresolved flag is a logical failure to surface to the caller.
+        let resolved = resp
+            .data
+            .and_then(|d| d.resolve_review_thread)
+            .and_then(|p| p.thread)
+            .map(|t| t.is_resolved)
+            .unwrap_or(false);
+        if !resolved {
+            return Err(Error::Vcs(format!(
+                "github graphql: resolveReviewThread({}) did not resolve the thread",
+                id.0
+            )));
+        }
+        Ok(())
     }
 
     async fn list_deployments(&self, repo: &str, ref_: &str) -> Result<Vec<Deployment>> {
         let route = format!("/repos/{repo}/deployments?ref={ref_}");
         let deployments: Vec<GhDeployment> =
             self.request_json(http::Method::GET, &route, None).await?;
-        // The latest deployment status requires a second call per deployment
-        // (Task 316 aggregates them); this task lists deployments with an empty
-        // `state` placeholder. Signature + listing frozen now.
-        Ok(deployments
-            .into_iter()
-            .map(|d| Deployment {
+        // Task 316: aggregate each deployment's latest status with a second call
+        // to `/deployments/{id}/statuses` (the statuses endpoint returns them
+        // newest-first; the head is the current state). A deployment with no
+        // status yet keeps an empty `state`.
+        let mut out = Vec::with_capacity(deployments.len());
+        for d in deployments {
+            let status_route = format!("/repos/{repo}/deployments/{}/statuses?per_page=1", d.id);
+            let statuses: Vec<GhDeploymentStatus> = self
+                .request_json(http::Method::GET, &status_route, None)
+                .await
+                .unwrap_or_default();
+            let state = statuses
+                .into_iter()
+                .next()
+                .map(|s| s.state)
+                .unwrap_or_default();
+            out.push(Deployment {
                 id: d.id.to_string(),
                 environment: d.environment,
-                state: String::new(),
+                state,
                 ref_: d.ref_,
-            })
-            .collect())
+            });
+        }
+        Ok(out)
     }
 
     async fn fetch_issue(&self, url: &Url) -> Result<Option<Issue>> {

@@ -174,6 +174,96 @@ message SetVcsCredentialRequest {
   optional int64 expires_at = 5;
 }
 
+// A single review-thread comment (Task 316, design/13 §3.6). `body` is the
+// comment text; `author` is the GitHub login. Field numbers FROZEN.
+message ReviewThreadComment {
+  string author = 1;
+  string body = 2;
+}
+
+// A review thread on a PR (Task 316, design/13 §3.6/§3.8). GraphQL-sourced,
+// never persisted to SQLite (GitHub is canonical). `id` is the GraphQL node
+// id (the `ResolveThread` mutation key). Field numbers FROZEN.
+message ReviewThread {
+  // The GraphQL thread node id.
+  string id = 1;
+  // Whether the thread is resolved.
+  bool resolved = 2;
+  // The file path the thread is anchored to; empty for PR-level threads.
+  string path = 3;
+  // The thread's comments, oldest first.
+  repeated ReviewThreadComment comments = 4;
+}
+
+// A deployment + its latest aggregated status (Task 316, design/13 §3.8). The
+// `state` is the most-recent deployment-status (`success|failure|in_progress|
+// queued|...`), empty when the deployment has no status yet. Field numbers
+// FROZEN.
+message Deployment {
+  string id = 1;
+  string environment = 2;
+  string state = 3;
+  // The git ref / SHA this deployment targets.
+  string ref = 4;
+}
+
+// Inputs for `Vcs.ListReviewThreads` (Task 316). Resolves the PR by
+// `(repository_id, pr_number)`; the server fetches the threads via GitHub's
+// GraphQL API, caches them in memory keyed by PR (refresh-on-open), and emits
+// `pr.thread_updated` on `checks.<workarea_id>.<repository_id>` when they
+// change. `workarea_id` scopes the emitted subject (the threads cache is per
+// PR; the event is per (workarea, repo)).
+message ListReviewThreadsRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  int64 pr_number = 3;
+}
+
+message ListReviewThreadsResponse {
+  repeated ReviewThread threads = 1;
+}
+
+// Inputs for `Vcs.ResolveThread` (Task 316). `thread_id` is the GraphQL thread
+// node id from `ListReviewThreads`. On success the server runs the
+// `resolveReviewThread` GraphQL mutation, updates the cached thread's resolved
+// flag, and emits `pr.thread_updated`. `workarea_id`/`repository_id` scope the
+// emitted `checks.<wa>.<repo>` subject.
+message ResolveThreadRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  string thread_id = 3;
+}
+
+// Inputs for `Vcs.ListDeployments` (Task 316). Lists the repository's
+// deployments for `ref` and aggregates each one's latest status, caching the
+// result and emitting `pr.deployment_updated` on change.
+message ListDeploymentsRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  // The git ref / SHA to list deployments for.
+  string ref = 3;
+}
+
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+}
+
+// Inputs for `Vcs.SendThreadToAgent` (Task 316, design/13 §3.6 "Send to
+// agent"). Composes a message with the review-thread context attached and
+// posts it to a user-picked session of the workarea (the Core-side
+// compose+route; the UI picker is Task 324). `session_id` is the target
+// session within the workarea.
+message SendThreadToAgentRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  // The PR the thread belongs to (locates/refreshes the thread cache).
+  int64 pr_number = 3;
+  // The GraphQL thread node id whose context is attached.
+  string thread_id = 4;
+  // The target session within the workarea (the user-picked session).
+  string session_id = 5;
+}
+
 // V0.1 VCS service surface, frozen at Task 45. The five RPCs cover the
 // GitHub operations the Workarea + Maestro subsystems need for the
 // V0.1 demo path: create a PR, look it up, merge it, see its checks,
@@ -194,4 +284,18 @@ service Vcs {
   // obtained via its webview (Desktop-mediated OAuth, D6) → OS keychain
   // (Task 317).
   rpc SetVcsCredential(SetVcsCredentialRequest) returns (google.protobuf.Empty);
+  // List a PR's review threads via GitHub GraphQL (Task 316, design/13 §3.6).
+  // Cached in memory (never SQLite); emits `pr.thread_updated` on change.
+  // Additive above the FROZEN Task-45 five + Task-317's two.
+  rpc ListReviewThreads(ListReviewThreadsRequest) returns (ListReviewThreadsResponse);
+  // Mark a review thread resolved via the `resolveReviewThread` GraphQL
+  // mutation (Task 316); updates the cache + emits `pr.thread_updated`.
+  rpc ResolveThread(ResolveThreadRequest) returns (google.protobuf.Empty);
+  // List a repository's deployments for a ref + aggregate their statuses
+  // (Task 316); emits `pr.deployment_updated` on change.
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  // Compose a message with a review thread's context attached + post it to a
+  // user-picked session of the workarea (Task 316, design/13 §3.6 "Send to
+  // agent"; the UI picker is Task 324).
+  rpc SendThreadToAgent(SendThreadToAgentRequest) returns (google.protobuf.Empty);
 }

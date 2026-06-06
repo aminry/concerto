@@ -670,12 +670,19 @@ where
             ));
             builder = builder.add_service(sessions_service);
         }
-        if let (Some(supervisor), Some(workspace_mgr), Some(workarea_mgr)) =
-            (agent_supervisor, workspace_manager, workarea_manager)
-        {
+        if let (Some(supervisor), Some(workspace_mgr), Some(workarea_mgr)) = (
+            agent_supervisor.clone(),
+            workspace_manager,
+            workarea_manager,
+        ) {
             let mut handler = StreamsHandler::new(supervisor, workspace_mgr, workarea_mgr);
             if let Some(suggestions) = suggestions.clone() {
                 handler = handler.with_suggestions(suggestions);
+            }
+            // Task 316: wire the VCS aggregator's `checks.<wa>.<repo>` event
+            // broadcast as the producer for the `checks.*` subject.
+            if let Some(vcs) = vcs.as_ref() {
+                handler = handler.with_vcs_events(vcs.checks_sender());
             }
             let streams_service = StreamsServer::new(handler);
             builder = builder.add_service(streams_service);
@@ -694,7 +701,18 @@ where
         builder = builder.add_service(skills_service);
     }
     if let Some(vcs) = vcs {
-        let vcs_service = VcsServer::new(VcsHandler::new(vcs));
+        #[allow(unused_mut)]
+        let mut vcs_handler = VcsHandler::new(vcs);
+        // Task 316: the "Send to agent" sink needs the `#[cfg(unix)]` agent
+        // supervisor. On a non-unix Core the sink stays `None` and
+        // `SendThreadToAgent` returns `UNIMPLEMENTED`.
+        #[cfg(unix)]
+        if let Some(supervisor) = agent_supervisor.clone() {
+            use crate::handlers::vcs::AgentSupervisorSink;
+            vcs_handler = vcs_handler
+                .with_session_sink(std::sync::Arc::new(AgentSupervisorSink::new(supervisor)));
+        }
+        let vcs_service = VcsServer::new(vcs_handler);
         builder = builder.add_service(vcs_service);
     }
     if let (Some(pairing), Some(device_manager)) = (pairing, device_manager) {

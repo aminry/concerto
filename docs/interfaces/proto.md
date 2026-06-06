@@ -1127,6 +1127,36 @@ message Event {
     // Field number 16 — additive above Task 202's `gap_detected = 15`.
     TransportEvent transport = 16;
   }
+  // Task 316 (design/13 §5.3, PHASE3_PLANNING §2): the opaque VCS-event
+  // carrier for the `checks.<workarea_id>.<repository_id>` subject. This is
+  // a NON-ONEOF field (a sibling of `body`, NOT a oneof arm) so the FROZEN
+  // `body` oneof stays untouched (frozen through field 16) and every
+  // existing client ignores it. Set ONLY on `checks.<wa>.<repo>` events
+  // (the `body` oneof is then empty); the per-subject pump tolerates a
+  // body-less Event carrying only this field (offset/at are separate).
+  //
+  // FROZEN frame format (Task 324 parses it): a deterministic JSON object
+  //   {
+  //     "kind": "thread_updated" | "check_run_updated" | "deployment_updated",
+  //     "workarea_id":   "<workarea uuid>",
+  //     "repository_id": "<repository uuid>",
+  //     "entity": { ...the changed thread / check-run set / deployment set }
+  //   }
+  // where, by `kind`, `entity` is:
+  //   thread_updated:     { "id": "<thread node id>", "resolved": <bool>,
+  //                         "path": "<file path>" | null,
+  //                         "comments": ["<body>", ...] }
+  //   check_run_updated:  { "sha": "<head sha>",
+  //                         "runs": [ { "name", "status", "conclusion",
+  //                                     "details_url" }, ... ] }
+  //   deployment_updated: { "ref": "<git ref/sha>",
+  //                         "deployments": [ { "id", "environment", "state",
+  //                                            "ref" }, ... ] }
+  // JSON (not CBOR) matches the human-readable, schema-light shape the rest
+  // of the streams surface uses; the field is `bytes` so the frame can
+  // evolve additively without a proto change. Field 17 — first free number
+  // on `Event`, additive above the oneof's 16.
+  optional bytes checks_opaque = 17;
 }
 ```
 
@@ -1627,6 +1657,104 @@ message SetVcsCredentialRequest {
 }
 ```
 
+### message `ReviewThreadComment`
+
+```proto
+message ReviewThreadComment {
+  string author = 1;
+  string body = 2;
+}
+```
+
+### message `ReviewThread`
+
+```proto
+message ReviewThread {
+  // The GraphQL thread node id.
+  string id = 1;
+  // Whether the thread is resolved.
+  bool resolved = 2;
+  // The file path the thread is anchored to; empty for PR-level threads.
+  string path = 3;
+  // The thread's comments, oldest first.
+  repeated ReviewThreadComment comments = 4;
+}
+```
+
+### message `Deployment`
+
+```proto
+message Deployment {
+  string id = 1;
+  string environment = 2;
+  string state = 3;
+  // The git ref / SHA this deployment targets.
+  string ref = 4;
+}
+```
+
+### message `ListReviewThreadsRequest`
+
+```proto
+message ListReviewThreadsRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  int64 pr_number = 3;
+}
+```
+
+### message `ListReviewThreadsResponse`
+
+```proto
+message ListReviewThreadsResponse {
+  repeated ReviewThread threads = 1;
+}
+```
+
+### message `ResolveThreadRequest`
+
+```proto
+message ResolveThreadRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  string thread_id = 3;
+}
+```
+
+### message `ListDeploymentsRequest`
+
+```proto
+message ListDeploymentsRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  // The git ref / SHA to list deployments for.
+  string ref = 3;
+}
+```
+
+### message `ListDeploymentsResponse`
+
+```proto
+message ListDeploymentsResponse {
+  repeated Deployment deployments = 1;
+}
+```
+
+### message `SendThreadToAgentRequest`
+
+```proto
+message SendThreadToAgentRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  // The PR the thread belongs to (locates/refreshes the thread cache).
+  int64 pr_number = 3;
+  // The GraphQL thread node id whose context is attached.
+  string thread_id = 4;
+  // The target session within the workarea (the user-picked session).
+  string session_id = 5;
+}
+```
+
 ### service `Vcs`
 
 ```proto
@@ -1644,6 +1772,20 @@ service Vcs {
   // obtained via its webview (Desktop-mediated OAuth, D6) → OS keychain
   // (Task 317).
   rpc SetVcsCredential(SetVcsCredentialRequest) returns (google.protobuf.Empty);
+  // List a PR's review threads via GitHub GraphQL (Task 316, design/13 §3.6).
+  // Cached in memory (never SQLite); emits `pr.thread_updated` on change.
+  // Additive above the FROZEN Task-45 five + Task-317's two.
+  rpc ListReviewThreads(ListReviewThreadsRequest) returns (ListReviewThreadsResponse);
+  // Mark a review thread resolved via the `resolveReviewThread` GraphQL
+  // mutation (Task 316); updates the cache + emits `pr.thread_updated`.
+  rpc ResolveThread(ResolveThreadRequest) returns (google.protobuf.Empty);
+  // List a repository's deployments for a ref + aggregate their statuses
+  // (Task 316); emits `pr.deployment_updated` on change.
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  // Compose a message with a review thread's context attached + post it to a
+  // user-picked session of the workarea (Task 316, design/13 §3.6 "Send to
+  // agent"; the UI picker is Task 324).
+  rpc SendThreadToAgent(SendThreadToAgentRequest) returns (google.protobuf.Empty);
 }
 ```
 
