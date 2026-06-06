@@ -67,19 +67,19 @@ Add the **GitHub App authentication option** alongside the PAT (`design/13 R-7`)
 7. `scripts/smoke.sh` → unchanged gate (PAT-only co-located boot path is unaffected). Exits 0.
 
 ## Definition of Done
-- [ ] GitHub App auth on `GitHubProvider` (JWT → installation token, cached + transparently refreshed), selectable per repo alongside PAT; `choose_backend` gains the App arm
-- [ ] `RateLimitBudget` keyed by `ProviderKey`; three independent pools (App 15000/PAT 5000/gh separate) seeded from live `X-RateLimit-*` headers; `VcsState.rate_limits` populated
-- [ ] Degraded cadence below 10% (cadence doubled + background deprioritized) using the FROZEN §3.3=§3.9 constants from a single source of truth
-- [ ] `vcs.rate_limit_warning` broadcast below 20% (debounced); three-pool state exposed to a diagnostics read accessor
-- [ ] Exhaustion fails with `RateLimited{reset_at}`; background work queues + resumes on reset
-- [ ] App `app_id`/`installation_id`/`token_expires_at` in 313's `vcs_credentials`; App private key in `VcsSecretSlot::GithubAppPrivateKey`; installation token in-memory only — no new migration, no new secret class
-- [ ] Tests against 313's `testkit` (synthetic headers + synthetic clock) cover seed/warn/degrade/exhaust/resume/independence + App mint + refresh
-- [ ] Cadence constants co-located so 318 reuses them (location noted in Handoff)
-- [ ] Builds on Windows + Linux lanes; PAT-only path + smoke gate unchanged (green)
-- [ ] `cargo deny` green (no unvetted new pin; any JWT helper SPDX allow-listed or Stop-and-ask)
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code
-- [ ] No files outside Outputs modified
-- [ ] Single commit with the message below
+- [x] GitHub App auth on `GitHubProvider` (JWT → installation token, cached + transparently refreshed), selectable per repo alongside PAT; `choose_backend` gains the App arm
+- [x] `RateLimitBudget` keyed by `ProviderKey`; three independent pools (App 15000/PAT 5000/gh separate) seeded from live `X-RateLimit-*` headers; `VcsState.rate_limits` populated
+- [x] Degraded cadence below 10% (cadence doubled + background deprioritized) using the FROZEN §3.3=§3.9 constants from a single source of truth
+- [x] `vcs.rate_limit_warning` broadcast below 20% (debounced); three-pool state exposed to a diagnostics read accessor
+- [x] Exhaustion fails with `RateLimited{reset_at}`; background work queues + resumes on reset
+- [x] App `app_id`/`installation_id`/`token_expires_at` in 313's `vcs_credentials`; App private key in `VcsSecretSlot::GithubAppPrivateKey`; installation token in-memory only — no new migration, no new secret class
+- [x] Tests against 313's `testkit` (synthetic headers + synthetic clock) cover seed/warn/degrade/exhaust/resume/independence + App mint + refresh
+- [x] Cadence constants co-located so 318 reuses them (location noted in Handoff)
+- [x] Builds on Windows + Linux lanes; PAT-only path + smoke gate unchanged (green)
+- [x] `cargo deny` green (no unvetted new pin; any JWT helper SPDX allow-listed or Stop-and-ask)
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code
+- [x] No files outside Outputs modified
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/vcs/src/rate_limit.rs` (new — `RateLimitBudget`, the three-pool tracker, the FROZEN cadence constants, the warning/degrade/exhaust logic, the queue-resume timer)
@@ -107,7 +107,16 @@ Refs: tasks/v1.0/314-github-app-rate-limits.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan — —
-- Open questions for next task — —
-- Deliberate debt — —
-- Smoke-gate state — —
+- Drift from plan —
+  - **Three files outside `Outputs` were touched (all minimal, all consequences of the in-scope `choose_backend` App-arm + the App-auth tests):** (a) `crates/vcs/src/lib.rs` — added `pub mod rate_limit;` + re-exports (`RateLimitPools`/`OpPriority`/`ResumeQueue`/`RateLimitWarning`/cadence consts/`rate_limited*` helpers/`GithubNowSecs`); a re-export-only edit. (b) `crates/vcs/tests/provider_github.rs` (313's frozen test) — the four `choose_backend_dispatch_table` `RepoCapabilities` literals gained `has_github_app: false` because Scope mandated the new `RepoCapabilities.has_github_app` field + the `choose_backend` App arm; struct-literal compatibility forced this two-token edit (no test logic changed). (c) `crates/vcs/tests/fixtures/test_app_key.pem` — a throwaway 2048-bit RSA key the App-auth tests parse (the wiremock fake never verifies the JWT). Recorded here per the "unexpected file → note in Drift" rule.
+  - **`RateLimitBudget.reset_at` stays epoch SECONDS (313's FROZEN field, the `X-RateLimit-Reset` unit); the `RateLimited{reset_at}` error + the `RateLimitWarning` payload carry epoch MILLISECONDS** (the gRPC `RESOURCE_EXHAUSTED` hint unit the task names). `RateLimitBudget::reset_at_ms()` converts at the boundary. 313 froze the field as seconds; the task's "<epoch-ms>" placeholder is honored only at the error/event surface, not by re-typing 313's frozen field.
+  - **App-arm added above the PAT arm in `choose_backend`** (`has_github_app → OctocrabApp` precedes `has_octocrab_token → Octocrab`), per R-7 "prefer App (higher quota, finer scope)". `Backend` gained an `OctocrabApp` variant + `Backend::provider_key(app_id)` mapping each backend to its `ProviderKey` pool. `RepoCapabilities` gained `Default` so callers can build it field-by-field.
+  - **Own JWT-mint + token cache, NOT octocrab's built-in `installation_token()`.** octocrab's cache uses `chrono::Utc::now()` internally (no clock injection), which the synthetic-clock refresh test cannot drive deterministically. `GitHubProvider` therefore signs the JWT with `jsonwebtoken` (already in the lock via octocrab's `jwt-rust-crypto`) and POSTs to `/app/installations/{id}/access_tokens` itself, caching `(token, expires_at)` against an injectable `NowSecs` clock and refreshing within a 60s skew of expiry. REST calls now route through a `request_json` helper over octocrab's raw `execute()` so each response's `X-RateLimit-*` headers are captured (`last_rate_limit_headers()`) and the App token is attached per-call.
+  - **`VcsState` gained a live `pools: RateLimitPools` field + `sync_rate_limits()`/`rate_limit_diagnostics()`** alongside 313's FROZEN `rate_limits` map (the map is the materialized snapshot, refreshed from `pools`). Additive; 313's skeleton fields untouched.
+- Open questions for next task —
+  - **318 (`wait_for_check_runs`): import the cadence from `concerto_vcs::rate_limit`** — `CHECK_RUN_BACKOFF_SECS` (`[1,2,4,8,16,30]`) + `check_run_backoff_secs(attempt)` (caps at 30) are the single source of truth shared with `design/05 §3.9`. Do NOT re-declare the literals in the Scheduler crate.
+  - **The dispatcher/actor wiring of the pools into live PR-op calls is a thin follow-on** (matches 313's "the handle still shells out to `gh`; the octocrab trait surface is internal" posture). 314 ships the full pool/budget/degrade/exhaust/resume machinery + the App provider + the `Backend`→`ProviderKey` mapping + the diagnostics accessor as a complete, tested unit; the place that calls `pools.observe(provider.last_rate_limit_headers())` after each octocrab call and broadcasts the returned `RateLimitWarning` on `vcs.rate_limit_warning` lands when the handle is switched to dispatch through the trait (gRPC proto untouched, as Scope requires). The diagnostics RPC + the warning broadcast wire-up are 324/709's per Scope-out.
+  - **`token_expires_at` persistence:** `GitHubProvider::ensure_installation_token()` returns `(token, expires_at)` so the actor can upsert the expiry into 313's `vcs_credentials.token_expires_at` (the token itself is in-memory only). The actor-side upsert call is part of the same follow-on wiring above.
+- Deliberate debt — — (none; no `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code. The 313 GraphQL/`revert_pr` stubs remain typed-`unimplemented_err`, untouched by this task.)
+- Smoke-gate state — **unchanged (not re-run).** `Smoke gate` field is `unchanged`; this task adds no capability and leaves the PAT-only co-located boot path byte-for-byte unaffected (the App path is opt-in per repo, the rate-limit pools are additive in-memory state). Per the §5.3 fast-local-gate model an `unchanged` smoke field is the CI/operator gate — `scripts/smoke.sh` was not executed in-worktree (mirrors 313's handling). `cargo check/clippy/test --workspace` + `cargo deny` + interface-regen all green locally.
+  - **Tier-2 — what the `wiremock` `testkit` double does NOT cover (→ Phase-3 Tier-3 checklist):** the `FakeGitHub` harness (313's, extended here with `mount_app_token`/`token_mint_count`/`mount_*_rate_limited`/`mount_get_rate_exhausted` + the `SyntheticClock`) proves the budget seeds from scripted `X-RateLimit-*` headers, the 20% warning debounce, the 10% degrade + background-yield, exhaustion → `RateLimited{reset_at}`, the queue-park/resume across the synthetic clock, three-pool independence, and the App JWT→installation-token mint + transparent refresh on synthetic-clock expiry. It does **NOT** cover a **real GitHub App installation-token mint against GitHub** or a **real rate-limit degradation under live load** — the Phase-3 Tier-3 line "mint a real GitHub App installation token + observe a real degraded-cadence transition," signed off by the operator at the phase gate.

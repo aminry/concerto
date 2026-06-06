@@ -37,6 +37,30 @@ graphql_client = { workspace = true }
 # `ring` rustls posture as octocrab above (Windows-lane clean).
 reqwest = { workspace = true }
 
+# Task 314: the GitHub App option (R-7) mints an installation token by signing a
+# short-lived JWT with the App private key (PEM, from
+# `VcsSecretSlot::GithubAppPrivateKey`). `jsonwebtoken` is ALREADY in the lock at
+# this exact version + feature set — octocrab's `jwt-rust-crypto` feature pins
+# `jsonwebtoken/rust_crypto` (Task-313 pin note). Naming it as a direct dep with
+# the SAME `default-features = false, features = ["use_pem", "rust_crypto"]`
+# leaves `Cargo.lock` byte-identical (no new crate, no new advisory) — the
+# RUSTSEC-2023-0071 (rsa) advisory it pulls is already operator-ratified +
+# ignored in `deny.toml` (Task 313). `rust_crypto`, NOT `aws_lc_rs`, keeps the
+# no-openssl / pure-Rust / Windows-lane posture.
+jsonwebtoken = { version = "10", default-features = false, features = [
+    "use_pem",
+    "rust_crypto",
+] }
+# Task 314: the rate-limit-pool path reads `X-RateLimit-*` headers off octocrab's
+# raw `http::Response` + builds raw `http::Request`s (so the App installation
+# token can be attached per-call + the headers captured). `http`/`http-body-util`/
+# `bytes` are octocrab's own request/response types — already in the lock at these
+# versions (transitive via octocrab/reqwest); naming them direct leaves the lock
+# unchanged. Pure-Rust, cross-platform, already-allowed SPDX.
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+
 # Task 313: octocrab builds on `hyper-rustls`, which needs a process-level rustls
 # `CryptoProvider`. The workspace links BOTH rustls backends (iroh's hickory tree
 # pulls `aws-lc-rs`; octocrab's `rustls-ring` pulls `ring`), so rustls cannot
