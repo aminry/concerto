@@ -37,7 +37,7 @@ use tokio::process::Command;
 /// the caller can surface to the user verbatim.
 ///
 /// Walks `$PATH` once at handle construction (cached on
-/// [`crate::vcs::VcsHandle`]). The walk is `which`-style: split `PATH`
+/// [`crate::VcsHandle`]). The walk is `which`-style: split `PATH`
 /// on the OS separator, probe each entry for `gh` (or `gh.exe` on
 /// Windows for parity, even though V0.1 is macOS-only), return the
 /// first executable hit.

@@ -42,6 +42,11 @@ mem-bench = []
 concerto-error = { path = "../error" }
 concerto-persist = { path = "../persist" }
 concerto-proto = { path = "../proto" }
+# Task 313: the VCS Provider Integration crate (`design/13`). The Core depends
+# on it for the `VcsHandle` (the supervised `VcsProviderActor` wrapping it stays
+# in `src/vcs/mod.rs` since it impls the Core's `Actor` trait). Houses the
+# octocrab/graphql_client tree so the Core's own dep graph stays bounded.
+concerto-vcs = { path = "../vcs" }
 # Task 206: the device-cert issuer (`LocalCoreIssuer`) + the Ed25519 key
 # primitives the Core's identity loader generates/loads. Pure crypto leaf
 # crate (no keychain/DB) — the Core injects the keychain-loaded signing key.

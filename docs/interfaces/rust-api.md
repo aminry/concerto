@@ -475,6 +475,30 @@ pub enum CoreSecretSlot {
 }
 ```
 
+### enum `VcsSecretSlot`
+
+```rust
+pub enum VcsSecretSlot {
+    /// A GitHub App's RSA private key (PEM). `scope_id` = the GitHub App id.
+    /// Used by Task 314 to mint installation tokens.
+    GithubAppPrivateKey,
+    /// A repository's webhook HMAC secret (32 bytes). `scope_id` = the repo id.
+    /// Used by Task 315 to verify inbound webhook signatures.
+    WebhookSecret,
+    /// A Linear OAuth access token (or personal API key, per D6). `scope_id` =
+    /// the Linear provider account id. Used by Task 317.
+    LinearAccessToken,
+    /// A Linear OAuth refresh token. `scope_id` = the Linear provider account id.
+    LinearRefreshToken,
+    /// A Jira (Atlassian) OAuth access token. `scope_id` = the Jira provider
+    /// account id. Used by Task 317.
+    JiraAccessToken,
+    /// A Jira (Atlassian) OAuth refresh token. `scope_id` = the Jira provider
+    /// account id.
+    JiraRefreshToken,
+}
+```
+
 ## `crates/persist/src/api.rs`
 
 ### struct `PersistenceConfig`
@@ -968,6 +992,50 @@ pub struct PullRequest {
     pub body: String,
     pub url: String,
     pub head_sha: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+```
+
+### struct `VcsCredentialId`
+
+```rust
+pub struct VcsCredentialId(pub String);
+```
+
+### struct `NewVcsCredential`
+
+```rust
+pub struct NewVcsCredential {
+    pub id: VcsCredentialId,
+    /// `'github'` | `'linear'` | `'jira'`.
+    pub provider: String,
+    /// App id (App auth) / repo id (webhook) / provider account id (Linear/Jira).
+    pub scope_id: String,
+    /// Human-facing login / org (display only).
+    pub external_account: Option<String>,
+    /// GitHub App id (App auth only).
+    pub app_id: Option<String>,
+    /// GitHub App installation id (App auth only).
+    pub installation_id: Option<String>,
+    /// Token expiry, epoch ms (nullable — PATs / personal keys do not expire).
+    pub token_expires_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+```
+
+### struct `VcsCredential`
+
+```rust
+pub struct VcsCredential {
+    pub id: VcsCredentialId,
+    pub provider: String,
+    pub scope_id: String,
+    pub external_account: Option<String>,
+    pub app_id: Option<String>,
+    pub installation_id: Option<String>,
+    pub token_expires_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }

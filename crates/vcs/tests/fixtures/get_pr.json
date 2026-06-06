@@ -1,0 +1,18 @@
+{
+  "number": 101,
+  "node_id": "PR_kwDOABCD123",
+  "title": "Add the widget",
+  "body": "This PR adds the widget.",
+  "state": "open",
+  "draft": false,
+  "html_url": "https://github.com/acme/widget/pull/101",
+  "merged": false,
+  "head": {
+    "ref": "feature/add-widget",
+    "sha": "cccccccccccccccccccccccccccccccccccccccc"
+  },
+  "base": {
+    "ref": "main",
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

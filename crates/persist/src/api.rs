@@ -997,6 +997,63 @@ pub struct PullRequest {
     pub updated_at: i64,
 }
 
+/// Identifier for a `vcs_credentials` row (Task 313). UUIDv7, caller-generated.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VcsCredentialId(pub String);
+
+impl VcsCredentialId {
+    /// View as a borrowed string slice (`&str`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VcsCredentialId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Upsert-time shape for a `vcs_credentials` row (Task 313, migration 0012).
+///
+/// **Non-secret metadata only** — there is deliberately no key/token field. The
+/// secret material lives in the OS keychain via `VcsSecretSlot`; this row holds
+/// the *references* (which app/installation/account, when the token expires) so
+/// the Core can decide whether to refresh (`design/13 §4`, locked decision D4).
+/// Timestamps are caller-supplied unix epoch milliseconds.
+#[derive(Debug, Clone)]
+pub struct NewVcsCredential {
+    pub id: VcsCredentialId,
+    /// `'github'` | `'linear'` | `'jira'`.
+    pub provider: String,
+    /// App id (App auth) / repo id (webhook) / provider account id (Linear/Jira).
+    pub scope_id: String,
+    /// Human-facing login / org (display only).
+    pub external_account: Option<String>,
+    /// GitHub App id (App auth only).
+    pub app_id: Option<String>,
+    /// GitHub App installation id (App auth only).
+    pub installation_id: Option<String>,
+    /// Token expiry, epoch ms (nullable — PATs / personal keys do not expire).
+    pub token_expires_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Row-shaped projection of a `vcs_credentials` row (Task 313).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcsCredential {
+    pub id: VcsCredentialId,
+    pub provider: String,
+    pub scope_id: String,
+    pub external_account: Option<String>,
+    pub app_id: Option<String>,
+    pub installation_id: Option<String>,
+    pub token_expires_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// The highest migration version this binary ships, derived from the
 /// embedded `sqlx::migrate!` migrator rather than a hardcoded literal that
 /// would drift from `crates/persist/migrations/`. Returns `None` only if the

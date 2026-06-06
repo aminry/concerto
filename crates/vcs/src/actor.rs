@@ -1,57 +1,58 @@
-//! `VcsProviderActor` + cloneable [`VcsHandle`] (Task 45).
+//! Cloneable [`VcsHandle`] + [`VcsConfig`] (Task 45, moved to `crates/vcs` by
+//! Task 313).
 //!
-//! Same actor pattern as the other Core managers — the actor's `run`
-//! parks on shutdown; all meaningful work flows through the cheap-to-
-//! clone handle. V0.1 ships exactly one backend: `gh` CLI shell-out
-//! (per `design/13 §2` V0.1 row).
+//! The V0.1 `VcsHandle` lived in `crates/core/src/vcs/actor.rs` and shelled out
+//! to `gh`. Task 313 moves the handle here so the new `crates/vcs` crate owns
+//! the whole VCS surface; the supervised `VcsProviderActor` (which needs the
+//! Core's `supervisor::Actor` trait) stays in `crates/core/src/vcs/` and wraps
+//! this handle — so `boot.rs` + the `Vcs` gRPC handler compile unchanged.
 //!
-//! ## Public surface (frozen at Task 45)
+//! ## Frozen surface (Task 45 — preserved verbatim)
 //!
-//! - [`VcsHandle::create_pr`] — `gh pr create`, persists row.
-//! - [`VcsHandle::get_pr`] — `gh pr view`, refreshes row.
-//! - [`VcsHandle::list_prs`] — `gh pr list`, no DB write.
-//! - [`VcsHandle::merge_pr`] — `gh pr merge`.
-//! - [`VcsHandle::get_check_runs`] — `gh api …/check-runs`.
-//! - [`VcsHandle::fetch_issue`] — `gh issue view`.
+//! The Task-45 `VcsHandle` method signatures (`create_pr`/`get_pr`/`list_prs`/
+//! `merge_pr`/`get_check_runs`/`fetch_issue` keyed by `RepositoryId`) are
+//! FROZEN and reused by the existing gRPC handler — extend, never break. The
+//! handle keeps shelling out to `gh` (the V0.1 behavior) so the V0.1 `Vcs` gRPC
+//! path is byte-for-byte unchanged. The new octocrab `GitHubProvider` +
+//! `choose_backend` dispatch + the `fetch_issue(url)` router are the *internal*
+//! trait surface this task adds; wiring the handle to dispatch through the
+//! trait is a follow-on (the gRPC proto is untouched this task).
+//!
+//! Task 313 adds [`VcsHandle::fetch_issue_url`] — the top-level URL-host router
+//! (`design/13 §6.1`): github.com → the GitHub issue fetch; linear.app /
+//! *.atlassian.net → the Task-317 seam (`Unimplemented`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use concerto_error::{Error, Result};
 use concerto_persist::{
     NewPullRequest, Persistence, PullRequest, PullRequestId, Repository, RepositoryId, WorkareaId,
 };
+use url::Url;
 
-use super::gh_cli;
-use crate::supervisor::{Actor, ActorContext};
+use crate::dispatch::{issue_router_unimplemented, route_issue_host, IssueHost};
+use crate::gh_cli;
+use crate::github::GitHubProvider;
+use crate::provider::{Issue, VcsProvider};
 
-/// Config for the actor's `run` loop. V0.1 has no knobs — the actor
-/// parks on shutdown.
+/// Config for the supervised actor's `run` loop. V0.1 has no knobs.
 #[derive(Clone, Debug, Default)]
 pub struct VcsConfig;
 
 /// Cheap-cloneable, shareable handle to the VCS provider.
 ///
-/// Cloning is `O(Arc)`; both the persistence handle and the resolved
-/// `gh` path are shared across clones. The `gh` path is resolved
-/// lazily on first use so a Core that never touches VCS doesn't pay
-/// the PATH-walk cost.
+/// Cloning is `O(Arc)`; the persistence handle and the resolved `gh` path are
+/// shared across clones. The `gh` path is resolved lazily on first use.
 #[derive(Clone)]
 pub struct VcsHandle {
     persistence: Arc<Persistence>,
-    /// `Some` once `gh` is resolved on PATH; cached so subsequent
-    /// calls skip the walk. `None` until the first lookup. Wrapped in
-    /// a `tokio::sync::OnceCell` so the resolution races to completion
-    /// across concurrent callers without locking the steady-state
-    /// path.
     gh_path: Arc<tokio::sync::OnceCell<PathBuf>>,
 }
 
 impl VcsHandle {
-    /// Build a fresh handle. The `gh` path is NOT resolved here; it
-    /// is resolved on first call via [`Self::gh`].
+    /// Build a fresh handle. The `gh` path is NOT resolved here.
     pub fn new(persistence: Arc<Persistence>) -> Self {
         Self {
             persistence,
@@ -59,15 +60,12 @@ impl VcsHandle {
         }
     }
 
-    /// Borrow the shared read-only pool. Used by the gRPC `Vcs`
-    /// handler to satisfy `GetPullRequest`'s repo-id → workarea-id
-    /// lookup without plumbing a separate `Arc<Persistence>` through.
+    /// Borrow the shared read-only pool (the gRPC handler's repo→workarea lookup).
     pub fn persistence_readers(&self) -> &sqlx::SqlitePool {
         self.persistence.readers()
     }
 
-    /// Resolve (and cache) the `gh` binary path. Returns
-    /// [`Error::Internal`] when `gh` is not on PATH.
+    /// Resolve (and cache) the `gh` binary path.
     pub async fn gh(&self) -> Result<&std::path::Path> {
         let path = self
             .gh_path
@@ -76,26 +74,21 @@ impl VcsHandle {
         Ok(path.as_path())
     }
 
-    /// Probe authentication once. Returns
-    /// [`Error::VcsNotAuthenticated`] on failure. The Core boot path
-    /// MAY call this opportunistically; per-RPC callers do not need
-    /// to call it (each `gh` invocation surfaces the same error if
-    /// auth has lapsed).
+    /// Probe authentication once. Returns [`Error::VcsNotAuthenticated`] on
+    /// failure.
     pub async fn check_auth(&self) -> Result<()> {
         let gh = self.gh().await?;
         gh_cli::check_auth(gh).await
     }
 
     /// List PRs in `repository_id`'s upstream repo via `gh pr list`.
-    /// Does not touch the cache.
     pub async fn list_prs(&self, repository_id: &RepositoryId) -> Result<Vec<gh_cli::PrSummary>> {
         let gh = self.gh().await?;
         let repo = self.resolve_repo_full_name(repository_id).await?;
         gh_cli::list_prs(gh, &repo).await
     }
 
-    /// Look up one PR by number, upsert the cache row keyed by
-    /// `(workarea_id, repository_id)`, and return the cached projection.
+    /// Look up one PR by number, upsert the cache row, return the projection.
     pub async fn get_pr(
         &self,
         workarea_id: &WorkareaId,
@@ -109,8 +102,7 @@ impl VcsHandle {
             .await
     }
 
-    /// Create a PR for `head_ref` against `base_ref` and persist the
-    /// resulting cache row.
+    /// Create a PR for `head_ref` against `base_ref` and persist the cache row.
     pub async fn create_pr(
         &self,
         workarea_id: &WorkareaId,
@@ -134,9 +126,6 @@ impl VcsHandle {
             base_ref
         };
         let number = gh_cli::create_pr(gh, &repo_name, head_ref, base, title, body).await?;
-
-        // Re-query to pick up the head SHA + the canonical body the
-        // server stored.
         let detail = gh_cli::view_pr(gh, &repo_name, number).await?;
         self.upsert_from_detail(workarea_id, repository_id, &detail)
             .await
@@ -165,8 +154,8 @@ impl VcsHandle {
         gh_cli::get_check_runs(gh, &repo, sha).await
     }
 
-    /// Fetch a GitHub issue via `gh issue view`. The repository's
-    /// upstream URL is used as the host context.
+    /// Fetch a GitHub issue via `gh issue view` (Task-45 frozen signature,
+    /// keyed by `RepositoryId` + number).
     pub async fn fetch_issue(
         &self,
         repository_id: &RepositoryId,
@@ -177,6 +166,36 @@ impl VcsHandle {
         gh_cli::view_issue(gh, &repo, issue_number).await
     }
 
+    /// Top-level `fetch_issue(url)` **router** (Task 313, `design/13 §6.1` + §2
+    /// row "313 fetch_issue routing"). Parses the URL host and dispatches:
+    /// github.com → the GitHub issue fetch (via the octocrab `GitHubProvider`
+    /// built from the supplied PAT); linear.app / *.atlassian.net → the Task-317
+    /// seam (returns the typed `Unimplemented`).
+    ///
+    /// `github_token` is the PAT to authenticate the GitHub arm. The per-provider
+    /// `fetch_issue(&Url)` stays on the `VcsProvider` trait; this is the
+    /// top-level dispatch the gRPC/Maestro callers use with a raw URL string.
+    pub async fn fetch_issue_url(
+        &self,
+        url: &str,
+        github_token: Option<&str>,
+    ) -> Result<Option<Issue>> {
+        let parsed = Url::parse(url)
+            .map_err(|e| Error::Validation(format!("invalid issue URL `{url}`: {e}")))?;
+        match route_issue_host(&parsed)? {
+            IssueHost::GitHub => {
+                let token = github_token.ok_or_else(|| {
+                    Error::VcsNotAuthenticated(
+                        "GitHub issue fetch needs a token (SecretKind::GithubPat)".to_string(),
+                    )
+                })?;
+                let provider = GitHubProvider::with_token(token)?;
+                provider.fetch_issue(&parsed).await
+            }
+            host @ (IssueHost::Linear | IssueHost::Jira) => Err(issue_router_unimplemented(host)),
+        }
+    }
+
     // ---- internal helpers ----
 
     async fn load_repository(&self, id: &RepositoryId) -> Result<Repository> {
@@ -185,7 +204,6 @@ impl VcsHandle {
             .ok_or_else(|| Error::NotFound(format!("repository {id} not found")))
     }
 
-    /// Resolve the `owner/repo` GitHub identifier for `repository_id`.
     async fn resolve_repo_full_name(&self, id: &RepositoryId) -> Result<String> {
         let row = self.load_repository(id).await?;
         repo_full_name_from_url(&row.url).ok_or_else(|| {
@@ -233,47 +251,10 @@ impl VcsHandle {
     }
 }
 
-/// Supervised actor that owns the [`VcsHandle`]. `run` parks on
-/// shutdown; the supervisor's factory clones the handle on each
-/// restart so the cached `gh` path survives a wrapper panic.
-pub struct VcsProviderActor {
-    handle: VcsHandle,
-}
-
-impl VcsProviderActor {
-    /// Build a fresh actor with a new handle.
-    pub fn new(persistence: Arc<Persistence>) -> Self {
-        Self {
-            handle: VcsHandle::new(persistence),
-        }
-    }
-
-    /// Cheap clone of the shared handle.
-    pub fn handle(&self) -> VcsHandle {
-        self.handle.clone()
-    }
-}
-
-#[async_trait]
-impl Actor for VcsProviderActor {
-    const NAME: &'static str = "vcs-provider";
-    type Config = VcsConfig;
-
-    async fn run(self, ctx: ActorContext<Self::Config>) -> Result<()> {
-        tracing::info!("VCS provider ready (gh CLI backend)");
-        ctx.shutdown.cancelled().await;
-        tracing::debug!("VCS provider actor shutting down");
-        Ok(())
-    }
-}
-
 /// Extract `owner/repo` from a GitHub URL of any common shape
 /// (`https://github.com/owner/repo.git`, `git@github.com:owner/repo`,
-/// `https://github.com/owner/repo`).
-///
-/// V0.1 only handles github.com URLs — V2.0's GitLab / Bitbucket
-/// adapters will dispatch on the host before reaching this helper.
-pub(crate) fn repo_full_name_from_url(url: &str) -> Option<String> {
+/// `https://github.com/owner/repo`). Moved verbatim from the V0.1 actor.
+pub fn repo_full_name_from_url(url: &str) -> Option<String> {
     let trimmed = url.trim();
     let stripped = trimmed.strip_suffix(".git").unwrap_or(trimmed);
     // SSH form: `git@github.com:owner/repo`
@@ -285,7 +266,6 @@ pub(crate) fn repo_full_name_from_url(url: &str) -> Option<String> {
     // HTTPS form: `https://github.com/owner/repo` (also handles http://)
     for prefix in ["https://github.com/", "http://github.com/"] {
         if let Some(rest) = stripped.strip_prefix(prefix) {
-            // Drop any trailing path / query.
             let head: String = rest
                 .split(['/', '#', '?'])
                 .take(2)

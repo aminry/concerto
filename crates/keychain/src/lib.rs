@@ -20,7 +20,7 @@
 pub mod api;
 pub mod error;
 
-pub use api::{CoreSecretSlot, Provider, SecretKind, SecretValue, Secrets};
+pub use api::{CoreSecretSlot, Provider, SecretKind, SecretValue, Secrets, VcsSecretSlot};
 pub use error::{Result, SecretsError};
 
 /// Service name used for every Concerto keychain entry. Tests override
@@ -148,6 +148,84 @@ pub(crate) async fn core_secret_delete_impl(
                 core_id = %core_id,
                 slot = ?slot,
                 "core secret deleted",
+            );
+            Ok(())
+        }
+        Err(e) => Err(SecretsError::from(e)),
+    }
+}
+
+/// Account string for a VCS secret: `vcs.<scope_id>.<slot_slug>`
+/// (`tasks/v1.0/PHASE3_PLANNING.md §4.1`, Task 313). The `scope_id` (App id /
+/// repo id / provider account id) keys each scope's secrets apart; the slot slug
+/// names the secret class. Public protocol — changing this format orphans
+/// existing keychain entries. Mirrors [`core_account_string`] beat-for-beat.
+fn vcs_account_string(scope_id: &str, slot: api::VcsSecretSlot) -> String {
+    format!("vcs.{}.{}", scope_id, slot.slug())
+}
+
+fn vcs_entry(
+    secrets: &Secrets,
+    scope_id: &str,
+    slot: api::VcsSecretSlot,
+) -> Result<keyring::Entry> {
+    let account = vcs_account_string(scope_id, slot);
+    keyring::Entry::new(secrets.service.as_ref(), &account).map_err(SecretsError::from)
+}
+
+pub(crate) async fn vcs_secret_get_impl(
+    secrets: &Secrets,
+    scope_id: &str,
+    slot: api::VcsSecretSlot,
+) -> Result<Option<SecretValue>> {
+    let entry = vcs_entry(secrets, scope_id, slot)?;
+    match entry.get_password() {
+        Ok(s) => {
+            tracing::info!(
+                target: "concerto::keychain",
+                scope_id = %scope_id,
+                slot = ?slot,
+                "vcs secret accessed",
+            );
+            Ok(Some(SecretValue::new(s)))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(SecretsError::from(e)),
+    }
+}
+
+pub(crate) async fn vcs_secret_set_impl(
+    secrets: &Secrets,
+    scope_id: &str,
+    slot: api::VcsSecretSlot,
+    value: SecretValue,
+) -> Result<()> {
+    let entry = vcs_entry(secrets, scope_id, slot)?;
+    entry
+        .set_password(value.expose())
+        .map_err(SecretsError::from)?;
+    tracing::info!(
+        target: "concerto::keychain",
+        scope_id = %scope_id,
+        slot = ?slot,
+        "vcs secret written",
+    );
+    Ok(())
+}
+
+pub(crate) async fn vcs_secret_delete_impl(
+    secrets: &Secrets,
+    scope_id: &str,
+    slot: api::VcsSecretSlot,
+) -> Result<()> {
+    let entry = vcs_entry(secrets, scope_id, slot)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {
+            tracing::info!(
+                target: "concerto::keychain",
+                scope_id = %scope_id,
+                slot = ?slot,
+                "vcs secret deleted",
             );
             Ok(())
         }
@@ -304,6 +382,59 @@ mod account_strings {
         assert_eq!(
             super::core_account_string("abc123", super::api::CoreSecretSlot::DevicePrivateKey),
             "cores.abc123.device_private_key"
+        );
+    }
+
+    // VCS secrets (Task 313, D4) embed the `scope_id` (App id / repo id /
+    // provider account id) so each scope's secret material is isolated. The
+    // `vcs.<scope_id>.<slot_slug>` format + every slot slug is public protocol:
+    // changing one orphans existing keychain entries. One round-trip per slot.
+
+    #[test]
+    fn vcs_secret_github_app_private_key() {
+        assert_eq!(
+            super::vcs_account_string("app-42", super::api::VcsSecretSlot::GithubAppPrivateKey),
+            "vcs.app-42.github_app_private_key"
+        );
+    }
+
+    #[test]
+    fn vcs_secret_webhook_secret() {
+        assert_eq!(
+            super::vcs_account_string("repo-7", super::api::VcsSecretSlot::WebhookSecret),
+            "vcs.repo-7.webhook_secret"
+        );
+    }
+
+    #[test]
+    fn vcs_secret_linear_access_token() {
+        assert_eq!(
+            super::vcs_account_string("linacct", super::api::VcsSecretSlot::LinearAccessToken),
+            "vcs.linacct.linear_access_token"
+        );
+    }
+
+    #[test]
+    fn vcs_secret_linear_refresh_token() {
+        assert_eq!(
+            super::vcs_account_string("linacct", super::api::VcsSecretSlot::LinearRefreshToken),
+            "vcs.linacct.linear_refresh_token"
+        );
+    }
+
+    #[test]
+    fn vcs_secret_jira_access_token() {
+        assert_eq!(
+            super::vcs_account_string("jiracct", super::api::VcsSecretSlot::JiraAccessToken),
+            "vcs.jiracct.jira_access_token"
+        );
+    }
+
+    #[test]
+    fn vcs_secret_jira_refresh_token() {
+        assert_eq!(
+            super::vcs_account_string("jiracct", super::api::VcsSecretSlot::JiraRefreshToken),
+            "vcs.jiracct.jira_refresh_token"
         );
     }
 }

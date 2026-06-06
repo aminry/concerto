@@ -1,0 +1,8 @@
+{
+  "_comment": "Synthetic X-RateLimit-* header values for the Task 314 rate-limit pool double. Task 314 mounts these via FakeGitHub::mount_get_json_rate_limited (or testkit::rate_limit_headers) so the dual-pool budget math is provable against a synthetic clock with no live GitHub. The body here is an arbitrary 200 payload.",
+  "resource": "core",
+  "limit": 5000,
+  "remaining": 4999,
+  "reset": 1700000000,
+  "used": 1
+}

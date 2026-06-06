@@ -192,6 +192,49 @@ impl Secrets {
     ) -> crate::error::Result<(), SecretsError> {
         crate::core_secret_delete_impl(self, core_id, slot).await
     }
+
+    /// Read a **VCS** secret, keyed by a `scope_id` (`design/13 §4` +
+    /// `tasks/v1.0/PHASE3_PLANNING.md §4.1`, Task 313).
+    ///
+    /// Mirrors [`Secrets::get_core_secret`] exactly: a *parameterized* accessor
+    /// (NOT a new closed [`SecretKind`] variant) so the `Copy`, frozen
+    /// `SecretKind` enum stays unchanged while the new VCS secret classes land.
+    /// The `scope_id` is the GitHub App id ([`VcsSecretSlot::GithubAppPrivateKey`]),
+    /// the repo id ([`VcsSecretSlot::WebhookSecret`]), or the provider account id
+    /// (the Linear/Jira slots); each `(scope_id, slot)` maps to exactly one
+    /// keychain `(service, account)` entry with account string
+    /// `vcs.<scope_id>.<slot_slug>`. VCS secret *material* lives ONLY here — the
+    /// non-secret metadata (which app/installation/account, token expiry) lives in
+    /// the `vcs_credentials` table (migration 0012). Returns `Ok(None)` when no
+    /// entry exists. The Windows keychain backend (Task 608) swaps underneath this
+    /// same API. The existing PAT (`SecretKind::GithubPat`) is unchanged — these
+    /// slots are the new App / webhook / Linear / Jira classes (D4).
+    pub async fn get_vcs_secret(
+        &self,
+        scope_id: &str,
+        slot: VcsSecretSlot,
+    ) -> crate::error::Result<Option<SecretValue>, SecretsError> {
+        crate::vcs_secret_get_impl(self, scope_id, slot).await
+    }
+
+    /// Write or overwrite a VCS secret keyed by `scope_id`.
+    pub async fn set_vcs_secret(
+        &self,
+        scope_id: &str,
+        slot: VcsSecretSlot,
+        value: SecretValue,
+    ) -> crate::error::Result<(), SecretsError> {
+        crate::vcs_secret_set_impl(self, scope_id, slot, value).await
+    }
+
+    /// Delete a VCS secret keyed by `scope_id`. Idempotent.
+    pub async fn delete_vcs_secret(
+        &self,
+        scope_id: &str,
+        slot: VcsSecretSlot,
+    ) -> crate::error::Result<(), SecretsError> {
+        crate::vcs_secret_delete_impl(self, scope_id, slot).await
+    }
 }
 
 /// Which per-paired-Core secret a [`Secrets::get_core_secret`] call addresses
@@ -220,6 +263,58 @@ impl CoreSecretSlot {
         match self {
             CoreSecretSlot::DeviceCert => "device_cert",
             CoreSecretSlot::DevicePrivateKey => "device_private_key",
+        }
+    }
+}
+
+/// Which VCS secret a [`Secrets::get_vcs_secret`] call addresses
+/// (`tasks/v1.0/PHASE3_PLANNING.md §4.1`, FROZEN by Task 313). Each
+/// `(scope_id, slot)` pair maps to exactly one keychain `(service, account)`
+/// entry with account string `vcs.<scope_id>.<slot_slug>`; the `scope_id`
+/// (App id / repo id / provider account id) isolates each scope's secrets.
+///
+/// These are the **new** V1.0 VCS secret classes (GitHub App, webhook, and the
+/// Linear / Jira OAuth tokens) — the existing GitHub PAT stays on
+/// [`SecretKind::GithubPat`] (the V0.1 `gh` shell-out reuses it). Adding them as a parameterized accessor
+/// (mirroring [`CoreSecretSlot`]) keeps the closed, `Copy` [`SecretKind`] enum
+/// FROZEN per the D4 decision: **never** add closed `SecretKind` variants for
+/// VCS secrets, and **never** put VCS secret material in `vcs_credentials` or
+/// `cores.json`.
+///
+/// Stable identifiers: each slot's slug is public protocol — changing one
+/// orphans existing keychain entries (round-trip-tested per slot in `lib.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VcsSecretSlot {
+    /// A GitHub App's RSA private key (PEM). `scope_id` = the GitHub App id.
+    /// Used by Task 314 to mint installation tokens.
+    GithubAppPrivateKey,
+    /// A repository's webhook HMAC secret (32 bytes). `scope_id` = the repo id.
+    /// Used by Task 315 to verify inbound webhook signatures.
+    WebhookSecret,
+    /// A Linear OAuth access token (or personal API key, per D6). `scope_id` =
+    /// the Linear provider account id. Used by Task 317.
+    LinearAccessToken,
+    /// A Linear OAuth refresh token. `scope_id` = the Linear provider account id.
+    LinearRefreshToken,
+    /// A Jira (Atlassian) OAuth access token. `scope_id` = the Jira provider
+    /// account id. Used by Task 317.
+    JiraAccessToken,
+    /// A Jira (Atlassian) OAuth refresh token. `scope_id` = the Jira provider
+    /// account id.
+    JiraRefreshToken,
+}
+
+impl VcsSecretSlot {
+    /// The stable account-string slug for this slot. **Public protocol** —
+    /// changing it orphans existing keychain entries.
+    pub fn slug(self) -> &'static str {
+        match self {
+            VcsSecretSlot::GithubAppPrivateKey => "github_app_private_key",
+            VcsSecretSlot::WebhookSecret => "webhook_secret",
+            VcsSecretSlot::LinearAccessToken => "linear_access_token",
+            VcsSecretSlot::LinearRefreshToken => "linear_refresh_token",
+            VcsSecretSlot::JiraAccessToken => "jira_access_token",
+            VcsSecretSlot::JiraRefreshToken => "jira_refresh_token",
         }
     }
 }
