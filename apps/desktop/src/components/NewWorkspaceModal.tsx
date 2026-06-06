@@ -1,13 +1,16 @@
 // "New Workspace" modal.
 //
-// Form contract (Task 25 public interface):
+// Form contract (Task 322 — multi-repo, lifting Task 25's single-repo
+// form):
 //   - name: text, non-empty.
-//   - repository: single-select, required (V0.1 single-repo only;
-//     `CreateWorkspaceRequest.repository_ids.len() == 1`).
+//   - repositories: multi-select (checkbox list), ≥1 required. Produces
+//     `CreateWorkspaceRequest.repository_ids: string[]`. Task 306 relaxed
+//     the Core's single-repo guard (now rejects only 0 repos); the form
+//     mirrors that — submit gates on ≥1 selected.
 //   - description: optional.
 //
-// Submit is disabled until both name + repo are present. On success
-// the modal closes; the sidebar auto-refreshes via the existing
+// Submit is disabled until name is non-empty AND ≥1 repo is checked. On
+// success the modal closes; the sidebar auto-refreshes via the existing
 // `workspace.events` subscription wired in `Sidebar.tsx`.
 
 import { useEffect, useState } from "react";
@@ -30,7 +33,7 @@ export function NewWorkspaceModal(): JSX.Element {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [repositoryId, setRepositoryId] = useState<string>("");
+  const [repositoryIds, setRepositoryIds] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Reset form fields each time the dialog re-opens; this is the
@@ -39,10 +42,16 @@ export function NewWorkspaceModal(): JSX.Element {
     if (open) {
       setName("");
       setDescription("");
-      setRepositoryId("");
+      setRepositoryIds([]);
       setErrorMsg(null);
     }
   }, [open]);
+
+  function toggleRepo(id: string): void {
+    setRepositoryIds((prev) =>
+      prev.includes(id) ? prev.filter((r) => r !== id) : [...prev, id],
+    );
+  }
 
   const reposQuery = useQuery({
     queryKey: ["repositories", projectId] as const,
@@ -59,7 +68,7 @@ export function NewWorkspaceModal(): JSX.Element {
       return createWorkspace({
         projectId,
         name: name.trim(),
-        repositoryIds: [repositoryId],
+        repositoryIds,
         description: description.trim() || undefined,
       });
     },
@@ -75,7 +84,7 @@ export function NewWorkspaceModal(): JSX.Element {
   const canSubmit =
     !!projectId &&
     name.trim().length > 0 &&
-    repositoryId.length > 0 &&
+    repositoryIds.length > 0 &&
     !mutation.isPending;
 
   function onSubmit(e: React.FormEvent): void {
@@ -101,7 +110,7 @@ export function NewWorkspaceModal(): JSX.Element {
         </div>
         <div>
           <label className="block text-xs uppercase tracking-wider text-faint mb-1">
-            Repository
+            Repositories <span className="text-faint">(one or more)</span>
           </label>
           {reposQuery.isLoading && (
             <p className="text-xs text-faint">Loading repositories…</p>
@@ -117,18 +126,25 @@ export function NewWorkspaceModal(): JSX.Element {
             </p>
           )}
           {reposQuery.data && reposQuery.data.repositories.length > 0 && (
-            <select
-              className="w-full rounded-md border border-border-strong bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              value={repositoryId}
-              onChange={(e) => setRepositoryId(e.target.value)}
+            <ul
+              role="group"
+              aria-label="Repositories"
+              className="max-h-48 overflow-y-auto rounded-md border border-border-strong bg-background divide-y divide-border"
             >
-              <option value="">— pick one —</option>
               {reposQuery.data.repositories.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
+                <li key={r.id}>
+                  <label className="flex items-center gap-2 px-2.5 py-1.5 text-sm text-foreground cursor-pointer hover:bg-surface-2">
+                    <input
+                      type="checkbox"
+                      className="accent-accent"
+                      checked={repositoryIds.includes(r.id)}
+                      onChange={() => toggleRepo(r.id)}
+                    />
+                    <span className="truncate">{r.name}</span>
+                  </label>
+                </li>
               ))}
-            </select>
+            </ul>
           )}
         </div>
         <div>

@@ -2,27 +2,62 @@
 // hosts the "+ New Workarea" button. V0.1 deliberately keeps the panel
 // narrow; the real three-panel layout (composer status, agent
 // transcript, diff viewer) arrives in Task 46+.
+//
+// Task 322: "+ New Workarea" now opens a sparse-cone picker (a small
+// dialog) so the user can size each repo's cone before the workarea is
+// materialized. The chosen per-repo cones thread into `createWorkarea`,
+// which applies them via `Repositories.SetCones` after create (see
+// `api/workareas.ts`). A repo left blank inherits the workspace/repo cone
+// defaults (the three-layer resolver, Task 302). The summary/workarea-list
+// view + multi-agent session tabs are Task 323, not here.
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useUiStore } from "../state/useUiStore";
 import { useWorkspace } from "../hooks/useWorkspaces";
 import { createWorkarea } from "../api/workareas";
+import { listRepositories, type Repository } from "../api/repositories";
+import { formatError } from "../api/errors";
+import { ConePicker, coneSelections } from "./ConePicker";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Dialog } from "./ui/dialog";
 
 export function WorkspaceDetail(): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId);
+  const projectId = useUiStore((s) => s.selectedProjectId);
   const setWorkspaceExpanded = useUiStore((s) => s.setWorkspaceExpanded);
   const workspaceQuery = useWorkspace(selectedWorkspaceId);
   const queryClient = useQueryClient();
 
+  const [coneModalOpen, setConeModalOpen] = useState(false);
+  // Raw cone text per repository id; reset each time the dialog opens.
+  const [coneValues, setConeValues] = useState<Record<string, string>>({});
+
+  const reposQuery = useQuery({
+    queryKey: ["repositories", projectId] as const,
+    queryFn: async () => {
+      if (!projectId) return { repositories: [] as Repository[] };
+      return listRepositories(projectId);
+    },
+    enabled: coneModalOpen && !!projectId,
+  });
+  const repos = reposQuery.data?.repositories ?? [];
+
+  useEffect(() => {
+    if (coneModalOpen) setConeValues({});
+  }, [coneModalOpen]);
+
   const mutation = useMutation({
     mutationFn: async () => {
       if (!selectedWorkspaceId) throw new Error("no workspace selected");
-      return createWorkarea(selectedWorkspaceId);
+      return createWorkarea(selectedWorkspaceId, {
+        cones: coneSelections(repos, coneValues),
+      });
     },
     onSuccess: () => {
+      setConeModalOpen(false);
       if (selectedWorkspaceId) {
         // Expand the parent workspace so the new workarea is visible.
         setWorkspaceExpanded(selectedWorkspaceId, true);
@@ -46,14 +81,14 @@ export function WorkspaceDetail(): JSX.Element {
       <div className="flex justify-end">
         <Button
           disabled={mutation.isPending}
-          onClick={() => mutation.mutate()}
+          onClick={() => setConeModalOpen(true)}
         >
-          {mutation.isPending ? "Creating…" : "+ New Workarea"}
+          + New Workarea
         </Button>
       </div>
       {mutation.isError && (
         <p className="text-xs text-err">
-          Failed to create workarea: {String(mutation.error)}
+          Failed to create workarea: {formatError(mutation.error)}
         </p>
       )}
       <Card>
@@ -74,6 +109,59 @@ export function WorkspaceDetail(): JSX.Element {
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={coneModalOpen}
+        onClose={() => setConeModalOpen(false)}
+        title="New Workarea — sparse cones"
+      >
+        <div className="space-y-3">
+          {reposQuery.isLoading && (
+            <p className="text-xs text-faint">Loading repositories…</p>
+          )}
+          {reposQuery.isError && (
+            <p className="text-xs text-err">
+              Failed to load repositories: {formatError(reposQuery.error)}
+            </p>
+          )}
+          {reposQuery.data && repos.length === 0 && (
+            <p className="text-xs text-faint">
+              This workspace has no repositories.
+            </p>
+          )}
+          {repos.length > 0 && (
+            <ConePicker
+              repos={repos}
+              values={coneValues}
+              onChange={(repoId, raw) =>
+                setConeValues((prev) => ({ ...prev, [repoId]: raw }))
+              }
+            />
+          )}
+          {mutation.isError && (
+            <p role="alert" className="text-xs text-err">
+              {formatError(mutation.error)}
+            </p>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setConeModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={mutation.isPending}
+              onClick={() => mutation.mutate()}
+            >
+              {mutation.isPending ? "Creating…" : "Create workarea"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </main>
   );
 }
