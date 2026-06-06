@@ -621,6 +621,15 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let workarea_handle = workarea_handle.with_agent_supervisor(agent_supervisor_handle.clone());
     let workspace_handle = workspace_handle.with_workarea_manager(workarea_handle.clone());
 
+    // Task 307: drive the workarea status FSM from Agent Supervisor session
+    // events. The pump polls live sessions (1 s) and subscribes — once each
+    // — to every session's `AgentEvent` stream, funnelling `Started` /
+    // `AwaitingApproval` / `ApprovalResolved` / `Exited` / `Crashed` through
+    // `transition_workarea`. Cancelled on root shutdown.
+    #[cfg(unix)]
+    workarea_handle
+        .spawn_session_fsm_pump(agent_supervisor_handle.clone(), runtime.shutdown_token());
+
     // Task 38: spawn the Scheduler. Owns the `/loop` fire wheel and the
     // expiration sweep; takes a supervisor clone so the fire path can
     // call `start_session` directly. Runs after the Agent Supervisor

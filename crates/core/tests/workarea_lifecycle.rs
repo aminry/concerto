@@ -430,6 +430,173 @@ async fn multi_repo_workarea_lays_out_one_worktree_per_repo() {
     core.shutdown().await.expect("shutdown");
 }
 
+/// Task 307: seed a 2-repo workspace whose SECOND repo's `local_path`
+/// points at a directory that is NOT a git repo, so `git worktree add`
+/// fails for it while the first repo succeeds — driving the soft `partial`
+/// create path.
+async fn seed_multi_one_broken(core: &CoreUnderTest, slug: &str) -> SeededMulti {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    let project_id = format!("proj-{slug}");
+    let workspace_id = format!("ws-{slug}");
+
+    let opts = SqliteConnectOptions::new()
+        .filename(&core.db_path)
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .expect("open db write pool");
+    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
+        .bind(&project_id)
+        .execute(&pool)
+        .await
+        .expect("insert project");
+    sqlx::query(
+        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES (?, ?, 'test', ?, 0)",
+    )
+    .bind(&workspace_id)
+    .bind(&project_id)
+    .bind(slug)
+    .execute(&pool)
+    .await
+    .expect("insert workspace");
+
+    let mut bares = Vec::new();
+    let mut works = Vec::new();
+    let mut repo_names = Vec::new();
+    for (position, short) in ["good", "broken"].into_iter().enumerate() {
+        let (bare_url, bare, work) = make_bare_with_commit().await;
+        let repo_id = format!("repo-{slug}-{short}");
+        let repo_name = format!("name-{slug}-{short}");
+        let local_path = core.data_dir.join("repos").join(&repo_id);
+
+        sqlx::query(
+            "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
+             VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        )
+        .bind(&repo_id)
+        .bind(&project_id)
+        .bind(&repo_name)
+        .bind(&bare_url)
+        .bind(local_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("insert repository");
+        sqlx::query(
+            "INSERT INTO workspace_repos (workspace_id, repository_id, position) VALUES (?, ?, ?)",
+        )
+        .bind(&workspace_id)
+        .bind(&repo_id)
+        .bind(position as i64)
+        .execute(&pool)
+        .await
+        .expect("insert workspace_repos");
+
+        if position == 0 {
+            // First repo: a real clone so its worktree-add succeeds.
+            tokio::fs::create_dir_all(local_path.parent().unwrap())
+                .await
+                .unwrap();
+            let out = Command::new("git")
+                .args(["clone", bare_url.as_str(), &local_path.to_string_lossy()])
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .await
+                .expect("git clone");
+            assert!(out.status.success(), "good clone failed");
+        } else {
+            // Second repo: a NON-git directory (it has a HEAD file so the
+            // create path's `clone_repo` short-circuits, but `git worktree
+            // add` against it fails — driving `partial`).
+            tokio::fs::create_dir_all(&local_path).await.unwrap();
+            tokio::fs::write(local_path.join("HEAD"), b"not a git repo\n")
+                .await
+                .unwrap();
+        }
+
+        bares.push(bare);
+        works.push(work);
+        repo_names.push(repo_name);
+    }
+    pool.close().await;
+
+    SeededMulti {
+        workspace_id,
+        workspace_slug: slug.to_string(),
+        repo_names: [repo_names[0].clone(), repo_names[1].clone()],
+        _bares: bares,
+        _works: works,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn partial_create_when_one_repo_worktree_add_fails() {
+    // Task 307: a 2-repo workarea where the second repo's worktree-add
+    // fails persists as `partial` (not aborted), keeps the first repo's
+    // worktree + junction row, and the second repo gets no junction row.
+    let core = CoreUnderTest::spawn().await.expect("spawn core");
+    let s = seed_multi_one_broken(&core, "partial").await;
+
+    let mut wac = core.workareas_client().await.expect("workareas client");
+    let wa = wac
+        .create_workarea(CreateWorkareaRequest {
+            workspace_id: s.workspace_id.clone(),
+            permission_mode: None,
+        })
+        .await
+        .expect("CreateWorkarea must succeed (soft partial, not abort)")
+        .into_inner();
+
+    assert_eq!(
+        wa.status, "partial",
+        "≥1 failed worktree-add must yield a `partial` workarea, got {:?}",
+        wa.status
+    );
+
+    // The good repo's worktree exists; the broken one does not.
+    let worktree_root = core
+        .data_dir
+        .join("workspaces")
+        .join(&s.workspace_slug)
+        .join(&wa.composer_name);
+    assert!(
+        worktree_root.join(&s.repo_names[0]).is_dir(),
+        "the successful repo's worktree must exist"
+    );
+    assert!(
+        !worktree_root.join(&s.repo_names[1]).join(".git").exists(),
+        "the failed repo must not have a materialized worktree"
+    );
+
+    // Exactly one `workarea_repos` row (only the materialized repo).
+    let pool = core.db().await.expect("db");
+    let (jcount,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM workarea_repos WHERE workarea_id = ?")
+            .bind(&wa.id)
+            .fetch_one(&pool)
+            .await
+            .expect("workarea_repos count");
+    assert_eq!(
+        jcount, 1,
+        "only the materialized repo gets a workarea_repos row in a partial create"
+    );
+
+    // The DB status is persisted as `partial` (proves migration 0010's
+    // widened CHECK accepts it end-to-end through the real Core).
+    let (status_db,): (String,) = sqlx::query_as("SELECT status FROM workareas WHERE id = ?")
+        .bind(&wa.id)
+        .fetch_one(&pool)
+        .await
+        .expect("workareas row");
+    assert_eq!(status_db, "partial");
+
+    core.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn second_workarea_gets_different_composer() {
     let core = CoreUnderTest::spawn().await.expect("spawn core");

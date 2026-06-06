@@ -1,6 +1,8 @@
 //! `workareas` + `workarea_repos` CRUD (Task 20).
 //!
-//! Schema is locked by migration 0001 (Task 09):
+//! Schema is locked by migration 0001 (Task 09); the `status` CHECK was
+//! widened to add `finished` + `partial` by migration 0010 (Task 307,
+//! a recreate-table migration since SQLite cannot `ALTER` a CHECK):
 //!
 //! ```sql
 //! CREATE TABLE workareas (
@@ -10,7 +12,7 @@
 //!     branch_name                 TEXT NOT NULL,
 //!     worktree_root               TEXT NOT NULL,
 //!     status                      TEXT NOT NULL CHECK (status IN (
-//!         'created','active','running','awaiting','paused','archived','crashed'
+//!         'created','active','running','awaiting','paused','finished','partial','archived','crashed'
 //!     )),
 //!     permission_mode             TEXT CHECK (permission_mode IS NULL OR permission_mode IN ('strict','normal','auto','yolo')),
 //!     bypass_destructive_guard    INTEGER CHECK (bypass_destructive_guard IS NULL OR bypass_destructive_guard IN (0,1)),

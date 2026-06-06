@@ -53,16 +53,20 @@ pub struct ArchiveOpts {
     pub remove_worktree: bool,
 }
 
-/// Probe every non-archived, non-crashed workarea; transition rows whose
-/// `worktree_root` directory is gone from disk to `status = 'crashed'`.
+/// Probe every non-archived, non-crashed workarea and return the ids whose
+/// `worktree_root` directory is gone from disk (`design/03 §6.5`).
 ///
-/// Called once at the end of [`super::WorkareaManager::new`]
-/// (`design/03 §6.5`). Returns the number of workareas adopted. Best-effort:
-/// errors enumerating one workarea log a warning and the sweep continues.
-pub async fn adopt_crashed_workareas(persistence: &Arc<Persistence>) -> Result<usize> {
+/// Pure detection — the actual `→ crashed` transition is driven by the
+/// caller ([`super::WorkareaManager::adopt_crashed_workareas`]) through the
+/// `transition_workarea(AdoptCrashed)` FSM funnel (Task 307) so each
+/// adoption audits + broadcasts like every other status change. Best-effort:
+/// a stat error on one workarea logs a warning and the sweep continues.
+pub async fn list_missing_worktree_workareas(
+    persistence: &Arc<Persistence>,
+) -> Result<Vec<WorkareaId>> {
     let candidates =
         concerto_persist::workareas::list_all_non_archived(persistence.readers()).await?;
-    let mut adopted = 0usize;
+    let mut missing = Vec::new();
     for (id, worktree_root) in candidates {
         // The worktree_root directory is the locked workarea-root layout
         // (`<data_dir>/workspaces/<slug>/<composer>/`). A missing root is
@@ -82,24 +86,11 @@ pub async fn adopt_crashed_workareas(persistence: &Arc<Persistence>) -> Result<u
                 continue;
             }
         };
-        if exists {
-            continue;
+        if !exists {
+            missing.push(id);
         }
-        let mut writer = persistence.writer().await;
-        if let Err(e) =
-            concerto_persist::workareas::update_status(&mut writer, &id, "crashed").await
-        {
-            tracing::warn!(
-                workarea = %id,
-                error = %e,
-                "failed to mark workarea crashed during boot sweep"
-            );
-            continue;
-        }
-        adopted += 1;
-        tracing::info!(workarea = %id, path = %path.display(), "adopted crashed workarea");
     }
-    Ok(adopted)
+    Ok(missing)
 }
 
 /// Shell out to `git worktree remove --force <dest>` from a repo's `.git`

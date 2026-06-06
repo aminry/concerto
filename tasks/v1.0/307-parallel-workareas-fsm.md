@@ -74,28 +74,31 @@ Tier 1.
 **Tier-1 scope.** The FSM is pure + table-testable; session-event wiring is provable with a stubbed/echo agent. The Tier-3 reality this gestures at — crash-injection at every create step recovering cleanly (`design/03 §10` crash row) — is corroborated at the Phase-3 manual checklist, not gated here.
 
 ## Definition of Done
-- [ ] Migration 0010 recreates `workareas` with the widened CHECK; preserves every column + FK + UNIQUE + both indexes; persistence test proves `finished` + `partial` round-trip
-- [ ] `fsm.rs` gains `WorkareaState::Partial` (+ `as_sql`/`from_sql`/`ALL`) and its transitions; `transition` signature + `INVALID_TRANSITION_WIRE_CODE` unchanged; table test exercises all pairs
-- [ ] `transition_workarea` funnels every status change (load → fsm → persist → broadcast → audit); illegal → `FAILED_PRECONDITION`
-- [ ] Session events drive `active→running→awaiting→running→finished` (`finished` only when no live session remains); `pause_workarea`/`resume_workarea` (hard pause)
-- [ ] `create_workarea` stamps `partial` (not `active`) when ≥1 repo's worktree-add fails, recording failing repo ids on `workarea.events`; crash adoption routes through `transition_workarea(AdoptCrashed)`
-- [ ] `Workarea` proto status comment widened (no field/number change); no new proto field
-- [ ] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
-- [ ] No files outside Outputs modified
-- [ ] Interfaces regenerated + committed (`schema.md`, `proto.md`)
-- [ ] Smoke gate green (unchanged)
-- [ ] Single commit with the message below
+- [x] Migration 0010 widens the `workareas.status` CHECK to add `finished` + `partial`; preserves every column + FK + UNIQUE + both indexes; persistence test proves `finished` + `partial` round-trip (NOTE: implemented as an in-place `PRAGMA writable_schema` CHECK rewrite instead of the prescribed DROP/RENAME recreate-table — the DROP would cascade-delete every child row under the FKs-ON migration runner; see Handoff *Drift*)
+- [x] `fsm.rs` gains `WorkareaState::Partial` (+ `as_sql`/`from_sql`/`ALL`) and its transitions; `transition` signature + `INVALID_TRANSITION_WIRE_CODE` unchanged; table test exercises all 90 pairs
+- [x] `transition_workarea` funnels every status change (load → fsm → persist → broadcast → audit); illegal → `FAILED_PRECONDITION`
+- [x] Session events drive `active→running→awaiting→running→finished` (`finished` only when no live session remains); `pause_workarea`/`resume_workarea` (hard pause)
+- [x] `create_workarea` stamps `partial` (not `active`) when ≥1 repo's worktree-add fails, recording failing repo ids on `workarea.events`; crash adoption routes through `transition_workarea(AdoptCrashed)`
+- [x] `Workarea` proto status comment widened (no field/number change); no new proto field
+- [x] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
+- [x] No files outside Outputs modified (one mechanical-drift addition: `crates/core/src/handlers/streams.rs` — see Handoff *Drift*)
+- [x] Interfaces regenerated + committed (`schema.md`, `proto.md`)
+- [x] Smoke gate green (unchanged)
+- [x] Single commit with the message below
 
 ## Outputs
-- `crates/persist/migrations/0010_workareas_status_finished_partial.sql` (new — recreate-table)
+- `crates/persist/migrations/0010_workareas_status_finished_partial.sql` (new — in-place `writable_schema` CHECK widen; see Handoff *Drift* re: not DROP/RENAME)
 - `crates/persist/src/workareas.rs` (modified — module-header CHECK comment widened; no signature change)
 - `crates/core/src/workspace_manager/fsm.rs` (modified — `Partial` + transitions)
-- `crates/core/src/workspace_manager/workarea.rs` (modified — `transition_workarea`, `pause`/`resume`, `partial` stamping)
-- `crates/core/src/workspace_manager/archive.rs` (modified — crash adoption routes through the FSM funnel)
+- `crates/core/src/workspace_manager/workarea.rs` (modified — `transition_workarea`, `apply_session_event`, `spawn_session_fsm_pump`, `pause`/`resume`, `partial` stamping, `StatusChanged`/`PartialCreate` events, crash-adoption funnel)
+- `crates/core/src/workspace_manager/archive.rs` (modified — `list_missing_worktree_workareas` probe; crash adoption marking moved to the FSM funnel)
 - `crates/core/src/boot.rs` (modified — wire the session-event subscription that drives the FSM)
+- `crates/core/src/handlers/streams.rs` (modified — DRIFT: two new `WorkareaEvent` arms in `map_workarea_event`, forced by the widened broadcast enum; no wire/proto change)
 - `crates/proto/proto/concerto/v1/workareas.proto` (modified — widened `status` doc-comment only)
-- `crates/core/tests/fsm_table.rs` (modified — full table + `Partial`)
-- `crates/core/tests/*` (new/modified — parallel-workarea + session-event-driven + partial-create integration tests)
+- `crates/core/tests/fsm_table.rs` (modified — full 90-pair table + `Partial` + no-session-event-produces-partial assertion)
+- `crates/core/tests/parallel_workareas_fsm.rs` (new — in-process FSM funnel / session-event / parallel-workarea / pause-resume tests)
+- `crates/core/tests/workarea_lifecycle.rs` (modified — `partial_create_when_one_repo_worktree_add_fails` subprocess test)
+- `crates/persist/tests/workareas_status_widen.rs` (new — migration-0010 widen + data/child-FK preservation tests)
 - `docs/interfaces/schema.md` + `docs/interfaces/proto.md` (regenerated)
 
 ## Commit message
@@ -113,7 +116,13 @@ Refs: tasks/v1.0/307-parallel-workareas-fsm.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan: —
-- Open questions for next task: —
-- Deliberate debt: —
-- Smoke-gate state: —
+- **Drift from plan:**
+  - **Migration 0010 is an in-place `PRAGMA writable_schema` CHECK rewrite, NOT the prescribed DROP/RENAME recreate-table.** The textbook recreate is *unsafe* here: the migration runner connection has `foreign_keys = ON` (`crates/persist/src/api.rs base_connect_options`) and sqlx-sqlite's migrator **always** wraps each migration in its own transaction and **ignores the `-- no-transaction` directive on SQLite** (verified in `sqlx-sqlite-0.8.6/src/migrate.rs::apply`). `PRAGMA foreign_keys` is a no-op inside a transaction, so it can't be disabled for the DROP — and with FKs on, `DROP TABLE workareas` performs an implicit DELETE that fires `ON DELETE CASCADE` on every child (`workarea_repos`, `sessions`, `checkpoints`, `pull_requests`, `tool_approvals`), silently destroying their rows on any populated install. Neither `PRAGMA defer_foreign_keys` nor `PRAGMA legacy_alter_table` suppresses that cascade (verified empirically on SQLite 3.51). The `writable_schema` edit reaches the **identical FROZEN end-state** — same columns, FK, `UNIQUE(workspace_id, composer_name)`, both indexes, widened CHECK — without dropping the table, so no child cascade can fire. `workareas_status_widen.rs::migration_0010_preserves_seeded_rows_and_child_fk` proves a seeded row + child `workarea_repos` row survive (FKs ON at connect). The frozen public interface (the widened value set) is unchanged; only the *mechanic* differs.
+  - **`crates/core/src/handlers/streams.rs` edited (outside the original Outputs).** Mechanical drift: `map_workarea_event` is an exhaustive `match` on the `WorkareaEvent` broadcast enum, which gained `StatusChanged` + `PartialCreate`. Added two arms mapping them onto the existing `ProtoWorkareaEvent { workarea_id, kind }` wire shape (`kind = "status:<to>"` / `"partial"`) — no proto/field change. Added to Outputs.
+  - **`schema.md`'s 0010 section renders empty.** The regen only extracts `CREATE TABLE`/`CREATE INDEX` statements; 0010 has neither (it `UPDATE`s `sqlite_master`), so the generated section is a header with no body — the deterministic, correct output for a non-CREATE migration. The widened CHECK is documented in the migration file + the persist module-header comment + the proto comment.
+- **Open questions for next task:**
+  - **Retry of a `partial` workarea's failed repo is a seam, not built (Scope — out).** `create_workarea` records the failing `repository_id`s on `WorkareaEvent::PartialCreate` and the FSM allows `Partial --SessionResumed--> Active` as the retry-success promotion. The actual re-`worktree add` + `workarea_repos` insert + the `Workareas`-service RPC that drives it is a thin follow-on (a good home is alongside 308's multi-session work or a dedicated retry RPC). Today the partial workarea is fully usable for the materialized repos (a session can start → `running`).
+  - **The cone seed for a partial create only covers materialized repos.** Failed repos get no `workarea_repos` row at all, so 302/305's cone resolver simply won't see them until a retry inserts the row. That's the intended shape; flagging it for the retry author.
+  - **Task 308 (multi-session)** consumes the union-of-sessions `finished` logic already implemented here (`apply_session_event` only transitions to `finished` when `list_live_ids_by_workarea` is empty). 308 owns the per-workarea edit mutex + multi-session cardinality; the FSM funnel + session pump are ready for >1 session per workarea.
+- **Deliberate debt:** — (none; no `TODO`/`FIXME`/`todo!()`/`unimplemented!()` in new code).
+- **Smoke-gate state:** unchanged + green. `scripts/smoke.sh` PASSED end-to-end; `workspace-workarea` + `echo-session` (the single-session happy path the FSM wiring must not regress) both PASS, confirming `active → running → finished` via live session events does not break the existing flow.

@@ -5,7 +5,8 @@
 //! workareas are archived; a session's `Started`/`AwaitingApproval`/
 //! `Finished` events drive workarea transitions.
 //!
-//! ## States (matches `workareas.status` CHECK constraint in migration 0001)
+//! ## States (matches `workareas.status` CHECK constraint, widened to add
+//! `finished` + `partial` by migration 0010, Task 307)
 //!
 //! - `Created` — row inserted, no on-disk worktree yet (transient inside
 //!   `create_workarea`).
@@ -16,6 +17,11 @@
 //!   retained.
 //! - `Finished` — all sessions ended cleanly; workarea kept around for
 //!   restart or archive.
+//! - `Partial` — a **multi-repo** workarea where ≥1 repo's `git worktree
+//!   add` failed during create (`design/03 §8`). The repos that succeeded
+//!   are materialized + persisted; the failing repo ids are surfaced on
+//!   `workarea.events` so the UI/retry can target them. Stamped inside
+//!   `create_workarea` like `Active` (no `Session*` event produces it).
 //! - `Crashed` — a session process crashed and Core has noticed (e.g. on
 //!   reboot the worktree path is missing).
 //! - `Archived` — `archived_at` set; soft-deleted.
@@ -52,6 +58,7 @@ pub enum WorkareaState {
     Awaiting,
     Paused,
     Finished,
+    Partial,
     Crashed,
     Archived,
 }
@@ -66,6 +73,7 @@ impl WorkareaState {
             WorkareaState::Awaiting => "awaiting",
             WorkareaState::Paused => "paused",
             WorkareaState::Finished => "finished",
+            WorkareaState::Partial => "partial",
             WorkareaState::Crashed => "crashed",
             WorkareaState::Archived => "archived",
         }
@@ -82,6 +90,7 @@ impl WorkareaState {
             "awaiting" => WorkareaState::Awaiting,
             "paused" => WorkareaState::Paused,
             "finished" => WorkareaState::Finished,
+            "partial" => WorkareaState::Partial,
             "crashed" => WorkareaState::Crashed,
             "archived" => WorkareaState::Archived,
             _ => return None,
@@ -89,13 +98,14 @@ impl WorkareaState {
     }
 
     /// Every variant — used by the table-driven test.
-    pub const ALL: [WorkareaState; 8] = [
+    pub const ALL: [WorkareaState; 9] = [
         WorkareaState::Created,
         WorkareaState::Active,
         WorkareaState::Running,
         WorkareaState::Awaiting,
         WorkareaState::Paused,
         WorkareaState::Finished,
+        WorkareaState::Partial,
         WorkareaState::Crashed,
         WorkareaState::Archived,
     ];
@@ -169,6 +179,13 @@ impl WorkareaEvent {
 ///   (no event; the transition is internal). The FSM rejects events
 ///   targeting `Created` other than `Archive` (which a fresh workarea
 ///   would not realistically receive).
+/// - `Partial` is stamped inside `create_workarea` like `Active` (no
+///   `Session*` event produces it — the table test asserts no
+///   `(state, SessionEvent) -> Partial` edge exists). From `Partial` the
+///   user can still start a session (`SessionStarted -> Running`), archive,
+///   or have it adopted as crashed at boot; a successful retry of the
+///   failing repo promotes it back to `Active` via `SessionResumed`
+///   (the retry RPC is Task 307's documented seam — see Handoff).
 pub fn transition(state: WorkareaState, event: WorkareaEvent) -> Result<WorkareaState> {
     use WorkareaEvent::*;
     use WorkareaState::*;
@@ -205,6 +222,17 @@ pub fn transition(state: WorkareaState, event: WorkareaEvent) -> Result<Workarea
         (Finished, SessionStarted) => Running,
         (Finished, Archive) => Archived,
         (Finished, AdoptCrashed) => Crashed,
+
+        // From Partial (a multi-repo workarea with ≥1 failed worktree-add,
+        // design/03 §8). The successfully-materialized repos are usable, so
+        // a session can start on it; a successful retry of the failing repo
+        // (the documented Task-307 seam) promotes it back to Active via
+        // SessionResumed. Archive + AdoptCrashed behave like every other
+        // non-archived state.
+        (Partial, SessionStarted) => Running,
+        (Partial, SessionResumed) => Active,
+        (Partial, Archive) => Archived,
+        (Partial, AdoptCrashed) => Crashed,
 
         // From Crashed.
         (Crashed, SessionStarted) => Running,
