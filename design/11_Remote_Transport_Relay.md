@@ -96,8 +96,9 @@ The relay's job is **minimal**:
 2. Maintain a routing table: `iroh_endpoint_id → current public IP+port` (refreshed by the endpoint every minute).
 3. For direct hole-punch assistance: exchange `STUN`-like address packets.
 4. For relayed-fallback streams: forward QUIC packets between two endpoints.
+5. **Inbound webhook forwarding** (V1.0 amendment, `§3.4.1`) — accept `POST /webhook/github/<endpoint_id>`, open an ephemeral `0x04` Webhook bidi to the addressed Core's `endpoint_id`, write the webhook envelope, await the Core's one-frame ack, and relay it back to GitHub as the HTTP status. This is the relay's **second** HTTP route, a sibling of the WSS bridge (`§3.4`).
 
-State is per-endpoint, in-memory, with optional persistence to Redis (V2 multi-tenant deployments).
+State is per-endpoint, in-memory, with optional persistence to Redis (V2 multi-tenant deployments). The relay holds **no business state for any of these jobs** — in particular the webhook route buffers nothing, stores no webhook secret, and performs no verification or parsing (`§3.4.1`, `§3.9`). When the addressed Core is offline (no route / dial fails), the webhook route **drops the attempt and logs it**, returning a `5xx` to GitHub so GitHub redelivers per its own retry policy; it does **not** queue or buffer the delivery (`§3.4.1`, `design/13 §8`).
 
 **Why our own and not n0's:**
 - Trust boundary: any third-party relay that observes our routing metadata is part of our security story (PRD §16.4). We want to operate or have the user operate this.
@@ -115,15 +116,24 @@ State is per-endpoint, in-memory, with optional persistence to Redis (V2 multi-t
 
 Each relay is stateless except for the per-endpoint routing entries (TTL 90s).
 
-### 3.3 Connection lifecycle: three logical channels per pairing
+### 3.3 Connection lifecycle: logical channels per pairing
 
-A paired (Core, Device) pair has three logical channels over Iroh:
+A paired (Core, Device) pair has three device-originated logical channels over Iroh, plus — added in V1.0 — a fourth, relay-originated channel for inbound webhooks (`§3.4.1`):
 
-1. **API channel** — long-lived QUIC stream pool, carries the bidirectional gRPC traffic (the same Tonic services from `10`). Established lazily when the device wants to send a request.
-2. **Push hint channel** — opt-in, lightweight. The relay-side push trigger (from `14`) sends a wakeup hint to the device through APNs/FCM; on wakeup the device opens this channel to fetch the payload.
-3. **Pairing channel** — short-lived, used only once per device, gated by the pairing token (`12 §3.3`).
+1. **API channel** (tag `0x01`) — long-lived QUIC stream pool, carries the bidirectional gRPC traffic (the same Tonic services from `10`). Established lazily when the device wants to send a request.
+2. **Push hint channel** (tag `0x02`) — opt-in, lightweight. The relay-side push trigger (from `14`) sends a wakeup hint to the device through APNs/FCM; on wakeup the device opens this channel to fetch the payload.
+3. **Pairing channel** (tag `0x03`) — short-lived, used only once per device, gated by the pairing token (`12 §3.3`).
 
-All three are Iroh QUIC streams. They share the same Iroh endpoint identity at the Core but different stream multiplexing IDs / Noise IK sessions.
+The first three are device-originated Iroh QUIC streams. They share the same Iroh endpoint identity at the Core but different stream multiplexing IDs / Noise IK sessions. Each opened bidi stream is demultiplexed at the Core on a single leading **channel-tag byte** (`crates/transport/src/channels.rs`, `ChannelTag` in `crates/transport/src/api.rs`, Task 212 — FROZEN: `0x01 → API`, `0x02 → PushHint`, `0x03 → Pairing`).
+
+> **V1.0 amendment (2026-06-05) — fourth channel `0x04 Webhook`, per `PHASE3_PLANNING §1 D3` + `§4.2`.**
+> A fourth logical channel is reserved for the inbound-webhook path that `design/13 §3.2` (VCS webhook receiver) needs:
+>
+> 4. **Webhook channel** (tag `0x04`) — short-lived, **relay-originated**. When a GitHub webhook POSTs to the relay's `POST /webhook/github/<endpoint_id>` route (`§3.4.1`), the relay opens one ephemeral `0x04` bidi to the addressed Core, writes a single `WebhookEnvelope` (`§3.4.1`), reads the Core's one-frame ack, and closes the stream.
+>
+> Unlike `0x01`/`0x02`/`0x03`, the `0x04` channel **does not establish Noise IK**: the peer at the far end of this stream is *GitHub via the relay*, not a paired device — there is no device certificate and no Noise XX/IK handshake to run. Its authenticity floor is the **per-repo HMAC** the Core verifies (`design/13 §3.2`, the HMAC-SHA256 over the body keyed by `VcsSecretSlot::WebhookSecret`, frozen by Task 313). The wire confidentiality on this hop is the Iroh connection's own QUIC encryption (every Iroh bidi is QUIC-TLS encrypted even with no inner Noise) plus GitHub's TLS into the relay; it is **not** end-to-end Noise. See `§3.9` for the precise relay-visibility carve-out and `§3.4.1` for the route + envelope + offline semantics.
+>
+> The demux byte is `0x04`; **Task 315** adds the `ChannelTag::Webhook = 0x04` arm to `crates/transport/src/api.rs` and the `0x04 => Ok(ChannelTag::Webhook)` arm to `tag_from_byte` in `crates/transport/src/channels.rs`, routing the demuxed duplex to the VCS webhook handler (`ingest_webhook`, `design/13 §5.1`) — **not** to the Noise-responder gRPC path the `0x01` arm takes. This task (315.0) only reserves and specifies the tag; 315 writes the code.
 
 ### 3.4 Connect-Web + WSS bridge for browsers
 
@@ -141,6 +151,64 @@ All three are Iroh QUIC streams. They share the same Iroh endpoint identity at t
 - Relay sees ciphertext only (it cannot decrypt the inner Noise layer).
 
 The WSS bridge is the **only** non-Iroh path we run. It's a deliberate compromise for V1.0 to ship a working web client. V2.0 swaps it for browser-native Iroh once mature.
+
+#### 3.4.1 Inbound webhook forwarding (relay→Core, `0x04` channel)
+
+> **V1.0 amendment (2026-06-05) — relay→Core inbound-webhook framing, per `PHASE3_PLANNING §1 D3` + `§4.2`.**
+> `design/13 §3.2` says GitHub POSTs to a `/webhook/github/<endpoint_id>` URL on the relay and "the relay forwards the webhook payload to the Core over the existing Iroh tunnel," but this doc had no inbound-HTTP-ingress concept and the framing was unspecified. This subsection pins it. It is the single canonical home for the route + the `WebhookEnvelope` + the offline-Core semantics; `§3.2`, `§3.3`, `§3.9`, and `§6.2` cross-reference it, and `design/13 §3.2`/`§6.2`/`§8` cite it. **Task 315 implements both sides of this contract; it has no latitude — the framing below is FROZEN.**
+
+**The second relay HTTP route.** Alongside the WSS bridge (`§3.4` Path B), the relay exposes a second HTTP route:
+
+```
+POST /webhook/github/<endpoint_id>
+```
+
+This is the **FROZEN public URL shape** GitHub registers against (it mirrors the `/wss/<endpoint_id>` prefix discipline). The route is a sibling of the WSS bridge and reuses 215's machinery — the same relay-forced Iroh **client** `Endpoint` (`RelayMode::Custom(relay_url)`; `iroh-relay::Server` has no dialable endpoint, so the relay holds its own client endpoint, exactly as the WSS bridge does — 215 Handoff drift), and the same **parse-`<endpoint_id>`-before-work** discipline (reject a malformed/oversized id with HTTP `4xx` before any dial, reusing `MAX_ENDPOINT_ID_LEN`). The difference from the WSS bridge: this is a **plain HTTPS POST → one Iroh bidi → status chain-back**, not a WebSocket upgrade + long-lived bidirectional pump. The route is plain TCP/HTTPS + an Iroh bidi — nothing `#[cfg(unix)]`; it builds on the Windows CI lane (Task 113) as-is, like the WSS bridge.
+
+**The forwarding chain (per request):**
+
+1. Parse `<endpoint_id>` from the path (reject malformed/oversized → `400`).
+2. Open an **ephemeral `0x04` Webhook bidi** to the addressed Core's `endpoint_id` (dial through the relay; if the dial fails / the Core is offline → drop + log + `502`/`503`, see *Offline-Core* below).
+3. Write a single **`WebhookEnvelope`** frame (below) carrying the delivery-id, the two GitHub signature/delivery headers, the event type, the endpoint id, and the opaque body.
+4. Read the Core's single **ack frame** (one status byte) and map it to the HTTP status returned to GitHub.
+5. Close the bidi.
+
+The relay never establishes Noise on this stream, never sees the per-repo HMAC secret, and never parses or persists the body — it is a transparent forwarder (`§3.9`).
+
+**The `WebhookEnvelope` — FROZEN framing on the `0x04` bidi.** The frame the relay writes (and the Core reads) carries exactly five fields:
+
+| # | Field | Source | Purpose at the Core |
+|---|---|---|---|
+| 1 | `delivery_id` | `X-GitHub-Delivery` header (UUID string) | Idempotency key — 315's `webhook_deliveries` cache (migration `0013`) dedupes replays on it. |
+| 2 | `signature_256` | `X-Hub-Signature-256` header (`sha256=<hex>`) | Passed through verbatim; the Core recomputes HMAC-SHA256 over `body` with the per-repo `VcsSecretSlot::WebhookSecret` (Task 313) and **constant-time-compares**. |
+| 3 | `event_type` | `X-GitHub-Event` header (`pull_request` / `check_run` / `deployment` / `pull_request_review_thread` / …) | Lets the Core route the parse without sniffing the body. |
+| 4 | `endpoint_id` | the addressed Core endpoint id from the path | Redundant with the dial target, carried so the Core can assert it matches its own identity and reject a misrouted frame. |
+| 5 | `body` | the raw GitHub POST body bytes | **Opaque** to the relay; HMAC-verified at the Core. Bounded to GitHub's documented max delivery size (**25 MiB** ceiling), well under the transport's 64 MiB `MAX_MESSAGE_SIZE`. |
+
+**Pinned encoding (MUST — no fork for 315).** The frame is a single **length-prefixed framing** written to the `0x04` bidi after the channel-tag byte:
+
+```text
+0x04                            channel-tag byte (acceptor-priming write, §3.3)
+u32  len(delivery_id)   + delivery_id   bytes (UTF-8)
+u32  len(signature_256) + signature_256 bytes (UTF-8)
+u32  len(event_type)    + event_type    bytes (UTF-8)
+u32  len(endpoint_id)   + endpoint_id   bytes (UTF-8)
+u32  len(body)          + body          bytes (opaque)
+```
+
+All `u32` lengths are **big-endian**. The four header strings are UTF-8; `body` is opaque bytes. The Core MUST reject a frame whose `len(body)` exceeds the **25 MiB** ceiling (and any total exceeding `MAX_MESSAGE_SIZE`) with a parse-reject ack before reading the body. A missing `signature_256` (GitHub omits it only on a misconfigured hook) is carried as a zero-length field and treated by the Core as an HMAC failure.
+
+**The ack frame (MUST).** The Core replies on the same bidi with a **single status byte** the relay maps to the HTTP status it returns to GitHub:
+
+| Ack byte | HTTP to GitHub | Meaning |
+|---|---|---|
+| `0x00` | `200` | Accepted — HMAC verified, delivery enqueued/processed (or idempotently deduped). |
+| `0x01` | `400` | Reject — HMAC mismatch, malformed frame, oversized body, or `endpoint_id` mismatch. The relay returns `400`; per `design/13 §8` the Core does **not** reveal the reason to the sender. |
+| `0x02` | `500` | Core-internal error after a valid frame (e.g. DB write failure). GitHub redelivers. |
+
+The relay maps **only** these three bytes; any other byte (or a closed stream before the ack) is treated as `5xx` + drop + log.
+
+**Offline-Core behavior (MUST — no buffering).** If the relay cannot open the `0x04` bidi to `<endpoint_id>` (no route, dial timeout, Core down), it **drops the delivery and logs it** (endpoint id + delivery id + timestamp; never the body) and returns `502`/`503` to GitHub. GitHub then redelivers per its own redelivery policy. The relay **does not buffer, queue, or persist** the delivery — it stays near-stateless (`§3.2`). The Core's own fallback for a missed webhook is polling (`design/13 §3.2`/`§3.3`), not relay replay.
 
 ### 3.5 mDNS LAN discovery
 
@@ -200,8 +268,21 @@ If the Iroh prototype shows < 60% direct-connection success, we'd revisit by add
 | **Device certificate contents** | **No** | **No** | Carried in encrypted gRPC metadata, not in relay-visible frames |
 | **Workspace names, repo names, file paths** | **No** | **No** | All in encrypted payload |
 | **Pairing tokens** | **No** | **No** | Used in Noise XX pre-handshake; never visible to relay |
+| **Inbound webhook body** (`0x04` channel) | **Yes — in transit only** | **Yes — in transit only** | Forwarded opaquely; see the V1.0 carve-out below |
+| **Per-repo webhook HMAC secret** | **No** | **No** | Lives only in the Core keychain (`VcsSecretSlot::WebhookSecret`, Task 313); never sent to the relay |
 
 The cryptographic guarantee is that **the relay sees only metadata that a TCP/IP-aware network observer would see anyway** (source IP, byte counts, connection lifetime), plus the addressed endpoint ID. It does not see what the user is doing, what repo they're working on, what the agent is saying, or any device credential.
+
+> **V1.0 amendment (2026-06-05) — the inbound-webhook carve-out, per `PHASE3_PLANNING §1 D3` + `§4.2`.**
+> The inbound-webhook path (`§3.4.1`, `0x04` channel) is a **deliberate, bounded exception** to the "relay sees ciphertext only" property — and it is the *only* one. On this path the relay is a **transparent forwarder** of GitHub's already-signed POST body: it sees the body bytes **in transit** (exactly as any TCP proxy sees the bytes it forwards), because there is no inner Noise layer on the `0x04` channel to hide them (`§3.3`: the peer is GitHub-via-relay, not a paired device, so no device cert / Noise handshake exists). The relay does **not** verify, parse, decode, persist, or log the body; it copies the envelope through and chains back a single status byte.
+>
+> **Why this is safe and precisely bounded:**
+> - The relay **never holds the per-repo HMAC secret** — it lives only in the Core keychain (`VcsSecretSlot::WebhookSecret`). A compromised or malicious relay cannot forge a webhook the Core will accept, because it cannot compute a valid `X-Hub-Signature-256`.
+> - **Integrity/authenticity is the Core-verified HMAC**, not relay trust. The Core recomputes HMAC-SHA256 over `body` and constant-time-compares before acting (`design/13 §3.2`/`§6.2`).
+> - **Replay is idempotency-bounded** at the Core on `delivery_id` (`webhook_deliveries`, migration `0013`), not at the relay.
+> - **Confidentiality on the wire** is still present, just not via inner Noise: GitHub's TLS into the relay on the inbound hop, and the Iroh connection's own QUIC-TLS encryption on the relay→Core hop. Both legs are encrypted to a network observer; the relay process itself is the single point that sees plaintext body bytes in transit — and webhook payloads are repository event metadata GitHub already transmits over the public internet, not Concerto's E2EE user content.
+>
+> Stated plainly: this is **not** end-to-end Noise (do not claim it is), and it is **not** an uncontrolled "relay sees plaintext it shouldn't" leak — it is a scoped, HMAC-anchored forwarder for one inbound integration path, with the secret out of the relay's reach.
 
 **Differences that matter to a buyer:**
 
@@ -344,6 +425,7 @@ flowchart TB
         IrohRelay["Iroh relay protocol<br/>(hole-punch assist +<br/>relayed QUIC)"]
         Routes["Endpoint routes table<br/>(in-memory, TTL 90s)"]
         Wss["WSS Bridge<br/>(Connect-Web ↔ Iroh)"]
+        WebhookRt["Webhook route (§3.4.1)<br/>POST /webhook/github/&lt;endpoint_id&gt;<br/>(ephemeral 0x04 bidi)"]
         BW["Bandwidth counters"]
         Health["health endpoint"]
     end
@@ -351,7 +433,11 @@ flowchart TB
     Phone["Phone"] -->|connect via| IrohRelay
     Web["Web client"] -->|wss| Wss
     Wss -->|Iroh stream| IrohRelay
+    GH["GitHub"] -->|POST webhook| WebhookRt
+    WebhookRt -->|0x04 WebhookEnvelope bidi| IrohRelay
 ```
+
+> **V1.0 amendment (2026-06-05):** the `WebhookRt` node (the second relay HTTP route, `§3.4.1`) is added per `PHASE3_PLANNING §1 D3` + `§4.2`. Like the `Wss` node it opens an Iroh bidi to the addressed Core through the relay — but a **single ephemeral `0x04` `WebhookEnvelope` bidi** (write envelope → read one-byte ack → close), not a long-lived WSS pump.
 
 ### 6.3 Relay deployment
 
