@@ -22,6 +22,11 @@ export type RpcMethod =
   | "Workareas.GetWorkareaRepoDiff"
   | "Repositories.AddRepository"
   | "Repositories.ListByProject"
+  // Task 322 — sparse-cone picker (Task 305 EstimateConeSize telemetry +
+  // Task 302 SetCones per-(workarea, repo) cone setter). The strings match
+  // the Rust shell dispatch table (`<Service>.<Rpc>`) exactly.
+  | "Repositories.EstimateConeSize"
+  | "Repositories.SetCones"
   | "Sessions.ListSessions"
   | "Sessions.GetSession"
   | "Sessions.CreateSession"

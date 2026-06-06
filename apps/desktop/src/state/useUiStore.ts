@@ -67,6 +67,13 @@ export type UiStore = {
   /// terminal panel still uses a tab strip so V1.0's multi-session story
   /// drops into the same surface without a rewrite.
   activeSessionId: string | null;
+  /// Task 322 — the active repo in the workarea's Level-1 Code & PRs repo
+  /// selector (`design/15 §3.4`). UI-only selection: which of the
+  /// workarea's repos drives the Diff view. Reset on workarea switch (see
+  /// `setSelectedWorkarea`) so a stale repo id from the previous workarea
+  /// never renders. Deliberately NOT persisted (ephemeral selection, like
+  /// `activeSessionId`) — `LAYOUT_STORAGE_KEY` is unchanged.
+  selectedRepoId: string | null;
   sidebarCollapsed: boolean;
   /// Per-workspace expansion state for the sidebar tree. Tracked here
   /// (not in component-local state) so the choice survives a sidebar
@@ -103,6 +110,7 @@ export type UiStore = {
   setSelectedWorkarea: (id: string | null) => void;
   setSelectedProject: (id: string | null) => void;
   setActiveSession: (id: string | null) => void;
+  setSelectedRepo: (id: string | null) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleWorkspaceExpanded: (workspaceId: string) => void;
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void;
@@ -185,6 +193,7 @@ export const useUiStore = create<UiStore>((set) => ({
   selectedWorkareaId: null,
   selectedProjectId: null,
   activeSessionId: null,
+  selectedRepoId: null,
   sidebarCollapsed: false,
   expandedWorkspaces: new Set<string>(),
   newWorkspaceModalOpen: false,
@@ -202,11 +211,18 @@ export const useUiStore = create<UiStore>((set) => ({
       selectedWorkspaceId: id,
       selectedWorkareaId: null,
       activeSessionId: null,
+      // Switching workspace clears the workarea, so the active repo
+      // selection (keyed to the old workarea) must clear too.
+      selectedRepoId: null,
     }),
   setSelectedWorkarea: (id) =>
-    set({ selectedWorkareaId: id, activeSessionId: null }),
+    // Clearing `selectedRepoId` here keeps the Level-1 repo selector from
+    // rendering a repo id that belonged to the previous workarea; the
+    // selector re-auto-selects the new workarea's first repo (Task 322).
+    set({ selectedWorkareaId: id, activeSessionId: null, selectedRepoId: null }),
   setSelectedProject: (id) => set({ selectedProjectId: id }),
   setActiveSession: (id) => set({ activeSessionId: id }),
+  setSelectedRepo: (id) => set({ selectedRepoId: id }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleWorkspaceExpanded: (workspaceId) =>
     set((state) => {
