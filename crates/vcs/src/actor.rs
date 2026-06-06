@@ -32,9 +32,13 @@ use concerto_persist::{
 };
 use url::Url;
 
-use crate::dispatch::{issue_router_unimplemented, route_issue_host, IssueHost};
+use concerto_keychain::SecretValue;
+
+use crate::dispatch::{external_tracker_blocked, route_issue_host, IssueCache, IssueHost};
 use crate::gh_cli;
 use crate::github::GitHubProvider;
+use crate::jira::{JiraClient, RefreshToken};
+use crate::linear::LinearClient;
 use crate::provider::{Issue, VcsProvider};
 
 /// Config for the supervised actor's `run` loop. V0.1 has no knobs.
@@ -49,6 +53,10 @@ pub struct VcsConfig;
 pub struct VcsHandle {
     persistence: Arc<Persistence>,
     gh_path: Arc<tokio::sync::OnceCell<PathBuf>>,
+    /// Shared 1 h-TTL issue cache (`design/13 §3.7`/§4). Issue bodies live ONLY
+    /// here — never in SQLite. Cloned with the handle so every clone shares one
+    /// cache (Task 317).
+    issue_cache: IssueCache,
 }
 
 impl VcsHandle {
@@ -57,12 +65,29 @@ impl VcsHandle {
         Self {
             persistence,
             gh_path: Arc::new(tokio::sync::OnceCell::new()),
+            issue_cache: IssueCache::system(),
+        }
+    }
+
+    /// Build a handle with a caller-supplied issue cache (the `testkit`
+    /// synthetic-clock cache in tests). Production uses [`VcsHandle::new`].
+    pub fn with_issue_cache(persistence: Arc<Persistence>, issue_cache: IssueCache) -> Self {
+        Self {
+            persistence,
+            gh_path: Arc::new(tokio::sync::OnceCell::new()),
+            issue_cache,
         }
     }
 
     /// Borrow the shared read-only pool (the gRPC handler's repo→workarea lookup).
     pub fn persistence_readers(&self) -> &sqlx::SqlitePool {
         self.persistence.readers()
+    }
+
+    /// Exclusive write access to the SQLite writer (the `SetVcsCredential`
+    /// handler upserts the non-secret `vcs_credentials` metadata row, Task 317).
+    pub async fn persistence_writer(&self) -> concerto_persist::WriterGuard<'_> {
+        self.persistence.writer().await
     }
 
     /// Resolve (and cache) the `gh` binary path.
@@ -166,34 +191,135 @@ impl VcsHandle {
         gh_cli::view_issue(gh, &repo, issue_number).await
     }
 
-    /// Top-level `fetch_issue(url)` **router** (Task 313, `design/13 §6.1` + §2
-    /// row "313 fetch_issue routing"). Parses the URL host and dispatches:
-    /// github.com → the GitHub issue fetch (via the octocrab `GitHubProvider`
-    /// built from the supplied PAT); linear.app / *.atlassian.net → the Task-317
-    /// seam (returns the typed `Unimplemented`).
+    /// Top-level `fetch_issue(url)` **router** (`design/13 §6.1` + §3.7). Parses
+    /// the URL host and dispatches: `github.com`/Enterprise → the GitHub issue
+    /// fetch (octocrab, Task 313); `linear.app` → the Linear GraphQL client;
+    /// `*.atlassian.net` → the Jira REST client (Task 317). The result is cached
+    /// for 1 h in memory (keyed by canonicalized URL); a still-fresh hit skips
+    /// the HTTP call entirely. Issue bodies are NEVER persisted to SQLite.
     ///
-    /// `github_token` is the PAT to authenticate the GitHub arm. The per-provider
-    /// `fetch_issue(&Url)` stays on the `VcsProvider` trait; this is the
-    /// top-level dispatch the gRPC/Maestro callers use with a raw URL string.
+    /// `creds` carries the per-arm credentials (read from the keychain by the
+    /// caller) + the `enterprise_data_privacy` flag: a privacy-locked project
+    /// refuses an external-tracker (Linear/Jira) fetch with the typed
+    /// [`external_tracker_blocked`] error BEFORE any outbound call (the GitHub
+    /// arm is the user's own repo host, not an external tracker, so it is not
+    /// gated here).
     pub async fn fetch_issue_url(
         &self,
         url: &str,
-        github_token: Option<&str>,
+        creds: &IssueFetchCreds<'_>,
     ) -> Result<Option<Issue>> {
+        // 1 h-TTL cache hit → no HTTP call (privacy + latency).
+        if let Some(cached) = self.issue_cache.get(url) {
+            return Ok(Some(cached));
+        }
+
         let parsed = Url::parse(url)
             .map_err(|e| Error::Validation(format!("invalid issue URL `{url}`: {e}")))?;
-        match route_issue_host(&parsed)? {
+        let issue = match route_issue_host(&parsed)? {
             IssueHost::GitHub => {
-                let token = github_token.ok_or_else(|| {
+                let token = creds.github_token.ok_or_else(|| {
                     Error::VcsNotAuthenticated(
                         "GitHub issue fetch needs a token (SecretKind::GithubPat)".to_string(),
                     )
                 })?;
                 let provider = GitHubProvider::with_token(token)?;
-                provider.fetch_issue(&parsed).await
+                provider.fetch_issue(&parsed).await?
             }
-            host @ (IssueHost::Linear | IssueHost::Jira) => Err(issue_router_unimplemented(host)),
+            IssueHost::Linear => {
+                if creds.enterprise_data_privacy {
+                    return Err(external_tracker_blocked("linear"));
+                }
+                let token = creds.linear_token.ok_or_else(|| {
+                    Error::VcsNotAuthenticated(
+                        "Linear issue fetch needs a token (VcsSecretSlot::LinearAccessToken); \
+                         connect Linear in Settings"
+                            .to_string(),
+                    )
+                })?;
+                let client = match creds.linear_base {
+                    Some(base) => LinearClient::with_base(base)?,
+                    None => LinearClient::new()?,
+                };
+                Some(client.fetch(url, token).await?)
+            }
+            IssueHost::Jira => {
+                if creds.enterprise_data_privacy {
+                    return Err(external_tracker_blocked("jira"));
+                }
+                let token = creds.jira_token.ok_or_else(|| {
+                    Error::VcsNotAuthenticated(
+                        "Jira issue fetch needs a token (VcsSecretSlot::JiraAccessToken); \
+                         connect Jira in Settings"
+                            .to_string(),
+                    )
+                })?;
+                // Jira's REST base is the Atlassian site host of the URL itself
+                // (`https://<site>.atlassian.net`), unless the caller overrides
+                // it (the testkit wiremock base).
+                let base = match creds.jira_base {
+                    Some(base) => base.to_string(),
+                    None => jira_base_from_url(&parsed)?,
+                };
+                let client = JiraClient::with_base(&base)?;
+                Some(client.fetch(url, token, creds.jira_refresh).await?)
+            }
+        };
+
+        // Cache successful fetches (a `None`/absent issue is not cached).
+        if let Some(ref issue) = issue {
+            self.issue_cache.put(url, issue.clone());
         }
+        Ok(issue)
+    }
+
+    /// Direct Linear issue fetch by id (`ENG-123`) or URL (`design/13 §5.1`
+    /// `fetch_linear_issue`). Skips the host-routing step; still consults the 1 h
+    /// cache + the `enterprise_data_privacy` gate. `linear_base` overrides the
+    /// production endpoint (the testkit wiremock base) when `Some`.
+    pub async fn fetch_linear_issue(
+        &self,
+        id_or_url: &str,
+        token: &SecretValue,
+        enterprise_data_privacy: bool,
+        linear_base: Option<&str>,
+    ) -> Result<Issue> {
+        if enterprise_data_privacy {
+            return Err(external_tracker_blocked("linear"));
+        }
+        if let Some(cached) = self.issue_cache.get(id_or_url) {
+            return Ok(cached);
+        }
+        let client = match linear_base {
+            Some(base) => LinearClient::with_base(base)?,
+            None => LinearClient::new()?,
+        };
+        let issue = client.fetch(id_or_url, token).await?;
+        self.issue_cache.put(id_or_url, issue.clone());
+        Ok(issue)
+    }
+
+    /// Direct Jira issue fetch by key (`PROJ-45`) or URL (`design/13 §5.1`). The
+    /// caller supplies the Atlassian site base + token + optional one-shot
+    /// refresh. Consults the 1 h cache + the privacy gate.
+    pub async fn fetch_jira_issue(
+        &self,
+        key_or_url: &str,
+        base_uri: &str,
+        token: &SecretValue,
+        refresh: Option<&RefreshToken<'_>>,
+        enterprise_data_privacy: bool,
+    ) -> Result<Issue> {
+        if enterprise_data_privacy {
+            return Err(external_tracker_blocked("jira"));
+        }
+        if let Some(cached) = self.issue_cache.get(key_or_url) {
+            return Ok(cached);
+        }
+        let client = JiraClient::with_base(base_uri)?;
+        let issue = client.fetch(key_or_url, token, refresh).await?;
+        self.issue_cache.put(key_or_url, issue.clone());
+        Ok(issue)
     }
 
     // ---- internal helpers ----
@@ -249,6 +375,47 @@ impl VcsHandle {
             .await?
             .ok_or_else(|| Error::Internal(format!("pull_request {id} missing after upsert")))
     }
+}
+
+/// Per-arm credentials + privacy flag for [`VcsHandle::fetch_issue_url`]
+/// (Task 317). The caller (the gRPC handler) reads each token from the keychain
+/// (GitHub PAT via `SecretKind::GithubPat`; Linear/Jira via the
+/// `VcsSecretSlot::{Linear,Jira}AccessToken` slots) and resolves the project's
+/// `enterprise_data_privacy` setting before constructing this. All fields are
+/// borrowed so no secret is copied into the carrier.
+///
+/// Only the arm matching the URL host is consulted, so an unused arm may be
+/// `None`. `linear_base`/`jira_base` override the production API base (the
+/// `testkit` wiremock base in tests; `None` → the real endpoint / the URL's
+/// Atlassian site for Jira).
+#[derive(Default)]
+pub struct IssueFetchCreds<'a> {
+    /// GitHub PAT (the GitHub arm; not gated by `enterprise_data_privacy` —
+    /// it is the user's own repo host, not an external tracker).
+    pub github_token: Option<&'a str>,
+    /// Linear OAuth access token or personal API key.
+    pub linear_token: Option<&'a SecretValue>,
+    /// Jira (Atlassian) OAuth access token.
+    pub jira_token: Option<&'a SecretValue>,
+    /// One-shot Jira OAuth refresh callback (invoked once on a 401).
+    pub jira_refresh: Option<&'a RefreshToken<'a>>,
+    /// Override the Linear API base (testkit). `None` → production.
+    pub linear_base: Option<&'a str>,
+    /// Override the Jira API base (testkit). `None` → the URL's Atlassian site.
+    pub jira_base: Option<&'a str>,
+    /// When `true`, refuse Linear/Jira (external-tracker) fetches with the typed
+    /// `vcs.external_tracker_blocked` error (the `design/13 §3.7` privacy floor).
+    pub enterprise_data_privacy: bool,
+}
+
+/// Derive the Jira REST base (`https://<site>.atlassian.net`) from a Jira issue
+/// URL, dropping the path. Used when the caller does not override the base.
+fn jira_base_from_url(url: &Url) -> Result<String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::Validation(format!("jira: URL has no host: {url}")))?;
+    let scheme = url.scheme();
+    Ok(format!("{scheme}://{host}"))
 }
 
 /// Extract `owner/repo` from a GitHub URL of any common shape

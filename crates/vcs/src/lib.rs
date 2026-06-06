@@ -16,6 +16,15 @@
 //! - **[`VcsHandle`]** ([`actor`]) — the cheap-clone handle with the FROZEN
 //!   Task-45 method set (reused unchanged by the Core's `Vcs` gRPC handler) plus
 //!   the new [`VcsHandle::fetch_issue_url`] router.
+//! - **[`LinearClient`]** ([`linear`]) + **[`JiraClient`]** ([`jira`]) — the
+//!   native issue-fetch clients (Task 317): a hand-rolled Linear GraphQL query
+//!   and a Jira REST GET (ADF flattened to text, one OAuth refresh on 401), each
+//!   mapping to the shared [`Issue`]. Wired into the [`VcsHandle::fetch_issue_url`]
+//!   host router behind a 1 h in-memory [`IssueCache`]; issue bodies are never
+//!   persisted (`design/13 §3.7` privacy floor).
+//! - **[`write_back`]** — the FROZEN [`IssueWriteBack`] trait + LIVE no-op
+//!   [`NoopWriteBack`] (Task 317, D5); the real status-transition-on-merge lands
+//!   in Task 320.5 behind the same trait.
 //! - **[`testkit`]** (behind `--features testkit`) — the shared wiremock-backed
 //!   `FakeGitHub`/`FakeLinear`/`FakeJira` harness 314/315/316/317/320/320.5
 //!   reuse (D2).
@@ -30,19 +39,26 @@ pub mod dispatch;
 pub mod gh_cli;
 pub mod github;
 pub mod github_cli;
+pub mod jira;
+pub mod linear;
 pub mod provider;
+pub mod write_back;
 
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
-pub use actor::{repo_full_name_from_url, VcsConfig, VcsHandle};
+pub use actor::{repo_full_name_from_url, IssueFetchCreds, VcsConfig, VcsHandle};
 pub use dispatch::{
-    choose_backend, is_no_vcs_credentials, no_vcs_credentials, route_issue_host, Backend,
-    IssueHost, ProviderKey, RateLimitBudget, RepoCapabilities, VcsOp, VcsState,
+    choose_backend, external_tracker_blocked, is_external_tracker_blocked, is_no_vcs_credentials,
+    no_vcs_credentials, route_issue_host, system_now_secs, Backend, IssueCache, IssueHost, NowSecs,
+    ProviderKey, RateLimitBudget, RepoCapabilities, VcsOp, VcsState, ISSUE_CACHE_TTL_SECS,
 };
 pub use github::{GitHubProvider, DEFAULT_GITHUB_BASE_URI};
 pub use github_cli::GitHubProviderViaCli;
+pub use jira::{flatten_adf, parse_jira_key, JiraClient, RefreshToken};
+pub use linear::{parse_linear_id, LinearClient, DEFAULT_LINEAR_BASE_URI};
 pub use provider::{
     is_unimplemented, unimplemented_err, CheckRun, CreatePrRequest, Deployment, Issue, MergeMethod,
     MergeReport, ProviderPrId, PullRequest, RevertReport, ReviewThread, ThreadId, VcsProvider,
 };
+pub use write_back::{IssueProvider, IssueRef, IssueTransition, IssueWriteBack, NoopWriteBack};

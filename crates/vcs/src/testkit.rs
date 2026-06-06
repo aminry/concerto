@@ -24,7 +24,7 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::github::GitHubProvider;
@@ -158,6 +158,16 @@ impl FakeLinear {
             .mount(&self.server)
             .await;
     }
+
+    /// Number of requests the fake has received so far. Lets the 1 h-cache test
+    /// assert the second fetch served from cache made NO second HTTP call.
+    pub async fn request_count(&self) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .map(|r| r.len())
+            .unwrap_or(0)
+    }
 }
 
 /// A wiremock-backed fake Jira (Atlassian) REST endpoint (Task 317). Frozen
@@ -191,6 +201,48 @@ impl FakeJira {
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(&self.server)
             .await;
+    }
+
+    /// Mount the **OAuth-refresh** flow for the Jira 401→refresh→retry test
+    /// (Task 317): a request bearing `stale_token` gets a `401`; a request
+    /// bearing `fresh_token` gets the `200` body. Lets a single test prove the
+    /// client transparently refreshes and retries once.
+    pub async fn mount_get_json_with_refresh(
+        &self,
+        path_str: &str,
+        stale_token: &str,
+        fresh_token: &str,
+        body: serde_json::Value,
+    ) {
+        // Stale bearer → 401.
+        Mock::given(method("GET"))
+            .and(path(path_str))
+            .and(header(
+                "authorization",
+                format!("Bearer {stale_token}").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&self.server)
+            .await;
+        // Fresh bearer → 200 + body.
+        Mock::given(method("GET"))
+            .and(path(path_str))
+            .and(header(
+                "authorization",
+                format!("Bearer {fresh_token}").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Number of requests received (cache / retry assertions).
+    pub async fn request_count(&self) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .map(|r| r.len())
+            .unwrap_or(0)
     }
 }
 

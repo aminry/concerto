@@ -167,5 +167,7 @@ fn issue_detail_to_issue(d: gh_cli::IssueDetail) -> Issue {
         state: d.state.to_lowercase(),
         url: d.url,
         labels: d.labels.into_iter().map(|l| l.name).collect(),
+        // GitHub issues key on `number`; no provider-native string id.
+        external_id: String::new(),
     }
 }

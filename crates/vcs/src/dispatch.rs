@@ -14,12 +14,12 @@
 //!   FROZEN here (314 keys its three rate-limit pools off it).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use concerto_error::{Error, Result};
 use url::Url;
 
-use crate::provider::{unimplemented_err, CheckRun, ReviewThread, VcsProvider};
+use crate::provider::{CheckRun, Issue, ReviewThread, VcsProvider};
 
 /// Which backend [`choose_backend`] selected for an operation.
 ///
@@ -128,17 +128,116 @@ pub fn route_issue_host(url: &Url) -> Result<IssueHost> {
     }
 }
 
-/// The Linear/Jira routing seam Task 317 fills. Returns the typed
-/// `Unimplemented` error until the native clients land.
-pub fn issue_router_unimplemented(host: IssueHost) -> Error {
-    let which = match host {
-        IssueHost::Linear => "Linear",
-        IssueHost::Jira => "Jira",
-        IssueHost::GitHub => "GitHub", // unreachable in the seam path
-    };
-    unimplemented_err(&format!(
-        "{which} issue fetch (router seam; filled by Task 317)"
+/// The typed "external-tracker fetch blocked by `enterprise_data_privacy`"
+/// error (Task 317, `design/13 §3.7` privacy floor). Reuses the FROZEN
+/// `Error::Vcs` variant with a stable `vcs.external_tracker_blocked` prefix the
+/// UI can switch on to explain *why* the fetch was refused (mirrors the
+/// `no_vcs_credentials` convention). The Core consults the resolved project
+/// setting BEFORE the outbound fetch; on a privacy-locked project the router
+/// returns this rather than calling Linear/Jira.
+pub fn external_tracker_blocked(host: &str) -> Error {
+    Error::Vcs(format!(
+        "vcs.external_tracker_blocked: {host} issue fetch refused — this project has \
+         enterprise_data_privacy enabled, so issue content must not leave for an external tracker"
     ))
+}
+
+/// True when `e` is the [`external_tracker_blocked`] refusal.
+pub fn is_external_tracker_blocked(e: &Error) -> bool {
+    matches!(e, Error::Vcs(m) if m.starts_with("vcs.external_tracker_blocked"))
+}
+
+// ---------------------------------------------------------------------------
+// Issue TTL cache (`design/13 §3.7`/§4: "fetched on demand, cached 1h in
+// memory; issue bodies never persisted").
+// ---------------------------------------------------------------------------
+
+/// The issue-cache TTL: 1 hour, in seconds (`design/13 §3.7`/§4).
+pub const ISSUE_CACHE_TTL_SECS: i64 = 3600;
+
+/// A clock the [`IssueCache`] reads "now" from. Production passes
+/// [`system_now_secs`]; tests pass a closure over the `testkit` `SyntheticClock`
+/// so the 1 h-expiry path is deterministic. Boxed `dyn Fn` so the cache holds no
+/// generic param.
+pub type NowSecs = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+/// Wall-clock "now" in epoch seconds (the production [`NowSecs`]).
+pub fn system_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// An in-memory, 1 h-TTL cache of fetched issues keyed by canonicalized URL
+/// (`design/13 §3.7`/§4). Issue bodies are held ONLY here — never written to
+/// SQLite (the privacy floor). Cheap-clone (`Arc<Mutex<…>>`), so the router can
+/// share one cache across calls.
+///
+/// The clock is injectable ([`NowSecs`]) so the TTL test drives expiry with the
+/// `testkit` synthetic clock instead of sleeping an hour.
+#[derive(Clone)]
+pub struct IssueCache {
+    inner: Arc<Mutex<HashMap<String, (i64, Issue)>>>,
+    now: NowSecs,
+}
+
+impl IssueCache {
+    /// Build a cache that reads time from `now`.
+    pub fn new(now: NowSecs) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            now,
+        }
+    }
+
+    /// Build a cache on the wall clock (the production path).
+    pub fn system() -> Self {
+        Self::new(Arc::new(system_now_secs))
+    }
+
+    /// Canonicalize a URL for use as a cache key: `scheme://host/path` with the
+    /// host lowercased (query + fragment dropped, since the same issue is the
+    /// same issue regardless of trailing query). A bare id (not a URL) keys on
+    /// the trimmed string verbatim.
+    pub fn canonical_key(url: &str) -> String {
+        match Url::parse(url.trim()) {
+            Ok(u) => {
+                let host = u.host_str().unwrap_or("").to_ascii_lowercase();
+                format!("{}://{}{}", u.scheme(), host, u.path())
+            }
+            // Not a URL (a bare id) → key on the trimmed string verbatim.
+            Err(_) => url.trim().to_string(),
+        }
+    }
+
+    /// Look up a still-fresh cached issue for `url`, evicting it if expired.
+    /// Returns `None` on a miss or an expired entry.
+    pub fn get(&self, url: &str) -> Option<Issue> {
+        let key = Self::canonical_key(url);
+        let now = (self.now)();
+        let mut map = self.inner.lock().expect("issue cache mutex");
+        match map.get(&key) {
+            Some((stored_at, issue)) if now - *stored_at < ISSUE_CACHE_TTL_SECS => {
+                Some(issue.clone())
+            }
+            Some(_) => {
+                map.remove(&key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Insert (or refresh) the cached issue for `url` at the current time.
+    pub fn put(&self, url: &str, issue: Issue) {
+        let key = Self::canonical_key(url);
+        let now = (self.now)();
+        self.inner
+            .lock()
+            .expect("issue cache mutex")
+            .insert(key, (now, issue));
+    }
 }
 
 // ---------------------------------------------------------------------------
