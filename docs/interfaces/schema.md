@@ -343,3 +343,32 @@ CREATE INDEX idx_pull_requests_workarea ON pull_requests(workarea_id);
 CREATE INDEX idx_pull_requests_repo ON pull_requests(repository_id);
 ```
 
+## `crates/persist/migrations/0012_vcs_credentials.sql`
+
+```sql
+CREATE TABLE vcs_credentials (
+    id                TEXT PRIMARY KEY,
+    -- 'github' | 'linear' | 'jira' (free-form TEXT; same forward-compat posture
+    -- as pull_requests.provider).
+    provider          TEXT NOT NULL,
+    -- App id (App auth) / repo id (webhook) / provider account id (Linear/Jira).
+    scope_id          TEXT NOT NULL,
+    -- Human-facing login / org name (display only; not a secret).
+    external_account  TEXT,
+    -- GitHub App id (App auth only; NULL for PAT/webhook/Linear/Jira rows).
+    app_id            TEXT,
+    -- GitHub App installation id (App auth only).
+    installation_id   TEXT,
+    -- When the keychain-held token/installation token expires (epoch ms),
+    -- nullable (PATs / personal keys do not expire on a schedule).
+    token_expires_at  INTEGER,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    UNIQUE(provider, scope_id)
+);
+```
+
+```sql
+CREATE INDEX idx_vcs_credentials_provider ON vcs_credentials(provider);
+```
+

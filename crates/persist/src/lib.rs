@@ -29,14 +29,15 @@ pub mod sessions;
 pub mod skills;
 pub mod suggestion_learn;
 pub mod tool_approvals;
+pub mod vcs_credentials;
 pub mod workareas;
 pub mod workspaces;
 
 pub use api::{
     NewChat, NewProject, NewPullRequest, NewRepository, NewSchedule, NewScheduleRun, NewSession,
-    NewSkill, NewSuggestionLearn, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
-    PersistenceConfig, Project, ProjectId, PullRequest, PullRequestId, Repository, RepositoryId,
-    Schedule, ScheduleId, ScheduleRun, ScheduleRunId, Session, SessionId, SkillFilter, SkillId,
-    SkillRow, SkillScope, SuggestionLearn, SuggestionLearnId, Workarea, WorkareaId, Workspace,
-    WorkspaceId, WriterGuard,
+    NewSkill, NewSuggestionLearn, NewVcsCredential, NewWorkarea, NewWorkareaRepo, NewWorkspace,
+    Persistence, PersistenceConfig, Project, ProjectId, PullRequest, PullRequestId, Repository,
+    RepositoryId, Schedule, ScheduleId, ScheduleRun, ScheduleRunId, Session, SessionId,
+    SkillFilter, SkillId, SkillRow, SkillScope, SuggestionLearn, SuggestionLearnId, VcsCredential,
+    VcsCredentialId, Workarea, WorkareaId, Workspace, WorkspaceId, WriterGuard,
 };

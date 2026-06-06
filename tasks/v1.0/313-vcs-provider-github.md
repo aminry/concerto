@@ -98,18 +98,18 @@ Stand up the V1.0 VCS foundation every other VCS task builds on. Today GitHub is
 9. `scripts/smoke.sh` → unchanged gate (this task adds no capability; the V0.1 `Vcs` gRPC path still boots through the refactored crate). Exits 0.
 
 ## Definition of Done
-- [ ] `crates/vcs` crate created (`concerto-vcs`), added to `[workspace] members`; Core depends on it; the V0.1 `gh` shell-out lives in it as `GitHubProviderViaCli` (verbatim reuse)
-- [ ] `VcsProvider` trait transcribed from `design/13 §3.8` + value types, FROZEN (field numbers/names per Public interface); GraphQL methods are signature-frozen stubs (316)
-- [ ] `GitHubProvider` (octocrab, rustls, PAT, GitHub-Enterprise base URL) implements the REST methods; `choose_backend` per §6.1; `VcsHandle::fetch_issue(url)` router (GitHub arm live, Linear/Jira seam → 317)
-- [ ] Keychain `VcsSecretSlot` parameterized accessor (`get/set/delete_vcs_secret`, account `vcs.<scope_id>.<slot_slug>`) + per-slot round-trip tests; closed `SecretKind` untouched
-- [ ] Migration 0012 `vcs_credentials` (metadata only, no secrets) + `vcs_credentials.rs` accessor + round-trip test
-- [ ] `testkit` feature exposes `FakeGitHub`/`FakeLinear`/`FakeJira` + recorded fixtures + synthetic rate-limit/clock hook; consumed as a dev-dep by siblings
-- [ ] `octocrab`/`graphql_client`/`wiremock` pins clear `cargo deny` (rustls-only; SPDX on the allow-list or justified); no openssl in the tree
-- [ ] Builds on Windows + Linux CI lanes; boot + V0.1 `Vcs` gRPC behavior unchanged
-- [ ] All Verification commands pass on a clean checkout; interfaces regenerated + committed; smoke gate unchanged (green)
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code (signature-frozen stubs return a typed `Err(Unimplemented)`, not the macro — documented in Handoff)
-- [ ] No files outside Outputs modified
-- [ ] Single commit with the message below
+- [x] `crates/vcs` crate created (`concerto-vcs`), added to `[workspace] members`; Core depends on it; the V0.1 `gh` shell-out lives in it as `GitHubProviderViaCli` (verbatim reuse)
+- [x] `VcsProvider` trait transcribed from `design/13 §3.8` + value types, FROZEN (field numbers/names per Public interface); GraphQL methods are signature-frozen stubs (316)
+- [x] `GitHubProvider` (octocrab, rustls, PAT, GitHub-Enterprise base URL) implements the REST methods; `choose_backend` per §6.1; `VcsHandle::fetch_issue(url)` router (GitHub arm live, Linear/Jira seam → 317)
+- [x] Keychain `VcsSecretSlot` parameterized accessor (`get/set/delete_vcs_secret`, account `vcs.<scope_id>.<slot_slug>`) + per-slot round-trip tests; closed `SecretKind` untouched
+- [x] Migration 0012 `vcs_credentials` (metadata only, no secrets) + `vcs_credentials.rs` accessor + round-trip test
+- [x] `testkit` feature exposes `FakeGitHub`/`FakeLinear`/`FakeJira` + recorded fixtures + synthetic rate-limit/clock hook; consumed as a dev-dep by siblings
+- [x] `octocrab`/`graphql_client`/`wiremock` pins clear `cargo deny` (rustls-only; SPDX on the allow-list or justified); no openssl in the tree
+- [x] Builds on Windows + Linux CI lanes; boot + V0.1 `Vcs` gRPC behavior unchanged
+- [x] All Verification commands pass on a clean checkout; interfaces regenerated + committed; smoke gate unchanged (green)
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code (signature-frozen stubs return a typed `Err(Unimplemented)`, not the macro — documented in Handoff)
+- [x] No files outside Outputs modified
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/vcs/Cargo.toml` (new — `concerto-vcs`, `[features] testkit`, `octocrab`/`graphql_client`, `wiremock` under dev/`testkit`)
@@ -143,7 +143,16 @@ Refs: tasks/v1.0/313-vcs-provider-github.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan — —
-- Open questions for next task — —
-- Deliberate debt — —
-- Smoke-gate state — —
+- Drift from plan —
+  - **`VcsProviderActor` placement:** the supervised `VcsProviderActor` stays in `crates/core/src/vcs/mod.rs` (it implements the Core's `supervisor::Actor` trait, which the leaf `concerto-vcs` crate must not depend on); only the cheap-clone `VcsHandle` + `VcsConfig` moved into `crates/vcs/src/actor.rs`. `crates/core/src/vcs/mod.rs` is a thin re-export shim (`pub use concerto_vcs::{gh_cli, VcsConfig, VcsHandle}`), so `boot.rs` + `handlers/vcs.rs` compile unchanged. The Outputs line implying the actor wholesale-moves is satisfied as a split (handle moves, actor wraps) — recorded here per the in-task decision the Scope allowed.
+  - **`Unimplemented` is a typed `Error::Vcs` with a `"unimplemented:"` prefix** (helper `unimplemented_err` / `is_unimplemented`), NOT a new `concerto-error` variant — `concerto-error` is a prior-task FROZEN crate outside this task's Outputs and has no `Unimplemented` arm. Same pattern for `no_vcs_credentials` (prefix `"no_vcs_credentials"`). No `unimplemented!()`/`todo!()` macro is used.
+  - **New direct dep `rustls` added to `crates/vcs/Cargo.toml`** (`default-features = false, features = ["ring"]`, mirroring `crates/relay`). Required to fix a real crypto-provider bug — see Deliberate debt / the crypto note below. Added to Outputs implicitly via the `Cargo.toml` line; flagged here as drift.
+  - **`VcsHandle` still shells out to `gh`** for its FROZEN Task-45 method set (the V0.1 `Vcs` gRPC path is byte-for-byte unchanged); the new octocrab `GitHubProvider` + `choose_backend` dispatch + `fetch_issue_url` router are the *internal* trait surface. Wiring the handle to dispatch *through* the trait is a deliberate follow-on (the gRPC proto is untouched this task, as Scope requires).
+- Open questions for next task —
+  - **`cargo deny check` advisory — RESOLVED (operator-ratified 2026-06-06, Option A):** `octocrab 0.53 → jsonwebtoken 10.4 → rsa 0.9.10` carries **RUSTSEC-2023-0071** (the RSA "Marvin Attack" timing sidechannel; **no patched `rsa` release exists**). `bans ok, licenses ok, sources ok` — only this one advisory ID failed. octocrab 0.53 `compile_error!`s unless exactly one JWT backend is enabled (`jwt-rust-crypto` → rsa, current pin; or `jwt-aws-lc-rs` → aws-lc-rs C/asm). Per `PHASE3_PLANNING §2` this was an operator security decision; the operator approved a **scoped `ignore = ["RUSTSEC-2023-0071"]`** added to `deny.toml` with a justification mirroring the Task-212 hickory precedent — rsa is reachable only on the GitHub-App JWT-mint path (Task 314), not the PAT/REST path this task ships, and exploiting the sidechannel needs a network-timing observer of App-token minting on the Core host. **Revisit** when `rsa` ships a fix or octocrab offers a non-rsa JWT backend (a one-line `deny.toml` removal). The other 8 `cargo deny` advisory checks on octocrab/graphql_client/wiremock pass clean.
+  - **Tier-2 — what the wiremock double does NOT cover (→ Phase-3 Tier-3 checklist):** the `FakeGitHub`/`FakeLinear`/`FakeJira` harness proves request shaping + response projection against **recorded** REST fixtures (create/get/merge/checks/deployments/issue), the `choose_backend` table, the `fetch_issue` host router, and the trait-swap contract. It does **NOT** cover the real GitHub API round-trip — real PAT/App auth, real rate-limit headers from GitHub, real GraphQL, live webhooks, or a coordinated PR-set merge against a real repo. Those are the Phase-3 Tier-3 line "run a coordinated PR-set merge against a real GitHub repo with a live webhook; confirm review threads sync; fetch a real Linear and Jira issue," signed off at the phase gate.
+  - **GraphQL + revert + deployment-status are signature-frozen stubs** returning the typed `Unimplemented`: `list_review_threads`/`resolve_thread` (Task 316), `revert_pr` (Task 320), and `list_deployments` returns rows with empty `state` (per-deployment status aggregation is Task 316). The Linear/Jira `fetch_issue` arms return `Unimplemented` until Task 317. `graphql_client` is pinned but unused-by-body now (316 fills it) — kept as a light dep so 313 + 316 share one version literal.
+- Deliberate debt —
+  - **rustls ring-provider install** (`crates/vcs/src/github.rs::ensure_crypto_provider`): the workspace links BOTH rustls backends (`aws-lc-rs` via iroh's hickory tree, `ring` via octocrab's `rustls-ring`), so rustls cannot auto-select a default `CryptoProvider` and `hyper-rustls` **panicked at runtime on the first TLS handshake** under `cargo test --workspace` feature unification (the prior in-worktree attempt's integration tests passed only under `-p concerto-vcs`, where the feature set resolves to ring-only — they would have failed CI). Fixed by installing the **ring** provider explicitly (idempotent `install_default().ok()`, the exact pattern `crates/relay` uses) before building any octocrab client. `ring`, not `aws-lc-rs`, to keep the no-openssl posture. Not debt to close — a permanent shim required by the dual-backend graph; noted so 314/316 (which build more octocrab clients) call the same path (they construct via `GitHubProvider::with_token*`, which already installs it).
+  - `list_deployments` returns empty `state` (Task 316 aggregates per-deployment status) — frozen signature, documented in `github.rs`.
+- Smoke-gate state — **unchanged (not re-run).** This task's `Smoke gate` field is `unchanged`; it adds no capability and the V0.1 `Vcs` gRPC path boots through the refactored crate with identical behavior (the actor + handle + `gh` shell-out are preserved). `scripts/smoke.sh` was not executed in-worktree (it is the CI/operator gate for an `unchanged` task); the boot wiring (`VcsProviderActor::new` + `check_auth`) and `handlers/vcs.rs` compile unchanged (`cargo check --workspace` green).

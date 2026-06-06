@@ -1,0 +1,12 @@
+[
+  {
+    "id": 555,
+    "environment": "production",
+    "ref": "main"
+  },
+  {
+    "id": 556,
+    "environment": "staging",
+    "ref": "feature/add-widget"
+  }
+]

@@ -10,6 +10,12 @@ members = [
     "crates/gix-wrap",
     "crates/keychain",
     "crates/persist",
+    # Task 313: dedicated VCS Provider Integration crate (`design/13`). Houses
+    # the FROZEN `VcsProvider` trait + octocrab `GitHubProvider` + `gh`-CLI
+    # fallback + the `testkit` wiremock harness. Sibling of `crates/relay`/
+    # `crates/transport`; the Core depends on it. Contains the octocrab/
+    # graphql_client tree so the rest of the workspace's dep graph stays bounded.
+    "crates/vcs",
     "crates/agent-host",
     "crates/error",
     # Task 14: Tauri 2 shell. Lives under `apps/desktop/src-tauri/`
@@ -329,3 +335,50 @@ tokio-tungstenite = { version = "0.26", default-features = false, features = ["c
 # at the workspace level to keep the version literal honest; not exact-pinned (a
 # stable, self-contained leaf — not part of the spike-validated QUIC trio).
 url = "2"
+# Task 313: the native GitHub API client for `crates/vcs` (`design/13 §3.1`
+# "octocrab native + gh CLI fallback"). `octocrab` is the maintained, de-facto
+# Rust GitHub client (REST + GraphQL); it backs the default `GitHubProvider`
+# (PR CRUD / merge / checks / deployments / issue fetch). TLS is **rustls**, NOT
+# native-tls/openssl: `default-features = false` drops octocrab's default
+# `default-client` (which would pull native-tls) and we opt into `rustls` only,
+# which routes through `hyper-rustls 0.27` over the already-present rustls/ring
+# stack — `cargo tree -i openssl-sys` / `-i native-tls` are both EMPTY (verified
+# in-task), keeping the Windows CI lane (Task 113) green and the deny.toml
+# license posture unchanged (octocrab + its tree — arc-swap/snafu/jsonwebtoken/
+# secrecy 0.10/chrono/http-serde/tower-http — all resolve to MIT/Apache-2.0/BSD,
+# already on the allow-list; vetted cargo-deny-clean before this landed). Not
+# exact-pinned (a self-contained API-client leaf with a stable surface, not part
+# of the spike-validated QUIC trio). `jwt-rust-crypto` selects octocrab's
+# **pure-Rust** JWT signing backend (`jsonwebtoken` over RustCrypto) for the
+# GitHub App path (Task 314) — NOT `jwt-aws-lc-rs`, which would pull the
+# `aws-lc-rs` C/assembly crypto lib and break the Windows lane + the no-openssl
+# posture. octocrab 0.53 `compile_error!`s unless exactly one JWT backend is on.
+# `default-client` provides the `hyper-util` legacy client `build()` (the real
+# constructor); `rustls-ring` pins `hyper-rustls`' crypto backend to **ring**
+# (the same backend iroh/transport already use — NOT aws-lc-rs), so the whole
+# tree is pure-Rust + cross-platform. This mirrors octocrab's own `default`
+# feature set minus the `opentls`/native-tls path (which `default-features =
+# false` drops) — `cargo tree -i openssl-sys` / `-i native-tls` stay EMPTY.
+octocrab = { version = "0.53", default-features = false, features = [
+    "rustls",
+    "rustls-ring",
+    "default-client",
+    "jwt-rust-crypto",
+] }
+# Task 313: typed GraphQL request/response codegen for the GitHub GraphQL API
+# (review-thread fetch/resolve — `design/13 §3.6`). 313 freezes the
+# `list_review_threads`/`resolve_thread` trait signatures as implemented-stubs;
+# Task 316 fills the bodies using `graphql_client`'s derive to type the queries.
+# Pinned here (the workspace pin keeps 313 + 316 on one version literal) but kept
+# as a light dep in `crates/vcs` now. License `Apache-2.0 OR MIT` → cargo-deny
+# selects MIT (already on the allow-list); no new SPDX. Pure-Rust, cross-platform.
+graphql_client = { version = "0.16", default-features = false }
+# Task 313: the shared VCS test double (`design/13 §10` names wiremock). A
+# `wiremock`-backed `MockServer` stands in for the GitHub/Linear/Jira REST +
+# GraphQL endpoints so the Tier-2 `testkit` harness (FROZEN, reused by
+# 314/315/316/317/320/320.5) can prove provider logic against recorded fixtures
+# with no live API. **Dev/`testkit`-only** — never linked into a shipped binary.
+# License `Apache-2.0 OR MIT` → cargo-deny selects MIT (already on the allow-list);
+# its tree (`http-types`/`deadpool`/`assert-json-diff`) is permissive, vetted
+# cargo-deny-clean. Pure-Rust, cross-platform.
+wiremock = "0.6"

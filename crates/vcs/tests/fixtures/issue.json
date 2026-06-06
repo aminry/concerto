@@ -1,0 +1,11 @@
+{
+  "number": 7,
+  "title": "Widget falls over on Tuesdays",
+  "body": "Steps to reproduce: wait until Tuesday.",
+  "state": "open",
+  "html_url": "https://github.com/acme/widget/issues/7",
+  "labels": [
+    { "name": "bug" },
+    { "name": "priority:high" }
+  ]
+}

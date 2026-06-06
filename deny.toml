@@ -85,6 +85,9 @@ yanked = "deny"
 ignore = [
     "RUSTSEC-2026-0119", # hickory-proto 0.26.0-beta.4: O(n²) name-compression CPU exhaustion (DNS encode path; fixed in 0.26.1, unreachable under iroh's =beta.4 pin)
     "RUSTSEC-2026-0120", # hickory-net   0.26.0-beta.4: NSEC3 closest-encloser unbounded loop (cross-zone DNS responses; fixed in 0.26.1, unreachable under iroh's =beta.4 pin)
+    # rsa "Marvin Attack" RSA timing sidechannel (Task 313, operator-ratified 2026-06-06).
+    # Scoped to this one ID; every other advisory still fails the gate.
+    "RUSTSEC-2023-0071", # rsa 0.9.10 via octocrab 0.53 → jsonwebtoken 10.4 → rsa; NO patched rsa release exists. Reachable only on the GitHub-App JWT-mint path (Task 314), NOT the PAT/REST path 313 ships; exploiting it needs a network-timing observer of App-token minting on the Core host (local/self-hosted use is unaffected per the upstream advisory). Revisit when rsa ships a fix or octocrab offers a non-rsa JWT backend.
 ]
 # `unmaintained` advisories on transitive deps are demoted from error to
 # informational. Tauri 2's tree carries several: gtk-rs GTK3 bindings

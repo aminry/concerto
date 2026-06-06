@@ -1,0 +1,78 @@
+[package]
+name = "concerto-vcs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "concerto_vcs"
+path = "src/lib.rs"
+
+[features]
+# Task 313 (D2): the shared `wiremock`-backed VCS test double. Consumers
+# (314/315/316/317/320/320.5) enable it as a dev-dependency:
+#   concerto-vcs = { path = "../vcs", features = ["testkit"] }
+# It pulls `wiremock` so `FakeGitHub`/`FakeLinear`/`FakeJira` can stand up a
+# loopback `MockServer`. Off by default → a shipped Core never links wiremock.
+testkit = ["dep:wiremock"]
+
+[dependencies]
+concerto-error = { path = "../error" }
+concerto-persist = { path = "../persist" }
+concerto-keychain = { path = "../keychain" }
+
+# Task 313: the default GitHub backend. `octocrab` (rustls, NO native-tls/
+# openssl — see the root Cargo.toml Task-313 pin note) backs `GitHubProvider`:
+# REST for PR CRUD / merge / checks / deployments / issue fetch, GraphQL for the
+# 316 review-thread stubs. Configurable base URL gives GitHub Enterprise (R-10).
+octocrab = { workspace = true }
+# Task 313: typed GraphQL codegen, frozen now + filled by 316.
+graphql_client = { workspace = true }
+
+# Task 313: octocrab builds on `hyper-rustls`, which needs a process-level rustls
+# `CryptoProvider`. The workspace links BOTH rustls backends (iroh's hickory tree
+# pulls `aws-lc-rs`; octocrab's `rustls-ring` pulls `ring`), so rustls cannot
+# auto-select a default and panics on the first TLS handshake under
+# `cargo test --workspace` feature unification. We pin the **ring** provider
+# explicitly (`default_provider().install_default()`, the same idempotent
+# install the relay crate uses) before building any octocrab client — `ring`,
+# NOT `aws-lc-rs`, to keep the no-openssl / pure-Rust / Windows-lane posture.
+# `default-features = false` + `ring` mirrors `crates/relay/Cargo.toml`.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# `fetch_issue(&Url)` takes `url::Url` (the FROZEN trait signature). Workspace
+# pin (already in the graph via iroh/transport).
+url = { workspace = true }
+
+# The `gh` CLI fallback (`GitHubProviderViaCli`) writes PR title/body to temp
+# files and passes `--title-file`/`--body-file` — moved verbatim from the V0.1
+# `crates/core/src/vcs/gh_cli.rs`. `tempfile` is already workspace-vetted.
+tempfile = "3"
+
+# `#[async_trait]` on the `VcsProvider` trait + the `Actor`-less handle. Workspace pin.
+async-trait = { workspace = true }
+# Caller-generated UUIDv7 ids for the `pull_requests` cache rows (moved from the
+# V0.1 actor). Workspace pin.
+uuid = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process", "sync", "time", "rt", "macros"] }
+tracing = { workspace = true }
+# The `VcsHandle::persistence_readers()` accessor returns `&sqlx::SqlitePool`
+# (the FROZEN Task-45 signature the gRPC handler's repo→workarea lookup uses).
+# Same feature subset as `concerto-persist`/`concerto-core`.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+
+# Task 313 (D2): `testkit` pulls the wiremock double. Optional → only present
+# when the `testkit` feature is on (dev/test builds).
+wiremock = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The crate's own Tier-2 tests turn on `testkit` to exercise `GitHubProvider`
+# against the wiremock double + the recorded fixtures.
+concerto-vcs = { path = ".", features = ["testkit"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+wiremock = { workspace = true }
+serde_json = { workspace = true }
