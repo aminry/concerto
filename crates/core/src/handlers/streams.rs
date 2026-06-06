@@ -114,6 +114,7 @@ use concerto_proto::v1::{
     WorkspaceEvent as ProtoWorkspaceEvent,
 };
 use concerto_transport::{ClientKind, ConnectionPath, TransportTelemetry};
+use concerto_vcs::VcsEvent;
 use futures::Stream;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
@@ -161,6 +162,18 @@ pub enum Subject {
     /// [`StreamsHandler::with_transport_events`]); absent when no remote
     /// transport is attached (the subject then yields no events).
     TransportEvents,
+    /// Task 316 — `checks.<workarea_id>.<repository_id>`. The per-(workarea,
+    /// repo) VCS events (`pr.thread_updated` / `pr.check_run_updated` /
+    /// `pr.deployment_updated`, `design/13 §5.3`) carried as an opaque frame
+    /// on the non-oneof `Event.checks_opaque = 17` field (PHASE3_PLANNING §2 —
+    /// NO new `body` oneof arm). Producer is the VCS aggregator's broadcast
+    /// (wired via [`StreamsHandler::with_vcs_events`]); absent when no VCS
+    /// handle is attached (the subject then yields no events). Count-bounded
+    /// like every non-`session.io` subject.
+    Checks {
+        workarea_id: String,
+        repository_id: String,
+    },
 }
 
 /// How a [`SubjectBuffer`] bounds its ring: by event count (most
@@ -401,6 +414,14 @@ pub struct StreamsHandler {
     /// produces no events (an empty live stream) — the honest
     /// "co-located Core has no remote sessions" answer.
     transport_events: Option<broadcast::Sender<TransportTelemetry>>,
+    /// Optional VCS event source (Task 316). The VCS aggregator's
+    /// `ChecksAggregator::sender()` broadcast, wired via
+    /// [`Self::with_vcs_events`]. Each `VcsEvent` carries an opaque frame +
+    /// its `(workarea_id, repository_id)` scope; the `checks.<wa>.<repo>`
+    /// subject filters the broadcast to its scope and wraps the frame into
+    /// `Event.checks_opaque`. When `None`, the `checks.*` subject is valid but
+    /// produces no events (the honest "no VCS attached" answer).
+    vcs_events: Option<broadcast::Sender<VcsEvent>>,
     /// Per-subject ring-buffer + offset + ack state, keyed by the
     /// canonical subject string. Replaces the V0.1 bare offset map; the
     /// offset counter now lives inside each [`SubjectBuffer`].
@@ -421,6 +442,7 @@ impl StreamsHandler {
             workareas,
             suggestions: None,
             transport_events: None,
+            vcs_events: None,
             buffers: Arc::new(Mutex::new(HashMap::new())),
             next_subscriber_id: Arc::new(AtomicU64::new(0)),
         }
@@ -443,6 +465,15 @@ impl StreamsHandler {
         transport_events: broadcast::Sender<TransportTelemetry>,
     ) -> Self {
         self.transport_events = Some(transport_events);
+        self
+    }
+
+    /// Attach the VCS aggregator's event broadcast (Task 316) so the
+    /// `checks.<workarea_id>.<repository_id>` subject has a producer. Wired by
+    /// the api_server from `ChecksAggregator::sender()`. Returns `self` for
+    /// chaining.
+    pub fn with_vcs_events(mut self, vcs_events: broadcast::Sender<VcsEvent>) -> Self {
+        self.vcs_events = Some(vcs_events);
         self
     }
 
@@ -522,6 +553,38 @@ impl StreamsHandler {
                         let rx = tx.subscribe();
                         let live = BroadcastStream::new(rx)
                             .filter_map(|item| item.ok().map(map_transport_event));
+                        Ok((Vec::new(), Box::pin(live)))
+                    }
+                    None => {
+                        let empty = futures::stream::pending::<Event>();
+                        Ok((Vec::new(), Box::pin(empty)))
+                    }
+                }
+            }
+            Subject::Checks {
+                workarea_id,
+                repository_id,
+            } => {
+                // Task 316: filter the VCS aggregator's broadcast to this
+                // subject's `(workarea, repo)` scope + wrap each frame into an
+                // `Event` carrying ONLY the non-oneof `checks_opaque` field (the
+                // `body` oneof is left empty — the pump tolerates a body-less
+                // Event since offset/at are separate). When no VCS source is
+                // attached, the subject is valid but yields nothing.
+                match &self.vcs_events {
+                    Some(tx) => {
+                        let rx = tx.subscribe();
+                        let wa = workarea_id.clone();
+                        let repo = repository_id.clone();
+                        let live = BroadcastStream::new(rx).filter_map(move |item| {
+                            item.ok().and_then(|ev: VcsEvent| {
+                                if ev.workarea_id == wa && ev.repository_id == repo {
+                                    Some(map_vcs_event(ev))
+                                } else {
+                                    None
+                                }
+                            })
+                        });
                         Ok((Vec::new(), Box::pin(live)))
                     }
                     None => {
@@ -678,6 +741,7 @@ impl StreamsHandler {
                             subject: subject_str.to_string(),
                             buffer_floor: buf.floor,
                         })),
+                        checks_opaque: None,
                     };
                     (Vec::new(), Some(gap))
                 }
@@ -861,6 +925,21 @@ pub fn parse_subject(s: &str) -> Result<Subject, Status> {
         }
         return Err(invalid_subject(s));
     }
+    // Task 316: `checks.<workarea_id>.<repository_id>` (`design/13 §5.3`). Two
+    // trailing segments (mirrors `suggestion.events.<workarea_id>` but with a
+    // second segment); a missing repo segment is `INVALID_ARGUMENT`.
+    if let Some(rest) = s.strip_prefix("checks.") {
+        let mut parts = rest.splitn(2, '.');
+        let workarea_id = parts.next().unwrap_or_default();
+        let repository_id = parts.next().unwrap_or_default();
+        if workarea_id.is_empty() || repository_id.is_empty() {
+            return Err(invalid_subject(s));
+        }
+        return Ok(Subject::Checks {
+            workarea_id: workarea_id.to_string(),
+            repository_id: repository_id.to_string(),
+        });
+    }
     match s {
         "workspace.events" => Ok(Subject::WorkspaceEvents),
         "workarea.events" => Ok(Subject::WorkareaEvents),
@@ -997,6 +1076,7 @@ fn map_agent_event(ev: AgentEvent) -> Option<Event> {
             session_id: session_id.to_string(),
             kind: Some(kind),
         })),
+        checks_opaque: None,
     })
 }
 
@@ -1009,6 +1089,7 @@ fn map_session_io(chunk: SessionIoChunk) -> Event {
             stream: chunk.stream.to_string(),
             data: chunk.data,
         })),
+        checks_opaque: None,
     }
 }
 
@@ -1027,6 +1108,7 @@ fn map_workspace_event(ev: WorkspaceEvent) -> Event {
             workspace_id,
             kind,
         })),
+        checks_opaque: None,
     }
 }
 
@@ -1064,6 +1146,23 @@ fn map_transport_event(ev: TransportTelemetry) -> Event {
         body: Some(EventBody::Transport(ProtoTransportEvent {
             kind: Some(kind),
         })),
+        checks_opaque: None,
+    }
+}
+
+/// Map a Task-316 [`VcsEvent`] into a wire [`Event`] for the
+/// `checks.<workarea_id>.<repository_id>` subject. The event carries ONLY the
+/// non-oneof `Event.checks_opaque = 17` field (the `body` oneof is left
+/// `None` — PHASE3_PLANNING §2: NO new oneof arm). The opaque frame is the
+/// FROZEN JSON the VCS aggregator built (`design/13 §5.3`); Task 324 parses it.
+/// `offset` is left 0; the per-subject pump stamps it (the pump tolerates a
+/// `body`-less Event since offset/at are separate fields).
+fn map_vcs_event(ev: VcsEvent) -> Event {
+    Event {
+        offset: 0,
+        at: Some(now_ts()),
+        body: None,
+        checks_opaque: Some(ev.frame),
     }
 }
 
@@ -1097,6 +1196,7 @@ fn map_suggestion_event(chip: Chip) -> Event {
             created_at_ms: chip.created_at,
             action: chip.action.as_wire_str().to_string(),
         })),
+        checks_opaque: None,
     }
 }
 
@@ -1118,6 +1218,7 @@ fn map_workarea_event(ev: WorkareaEvent) -> Event {
             workarea_id,
             kind,
         })),
+        checks_opaque: None,
     }
 }
 
@@ -1134,6 +1235,7 @@ mod tests {
                 stream: "stdout".to_string(),
                 data: data.to_vec(),
             })),
+            checks_opaque: None,
         }
     }
 
@@ -1145,6 +1247,7 @@ mod tests {
                 workspace_id: format!("ws-{n}"),
                 kind: "created".to_string(),
             })),
+            checks_opaque: None,
         }
     }
 
@@ -1217,6 +1320,65 @@ mod tests {
     fn parse_empty_session_id_errors() {
         let e = parse_subject("session.events.").unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn parse_checks_subject_ok() {
+        // Task 316: `checks.<workarea_id>.<repository_id>` parses to the
+        // per-(workarea, repo) Checks subject.
+        assert_eq!(
+            parse_subject("checks.wa-1.repo-7").unwrap(),
+            Subject::Checks {
+                workarea_id: "wa-1".to_string(),
+                repository_id: "repo-7".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_checks_subject_missing_repo_errors() {
+        // A missing repo segment is INVALID_ARGUMENT (the §6.1 discipline).
+        let e = parse_subject("checks.wa-1").unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        let e = parse_subject("checks.wa-1.").unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        let e = parse_subject("checks.").unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn map_vcs_event_carries_only_checks_opaque() {
+        // Task 316: a VCS event maps to a body-LESS Event carrying ONLY the
+        // non-oneof `checks_opaque = 17` field (no new oneof arm).
+        let frame = br#"{"kind":"thread_updated"}"#.to_vec();
+        let ev = map_vcs_event(VcsEvent {
+            workarea_id: "wa-1".to_string(),
+            repository_id: "repo-7".to_string(),
+            frame: frame.clone(),
+        });
+        assert!(ev.body.is_none(), "no oneof body");
+        assert_eq!(ev.checks_opaque, Some(frame));
+    }
+
+    #[test]
+    fn publish_tolerates_body_less_checks_event() {
+        // Task 316: the per-subject pump stamps offsets on a body-less Event
+        // (only `checks_opaque` set) exactly like any other — offset/at are
+        // separate fields, so the ring + offset authority are unaffected.
+        let mut buf = SubjectBuffer::new(RingBound::Count(RING_EVENT_CAP));
+        let e0 = buf.publish(map_vcs_event(VcsEvent {
+            workarea_id: "wa".to_string(),
+            repository_id: "repo".to_string(),
+            frame: b"{}".to_vec(),
+        }));
+        let e1 = buf.publish(map_vcs_event(VcsEvent {
+            workarea_id: "wa".to_string(),
+            repository_id: "repo".to_string(),
+            frame: b"{}".to_vec(),
+        }));
+        assert_eq!(e0.offset, 0);
+        assert_eq!(e1.offset, 1);
+        assert!(e0.body.is_none() && e0.checks_opaque.is_some());
     }
 
     // ---- Ring-buffer unit tests (Task 202) ------------------------------

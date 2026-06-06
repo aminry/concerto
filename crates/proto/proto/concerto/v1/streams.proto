@@ -26,6 +26,16 @@
 // transport telemetry rides this `Event` oneof. Field number 16 is the
 // next free number above Task 202's `gap_detected = 15` — append-only,
 // never reused/moved.
+//
+// Task 316 (V1.0, design/13 §5.3 + PHASE3_PLANNING §2) adds the opaque
+// VCS-event carrier `Event.checks_opaque = 17`. Per the locked decision
+// the `checks.<workarea_id>.<repository_id>` review-thread / check-run /
+// deployment events do NOT get a new `body` oneof arm (the oneof is FROZEN
+// through field 16). Instead they ride a NON-ONEOF `optional bytes` field
+// (a sibling of the oneof) — every existing client ignores the unknown
+// field and stays wire-compatible, while Task 324 parses the opaque frame.
+// Field number 17 is the first free number on the `Event` message above the
+// oneof's 16. The frame format is FROZEN here (see `checks_opaque`).
 
 syntax = "proto3";
 
@@ -89,6 +99,36 @@ message Event {
     // Field number 16 — additive above Task 202's `gap_detected = 15`.
     TransportEvent transport = 16;
   }
+  // Task 316 (design/13 §5.3, PHASE3_PLANNING §2): the opaque VCS-event
+  // carrier for the `checks.<workarea_id>.<repository_id>` subject. This is
+  // a NON-ONEOF field (a sibling of `body`, NOT a oneof arm) so the FROZEN
+  // `body` oneof stays untouched (frozen through field 16) and every
+  // existing client ignores it. Set ONLY on `checks.<wa>.<repo>` events
+  // (the `body` oneof is then empty); the per-subject pump tolerates a
+  // body-less Event carrying only this field (offset/at are separate).
+  //
+  // FROZEN frame format (Task 324 parses it): a deterministic JSON object
+  //   {
+  //     "kind": "thread_updated" | "check_run_updated" | "deployment_updated",
+  //     "workarea_id":   "<workarea uuid>",
+  //     "repository_id": "<repository uuid>",
+  //     "entity": { ...the changed thread / check-run set / deployment set }
+  //   }
+  // where, by `kind`, `entity` is:
+  //   thread_updated:     { "id": "<thread node id>", "resolved": <bool>,
+  //                         "path": "<file path>" | null,
+  //                         "comments": ["<body>", ...] }
+  //   check_run_updated:  { "sha": "<head sha>",
+  //                         "runs": [ { "name", "status", "conclusion",
+  //                                     "details_url" }, ... ] }
+  //   deployment_updated: { "ref": "<git ref/sha>",
+  //                         "deployments": [ { "id", "environment", "state",
+  //                                            "ref" }, ... ] }
+  // JSON (not CBOR) matches the human-readable, schema-light shape the rest
+  // of the streams surface uses; the field is `bytes` so the frame can
+  // evolve additively without a proto change. Field 17 — first free number
+  // on `Event`, additive above the oneof's 16.
+  optional bytes checks_opaque = 17;
 }
 
 // Task 216 (design/11 §5.3): one of the four transport lifecycle events the

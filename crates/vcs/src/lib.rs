@@ -35,10 +35,12 @@
 //! service is untouched; the trait is the *internal* surface.
 
 pub mod actor;
+pub mod checks;
 pub mod dispatch;
 pub mod gh_cli;
 pub mod github;
 pub mod github_cli;
+pub mod github_graphql;
 pub mod jira;
 pub mod linear;
 pub mod provider;
@@ -49,6 +51,10 @@ pub mod write_back;
 pub mod testkit;
 
 pub use actor::{repo_full_name_from_url, IssueFetchCreds, VcsConfig, VcsHandle};
+pub use checks::{
+    check_run_frame, deployment_frame, thread_frame, ChecksAggregator, VcsEvent,
+    CHECK_CACHE_TTL_SECS, KIND_CHECK_RUN_UPDATED, KIND_DEPLOYMENT_UPDATED, KIND_THREAD_UPDATED,
+};
 pub use dispatch::{
     choose_backend, external_tracker_blocked, is_external_tracker_blocked, is_no_vcs_credentials,
     no_vcs_credentials, route_issue_host, system_now_secs, Backend, IssueCache, IssueHost, NowSecs,

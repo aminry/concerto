@@ -10,6 +10,8 @@
 //! - `GetChecks` — `gh api …/check-runs`.
 //! - `FetchIssue` — `gh issue view`.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use concerto_keychain::{SecretKind, SecretValue, Secrets, VcsSecretSlot};
 use concerto_persist::{
@@ -18,10 +20,15 @@ use concerto_persist::{
 };
 use concerto_proto::v1::vcs_server::Vcs as VcsService;
 use concerto_proto::v1::{
-    CheckRun as ProtoCheckRun, CreatePrRequest, FetchIssueByUrlRequest, FetchIssueRequest,
-    GetChecksRequest, GetChecksResponse, GetPrRequest, Issue as ProtoIssue, MergePrRequest,
-    PullRequest as ProtoPullRequest, SetVcsCredentialRequest, VcsCredentialProvider,
+    CheckRun as ProtoCheckRun, CreatePrRequest, Deployment as ProtoDeployment,
+    FetchIssueByUrlRequest, FetchIssueRequest, GetChecksRequest, GetChecksResponse, GetPrRequest,
+    Issue as ProtoIssue, ListDeploymentsRequest, ListDeploymentsResponse, ListReviewThreadsRequest,
+    ListReviewThreadsResponse, MergePrRequest, PullRequest as ProtoPullRequest,
+    ResolveThreadRequest, ReviewThread as ProtoReviewThread,
+    ReviewThreadComment as ProtoReviewThreadComment, SendThreadToAgentRequest,
+    SetVcsCredentialRequest, VcsCredentialProvider,
 };
+use concerto_vcs::provider::{Deployment as VcsDeployment, ProviderPrId, ReviewThread, ThreadId};
 use concerto_vcs::{Issue as VcsIssue, IssueFetchCreds};
 use tonic::{Request, Response, Status};
 
@@ -29,15 +36,66 @@ use crate::error_map::error_to_status;
 use crate::vcs::gh_cli;
 use crate::vcs::VcsHandle;
 
+/// A sink the "Send to agent" path posts the composed message to (Task 316,
+/// `design/13 §3.6`). Decouples the cross-platform `Vcs` handler from the
+/// `#[cfg(unix)]` agent supervisor — on unix the api_server wires an adapter
+/// over `AgentSupervisorHandle::send_input`; elsewhere it is `None` and the RPC
+/// returns `UNIMPLEMENTED`.
+#[async_trait]
+pub trait SessionMessageSink: Send + Sync + 'static {
+    /// Deliver `message` to `session_id` (the agent's stdin). Returns the
+    /// underlying error untouched so the handler can map it to a `Status`.
+    async fn send(&self, session_id: &str, message: &str) -> concerto_error::Result<()>;
+}
+
+/// The unix [`SessionMessageSink`] adapter over the agent supervisor (Task
+/// 316). Posts the composed thread message to the target session's stdin via
+/// `AgentSupervisorHandle::send_input`. Unix-only (the supervisor is gated).
+#[cfg(unix)]
+pub struct AgentSupervisorSink {
+    supervisor: crate::agent_supervisor::AgentSupervisorHandle,
+}
+
+#[cfg(unix)]
+impl AgentSupervisorSink {
+    pub fn new(supervisor: crate::agent_supervisor::AgentSupervisorHandle) -> Self {
+        Self { supervisor }
+    }
+}
+
+#[cfg(unix)]
+#[async_trait]
+impl SessionMessageSink for AgentSupervisorSink {
+    async fn send(&self, session_id: &str, message: &str) -> concerto_error::Result<()> {
+        let sid = concerto_persist::SessionId(session_id.to_string());
+        self.supervisor
+            .send_input(&sid, message.as_bytes().to_vec())
+            .await
+    }
+}
+
 /// Implements the generated `Vcs` service trait.
 #[derive(Clone)]
 pub struct VcsHandler {
     vcs: VcsHandle,
+    /// Optional "Send to agent" sink (Task 316). `None` on non-unix targets
+    /// (no agent supervisor) → `SendThreadToAgent` returns `UNIMPLEMENTED`.
+    session_sink: Option<Arc<dyn SessionMessageSink>>,
 }
 
 impl VcsHandler {
     pub fn new(vcs: VcsHandle) -> Self {
-        Self { vcs }
+        Self {
+            vcs,
+            session_sink: None,
+        }
+    }
+
+    /// Attach the "Send to agent" session sink (Task 316). Wired on unix from
+    /// the agent supervisor; returns `self` for chaining.
+    pub fn with_session_sink(mut self, sink: Arc<dyn SessionMessageSink>) -> Self {
+        self.session_sink = Some(sink);
+        self
     }
 }
 
@@ -307,6 +365,176 @@ impl VcsService for VcsHandler {
         }
         Ok(Response::new(()))
     }
+
+    #[tracing::instrument(skip_all, name = "Vcs::ListReviewThreads")]
+    async fn list_review_threads(
+        &self,
+        request: Request<ListReviewThreadsRequest>,
+    ) -> Result<Response<ListReviewThreadsResponse>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        if req.pr_number <= 0 {
+            return Err(Status::invalid_argument("pr_number must be > 0"));
+        }
+        let repo_id = PersistRepositoryId(req.repository_id.clone());
+        let (provider, repo_full) = self.provider_for_repo(&repo_id).await?;
+        let pr = ProviderPrId::new(repo_full, req.pr_number);
+        // Refresh-on-open: fetch via GraphQL, fill the cache, emit per change.
+        let threads = self
+            .vcs
+            .checks()
+            .list_review_threads(&provider, &req.workarea_id, &req.repository_id, pr)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ListReviewThreadsResponse {
+            threads: threads.into_iter().map(review_thread_to_proto).collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Vcs::ResolveThread")]
+    async fn resolve_thread(
+        &self,
+        request: Request<ResolveThreadRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        if req.thread_id.is_empty() {
+            return Err(Status::invalid_argument("thread_id is required"));
+        }
+        let repo_id = PersistRepositoryId(req.repository_id.clone());
+        let (provider, repo_full) = self.provider_for_repo(&repo_id).await?;
+        // The mutation keys only on the thread node id; the PR id locates the
+        // cached thread set to flip + frame (number 0 is fine if uncached).
+        let pr = ProviderPrId::new(repo_full, 0);
+        self.vcs
+            .checks()
+            .resolve_thread(
+                &provider,
+                &req.workarea_id,
+                &req.repository_id,
+                &pr,
+                ThreadId(req.thread_id),
+            )
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "Vcs::ListDeployments")]
+    async fn list_deployments(
+        &self,
+        request: Request<ListDeploymentsRequest>,
+    ) -> Result<Response<ListDeploymentsResponse>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        if req.r#ref.is_empty() {
+            return Err(Status::invalid_argument("ref is required"));
+        }
+        let repo_id = PersistRepositoryId(req.repository_id.clone());
+        let (provider, repo_full) = self.provider_for_repo(&repo_id).await?;
+        let deployments = self
+            .vcs
+            .checks()
+            .list_deployments(
+                &provider,
+                &req.workarea_id,
+                &req.repository_id,
+                &repo_full,
+                &req.r#ref,
+            )
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ListDeploymentsResponse {
+            deployments: deployments.into_iter().map(deployment_to_proto).collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Vcs::SendThreadToAgent")]
+    async fn send_thread_to_agent(
+        &self,
+        request: Request<SendThreadToAgentRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        if req.thread_id.is_empty() {
+            return Err(Status::invalid_argument("thread_id is required"));
+        }
+        if req.session_id.is_empty() {
+            return Err(Status::invalid_argument("session_id is required"));
+        }
+        let sink = self.session_sink.as_ref().ok_or_else(|| {
+            Status::unimplemented(
+                "SendThreadToAgent needs the agent supervisor (not available on this Core target)",
+            )
+        })?;
+        let repo_id = PersistRepositoryId(req.repository_id.clone());
+        let (provider, repo_full) = self.provider_for_repo(&repo_id).await?;
+        let pr = ProviderPrId::new(repo_full, req.pr_number);
+
+        // Prefer the cached thread set (refresh-on-open already populated it);
+        // fall back to a fresh GraphQL fetch when the cache is cold.
+        let threads = match self.vcs.checks().cached_threads(&pr) {
+            Some(t) => t,
+            None => self
+                .vcs
+                .checks()
+                .list_review_threads(&provider, &req.workarea_id, &req.repository_id, pr)
+                .await
+                .map_err(error_to_status)?,
+        };
+        let thread = threads
+            .into_iter()
+            .find(|t| t.id == ThreadId(req.thread_id.clone()))
+            .ok_or_else(|| {
+                Status::not_found(format!("review thread {} not found", req.thread_id))
+            })?;
+
+        let message = compose_thread_message(&thread);
+        sink.send(&req.session_id, &message)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
+    }
+}
+
+impl VcsHandler {
+    /// Build the octocrab provider for `repo_id` from the keychain GitHub PAT +
+    /// return it with the repo's `owner/repo` full name. The GraphQL
+    /// review-thread + REST check/deploy paths are octocrab-only.
+    async fn provider_for_repo(
+        &self,
+        repo_id: &PersistRepositoryId,
+    ) -> Result<(Arc<dyn concerto_vcs::provider::VcsProvider>, String), Status> {
+        let repo_full = self
+            .vcs
+            .repo_full_name(repo_id)
+            .await
+            .map_err(error_to_status)?;
+        let secrets = Secrets::new();
+        let pat = secrets
+            .get(SecretKind::GithubPat)
+            .await
+            .map_err(|e| error_to_status(e.into()))?
+            .ok_or_else(|| {
+                Status::failed_precondition(
+                    "no GitHub PAT configured (SecretKind::GithubPat); connect GitHub in Settings",
+                )
+            })?;
+        let provider = self
+            .vcs
+            .github_provider(pat.expose())
+            .await
+            .map_err(error_to_status)?;
+        Ok((provider, repo_full))
+    }
 }
 
 impl VcsHandler {
@@ -411,4 +639,55 @@ fn vcs_issue_to_proto(issue: VcsIssue) -> ProtoIssue {
         labels: issue.labels,
         external_id: issue.external_id,
     }
+}
+
+/// Map a `crates/vcs` [`ReviewThread`] to the proto `ReviewThread` (Task 316).
+/// The value type carries only comment bodies; the author is unknown at this
+/// layer, so the proto comment's `author` is left empty (the GraphQL query
+/// fetches authors, but the FROZEN value type does not carry them — extending
+/// it is out of this task's scope per the 313 contract; documented in Handoff).
+fn review_thread_to_proto(thread: ReviewThread) -> ProtoReviewThread {
+    ProtoReviewThread {
+        id: thread.id.0,
+        resolved: thread.resolved,
+        path: thread.path.unwrap_or_default(),
+        comments: thread
+            .comments
+            .into_iter()
+            .map(|body| ProtoReviewThreadComment {
+                author: String::new(),
+                body,
+            })
+            .collect(),
+    }
+}
+
+/// Map a `crates/vcs` [`VcsDeployment`] to the proto `Deployment` (Task 316).
+fn deployment_to_proto(d: VcsDeployment) -> ProtoDeployment {
+    ProtoDeployment {
+        id: d.id,
+        environment: d.environment,
+        state: d.state,
+        r#ref: d.ref_,
+    }
+}
+
+/// Compose the "Send to agent" message body from a review thread's context
+/// (Task 316, `design/13 §3.6`). Deterministic + minimal: the anchor path + the
+/// thread's comments, oldest first, as a plain-text block the agent can act on.
+fn compose_thread_message(thread: &ReviewThread) -> String {
+    let mut out = String::new();
+    out.push_str("Please address this PR review thread");
+    if let Some(path) = &thread.path {
+        out.push_str(" on `");
+        out.push_str(path);
+        out.push('`');
+    }
+    out.push_str(":\n\n");
+    for comment in &thread.comments {
+        out.push_str("- ");
+        out.push_str(comment);
+        out.push('\n');
+    }
+    out
 }

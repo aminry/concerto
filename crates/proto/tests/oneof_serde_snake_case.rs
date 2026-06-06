@@ -21,6 +21,8 @@ fn event_body_oneof_serializes_with_snake_case_field_name() {
             stream: "stdout".into(),
             data: vec![104, 105],
         })),
+        // Task 316: additive non-oneof carrier (unset here).
+        checks_opaque: None,
     };
     let json = serde_json::to_string(&ev).unwrap();
     assert!(

@@ -34,6 +34,7 @@ use url::Url;
 
 use concerto_keychain::SecretValue;
 
+use crate::checks::ChecksAggregator;
 use crate::dispatch::{external_tracker_blocked, route_issue_host, IssueCache, IssueHost};
 use crate::gh_cli;
 use crate::github::GitHubProvider;
@@ -57,6 +58,12 @@ pub struct VcsHandle {
     /// here — never in SQLite. Cloned with the handle so every clone shares one
     /// cache (Task 317).
     issue_cache: IssueCache,
+    /// Shared review-thread / check-run / deployment aggregator + the
+    /// `checks.<wa>.<repo>` event broadcaster (Task 316). Cloned with the handle
+    /// so the gRPC handler + the streams handler (which reads
+    /// [`VcsHandle::checks_sender`]) share one aggregator + one broadcast.
+    /// In-memory only — never persisted (`design/13 §3.6`/R-3).
+    checks: ChecksAggregator,
 }
 
 impl VcsHandle {
@@ -66,6 +73,7 @@ impl VcsHandle {
             persistence,
             gh_path: Arc::new(tokio::sync::OnceCell::new()),
             issue_cache: IssueCache::system(),
+            checks: ChecksAggregator::new(),
         }
     }
 
@@ -76,7 +84,19 @@ impl VcsHandle {
             persistence,
             gh_path: Arc::new(tokio::sync::OnceCell::new()),
             issue_cache,
+            checks: ChecksAggregator::new(),
         }
+    }
+
+    /// The shared review-thread / check-run / deployment aggregator (Task 316).
+    pub fn checks(&self) -> &ChecksAggregator {
+        &self.checks
+    }
+
+    /// The `checks.<wa>.<repo>` event broadcast sender, for the Core to wire
+    /// into the `StreamsHandler` (`with_vcs_events`).
+    pub fn checks_sender(&self) -> tokio::sync::broadcast::Sender<crate::checks::VcsEvent> {
+        self.checks.sender()
     }
 
     /// Borrow the shared read-only pool (the gRPC handler's repo→workarea lookup).
@@ -320,6 +340,49 @@ impl VcsHandle {
         let issue = client.fetch(key_or_url, token, refresh).await?;
         self.issue_cache.put(key_or_url, issue.clone());
         Ok(issue)
+    }
+
+    // ---- Task 316: review-thread / check-run / deployment aggregation ----
+
+    /// Build the octocrab [`GitHubProvider`] for `repo_full_name` from the
+    /// keychain PAT (`SecretKind::GithubPat`) + return it as a trait object the
+    /// [`ChecksAggregator`] drives. Every call goes through the provider's
+    /// header-capturing `request_json` path, so it bills Task 314's rate-limit
+    /// pool. (The full per-call `choose_backend` App-vs-PAT-vs-gh selection is
+    /// the dispatcher's; the GraphQL review-thread + REST check/deploy paths are
+    /// octocrab-only — `gh` has no thread-resolve — so this uses the PAT
+    /// octocrab provider directly.)
+    pub async fn github_provider(&self, token: &str) -> Result<Arc<dyn VcsProvider>> {
+        Ok(Arc::new(GitHubProvider::with_token(token)?))
+    }
+
+    /// Resolve a repository row's `owner/repo` full name (public so the gRPC
+    /// handler can scope GraphQL/REST calls).
+    pub async fn repo_full_name(&self, id: &RepositoryId) -> Result<String> {
+        self.resolve_repo_full_name(id).await
+    }
+
+    /// Look up the cached PR row for `(repository_id, pr_number)` — the handler
+    /// needs its GraphQL node id (`external_id`, Task 319 when present) +
+    /// `head_sha`. Returns `None` when no row is cached yet.
+    pub async fn cached_pr_row(
+        &self,
+        repository_id: &RepositoryId,
+        pr_number: i64,
+    ) -> Result<Option<PullRequest>> {
+        let pool = self.persistence.readers();
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM pull_requests WHERE repository_id = ? AND pr_number = ? LIMIT 1",
+        )
+        .bind(&repository_id.0)
+        .bind(pr_number)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        match id {
+            Some(id) => concerto_persist::pull_requests::get(pool, &PullRequestId(id)).await,
+            None => Ok(None),
+        }
     }
 
     // ---- internal helpers ----

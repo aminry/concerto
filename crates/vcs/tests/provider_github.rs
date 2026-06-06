@@ -169,29 +169,19 @@ async fn fetch_issue_gets_and_projects() {
 }
 
 // ---------------------------------------------------------------------------
-// Signature-frozen stubs return the typed `Unimplemented` (Task 316/320).
+// `revert_pr` is still a signature-frozen stub (Task 320). The GraphQL
+// review-thread methods are now implemented (Task 316) — see
+// `crates/vcs/tests/review_threads.rs`.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn graphql_and_revert_stubs_return_unimplemented() {
+async fn revert_stub_returns_unimplemented() {
     let gh = FakeGitHub::start().await;
     let provider = gh.provider();
     let id = ProviderPrId::new("acme/widget", 101);
 
-    let err = provider
-        .list_review_threads(id.clone())
-        .await
-        .expect_err("stub");
-    assert!(is_unimplemented(&err), "list_review_threads is a 316 stub");
-
     let err = provider.revert_pr(id).await.expect_err("stub");
     assert!(is_unimplemented(&err), "revert_pr is a 320 stub");
-
-    let err = provider
-        .resolve_thread(concerto_vcs::ThreadId("T_1".to_string()))
-        .await
-        .expect_err("stub");
-    assert!(is_unimplemented(&err), "resolve_thread is a 316 stub");
 }
 
 // ---------------------------------------------------------------------------
