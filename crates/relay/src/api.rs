@@ -23,6 +23,8 @@
 //! - `RELAY_LISTEN_ADDR` — the Iroh-relay HTTP bind address.
 //! - `WSS_LISTEN_ADDR` — **reserved for Task 215** (parsed + validated here; the
 //!   bridge itself is 215). See [`RelayConfig::wss_listen_addr`].
+//! - `WEBHOOK_LISTEN_ADDR` — **Task 315** (the inbound-webhook route,
+//!   `design/11 §3.4.1`). See [`RelayConfig::webhook_listen_addr`].
 //! - `MAX_ROUTES` — routing-table cap (`design/11 §6.3`: a node handles
 //!   10k–50k routes).
 //! - `BANDWIDTH_CAP_PER_ENDPOINT` — per-endpoint forwarded-byte cap.
@@ -90,6 +92,14 @@ pub struct RelayConfig {
     /// and a malformed value fails fast, but this task does **not** stand up a
     /// WSS listener. `None` when unset.
     pub wss_listen_addr: Option<SocketAddr>,
+    /// `WEBHOOK_LISTEN_ADDR` — **Task 315** (the inbound-webhook route,
+    /// `design/11 §3.4.1`). When set, the relay serves
+    /// `POST /webhook/github/<endpoint_id>` over TLS on this address, opening an
+    /// ephemeral `0x04` Webhook bidi to the addressed Core. Additive to the
+    /// FROZEN env surface; a sibling of [`Self::wss_listen_addr`] (a separate
+    /// listener, mirroring its `Option<SocketAddr>` shape). `None` (unset) ⇒ no
+    /// webhook route (Iroh-only / WSS-only relay). A malformed value fails fast.
+    pub webhook_listen_addr: Option<SocketAddr>,
     /// `MAX_ROUTES` — the routing-table cap (`design/11 §6.3`). Registrations
     /// beyond it are rejected (and counted). Defaults to [`DEFAULT_MAX_ROUTES`].
     pub max_routes: usize,
@@ -234,6 +244,52 @@ pub struct WssBridgeServer {
 #[derive(Clone)]
 pub struct WssBridgeMetrics {
     pub(crate) inner: crate::metrics::WssMetricsInner,
+}
+
+// ===========================================================================
+// webhook.rs surface — the inbound-webhook route (`design/11 §3.4.1`, Task 315)
+// ===========================================================================
+
+/// The FROZEN URL path prefix the webhook route accepts:
+/// `POST /webhook/github/<endpoint_id>` (`design/11 §3.4.1`). GitHub registers
+/// exactly this URL; changing the prefix is a wire break across the
+/// GitHub↔relay boundary. Mirrors the [`WSS_PATH_PREFIX`] discipline. **FROZEN.**
+pub const WEBHOOK_PATH_PREFIX: &str = "/webhook/github/";
+
+/// The maximum inbound webhook body the relay accepts before rejecting the POST
+/// with HTTP `413` **before** dialing (`design/11 §3.4.1`: GitHub's documented
+/// **25 MiB** max delivery size). Enforced at the relay HTTP layer; the Core
+/// enforces the same ceiling again at the `0x04` frame layer
+/// (`concerto_transport::MAX_WEBHOOK_BODY_SIZE`). **FROZEN.**
+pub const MAX_WEBHOOK_BODY_SIZE: usize = 25 * 1024 * 1024;
+
+/// A running inbound-webhook route listener (`design/11 §3.4.1`, Task 315) — a
+/// sibling of the [`WssBridgeServer`]. Per `POST /webhook/github/<endpoint_id>`
+/// it parses the endpoint id (rejecting a malformed/oversized id with HTTP `400`
+/// before any dial), reads the GitHub headers + bounded body, opens **one**
+/// ephemeral `0x04` Webhook Iroh bidi to the addressed Core (relay-forced dial,
+/// `RelayMode::Custom`), writes the FROZEN `WebhookEnvelope`, awaits the Core's
+/// one-byte ack, and maps it to the HTTP status returned to GitHub. The relay
+/// does **no** HMAC verify, **no** parse, **no** persistence — it forwards the
+/// body opaquely (`design/11 §3.9`). An offline Core (dial fail) → `502`/`503` +
+/// drop + log; **no buffering** (`design/11 §3.2`, `design/13 §8`).
+///
+/// Started by [`crate::webhook::WebhookRouteServer::start`] when
+/// [`RelayConfig::webhook_listen_addr`] (the `WEBHOOK_LISTEN_ADDR` env var) is
+/// set; the `concerto-relay` binary spawns it alongside [`Relay`]. Method impls
+/// live in [`crate::webhook`].
+pub struct WebhookRouteServer {
+    pub(crate) inner: crate::webhook::WebhookRouteInner,
+}
+
+/// The inbound-webhook route Prometheus metrics handle (`design/11 §3.9`
+/// metadata-only — the FROZEN `concerto_relay_webhooks_*` names live in
+/// [`crate::metrics`]). Tracks forwarded + dropped delivery **counts** (never
+/// content). Cloneable into each per-request handler. Method impls live in
+/// [`crate::metrics`].
+#[derive(Clone)]
+pub struct WebhookRouteMetrics {
+    pub(crate) inner: crate::metrics::WebhookMetricsInner,
 }
 
 // ===========================================================================

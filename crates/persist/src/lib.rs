@@ -30,6 +30,7 @@ pub mod skills;
 pub mod suggestion_learn;
 pub mod tool_approvals;
 pub mod vcs_credentials;
+pub mod webhook_deliveries;
 pub mod workareas;
 pub mod workspaces;
 

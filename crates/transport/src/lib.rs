@@ -44,6 +44,7 @@ pub mod error;
 pub mod handle;
 pub mod mdns;
 pub mod state;
+pub mod webhook;
 
 // The frozen surface, flattened to the crate root for ergonomic `use
 // concerto_transport::{..}` (217's façade + the clients import from here). The
@@ -54,7 +55,12 @@ pub use api::{
     ConnectionPath, DeviceId, DiscoveredCore, IrohConnector, IrohDuplex, IrohTransport,
     MdnsBrowser, MdnsConfig, MdnsResponder, NatStats, NetworkStats, NoiseDuplex, PairingListener,
     RelayInfo, TransportConfig, TransportHandle, TransportState, TransportTelemetry, WakeupHint,
-    WakeupPayload, ALPN, MAX_MESSAGE_SIZE, NAT_SUCCESS_DELTA_PCT, NAT_SUCCESS_PRD_LINE_PCT,
-    SERVICE_TYPE, TXT_CAPS, TXT_CORE_PUBKEY, TXT_ENDPOINT_ID, TXT_VERSION,
+    WakeupPayload, WebhookAck, WebhookEnvelope, WebhookSink, ALPN, MAX_MESSAGE_SIZE,
+    MAX_WEBHOOK_BODY_SIZE, NAT_SUCCESS_DELTA_PCT, NAT_SUCCESS_PRD_LINE_PCT, SERVICE_TYPE, TXT_CAPS,
+    TXT_CORE_PUBKEY, TXT_ENDPOINT_ID, TXT_VERSION,
 };
 pub use error::{Result, TransportError};
+// The `0x04` Webhook channel framing helpers (`design/11 §3.4.1`, Task 315): the
+// relay drives `write_envelope`/`read_ack`; the Core serve loop drives
+// `read_envelope`/`write_ack`.
+pub use webhook::{read_ack, read_envelope, write_ack, write_envelope};

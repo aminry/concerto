@@ -17,6 +17,7 @@ use crate::error::{RelayError, Result};
 /// text and for the error messages.
 pub const ENV_RELAY_LISTEN_ADDR: &str = "RELAY_LISTEN_ADDR";
 pub const ENV_WSS_LISTEN_ADDR: &str = "WSS_LISTEN_ADDR";
+pub const ENV_WEBHOOK_LISTEN_ADDR: &str = "WEBHOOK_LISTEN_ADDR";
 pub const ENV_MAX_ROUTES: &str = "MAX_ROUTES";
 pub const ENV_BANDWIDTH_CAP_PER_ENDPOINT: &str = "BANDWIDTH_CAP_PER_ENDPOINT";
 pub const ENV_PROMETHEUS_LISTEN_ADDR: &str = "PROMETHEUS_LISTEN_ADDR";
@@ -44,6 +45,16 @@ impl RelayConfig {
             Some(raw) if !raw.trim().is_empty() => {
                 Some(parse_socket_addr_required(ENV_WSS_LISTEN_ADDR, raw.trim())?)
             }
+            _ => None,
+        };
+
+        // Task 315: the inbound-webhook route (`design/11 §3.4.1`), a sibling of
+        // the WSS listener. Additive + opt-in; a malformed value fails fast.
+        let webhook_listen_addr = match lookup(ENV_WEBHOOK_LISTEN_ADDR) {
+            Some(raw) if !raw.trim().is_empty() => Some(parse_socket_addr_required(
+                ENV_WEBHOOK_LISTEN_ADDR,
+                raw.trim(),
+            )?),
             _ => None,
         };
 
@@ -91,6 +102,7 @@ impl RelayConfig {
         Ok(Self {
             relay_listen_addr,
             wss_listen_addr,
+            webhook_listen_addr,
             max_routes,
             bandwidth_cap_per_endpoint,
             prometheus_listen_addr,
@@ -149,6 +161,10 @@ mod tests {
         assert_eq!(c.max_routes, DEFAULT_MAX_ROUTES);
         assert_eq!(c.bandwidth_cap_per_endpoint, None);
         assert_eq!(c.wss_listen_addr, None, "WSS reserved, unset by default");
+        assert_eq!(
+            c.webhook_listen_addr, None,
+            "webhook route opt-in, unset by default"
+        );
     }
 
     #[test]
@@ -156,6 +172,7 @@ mod tests {
         let c = RelayConfig::from_lookup(lookup(&[
             (ENV_RELAY_LISTEN_ADDR, "127.0.0.1:8080"),
             (ENV_WSS_LISTEN_ADDR, "127.0.0.1:8443"),
+            (ENV_WEBHOOK_LISTEN_ADDR, "127.0.0.1:8444"),
             (ENV_MAX_ROUTES, "10000"),
             (ENV_BANDWIDTH_CAP_PER_ENDPOINT, "53687091200"),
             (ENV_PROMETHEUS_LISTEN_ADDR, "127.0.0.1:9091"),
@@ -163,6 +180,10 @@ mod tests {
         .expect("full config parses");
         assert_eq!(c.relay_listen_addr, "127.0.0.1:8080".parse().unwrap());
         assert_eq!(c.wss_listen_addr, Some("127.0.0.1:8443".parse().unwrap()));
+        assert_eq!(
+            c.webhook_listen_addr,
+            Some("127.0.0.1:8444".parse().unwrap())
+        );
         assert_eq!(c.max_routes, 10_000);
         assert_eq!(c.bandwidth_cap_per_endpoint, Some(53_687_091_200));
         assert_eq!(c.prometheus_listen_addr, "127.0.0.1:9091".parse().unwrap());
@@ -184,6 +205,13 @@ mod tests {
         let err = RelayConfig::from_lookup(lookup(&[(ENV_WSS_LISTEN_ADDR, "1.2.3.4")]))
             .expect_err("port-less WSS addr must fail");
         assert!(err.to_string().contains(ENV_WSS_LISTEN_ADDR));
+    }
+
+    #[test]
+    fn malformed_webhook_addr_fails_fast() {
+        let err = RelayConfig::from_lookup(lookup(&[(ENV_WEBHOOK_LISTEN_ADDR, "1.2.3.4")]))
+            .expect_err("port-less webhook addr must fail");
+        assert!(err.to_string().contains(ENV_WEBHOOK_LISTEN_ADDR));
     }
 
     #[test]

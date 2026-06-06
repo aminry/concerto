@@ -23,7 +23,14 @@
 //! byte 0x01 → API        (gRPC over the Noise-wrapped adapter)
 //! byte 0x02 → PushHint   (wakeup-fetch)
 //! byte 0x03 → Pairing    (Noise XX over the one-shot token — Task 207 drives)
+//! byte 0x04 → Webhook    (relay-originated inbound webhook — NO Noise; Task 315)
 //! ```
+//!
+//! The `0x04` Webhook channel (`design/11 §3.4.1`) is deliberately **non-Noise**:
+//! the peer is GitHub-via-relay, not a paired device, so no device cert / Noise
+//! IK handshake exists. Its authenticity floor is the per-repo HMAC the Core
+//! verifies on the body; the serve loop reads the `WebhookEnvelope` off the
+//! **raw** duplex and hands it to the Core's `WebhookSink` (Task 315).
 //!
 //! The tag byte doubles as the **acceptor-priming** write (spike gotcha #3):
 //! writing it immediately wakes the server's `accept_bi()` without waiting for
@@ -56,6 +63,7 @@ pub(crate) fn tag_from_byte(b: u8) -> Result<crate::api::ChannelTag> {
         0x01 => Ok(ChannelTag::Api),
         0x02 => Ok(ChannelTag::PushHint),
         0x03 => Ok(ChannelTag::Pairing),
+        0x04 => Ok(ChannelTag::Webhook),
         other => Err(TransportError::Channel(format!(
             "unknown channel tag byte 0x{other:02x}"
         ))),
@@ -72,14 +80,22 @@ mod tests {
         assert_eq!(ChannelTag::Api.as_byte(), 0x01);
         assert_eq!(ChannelTag::PushHint.as_byte(), 0x02);
         assert_eq!(ChannelTag::Pairing.as_byte(), 0x03);
+        // Task 315: the FROZEN `0x04` Webhook tag joins `0x01`/`0x02`/`0x03`.
+        assert_eq!(ChannelTag::Webhook.as_byte(), 0x04);
     }
 
     #[test]
     fn tag_roundtrips_and_rejects_unknown() {
-        for tag in [ChannelTag::Api, ChannelTag::PushHint, ChannelTag::Pairing] {
+        for tag in [
+            ChannelTag::Api,
+            ChannelTag::PushHint,
+            ChannelTag::Pairing,
+            ChannelTag::Webhook,
+        ] {
             assert_eq!(ChannelTag::from_byte(tag.as_byte()).unwrap(), tag);
         }
         assert!(ChannelTag::from_byte(0x00).is_err());
+        assert!(ChannelTag::from_byte(0x05).is_err());
         assert!(ChannelTag::from_byte(0xff).is_err());
     }
 

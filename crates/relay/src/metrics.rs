@@ -18,7 +18,7 @@ use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Opts, Registry, T
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use crate::api::WssBridgeMetrics;
+use crate::api::{WebhookRouteMetrics, WssBridgeMetrics};
 use crate::error::{RelayError, Result};
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,17 @@ pub const METRIC_WSS_BRIDGES: &str = "concerto_relay_wss_bridges";
 /// direction (`design/11 §3.4`, §3.9 — byte *counts* only, never content).
 /// Counter vec. **FROZEN** (append-only).
 pub const METRIC_WSS_BYTES_FORWARDED_TOTAL: &str = "concerto_relay_wss_bytes_forwarded_total";
+
+/// Total inbound webhooks successfully forwarded to a Core over the `0x04`
+/// channel (the relay opened the bidi + got an ack, `design/11 §3.4.1`, Task
+/// 315). Counter. **FROZEN** (append-only under the `concerto_relay_*` prefix).
+/// The relay sees only that a delivery was forwarded — never the body
+/// (`design/11 §3.9`).
+pub const METRIC_WEBHOOKS_FORWARDED_TOTAL: &str = "concerto_relay_webhooks_forwarded_total";
+/// Total inbound webhooks **dropped** — the addressed Core was offline / the dial
+/// failed (`design/11 §3.4.1` offline-Core: drop + log + 5xx, no buffering). Task
+/// 315. Counter. **FROZEN** (append-only).
+pub const METRIC_WEBHOOKS_DROPPED_TOTAL: &str = "concerto_relay_webhooks_dropped_total";
 
 /// The label key for the region dimension on the hole-punch metrics
 /// (`design/11 §6.3` "per region"). FROZEN.
@@ -315,6 +326,58 @@ impl WssBridgeMetrics {
     /// The current live-bridge count (the `concerto_relay_wss_bridges` value).
     pub fn live_bridges(&self) -> i64 {
         self.inner.bridges.get()
+    }
+}
+
+impl RelayMetrics {
+    /// Register the inbound-webhook route metrics (`design/11 §3.4.1`, Task 315)
+    /// into **this** relay registry and return the cloneable
+    /// [`WebhookRouteMetrics`] handle the route drives, so the webhook series
+    /// appear on the same `/metrics` endpoint. Call once per [`RelayMetrics`].
+    pub fn webhook_metrics(&self) -> Result<WebhookRouteMetrics> {
+        let forwarded = IntCounter::with_opts(Opts::new(
+            METRIC_WEBHOOKS_FORWARDED_TOTAL,
+            "Total inbound webhooks forwarded to a Core over the 0x04 channel (metadata only).",
+        ))
+        .map_err(metrics_err)?;
+        let dropped = IntCounter::with_opts(Opts::new(
+            METRIC_WEBHOOKS_DROPPED_TOTAL,
+            "Total inbound webhooks dropped because the addressed Core was offline (5xx).",
+        ))
+        .map_err(metrics_err)?;
+
+        self.registry
+            .register(Box::new(forwarded.clone()))
+            .map_err(metrics_err)?;
+        self.registry
+            .register(Box::new(dropped.clone()))
+            .map_err(metrics_err)?;
+
+        Ok(WebhookRouteMetrics {
+            inner: WebhookMetricsInner { forwarded, dropped },
+        })
+    }
+}
+
+/// The private internals behind
+/// [`WebhookRouteMetrics`](crate::api::WebhookRouteMetrics) — the forwarded +
+/// dropped counters, sharing the relay [`Registry`]. Counts only (`design/11
+/// §3.9`) — no body reaches a metric.
+#[derive(Clone)]
+pub struct WebhookMetricsInner {
+    forwarded: IntCounter,
+    dropped: IntCounter,
+}
+
+impl WebhookRouteMetrics {
+    /// A webhook was forwarded to a Core (bidi opened + ack received).
+    pub fn forwarded(&self) {
+        self.inner.forwarded.inc();
+    }
+
+    /// A webhook was dropped (offline Core / dial failure → 5xx).
+    pub fn dropped(&self) {
+        self.inner.dropped.inc();
     }
 }
 

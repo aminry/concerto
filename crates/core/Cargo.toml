@@ -195,6 +195,14 @@ notify = { version = "8" }
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# Task 315: the inbound-webhook Tier-2 tests drive `VcsHandle::ingest_webhook`
+# against 313's `testkit` `FakeGitHub` (the targeted-invalidation re-fetch +
+# emit side) + compute reference HMAC signatures with `hmac`/`sha2`. `testkit`
+# is wiremock-backed + test-only; it never enters the production graph
+# (`PHASE3_PLANNING §4.3`).
+concerto-vcs = { path = "../vcs", features = ["testkit"] }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 # Task 212: the Iroh end-to-end test (`tests/transport_iroh.rs`) builds a client
 # Iroh endpoint directly to dial the Core's `serve_iroh` listener. Workspace pin
 # (the validated trio); test-only, so it never enters the production graph.

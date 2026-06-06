@@ -167,6 +167,14 @@ pub enum ChannelTag {
     PushHint = 0x02,
     /// The short-lived pairing channel (Noise XX over the token). Wire byte `0x03`.
     Pairing = 0x03,
+    /// The short-lived, **relay-originated** inbound-webhook channel
+    /// (`design/11 §3.4.1`, Task 315). Wire byte `0x04`. Unlike `0x01`/`0x02`/
+    /// `0x03` this channel does **NOT** establish Noise IK — the peer is
+    /// GitHub-via-relay, not a paired device; its authenticity floor is the
+    /// per-repo HMAC the Core verifies. The relay opens one ephemeral `0x04`
+    /// bidi, writes a single [`WebhookEnvelope`], reads the Core's one-byte ack,
+    /// and closes.
+    Webhook = 0x04,
 }
 
 impl ChannelTag {
@@ -180,6 +188,93 @@ impl ChannelTag {
     pub fn from_byte(b: u8) -> Result<Self> {
         crate::channels::tag_from_byte(b)
     }
+}
+
+// ===========================================================================
+// webhook.rs surface — the `0x04` inbound-webhook channel (`design/11 §3.4.1`,
+// Task 315)
+// ===========================================================================
+
+/// The maximum `body` size (bytes) the Core accepts in a [`WebhookEnvelope`]
+/// before rejecting the frame with a parse-reject ack (`design/11 §3.4.1`:
+/// GitHub's documented **25 MiB** max delivery size, well under
+/// [`MAX_MESSAGE_SIZE`]). **FROZEN** — the relay enforces the same ceiling at its
+/// HTTP layer (rejecting oversized POSTs before dialing) and the Core enforces it
+/// again at the frame layer.
+pub const MAX_WEBHOOK_BODY_SIZE: usize = 25 * 1024 * 1024;
+
+/// The parsed inbound-webhook frame the relay writes on the `0x04` bidi and the
+/// Core reads (`design/11 §3.4.1`). **FROZEN framing** — five length-prefixed
+/// fields after the channel-tag byte:
+///
+/// ```text
+/// 0x04                            channel-tag byte (acceptor-priming write)
+/// u32  len(delivery_id)   + delivery_id   bytes (UTF-8)
+/// u32  len(signature_256) + signature_256 bytes (UTF-8)
+/// u32  len(event_type)    + event_type    bytes (UTF-8)
+/// u32  len(endpoint_id)   + endpoint_id   bytes (UTF-8)
+/// u32  len(body)          + body          bytes (opaque)
+/// ```
+///
+/// All `u32` lengths are **big-endian**. The four header strings are UTF-8;
+/// `body` is opaque bytes (GitHub's signed JSON, HMAC-verified at the Core). A
+/// missing `X-Hub-Signature-256` is carried as a zero-length `signature_256`
+/// (the Core treats it as an HMAC failure).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookEnvelope {
+    /// The `X-GitHub-Delivery` header (UUID string) — the idempotency key.
+    pub delivery_id: String,
+    /// The `X-Hub-Signature-256` header (`sha256=<hex>`), passed through verbatim.
+    pub signature_256: String,
+    /// The `X-GitHub-Event` header (`pull_request`/`check_run`/…).
+    pub event_type: String,
+    /// The addressed Core endpoint id from the `/webhook/github/<endpoint_id>`
+    /// path (carried so the Core can assert it matches its own identity).
+    pub endpoint_id: String,
+    /// The raw GitHub POST body bytes (opaque to the relay).
+    pub body: Vec<u8>,
+}
+
+/// The Core's single-byte ack on the `0x04` bidi, mapped by the relay to the HTTP
+/// status it returns to GitHub (`design/11 §3.4.1`). **FROZEN wire bytes.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WebhookAck {
+    /// `0x00` → HTTP `200`: accepted — HMAC verified, processed (or idempotently
+    /// deduped).
+    Accepted = 0x00,
+    /// `0x01` → HTTP `400`: reject — HMAC mismatch, malformed/oversized frame, or
+    /// `endpoint_id` mismatch. Per `design/13 §8` the reason is NOT revealed to
+    /// the sender.
+    Reject = 0x01,
+    /// `0x02` → HTTP `500`: Core-internal error after a valid frame (GitHub
+    /// redelivers).
+    Error = 0x02,
+}
+
+impl WebhookAck {
+    /// The on-wire ack byte.
+    pub fn as_byte(self) -> u8 {
+        self as u8
+    }
+}
+
+/// The Core-supplied seam the transport invokes when it demuxes a `0x04` Webhook
+/// stream (`design/11 §3.4.1`, Task 315). Mirrors [`ApiDispatcher`] /
+/// [`AuthObserver`]: the transport stays Core-agnostic (no `concerto-core` /
+/// `concerto-vcs` dep) and the Core wires its VCS `ingest_webhook` path in at
+/// `serve_iroh`.
+///
+/// The transport reads the [`WebhookEnvelope`] off the **raw** duplex (no Noise),
+/// hands it to [`Self::ingest`], and writes the returned [`WebhookAck`] byte back
+/// on the same duplex. Implementations must be non-panicking; an internal error
+/// returns [`WebhookAck::Error`] (`0x02`).
+pub trait WebhookSink: Send + Sync + 'static {
+    /// Process one inbound webhook envelope and return the ack the transport
+    /// writes back. The Core's impl runs idempotency → HMAC → parse →
+    /// targeted-invalidate, mapping the outcome to an ack (`design/13 §6.2`).
+    fn ingest(&self, envelope: WebhookEnvelope)
+        -> Pin<Box<dyn Future<Output = WebhookAck> + Send>>;
 }
 
 // ===========================================================================
@@ -888,6 +983,14 @@ pub struct IrohTransport {
     /// `transport.events` subject. Held as a `broadcast::Sender` so it can be
     /// published from spawned per-connection tasks with no receiver attached.
     pub(crate) telemetry_tx: tokio::sync::broadcast::Sender<TransportTelemetry>,
+    /// The Core-supplied inbound-webhook seam (`design/11 §3.4.1`, Task 315).
+    /// `None` until [`IrohTransport::set_webhook_sink`] is called (the Core wires
+    /// it at `serve_iroh`); when `None` the serve loop drops a `0x04` stream with
+    /// a [`WebhookAck::Error`] ack (no Core consumer). Held in a `Mutex<Option>`
+    /// so it can be installed after `start` without changing the FROZEN `serve`
+    /// signature.
+    #[allow(clippy::type_complexity)]
+    pub(crate) webhook_sink: Arc<Mutex<Option<Arc<dyn WebhookSink>>>>,
     pub(crate) shutdown: CancellationToken,
 }
 

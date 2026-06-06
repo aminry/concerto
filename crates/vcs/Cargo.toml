@@ -81,6 +81,11 @@ url = { workspace = true }
 # `crates/core/src/vcs/gh_cli.rs`. `tempfile` is already workspace-vetted.
 tempfile = "3"
 
+# Task 315: the inbound-webhook HMAC-SHA256 verify (design/13 §3.2/§8). `hmac`'s
+# `Mac::verify_slice` does the CONSTANT-TIME tag compare the design mandates
+# (never `==` on the digest). RustCrypto, MIT/Apache-2.0, already in-tree.
+hmac = { workspace = true }
+sha2 = { workspace = true }
 # `#[async_trait]` on the `VcsProvider` trait + the `Actor`-less handle. Workspace pin.
 async-trait = { workspace = true }
 # Caller-generated UUIDv7 ids for the `pull_requests` cache rows (moved from the

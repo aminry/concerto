@@ -384,3 +384,17 @@ CREATE TABLE vcs_credentials (
 CREATE INDEX idx_vcs_credentials_provider ON vcs_credentials(provider);
 ```
 
+## `crates/persist/migrations/0013_webhook_deliveries.sql`
+
+```sql
+CREATE TABLE webhook_deliveries (
+    delivery_id TEXT PRIMARY KEY,        -- the X-GitHub-Delivery UUID (idempotency key)
+    repo_id     TEXT NOT NULL,           -- the repository this delivery targeted
+    received_at INTEGER NOT NULL         -- epoch ms when first ingested (drives the TTL prune)
+);
+```
+
+```sql
+CREATE INDEX idx_webhook_deliveries_received_at ON webhook_deliveries (received_at);
+```
+

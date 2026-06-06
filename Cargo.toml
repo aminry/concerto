@@ -89,6 +89,12 @@ prost = "0.13"
 keyring = { version = "3", default-features = false }
 secrecy = "0.10"
 zeroize = "1"
+# RustCrypto `hmac` + `sha2` for the inbound-webhook HMAC-SHA256 verify
+# (Task 315, design/13 §3.2/§8). Pure-Rust, MIT/Apache-2.0 (cargo-deny-clean),
+# already in-tree transitively. `hmac`'s `Mac::verify_slice` does the
+# **constant-time** tag compare the design mandates (never `==` on the digest).
+hmac = "0.12"
+sha2 = "0.10"
 # `home` for home_dir(); rust-lang's own crate, MIT/Apache-2.0. Picked
 # over `dirs` because `dirs` pulls in `option-ext` (MPL-2.0) — disallowed
 # by design/00 §6.11's permissive-only license posture.
