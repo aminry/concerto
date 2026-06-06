@@ -27,12 +27,31 @@ use crate::provider::{CheckRun, Issue, ReviewThread, VcsProvider};
 /// constructed providers. This keeps `choose_backend` pure + table-testable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
-    /// The default octocrab `GitHubProvider` (a PAT/App token is configured).
+    /// A GitHub App installation-authed octocrab `GitHubProvider` (Task 314,
+    /// R-7). Preferred over a PAT when the repo is configured for App auth
+    /// (15000/hr pool, finer scope, easier rotation).
+    OctocrabApp,
+    /// The PAT-authed octocrab `GitHubProvider` (a PAT is configured; 5000/hr).
     Octocrab,
     /// The `gh` CLI fallback `GitHubProviderViaCli`.
     GhCli,
     /// The issue-host router owns this op (`fetch_issue`).
     IssueRouter,
+}
+
+impl Backend {
+    /// The rate-limit pool ([`ProviderKey`]) calls on this backend bill against
+    /// (Task 314, `design/13 §3.9`). `OctocrabApp` bills the per-app installation
+    /// pool; PAT octocrab bills the PAT pool; `gh` bills its separately-tracked
+    /// pool. `IssueRouter` has no PR-op pool (issue fetch is cached + not budgeted
+    /// here), so it maps to the PAT pool when one applies.
+    pub fn provider_key(self, app_id: Option<&str>) -> ProviderKey {
+        match self {
+            Backend::OctocrabApp => ProviderKey::GithubApp(app_id.unwrap_or_default().to_string()),
+            Backend::Octocrab | Backend::IssueRouter => ProviderKey::GithubPat,
+            Backend::GhCli => ProviderKey::GhCli,
+        }
+    }
 }
 
 /// The operation being dispatched. `design/13 §6.1` branches `fetch_issue`
@@ -46,9 +65,12 @@ pub enum VcsOp {
 
 /// What a repo offers for backend selection. The dispatcher is given booleans
 /// (computed by the caller from the keychain / `PATH`) so it stays pure.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RepoCapabilities {
-    /// A PAT or App token is configured for this repo (→ octocrab).
+    /// A GitHub **App** installation is configured for this repo (Task 314, R-7
+    /// — `has_github_app`). Preferred over a PAT (higher quota, finer scope).
+    pub has_github_app: bool,
+    /// A PAT is configured for this repo (→ octocrab).
     pub has_octocrab_token: bool,
     /// `gh` is installed + authenticated (→ gh CLI).
     pub gh_available: bool,
@@ -59,16 +81,23 @@ pub struct RepoCapabilities {
 ///
 /// ```text
 /// choose_backend(repo, op):
-///     if op == fetch_issue: use the URL-host router (Linear/Jira client)
-///     elif repo.has_octocrab_token: use Octocrab
-///     elif gh_available():           use GhCli
+///     if op == fetch_issue:      use the URL-host router (Linear/Jira client)
+///     elif repo.has_github_app:  use OctocrabApp   (Task 314, R-7 — preferred)
+///     elif repo.has_octocrab_token: use Octocrab   (PAT)
+///     elif gh_available():       use GhCli
 ///     else: Error::NoVcsCredentials
 /// ```
+///
+/// Task 314 adds the `has_github_app` arm **above** the PAT arm: a repo
+/// configured for App auth uses it (higher quota, finer scope, easier rotation —
+/// R-7); otherwise PAT; otherwise `gh`. Still per-call, never user-chosen.
 pub fn choose_backend(caps: RepoCapabilities, op: VcsOp) -> Result<Backend> {
     if op == VcsOp::FetchIssue {
         return Ok(Backend::IssueRouter);
     }
-    if caps.has_octocrab_token {
+    if caps.has_github_app {
+        Ok(Backend::OctocrabApp)
+    } else if caps.has_octocrab_token {
         Ok(Backend::Octocrab)
     } else if caps.gh_available {
         Ok(Backend::GhCli)
@@ -278,8 +307,18 @@ pub struct VcsState {
     pub check_cache: HashMap<(String, String), Vec<CheckRun>>,
     /// Cached review threads, keyed by PR node id — Task 316 populates.
     pub threads_cache: HashMap<String, Vec<ReviewThread>>,
-    /// Per-key rate-limit budgets — Task 314 populates.
+    /// Per-key rate-limit budgets (the `design/13 §4` map skeleton 313 froze).
+    /// Task 314 keeps the live, debounced/queue-aware tracking in [`pools`]; this
+    /// map is the materialized snapshot (refreshed via [`VcsState::sync_rate_limits`])
+    /// so a reader holding only the frozen field still sees the current budgets.
+    ///
+    /// [`pools`]: VcsState::pools
     pub rate_limits: HashMap<ProviderKey, RateLimitBudget>,
+    /// The live three-pool rate-limit tracker (Task 314, `design/13 §3.9`). Keyed
+    /// off [`ProviderKey`] (App / PAT / `gh`), independent per pool. Owns the
+    /// `vcs.rate_limit_warning` debounce + the per-pool resume queue. The
+    /// dispatcher seeds it from `X-RateLimit-*` headers after each call.
+    pub pools: crate::rate_limit::RateLimitPools,
     /// Per-repo webhook HMAC secrets — Task 315 populates (kept in keychain;
     /// this map is the hot cache).
     pub webhook_secrets: HashMap<String, [u8; 32]>,
@@ -289,5 +328,22 @@ impl VcsState {
     /// Fresh, empty state.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Refresh the FROZEN `rate_limits` map from the live [`pools`] tracker
+    /// (Task 314). Call after observing headers so a consumer reading the
+    /// `design/13 §4` map skeleton sees the current per-pool budgets.
+    ///
+    /// [`pools`]: VcsState::pools
+    pub fn sync_rate_limits(&mut self) {
+        self.rate_limits = self.pools.snapshot().into_iter().collect();
+    }
+
+    /// The Settings → Diagnostics read accessor for the three rate-limit pools
+    /// (Task 314, `design/13 §3.9` "soft warning in Settings → Diagnostics").
+    /// Returns each pool's `(ProviderKey, RateLimitBudget)` sorted stably. The
+    /// full UI / RPC is Task 324 / 709; this is the data source they call.
+    pub fn rate_limit_diagnostics(&self) -> Vec<(ProviderKey, RateLimitBudget)> {
+        self.pools.snapshot()
     }
 }

@@ -1308,11 +1308,15 @@ name = "concerto-vcs"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "bytes",
  "concerto-error",
  "concerto-keychain",
  "concerto-persist",
  "concerto-vcs",
  "graphql_client",
+ "http",
+ "http-body-util",
+ "jsonwebtoken",
  "octocrab",
  "reqwest 0.13.4",
  "rustls",

@@ -204,6 +204,7 @@ fn choose_backend_dispatch_table() {
     assert_eq!(
         choose_backend(
             RepoCapabilities {
+                has_github_app: false,
                 has_octocrab_token: true,
                 gh_available: true,
             },
@@ -217,6 +218,7 @@ fn choose_backend_dispatch_table() {
     assert_eq!(
         choose_backend(
             RepoCapabilities {
+                has_github_app: false,
                 has_octocrab_token: true,
                 gh_available: false,
             },
@@ -230,6 +232,7 @@ fn choose_backend_dispatch_table() {
     assert_eq!(
         choose_backend(
             RepoCapabilities {
+                has_github_app: false,
                 has_octocrab_token: false,
                 gh_available: true,
             },
@@ -242,6 +245,7 @@ fn choose_backend_dispatch_table() {
     // Neither → the typed NoVcsCredentials decision error.
     let err = choose_backend(
         RepoCapabilities {
+            has_github_app: false,
             has_octocrab_token: false,
             gh_available: false,
         },

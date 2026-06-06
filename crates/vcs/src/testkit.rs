@@ -124,7 +124,136 @@ impl FakeGitHub {
             .mount(&self.server)
             .await;
     }
+
+    /// Mount a `PUT <path>` → JSON body **with synthetic `X-RateLimit-*`
+    /// headers** (Task 314 — the merge path bills the rate-limit pool too).
+    pub async fn mount_put_json_rate_limited(
+        &self,
+        path_str: &str,
+        body: serde_json::Value,
+        limit: u32,
+        remaining: u32,
+        reset_at: i64,
+    ) {
+        let mut tmpl = ResponseTemplate::new(200).set_body_json(body);
+        for (k, v) in rate_limit_headers(limit, remaining, reset_at) {
+            tmpl = tmpl.append_header(k.as_str(), v.as_str());
+        }
+        Mock::given(method("PUT"))
+            .and(path(path_str))
+            .respond_with(tmpl)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mount a `GET <path>` → `403` with `X-RateLimit-Remaining: 0` (the
+    /// `design/13 §8` exhaustion row). Task 314 asserts the call fails with the
+    /// typed `RateLimited{reset_at}` error.
+    pub async fn mount_get_rate_exhausted(&self, path_str: &str, limit: u32, reset_at: i64) {
+        let mut tmpl = ResponseTemplate::new(403)
+            .set_body_json(serde_json::json!({ "message": "API rate limit exceeded" }));
+        for (k, v) in rate_limit_headers(limit, 0, reset_at) {
+            tmpl = tmpl.append_header(k.as_str(), v.as_str());
+        }
+        Mock::given(method("GET"))
+            .and(path(path_str))
+            .respond_with(tmpl)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Script the GitHub **App installation-token** endpoint
+    /// (`POST /app/installations/{installation_id}/access_tokens`) — Task 314's
+    /// App-auth + transparent-refresh double. Every POST returns `{token,
+    /// expires_at}` with the supplied `token` + an RFC3339 `expires_at`
+    /// `expires_in_secs` after `minted_at_secs`. Mount this once; each refresh
+    /// the provider issues is one more POST the test can count via
+    /// [`FakeGitHub::token_mint_count`].
+    pub async fn mount_app_token(
+        &self,
+        installation_id: u64,
+        token: &str,
+        minted_at_secs: i64,
+        expires_in_secs: i64,
+    ) {
+        let route = format!("/app/installations/{installation_id}/access_tokens");
+        let expires_at = epoch_secs_to_rfc3339(minted_at_secs + expires_in_secs);
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "token": token,
+                "expires_at": expires_at,
+            })))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// How many App-token POSTs the fake has served (Task 314's refresh
+    /// assertion: a refresh after the synthetic clock passes expiry is one more
+    /// mint). Counts only the `…/access_tokens` route.
+    pub async fn token_mint_count(&self) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .map(|reqs| {
+                reqs.iter()
+                    .filter(|r| {
+                        r.method == wiremock::http::Method::POST
+                            && r.url.path().ends_with("/access_tokens")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Build an App-installation [`GitHubProvider`] (Task 314) pointed at this
+    /// fake's base. `private_key_pem` is a throwaway RSA key (the fake never
+    /// verifies the JWT); `now` is the synthetic clock so the
+    /// expiry/refresh path is deterministic.
+    pub fn app_provider(
+        &self,
+        app_id: u64,
+        installation_id: u64,
+        private_key_pem: &[u8],
+        now: crate::github::NowSecs,
+    ) -> GitHubProvider {
+        GitHubProvider::with_app_installation_and_base(
+            app_id,
+            installation_id,
+            private_key_pem,
+            &self.base_uri(),
+            now,
+        )
+        .expect("build App GitHubProvider against wiremock base")
+    }
 }
+
+/// Format epoch seconds as an RFC3339 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) —
+/// the shape GitHub's token endpoint returns, the inverse of `github.rs`'s
+/// `parse_rfc3339_secs`. Used by [`FakeGitHub::mount_app_token`].
+pub fn epoch_secs_to_rfc3339(secs: i64) -> String {
+    // days since epoch → civil date (Howard Hinnant's algorithm).
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
+/// A throwaway 2048-bit RSA private key (PKCS#8 PEM) for the Task-314 App-auth
+/// tests. The fake token endpoint never verifies the JWT signature, so a static
+/// test key is fine; this only needs to parse as a valid RSA key so
+/// `EncodingKey::from_rsa_pem` succeeds. NOT a real credential.
+pub const TEST_APP_PRIVATE_KEY_PEM: &[u8] = include_bytes!("../tests/fixtures/test_app_key.pem");
 
 /// A wiremock-backed fake Linear GraphQL endpoint (Task 317 fills the query
 /// fixtures + the client). The harness shape is frozen now.

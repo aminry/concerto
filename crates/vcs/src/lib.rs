@@ -42,6 +42,7 @@ pub mod github_cli;
 pub mod jira;
 pub mod linear;
 pub mod provider;
+pub mod rate_limit;
 pub mod write_back;
 
 #[cfg(feature = "testkit")]
@@ -53,12 +54,18 @@ pub use dispatch::{
     no_vcs_credentials, route_issue_host, system_now_secs, Backend, IssueCache, IssueHost, NowSecs,
     ProviderKey, RateLimitBudget, RepoCapabilities, VcsOp, VcsState, ISSUE_CACHE_TTL_SECS,
 };
-pub use github::{GitHubProvider, DEFAULT_GITHUB_BASE_URI};
+pub use github::{GitHubProvider, NowSecs as GithubNowSecs, DEFAULT_GITHUB_BASE_URI};
 pub use github_cli::GitHubProviderViaCli;
 pub use jira::{flatten_adf, parse_jira_key, JiraClient, RefreshToken};
 pub use linear::{parse_linear_id, LinearClient, DEFAULT_LINEAR_BASE_URI};
 pub use provider::{
     is_unimplemented, unimplemented_err, CheckRun, CreatePrRequest, Deployment, Issue, MergeMethod,
     MergeReport, ProviderPrId, PullRequest, RevertReport, ReviewThread, ThreadId, VcsProvider,
+};
+pub use rate_limit::{
+    check_run_backoff_secs, degraded_interval_secs, is_rate_limited, rate_limited,
+    rate_limited_reset_at, OpPriority, RateLimitPools, RateLimitWarning, ResumeQueue,
+    CHECK_RUN_BACKOFF_SECS, DEGRADE_FRACTION, DEPLOYMENT_SECS, PR_STATE_BACKGROUND_SECS,
+    PR_STATE_FOREGROUND_SECS, REVIEW_THREAD_SECS, WARN_FRACTION,
 };
 pub use write_back::{IssueProvider, IssueRef, IssueTransition, IssueWriteBack, NoopWriteBack};
