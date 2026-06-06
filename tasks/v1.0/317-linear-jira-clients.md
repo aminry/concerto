@@ -70,24 +70,29 @@ Replace the V0.1 "fetch Linear/Jira issues out-of-band via the agent" path with 
 **Tier-2 double + what it does NOT cover.** The `wiremock` `FakeLinear`/`FakeJira` doubles prove: query/response mapping, host routing, OAuth-refresh retry, the TTL cache, the privacy gate, and the no-op write-back seam. They do **NOT** cover: a **real Linear OAuth/API-key fetch** or a **real Jira/Atlassian 3LO + REST fetch** against live APIs — those are the Phase-3 Tier-3 checklist line **"fetch a real Linear and Jira issue"** (and the Desktop-mediated OAuth round-trip end-to-end). The real write-back (320.5) is its own task + checklist confirmation.
 
 ## Definition of Done
-- [ ] `crates/vcs` `LinearClient` (GraphQL) + `JiraClient` (REST, ADF-flatten, one OAuth refresh) map to the shared `Issue` value type
-- [ ] Both wired into the `VcsHandle::fetch_issue(url)` host router (Linear/Jira arms) + `fetch_linear_issue`/`fetch_jira_issue` helpers; 1 h in-memory TTL cache; issue body never persisted
-- [ ] Credentials stored via 313's `VcsSecretSlot::{Linear,Jira}*` keychain accessor (NO new `SecretKind`, NO migration); non-secret metadata via 313's `vcs_credentials`
-- [ ] `IssueWriteBack` trait + LIVE `NoopWriteBack` impl FROZEN; 320.5 reuses the trait unchanged
-- [ ] proto: `Issue.external_id = 7`, `FetchIssueByUrl` RPC, `SetVcsCredential` RPC + `VcsCredentialProvider` enum — FROZEN field numbers; Desktop-mediated OAuth documented in the RPC comment
-- [ ] `enterprise_data_privacy` projects refuse an external-tracker fetch with a typed error
-- [ ] Tier-2 tests pass against 313's `wiremock` `FakeLinear`/`FakeJira`; all `rust` §5.3 commands green; interfaces regenerated
-- [ ] Builds on the Windows CI lane (pure `reqwest`/rustls; keychain behind 313's accessor)
-- [ ] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
-- [ ] Single commit with the message below
+- [x] `crates/vcs` `LinearClient` (GraphQL) + `JiraClient` (REST, ADF-flatten, one OAuth refresh) map to the shared `Issue` value type
+- [x] Both wired into the `VcsHandle::fetch_issue(url)` host router (Linear/Jira arms) + `fetch_linear_issue`/`fetch_jira_issue` helpers; 1 h in-memory TTL cache; issue body never persisted
+- [x] Credentials stored via 313's `VcsSecretSlot::{Linear,Jira}*` keychain accessor (NO new `SecretKind`, NO migration); non-secret metadata via 313's `vcs_credentials`
+- [x] `IssueWriteBack` trait + LIVE `NoopWriteBack` impl FROZEN; 320.5 reuses the trait unchanged
+- [x] proto: `Issue.external_id = 7`, `FetchIssueByUrl` RPC, `SetVcsCredential` RPC + `VcsCredentialProvider` enum — FROZEN field numbers; Desktop-mediated OAuth documented in the RPC comment
+- [x] `enterprise_data_privacy` projects refuse an external-tracker fetch with a typed error
+- [x] Tier-2 tests pass against 313's `wiremock` `FakeLinear`/`FakeJira`; all `rust` §5.3 commands green; interfaces regenerated
+- [x] Builds on the Windows CI lane (pure `reqwest`/rustls; keychain behind 313's accessor)
+- [x] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/vcs/src/linear.rs` (new — `LinearClient` GraphQL fetch)
 - `crates/vcs/src/jira.rs` (new — `JiraClient` REST fetch + ADF flatten)
 - `crates/vcs/src/write_back.rs` (new — `IssueWriteBack` trait + `NoopWriteBack` + `IssueRef`)
-- `crates/vcs/src/lib.rs` or `crates/vcs/src/mod.rs` (modified — register `linear`/`jira`/`write_back`; register the host-router arms)
-- `crates/vcs/Cargo.toml` (modified — `concerto-vcs/testkit` dev-dep; `reqwest` reuse; `graphql_client` only if reused from 313)
-- `crates/vcs/tests/fixtures/linear_issue.json` + `jira_issue.json` (new — fixtures, if 313 left builders only)
+- `crates/vcs/src/lib.rs` (modified — register `linear`/`jira`/`write_back`; re-export the new public surface)
+- `crates/vcs/src/actor.rs` (modified — DRIFT: the host-router arms + `IssueFetchCreds` + `fetch_linear_issue`/`fetch_jira_issue` helpers + the issue-cache field live on `VcsHandle` here, not in `lib.rs`)
+- `crates/vcs/src/dispatch.rs` (modified — DRIFT: the 1 h `IssueCache`, the `external_tracker_blocked` typed error, and the replaced Linear/Jira router seam live next to `VcsState` here)
+- `crates/vcs/src/github.rs` + `crates/vcs/src/github_cli.rs` + `crates/vcs/src/provider.rs` (modified — DRIFT: the `Issue` value type gains `external_id`; the two existing GitHub `Issue` constructors set it to `""`)
+- `crates/vcs/src/testkit.rs` (modified — DRIFT: added `FakeLinear`/`FakeJira` fixture-mount + request-count + Jira 401→refresh helpers; the harness shape 313 froze is unchanged, only additive methods)
+- `crates/vcs/Cargo.toml` (modified — `reqwest` workspace reuse; `concerto-vcs/testkit` dev-dep + `wiremock` already present from 313)
+- `crates/vcs/tests/fixtures/linear_issue.json` + `jira_issue.json` (new — recorded fixtures; 313 left `FakeLinear`/`FakeJira` as builders only)
+- `crates/vcs/tests/clients_linear_jira.rs` (new — DRIFT: the Tier-2 test file for the Linear/Jira clients, router, cache, privacy gate, and no-op write-back)
 - `crates/core/src/handlers/vcs.rs` (modified — `FetchIssueByUrl` + `SetVcsCredential` handlers; route to the new clients)
 - `crates/proto/proto/concerto/v1/vcs.proto` (modified — `Issue.external_id`, `FetchIssueByUrl`, `SetVcsCredential`, `VcsCredentialProvider`)
 - `docs/interfaces/proto.md` (regenerated)
@@ -106,7 +111,7 @@ Refs: tasks/v1.0/317-linear-jira-clients.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan: —
-- Open questions for next task: —
-- Deliberate debt: —
-- Smoke-gate state: —
+- Drift from plan: The host-router arms, `IssueFetchCreds`, the `fetch_linear_issue`/`fetch_jira_issue` helpers, and the 1 h `IssueCache` did not all fit in `lib.rs`/`mod.rs` as the Outputs sketch implied — the router lives on `VcsHandle` in `crates/vcs/src/actor.rs` (extending 313's `fetch_issue_url`, which previously returned the now-removed `issue_router_unimplemented` seam) and the `IssueCache` + the typed `external_tracker_blocked` error live next to `VcsState` in `crates/vcs/src/dispatch.rs`. Added `crates/vcs/src/actor.rs`, `dispatch.rs`, `github.rs`, `github_cli.rs`, `provider.rs`, `testkit.rs`, and `crates/vcs/tests/clients_linear_jira.rs` to Outputs. The shared `Issue` value type gained a `String external_id` (was the FROZEN 313 shape) — additive + `#[derive(Default)]`; the two GitHub constructors set it to `""`. `testkit`'s `FakeLinear`/`FakeJira` were 313 builders-only; I added only *additive* mount/request-count/401-refresh helpers (the frozen harness shape is unchanged). The `concerto-error` enum is FROZEN/out-of-scope, so the privacy refusal reuses `Error::Vcs` with a stable `vcs.external_tracker_blocked:` prefix (mirroring 313's `no_vcs_credentials:`/`unimplemented:` convention) — `is_external_tracker_blocked()` lets callers switch on it without an enum variant.
+- Open questions for next task: **Tier-2 double coverage.** The `wiremock`-backed `FakeLinear` (GraphQL fixture) + `FakeJira` (REST fixture, with a synthetic-clock-driven 1 h-cache test) prove query/response→`Issue` mapping, URL-host routing, the Jira 401→one-refresh→retry, the 1 h TTL cache (2nd fetch makes NO HTTP call; re-fetches after expiry), the `enterprise_data_privacy` refusal (no outbound call), and the no-op `IssueWriteBack` seam. The double does **NOT** cover: a **real Linear OAuth/API-key fetch** against `api.linear.app`, a **real Atlassian 3LO + REST fetch** against a live `*.atlassian.net`, or the **Desktop-mediated OAuth round-trip** end-to-end — those are the Phase-3 Tier-3 checklist line "fetch a real Linear and Jira issue". For 320.5: the FROZEN `IssueWriteBack` trait + `IssueRef { provider, external_id, project_url }` + `#[non_exhaustive] IssueTransition { MergedDone }` are in `crates/vcs/src/write_back.rs` — implement the SAME trait for `MergedDone`, add NO variant. Also: the **`enterprise_data_privacy` gate is wired but not yet *sourced*** — the `FetchIssueByUrl` handler passes `enterprise_data_privacy: false` because Task 310's settings resolver is not in this build's path; the typed refusal + router gate are live and unit-tested (caller passes the flag), so 411/320.5 only need to feed the resolved per-project value in. The Jira `RefreshToken` callback + the Linear/Jira `linear_base`/`jira_base` overrides are caller-supplied seams; the gRPC handler currently passes `jira_refresh: None` (Desktop re-stores a refreshed token via `SetVcsCredential` instead of an in-Core refresh round-trip in P3).
+- Deliberate debt: **`NoopWriteBack` is the LIVE default, not a stub** — the real Linear `issueUpdate` / Jira transition write lands in **Task 320.5** behind the same FROZEN `IssueWriteBack` trait (D5). It returns `Ok(())` + a debug log, not a `todo!()`/`unimplemented!()`. The `FetchIssueByUrl` handler's `enterprise_data_privacy: false` is the one deliberate seam awaiting Task 310's resolver (closes when 310's resolved setting is threaded to the handler; the gate itself is implemented + tested today).
+- Smoke-gate state: unchanged. No smoke capability added — Linear/Jira fetch has no co-located smoke surface (real fetch is the Tier-3 checklist line above); `scripts/smoke.sh` and its manifest are untouched.

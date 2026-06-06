@@ -1314,6 +1314,7 @@ dependencies = [
  "concerto-vcs",
  "graphql_client",
  "octocrab",
+ "reqwest 0.13.4",
  "rustls",
  "serde",
  "serde_json",

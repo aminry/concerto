@@ -1,0 +1,17 @@
+{
+  "data": {
+    "issue": {
+      "identifier": "ENG-123",
+      "title": "Widget overflows on narrow viewports",
+      "description": "The widget grid does not wrap below 320px.\n\nRepro: open on an iPhone SE.",
+      "labels": {
+        "nodes": [
+          { "name": "bug" },
+          { "name": "frontend" }
+        ]
+      },
+      "state": { "name": "In Progress" },
+      "url": "https://linear.app/acme/issue/ENG-123/widget-overflows-on-narrow-viewports"
+    }
+  }
+}

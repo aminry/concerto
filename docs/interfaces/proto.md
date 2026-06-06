@@ -1582,6 +1582,48 @@ message Issue {
   string state = 4;
   string url = 5;
   repeated string labels = 6;
+  // The provider-native string id for Linear (`ENG-123`) / Jira (`PROJ-45`).
+  // Empty for GitHub issues (which use `number`). Added by Task 317.
+  string external_id = 7;
+}
+```
+
+### message `FetchIssueByUrlRequest`
+
+```proto
+message FetchIssueByUrlRequest {
+  // A full issue URL (e.g. `https://linear.app/acme/issue/ENG-123/...`,
+  // `https://acme.atlassian.net/browse/PROJ-45`, or a github.com issue URL).
+  string url = 1;
+}
+```
+
+### enum `VcsCredentialProvider`
+
+```proto
+enum VcsCredentialProvider {
+  VCS_CREDENTIAL_PROVIDER_UNSPECIFIED = 0;
+  VCS_CREDENTIAL_PROVIDER_LINEAR = 1;
+  VCS_CREDENTIAL_PROVIDER_JIRA = 2;
+}
+```
+
+### message `SetVcsCredentialRequest`
+
+```proto
+message SetVcsCredentialRequest {
+  VcsCredentialProvider provider = 1;
+  // The provider account id (the keychain `scope_id` for the Linear/Jira
+  // token slots) — e.g. the Linear workspace / Jira cloud account id.
+  string account_id = 2;
+  // The OAuth access token, or (Linear) a personal API key. Cleartext on the
+  // wire; stored only in the keychain.
+  string access_token = 3;
+  // The OAuth refresh token, when the flow returned one (absent for a Linear
+  // personal API key).
+  optional string refresh_token = 4;
+  // Access-token expiry, epoch ms (absent for a non-expiring personal key).
+  optional int64 expires_at = 5;
 }
 ```
 
@@ -1594,6 +1636,14 @@ service Vcs {
   rpc MergePullRequest(MergePrRequest) returns (google.protobuf.Empty);
   rpc GetChecks(GetChecksRequest) returns (GetChecksResponse);
   rpc FetchIssue(FetchIssueRequest) returns (Issue);
+  // Resolve a full issue URL (GitHub / Linear / Jira) into the shared
+  // `Issue`, routing by host. Additive to the FROZEN `FetchIssue` above
+  // (Task 317).
+  rpc FetchIssueByUrl(FetchIssueByUrlRequest) returns (Issue);
+  // Store a Linear/Jira OAuth token (or Linear personal API key) the Desktop
+  // obtained via its webview (Desktop-mediated OAuth, D6) → OS keychain
+  // (Task 317).
+  rpc SetVcsCredential(SetVcsCredentialRequest) returns (google.protobuf.Empty);
 }
 ```
 

@@ -1,0 +1,26 @@
+{
+  "key": "PROJ-45",
+  "fields": {
+    "summary": "Login button misaligned on Safari",
+    "description": {
+      "type": "doc",
+      "version": 1,
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            { "type": "text", "text": "The login button shifts 4px right on Safari 17." }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            { "type": "text", "text": "Only reproduces with the compact header." }
+          ]
+        }
+      ]
+    },
+    "labels": ["bug", "safari"],
+    "status": { "name": "To Do" }
+  }
+}

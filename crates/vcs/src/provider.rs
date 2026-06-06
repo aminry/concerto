@@ -202,15 +202,24 @@ pub struct Deployment {
 
 /// An issue (`design/13 §3.7`/§3.8 `Issue`). Mirrors the FROZEN `vcs.proto`
 /// `Issue` shape so the gRPC mapping is 1:1.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `number` is the **GitHub-only** integer id; Linear/Jira issues set it to
+/// `0` and carry their provider-native string id in [`Issue::external_id`]
+/// (`ENG-123` / `PROJ-45`) — the `string external_id = 7` field Task 317 added
+/// to the proto.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Issue {
+    /// GitHub integer id (`#<n>`); `0` for Linear/Jira (see `external_id`).
     pub number: i64,
     pub title: String,
     pub body: String,
-    /// `open|closed` (lowercased).
+    /// `open|closed` (lowercased) for GitHub; the tracker's status name
+    /// (lowercased) for Linear/Jira.
     pub state: String,
     pub url: String,
     pub labels: Vec<String>,
+    /// The provider-native string id (`ENG-123`/`PROJ-45`). Empty for GitHub.
+    pub external_id: String,
 }
 
 /// The FROZEN VCS provider abstraction (`design/13 §3.8`).

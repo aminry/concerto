@@ -31,6 +31,12 @@ octocrab = { workspace = true }
 # Task 313: typed GraphQL codegen, frozen now + filled by 316.
 graphql_client = { workspace = true }
 
+# Task 317: the Linear (GraphQL POST) + Jira (REST GET) issue-fetch clients are
+# hand-rolled over `reqwest` (the already-ratified rustls/no-openssl workspace
+# pin, Task 112) — no Atlassian/Linear SDK, no extra cargo-deny surface. Same
+# `ring` rustls posture as octocrab above (Windows-lane clean).
+reqwest = { workspace = true }
+
 # Task 313: octocrab builds on `hyper-rustls`, which needs a process-level rustls
 # `CryptoProvider`. The workspace links BOTH rustls backends (iroh's hickory tree
 # pulls `aws-lc-rs`; octocrab's `rustls-ring` pulls `ring`), so rustls cannot

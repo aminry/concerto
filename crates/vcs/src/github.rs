@@ -328,6 +328,9 @@ impl VcsProvider for GitHubProvider {
             state: issue.state.to_lowercase(),
             url: issue.html_url,
             labels: issue.labels.into_iter().map(|l| l.name).collect(),
+            // GitHub issues key on `number`; the provider-native string id is
+            // a Linear/Jira concept (Task 317).
+            external_id: String::new(),
         }))
     }
 }
