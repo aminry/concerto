@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+# Task 303: `benches/sparse_fixture.rs` is a SHARED restore helper
+# `#[path]`-included by the gate bench + the integration test — it is NOT a
+# bench target itself. Disable bench autodiscovery so it never becomes one;
+# the three real benches are declared explicitly in the `[[bench]]` stanzas.
+autobenches = false
 
 [lib]
 name = "concerto_gix_wrap"
@@ -33,6 +38,12 @@ tempfile = "3"
 # pulls in `plotters` (MIT/Apache-2.0) which is fine; CI does not run
 # the benches (only `cargo bench --no-run` validates compile).
 criterion = { version = "0.5", features = ["html_reports"] }
+# Task 303: restore the pre-packed sparse-cone fixture tar in the status
+# bench gate + integration test. `tar` is the pure-Rust, cross-platform
+# archive reader already pinned at the workspace level (Task 111); the
+# fixture is UNCOMPRESSED so no compression-crate dep is needed (cargo deny
+# stays green — no new workspace pin).
+tar = { workspace = true }
 
 # Task 29: bench harness. `harness = false` defers test running to
 # criterion's `criterion_main!` macro.
@@ -45,4 +56,11 @@ harness = false
 # a CI gate — CI only validates it compiles (`cargo bench --no-run`).
 [[bench]]
 name = "sparse_cone"
+harness = false
+
+# Task 303: the status sparse-cone bench GATE. Restores a pre-packed
+# fixture + asserts `git status` p50 < 100 ms (design/00 §7.7), exiting
+# non-zero on regression. `criterion_main!` provides the harness.
+[[bench]]
+name = "status_sparse_gate"
 harness = false

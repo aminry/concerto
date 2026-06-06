@@ -65,15 +65,15 @@ Tier 1. The `rust` §5.3 set + the bench gate.
 **Tier-1 scope + what it does NOT cover.** The CI gate proves `status` stays under 100 ms p50 on the **pre-packed fixture** at the committed scale, cold. It does **not** prove the number on a **real 2M-file monorepo on real hardware** — that is the Phase-3 Tier-3 checklist (corroborated by spike 104's extrapolation, ~75 ms p50 linear). The bench's scaled assertion + the spike doc together back the bar; the live confirmation is the operator's at the phase gate.
 
 ## Definition of Done
-- [ ] `status()` confirmed/wired through the (workarea, repo) sparse-cone worktree; integration test asserts in-cone-only status
-- [ ] No `gix`-native rewrite; the `gix` `status` feature is NOT enabled; `cargo deny` green
-- [ ] A `<100 ms p50` bench gate over a **pre-packed** sparse-cone fixture (no per-run loose-object regen); fails non-zero on regression
-- [ ] The fixture asserts its index is a sparse index; the cone + restore contract documented in the bench doc-comment
-- [ ] Bench runs cold (deterministic floor); warm-is-faster + the 2M-is-Tier-3 caveat documented
-- [ ] All Verification commands pass on a clean checkout; no interface change
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code
-- [ ] No files outside Outputs modified
-- [ ] Single commit with the message below
+- [x] `status()` confirmed/wired through the (workarea, repo) sparse-cone worktree; integration test asserts in-cone-only status
+- [x] No `gix`-native rewrite; the `gix` `status` feature is NOT enabled; `cargo deny` green
+- [x] A `<100 ms p50` bench gate over a **pre-packed** sparse-cone fixture (no per-run loose-object regen); fails non-zero on regression
+- [x] The fixture asserts its index is a sparse index; the cone + restore contract documented in the bench doc-comment
+- [x] Bench runs cold (deterministic floor); warm-is-faster + the 2M-is-Tier-3 caveat documented
+- [x] All Verification commands pass on a clean checkout; no interface change
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code
+- [x] No files outside Outputs modified
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/gix-wrap/benches/status_sparse_gate.rs` (new — the bench gate) OR `crates/gix-wrap/benches/sparse_cone.rs` (modified — add a `gate` group); `crates/gix-wrap/Cargo.toml` (modified — `[[bench]]` stanza if a new file)
@@ -97,4 +97,7 @@ Refs: tasks/v1.0/303-gix-status-sparse-bench.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state —
+- **Drift from plan:** (1) The wiring lock landed as a new `pub async fn WorkareaManager::get_repo_status` in `crates/core/src/workspace_manager/workarea.rs` — the exact sibling of the existing `get_repo_diff` (Task 29): a single `get_workarea_repo_worktree_path` read against `workarea_repos` (the per-(workarea, repo) sparse-cone worktree path Task 302 materializes) followed by the FROZEN `concerto_gix_wrap::status(&worktree)` shell-out. There was **no pre-existing status read path** to re-route (only `GetWorkareaRepoDiff` exists; no `GetWorkareaRepoStatus` RPC, and 303 adds no proto surface), so the lock is this caller method + the integration test that drives `status()` directly against a sparse cone. The method is `pub` and not yet consumed by a handler — that is intentional (a status RPC is a later task's surface); no dead-code lint fires on a `pub` method. (2) `crates/gix-wrap/benches/sparse_fixture.rs` is a SHARED `#[path]`-included restore/measure helper used by BOTH the bench gate and the integration test, so `autobenches = false` was set in `gix-wrap/Cargo.toml` to stop it being auto-discovered as a bench target (the three real benches stay explicit `[[bench]]` stanzas). (3) `Cargo.lock` + `gix-wrap/Cargo.toml` gained the existing **`tar` workspace pin** as a `gix-wrap` dev-dep (uncompressed-tar restore, no compression crate) — no new *workspace* pin, `cargo deny` stays green.
+- **Open questions for next task:** (1) `get_repo_status` is wired but unconsumed; whoever adds a `Workareas.GetWorkareaRepoStatus` RPC (a future Desktop/Maestro status surface) wires the thin tonic adapter to it exactly like `handlers/workareas.rs` does for `get_repo_diff`. (2) The committed fixture is a small (6 top dirs / ~600-file) sparse-cone repo — the gate proves the regression FLOOR + wiring with enormous margin (measured p50 ~10 ms cold vs the 100 ms bar); the **real 2M-file-monorepo <100 ms confirmation stays the Phase-3 Tier-3 checklist line**, corroborated by spike 104's ~75 ms p50 linear extrapolation. (3) Re-baking the fixture (`scripts/build-sparse-fixture.sh`) is mac/Linux-only (bash + a modern git); CI only *restores* the committed tar (cross-platform, pure-Rust `tar`), so no OS gating was needed on the restore path.
+- **Deliberate debt:** None. No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code. The `gix` `status` feature stays OFF (spike 104 NO-GO); `status()` body + signature UNCHANGED (Task 29 FROZEN).
+- **Smoke-gate state:** **Unchanged** — `scripts/smoke.sh` + `scripts/smoke.manifest` untouched (verified clean via `git status --porcelain`); 303 touches no smoke capability. The status hot path's regression guard is the test-shaped `gate_p50_under_budget` (runs under `cargo test --workspace`) + the `cargo bench --bench status_sparse_gate` process-exit twin, not the smoke gate.

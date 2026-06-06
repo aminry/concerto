@@ -1056,6 +1056,7 @@ dependencies = [
  "criterion",
  "gix",
  "libc",
+ "tar",
  "tempfile",
  "tokio",
  "tracing",

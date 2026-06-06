@@ -458,6 +458,47 @@ impl WorkareaManager {
         concerto_gix_wrap::diff_head(&worktree).await
     }
 
+    /// Resolve the worktree path for one repository inside a workarea, then
+    /// run the FROZEN `concerto_gix_wrap::status` shell-out seam against it
+    /// (Task 303, `design/02 §7.2`, `design/00 §7.7`).
+    ///
+    /// This is the status-read path the hot-path bench gate
+    /// (`crates/gix-wrap/benches/status_sparse_gate.rs`) measures: the
+    /// resolved `workarea_repos.worktree_path` is the **per-(workarea,
+    /// repo) sparse-cone worktree** Task 302 materializes, so `status` only
+    /// pays for the cone (the `--sparse-index` lever keeps the in-memory
+    /// index proportional to the cone, not the whole monorepo — spike 104
+    /// §4a). The seam itself stays untouched (Task 29 FROZEN); only this
+    /// caller wiring routes it through the sparse cone.
+    ///
+    /// Sibling of [`Self::get_repo_diff`]: a single read against
+    /// `workarea_repos`, then the shell-out (already driven by
+    /// `tokio::process`, so it does not block the gRPC reactor). Spike 104
+    /// returned GO for the shell-out path; **no gix-native rewrite** (the
+    /// `gix` `status` feature stays off).
+    pub async fn get_repo_status(
+        &self,
+        workarea_id: &WorkareaId,
+        repository_id: &concerto_persist::RepositoryId,
+    ) -> Result<concerto_gix_wrap::StatusReport> {
+        if self.get(workarea_id).await?.is_none() {
+            return Err(Error::NotFound(format!("workarea {workarea_id} not found")));
+        }
+        let worktree_path = concerto_persist::workareas::get_workarea_repo_worktree_path(
+            self.persistence.readers(),
+            workarea_id,
+            repository_id,
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::NotFound(format!(
+                "repository {repository_id} is not attached to workarea {workarea_id}"
+            ))
+        })?;
+        let worktree = PathBuf::from(worktree_path);
+        concerto_gix_wrap::status(&worktree).await
+    }
+
     /// Archive a workarea. Sets `archived_at` and transitions `status`
     /// to `"archived"`. Idempotent.
     ///
