@@ -260,6 +260,21 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     // manager) picks up the audited handle.
     let repo_handle = repo_handle.with_audit(audit_writer.clone());
 
+    // Task 304: inject the idle-prewarm scheduler's idle/power/net signal
+    // bundle. `host_signals()` is the best-effort, macOS-first
+    // implementation; it is deliberately the conservative "never prewarm"
+    // bundle for V1.0 because the real idle source is the Local-API client
+    // heartbeat (`design/02 §6.3`), which is a small documented follow-on.
+    // The seam is injected HERE so the follow-on only swaps `host_signals()`
+    // for a heartbeat-backed `IdleSignal` (and a real macOS power/net probe)
+    // — the scheduler, the eager triggers, and the `PrewarmBlobs` RPC all
+    // ship fully and are CI-proven against deterministic mocks. With the
+    // current bundle the background scheduler stays inert; the eager
+    // worktree-create + HEAD-update triggers do NOT depend on these signals
+    // and fire unconditionally for blobless repos.
+    let repo_handle =
+        repo_handle.with_prewarm_signals(crate::repo_manager::prefetch::signals::host_signals());
+
     // Task 206: establish the Core's Ed25519 identity (`design/12 §3.1`).
     // Runs AFTER the audit writer (so a first-launch generation can emit
     // `CoreIdentityCreated`) and is constructed here so the issuer's signing

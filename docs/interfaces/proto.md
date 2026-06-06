@@ -483,6 +483,26 @@ message SetConesResponse {
 }
 ```
 
+### message `PrewarmRequest`
+
+```proto
+message PrewarmRequest {
+  string repository_id = 1;
+  repeated string cone_paths = 2;
+  string commit = 3;
+}
+```
+
+### message `PrewarmProgress`
+
+```proto
+message PrewarmProgress {
+  uint64 blobs_fetched = 1;
+  uint64 blobs_total = 2;
+  bool done = 3;
+}
+```
+
 ### service `Repositories`
 
 ```proto
@@ -492,6 +512,7 @@ service Repositories {
   rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
+  rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
 }
 ```
 

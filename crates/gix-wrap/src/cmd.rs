@@ -117,6 +117,69 @@ pub async fn run_with_env(args: &[&str], cwd: &Path, env_pairs: &[(&str, &str)])
     Ok(Output { stdout, stderr })
 }
 
+/// Run `git <args>` feeding `stdin_data` on the subprocess stdin.
+///
+/// Same capture + non-zero-exit semantics as [`run`], but the child's
+/// stdin is a pipe the helper writes `stdin_data` into (then closes) so
+/// commands that read a newline-delimited object list off stdin —
+/// `git cat-file --batch-check` for the Task 304 prewarm path — don't
+/// blow the argv length limit on a large cone.
+pub async fn run_with_stdin(args: &[&str], cwd: &Path, stdin_data: &str) -> Result<Output> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = cmd.spawn().map_err(|e| {
+        Error::Git(format!(
+            "git {}: failed to spawn: {e}",
+            args.first().copied().unwrap_or("<empty>")
+        ))
+    })?;
+
+    // Write the payload and close stdin so the child sees EOF. Take the
+    // handle out so it drops (closing the pipe) before we await output.
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(stdin_data.as_bytes())
+            .await
+            .map_err(|e| Error::Git(format!("git {}: stdin write: {e}", args[0])))?;
+        // Explicit drop closes the pipe → child reads EOF.
+        drop(stdin);
+    }
+
+    let output = child.wait_with_output().await.map_err(|e| {
+        Error::Git(format!(
+            "git {}: wait: {e}",
+            args.first().copied().unwrap_or("<empty>")
+        ))
+    })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    if !output.status.success() {
+        return Err(Error::Git(format!(
+            "git {}: exit {}: {}",
+            args.first().copied().unwrap_or("<empty>"),
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<signal>".to_string()),
+            stderr.trim()
+        )));
+    }
+
+    Ok(Output { stdout, stderr })
+}
+
 /// Run `git <args>` with stderr streamed line-by-line to `progress_tx`.
 ///
 /// Returns an [`Output`] whose `stderr` is the concatenation of every

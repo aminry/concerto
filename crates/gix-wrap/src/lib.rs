@@ -51,8 +51,13 @@
 //! - [`sparse::is_cone_mode`] / [`sparse::force_cone_mode`] — the `design/02
 //!   §8` non-cone-force path.
 //!
-//! Idle blob prewarm remains Task 304; cone-level size telemetry remains
-//! Task 305.
+//! Task 304 adds the idle blob prewarm primitive; signature frozen:
+//!
+//! - [`api::prewarm_blobs_in_cone`] — cancellable in-cone blob
+//!   materialization for a blobless clone (`ls-tree` → chunked
+//!   `cat-file --batch-check`), emitting [`api::PrewarmProgressEvent`].
+//!
+//! Cone-level size telemetry remains Task 305.
 
 pub mod api;
 pub mod cmd;
@@ -62,9 +67,10 @@ pub mod status;
 
 pub use api::{
     apply_perf_config, clone_full, clone_with_strategy, commit_index, estimate_repo_size, fetch,
-    hard_reset, is_fsmonitor_alive, list_branches, ref_exists, register_maintenance,
-    rev_parse_head, start_fsmonitor, stop_fsmonitor, update_ref, worktree_add, BranchRef,
-    CloneProgressEvent, CloneStrategy, FetchReport, ProgressSink, SizeReport,
+    hard_reset, is_fsmonitor_alive, list_branches, prewarm_blobs_in_cone, ref_exists,
+    register_maintenance, rev_parse_head, start_fsmonitor, stop_fsmonitor, update_ref,
+    worktree_add, BranchRef, CloneProgressEvent, CloneStrategy, FetchReport, PrewarmProgressEvent,
+    ProgressSink, SizeReport,
 };
 // Task 302 sparse lifecycle surface.
 pub use sparse::{

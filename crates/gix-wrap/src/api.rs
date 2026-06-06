@@ -387,6 +387,136 @@ pub async fn estimate_repo_size(url: &str) -> Result<SizeReport> {
     })
 }
 
+/// Progress of an in-flight [`prewarm_blobs_in_cone`] materialization.
+///
+/// Mirrors the on-wire `concerto.v1.PrewarmProgress` shape (Task 304 lock,
+/// `PHASE3_PLANNING §4.6`): `blobs_fetched` / `blobs_total` are object
+/// counts, `done` is set on the terminal event. The Rust struct is the
+/// single source the Core's `RepoManager` re-shapes onto the gRPC stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrewarmProgressEvent {
+    /// Blobs materialized so far (cumulative across cone chunks).
+    pub blobs_fetched: u64,
+    /// Total in-cone blob OIDs discovered at `commit`.
+    pub blobs_total: u64,
+    /// True on the terminal event after the last chunk is materialized
+    /// (or after a clean cancellation).
+    pub done: bool,
+}
+
+/// Materialize the blobs reachable in `cone_paths` at `commit` for a
+/// blobless clone at `repo_dir` (Task 304, `design/02 §3.3`/`§5.1`).
+///
+/// A blobless clone (`--filter=blob:none`, Task 301) leaves blob objects
+/// *lazy* — present as promised-but-absent entries that git fetches
+/// on-demand the first time something reads them. This helper does that
+/// fetch ahead of agent need, scoped to the in-cone tree:
+///
+/// 1. `git ls-tree -r <commit> -- <cone_paths>` enumerates the blob OIDs
+///    reachable under the cone (empty `cone_paths` = the whole tree).
+/// 2. The OIDs are fed in bounded chunks to `git cat-file --batch-check`,
+///    which forces git's partial-clone machinery to fetch any missing
+///    blob from `origin`. `--batch-check` reads each object's header
+///    (which requires the object to be present), so a missing blob is
+///    transparently materialized without writing its content to stdout.
+///
+/// **Cancellable.** `should_cancel` is polled before every chunk; when it
+/// returns `true` the materialization stops promptly (between chunks, so
+/// at most one in-flight `cat-file` batch outlives the signal) and the
+/// call returns `Ok(blobs_fetched_so_far)` with the terminal `done`
+/// progress event already emitted. This is the `§6.3` "cancellable if
+/// user activity resumes" contract — the scheduler wires `should_cancel`
+/// to its `CancellationToken`.
+///
+/// `progress`, when supplied, receives a [`PrewarmProgressEvent`] after
+/// every chunk plus a terminal `done` event. Sends are best-effort
+/// (`try_send`) so a slow consumer never blocks the fetch.
+///
+/// Errors (a corrupt repo, an unreachable `origin`) surface as
+/// [`Error::Git`]; the scheduler treats a single repo's failure as
+/// non-fatal and moves on to the next.
+pub async fn prewarm_blobs_in_cone<C>(
+    repo_dir: &Path,
+    commit: &str,
+    cone_paths: &[String],
+    should_cancel: C,
+    progress: Option<mpsc::Sender<PrewarmProgressEvent>>,
+) -> Result<u64>
+where
+    C: Fn() -> bool + Send + Sync,
+{
+    // How many OIDs to hand a single `cat-file --batch-check` invocation.
+    // Bounds per-chunk memory + keeps the cancellation check frequent.
+    const CHUNK: usize = 256;
+
+    // 1. Enumerate in-cone blob OIDs at `commit`. `ls-tree -r` recurses;
+    // restricting with `-- <paths>` scopes to the cone (no paths = whole
+    // tree). `--format` keeps only the object name + type so we can filter
+    // to blobs without parsing the columnar default output.
+    let mut args: Vec<&str> = vec![
+        "ls-tree",
+        "-r",
+        "--format=%(objecttype) %(objectname)",
+        commit,
+    ];
+    if !cone_paths.is_empty() {
+        args.push("--");
+        for p in cone_paths {
+            args.push(p.as_str());
+        }
+    }
+    let listing = cmd::run(&args, repo_dir).await?;
+    let oids: Vec<String> = listing
+        .stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("blob "))
+        .map(|oid| oid.trim().to_string())
+        .collect();
+
+    let blobs_total = oids.len() as u64;
+    let mut blobs_fetched: u64 = 0;
+
+    let emit = |fetched: u64, done: bool| {
+        if let Some(sink) = &progress {
+            let _ = sink.try_send(PrewarmProgressEvent {
+                blobs_fetched: fetched,
+                blobs_total,
+                done,
+            });
+        }
+    };
+
+    // Nothing to do (e.g. an empty cone, or a tree with no blobs) — emit
+    // the terminal event and return.
+    if oids.is_empty() {
+        emit(0, true);
+        return Ok(0);
+    }
+
+    // 2. Force-materialize in bounded chunks, checking cancellation first.
+    for chunk in oids.chunks(CHUNK) {
+        if should_cancel() {
+            // Prompt cancellation: stop between chunks and emit terminal.
+            emit(blobs_fetched, true);
+            return Ok(blobs_fetched);
+        }
+        // `cat-file --batch-check` reads each object's header, which in a
+        // partial clone fetches a missing blob from origin. Feeding the
+        // OIDs on stdin avoids an argv-length blow-up on large cones.
+        let stdin = chunk
+            .iter()
+            .map(|o| o.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        cmd::run_with_stdin(&["cat-file", "--batch-check"], repo_dir, &stdin).await?;
+        blobs_fetched += chunk.len() as u64;
+        emit(blobs_fetched, false);
+    }
+
+    emit(blobs_fetched, true);
+    Ok(blobs_fetched)
+}
+
 /// Incremental fetch on an existing repo at `repo_dir`.
 ///
 /// Wraps `git fetch --all --prune`. V0.1 always uses shell-out per

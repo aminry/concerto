@@ -20,6 +20,12 @@
 // `SetCones(SetConesRequest) → SetConesResponse` RPC after `EstimateRepoSize`
 // (cone-mode + sparse-index always). All existing RPCs + field numbers are
 // unchanged.
+//
+// Task 304 (V1.0, design/02 §3.3/§5.2) appends the idle blob prewarm RPC
+// `PrewarmBlobs(PrewarmRequest) → stream PrewarmProgress` after `SetCones`.
+// `PrewarmProgress` is FROZEN by PHASE3_PLANNING §4.6. All existing RPCs +
+// field numbers are unchanged. (Task 305 owns the sibling
+// `EstimateConeSize`/`ConeStats` shapes; the two tasks do not collide.)
 
 syntax = "proto3";
 
@@ -145,10 +151,35 @@ message SetConesResponse {
   repeated string cone_paths = 1;
 }
 
+// Inputs for `Repositories.PrewarmBlobs` (Task 304, design/02 §3.3/§5.2).
+// Materializes the lazy blobs of a blobless clone (Task 301) that are
+// reachable in `cone_paths` at `commit`, ahead of agent need. `cone_paths`
+// are forward-slash, repo-root-relative directory paths; an empty list
+// prewarms the whole tree at `commit`. The Repo Manager serializes the
+// prewarm fetch behind the existing per-repo write lock and the global
+// 2-concurrent prewarm semaphore.
+message PrewarmRequest {
+  string repository_id = 1;
+  repeated string cone_paths = 2;
+  string commit = 3;
+}
+
+// Streaming progress for `Repositories.PrewarmBlobs` (Task 304). FROZEN by
+// PHASE3_PLANNING §4.6:
+//   - `blobs_fetched` — cumulative in-cone blobs materialized so far.
+//   - `blobs_total` — total in-cone blob OIDs discovered at `commit`.
+//   - `done` — true on the terminal message (clean finish OR cancellation).
+message PrewarmProgress {
+  uint64 blobs_fetched = 1;
+  uint64 blobs_total = 2;
+  bool done = 3;
+}
+
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
   rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
+  rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
 }

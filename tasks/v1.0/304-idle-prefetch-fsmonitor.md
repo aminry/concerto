@@ -75,16 +75,16 @@ Tier 1. The `rust` §5.3 set.
 **Tier-1 scope + what it does NOT cover.** With injected signals, the **scheduler logic** (enqueue, rate-limit, cancel, skip-on-battery/metered, the eager triggers) is fully CI-provable. CI does **not** cover **real AC/Wi-Fi/idle/bandwidth behavior** (no power state or metered network in CI) — that is the Phase-3 Tier-3 confidence item (and the real idle-heartbeat wiring is a documented follow-on). The verification states the injected double drives every branch; the real-machine behavior is the operator's confirmation.
 
 ## Definition of Done
-- [ ] `prewarm_blobs → PrewarmHandle` (cancellable) materializes in-cone blobs via shell-out fetch
-- [ ] Idle scheduler loop (mirrors `spawn_supervisor`) gated on injected idle/power/net closures; global-2-concurrent + per-repo bandwidth cap; cancels on activity
-- [ ] Eager triggers (worktree-create + HEAD-update, default ON) wired fully; `repo.prefetch_started/finished` emitted
-- [ ] fsmonitor supervision unchanged (reused structure only); `register_maintenance` reused for the weekly schedule
-- [ ] `PrewarmBlobs` RPC + `PrewarmProgress` (fields exactly `blobs_fetched=1`/`blobs_total=2`/`done=3`) appended; streaming mirrors `Clone`
-- [ ] Injected-signal seam FROZEN; real heartbeat/power/metered detection documented as a bounded follow-on (Handoff)
-- [ ] All Verification commands pass on a clean checkout; smoke unchanged; interfaces regenerated
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code (deliberate seams in Handoff)
-- [ ] No files outside Outputs modified
-- [ ] Single commit with the message below
+- [x] `prewarm_blobs → PrewarmHandle` (cancellable) materializes in-cone blobs via shell-out fetch
+- [x] Idle scheduler loop (mirrors `spawn_supervisor`) gated on injected idle/power/net closures; global-2-concurrent + per-repo bandwidth cap; cancels on activity
+- [x] Eager triggers (worktree-create + HEAD-update, default ON) wired fully; `repo.prefetch_started/finished` emitted
+- [x] fsmonitor supervision unchanged (reused structure only); `register_maintenance` reused for the weekly schedule
+- [x] `PrewarmBlobs` RPC + `PrewarmProgress` (fields exactly `blobs_fetched=1`/`blobs_total=2`/`done=3`) appended; streaming mirrors `Clone`
+- [x] Injected-signal seam FROZEN; real heartbeat/power/metered detection documented as a bounded follow-on (Handoff)
+- [x] All Verification commands pass on a clean checkout; smoke unchanged; interfaces regenerated
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code (deliberate seams in Handoff)
+- [x] No files outside Outputs modified
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/core/src/repo_manager/prefetch.rs` (new — idle scheduler + `prewarm_blobs` + `PrewarmHandle` + injected-signal seam) + `crates/core/src/repo_manager/mod.rs` (modified — `pub mod prefetch`)
@@ -112,4 +112,7 @@ Refs: tasks/v1.0/304-idle-prefetch-fsmonitor.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state —
+- **Drift from plan:** (1) The targeted-fetch primitive landed as `gix-wrap::api::prewarm_blobs_in_cone` (cancellable `ls-tree` → chunked `cat-file --batch-check`, materializing lazy blobs of a blobless clone) — placing it in `api.rs` keeps the `regen-interfaces.sh` `rust-api.md` summary meaningful (the regen only scrapes `crates/*/src/api.rs`, never the `repo_manager` module, so `prewarm_blobs`/`PrewarmHandle` themselves do **not** appear in `rust-api.md`; the `PrewarmProgressEvent` struct does). (2) That helper needed a new `gix-wrap::cmd::run_with_stdin` (feeds the OID list on stdin to dodge argv limits) and a `lib.rs` re-export — two files beyond the listed `crates/gix-wrap/src/api.rs`; mechanical companions of the api.rs change, added to keep the seam clean. (3) `crates/core/src/repo_manager/fsmonitor.rs` was **not** modified: the worktree-create + HEAD-update eager triggers are methods on `RepoManager` (`prewarm_on_worktree_create` / `prewarm_on_head_update` in `actor.rs`) rather than hooks into `bring_up_after_clone`, so the daemon-supervision module stays byte-identical (the Outputs note allowed this — "modified only if … hooks bring_up_after_clone"). (4) `repo.prefetch_started/finished` are emitted as `tracing` audit-lines (same shape Task 301/28 used for `repo.size_warning`/`repo.fsmonitor_restarted`) because no repo-event broadcast subject is wired through the streams handler yet — the Tray-rendered broadcast is a Phase-3 follow-on shared with those prior tasks.
+- **Open questions for next task:** Task 305 appends `EstimateConeSize`/`ConeStats` to the same `repositories.proto` + `Repositories` service — no collision (304 owns `PrewarmBlobs`/`PrewarmRequest`/`PrewarmProgress`; 305 owns the cone-size shapes) but 305 will rebase onto this proto. The background scheduler's per-repo prewarm scope is currently the whole tracked tree (empty cone) at HEAD; once 305's cone telemetry + 302's per-workarea cone *union* are available, `run_prewarm_pass` should walk the union of a repo's workarea cones rather than the whole tree — left as a consuming follow-on.
+- **Deliberate debt:** (a) **Real idle/power/net signals are the conservative `never_prewarm` bundle** (`prefetch::signals::host_signals()` returns it; `boot.rs` injects it). The injected-closure seam (`IdleSignal`/`PowerSignal`/`NetSignal` + `PrewarmSignals`) is FROZEN and fully CI-proven via deterministic mocks (idle/active/battery/metered/below-threshold branches), but the **real Local-API client-heartbeat idle source** (`design/02 §6.3`) and the **macOS power (`pmset`) / net (`SCNetworkReachability`) probes** are a small documented follow-on — until they land, the *background* scheduler is inert by design (off-by-default, honest). The eager worktree-create + HEAD-update triggers do **not** depend on these signals and ship fully (fire unconditionally for blobless repos). No closing task number assigned (it is the heartbeat-wiring follow-on the README/PHASE3_PLANNING §2 anticipates, not a numbered Phase-3 task). (b) The **per-repo bandwidth cap** is a counting seam (`BandwidthLimiter::acquire` is always consulted on the prewarm path; tests assert the consult count) — the real token-bucket throttle needs the byte-counting fetch wiring and is the same follow-on. (c) `read_prefetch_cursor` is `#[cfg_attr(not(test), allow(dead_code))]` — exercised by the round-trip test today; the HEAD-update trigger's "skip if cursor already == new HEAD" optimization that will consume it in production is left for the follow-on (not needed for correctness).
+- **Smoke-gate state:** unchanged. 304 touches no smoke capability (302 owns the `sparse-cone-clone` gate); `scripts/smoke.sh` not run (smoke field = unchanged).
