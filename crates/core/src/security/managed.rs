@@ -73,6 +73,26 @@
 //! — that's a deliberate forward-compatibility tripwire so a v2 policy file
 //! isn't silently mis-enforced by an older Core binary.
 //!
+//! ## V1.0 project-layer managed fields (Task 310, D9(b))
+//!
+//! **Design amendment (one line, `design/12 §3.8` + `PHASE3_PLANNING D9(b)`):**
+//! `managed.json` canonicalizes on **camelCase**. Every key the V0.1/Task-211
+//! schema shipped in snake_case (`allow_yolo`,
+//! `allow_bypass_destructive_guard`, `max_permission_mode`,
+//! `preamble_template_path`, `max_reasoning_level`) now parses from its
+//! camelCase spelling AND keeps a `#[serde(alias = "<snake_case>")]` so every
+//! already-deployed file (and all of Task 211's snake-case test fixtures)
+//! still parses unchanged. `disable_remote` stays readable in snake_case per
+//! `design/11 §6.4` (it is the documented LAN-only key) while also accepting
+//! the camelCase `disableRemote`.
+//!
+//! Task 310 also adds the project-layer managed fields the three-layer
+//! [`crate::settings::ProjectSettingsResolver`] caps on top of:
+//! `defaultPermissionMode`, `enterpriseDataPrivacy`, `defaultModel`, and the
+//! three agent-executable paths (`claudeExecutablePath` /
+//! `codexExecutablePath` / `geminiExecutablePath`). They are parsed + exposed
+//! as predicates here; the resolver consults them as its top (managed) layer.
+//!
 //! ## Hot reload (Task 42)
 //!
 //! [`ManagedPolicySource`] wraps a `tokio::sync::watch::Sender<ManagedPolicy>`
@@ -175,6 +195,36 @@ pub struct ManagedPolicy {
     /// later allow-list task. Read via [`Self::deny_filesystem_paths`].
     /// Default `[]`.
     pub deny_filesystem_paths: Vec<String>,
+
+    // ---- V1.0 project-layer managed fields (Task 310, D9(b)) ----
+    /// Org-pinned project default permission mode (`design/12 §3.8`
+    /// `defaultPermissionMode`). The settings resolver reports this as the
+    /// managed-layer value for the `default_permission_mode` field. `None` =
+    /// no org default (fall through to checked-in / local DB / global).
+    /// **Boundary:** the live permission *decision* path
+    /// ([`crate::security::resolve_effective_mode`]) caps on
+    /// [`Self::max_permission_mode`], NOT on this — this is the project-default
+    /// provenance the Settings UI renders. Read via
+    /// [`Self::default_permission_mode`].
+    pub default_permission_mode: Option<PermissionMode>,
+    /// Org-forced enterprise-data-privacy gate (`design/12 §3.8`
+    /// `enterpriseDataPrivacy`). When `Some(true)` the resolver reports
+    /// `enterprise_data_privacy = true` from the managed layer (Task 413
+    /// reads it to disable external summaries). `None` = no org override.
+    /// Read via [`Self::enterprise_data_privacy`].
+    pub enterprise_data_privacy: Option<bool>,
+    /// Org-pinned default LLM model (`design/12 §3.8` `defaultModel`).
+    /// Opaque string. Read via [`Self::default_model`]. `None` = no override.
+    pub default_model: Option<String>,
+    /// Org-pinned Claude CLI executable path (`design/12 §3.8`
+    /// `claudeExecutablePath`). Read via [`Self::claude_executable_path`].
+    pub claude_executable_path: Option<PathBuf>,
+    /// Org-pinned Codex CLI executable path (`design/12 §3.8`
+    /// `codexExecutablePath`). Read via [`Self::codex_executable_path`].
+    pub codex_executable_path: Option<PathBuf>,
+    /// Org-pinned Gemini CLI executable path (`design/12 §3.8`
+    /// `geminiExecutablePath`). Read via [`Self::gemini_executable_path`].
+    pub gemini_executable_path: Option<PathBuf>,
 }
 
 impl Default for ManagedPolicy {
@@ -192,6 +242,12 @@ impl Default for ManagedPolicy {
             relay_url: None,
             audit_forward_endpoint: None,
             deny_filesystem_paths: Vec::new(),
+            default_permission_mode: None,
+            enterprise_data_privacy: None,
+            default_model: None,
+            claude_executable_path: None,
+            codex_executable_path: None,
+            gemini_executable_path: None,
         }
     }
 }
@@ -262,6 +318,49 @@ impl ManagedPolicy {
     pub fn deny_filesystem_paths(&self) -> &[String] {
         &self.deny_filesystem_paths
     }
+
+    /// The org-pinned project default permission mode, if any (`design/12
+    /// §3.8` `defaultPermissionMode`, Task 310).
+    ///
+    /// **Boundary note:** this is the *project-default* managed-layer value
+    /// the [`crate::settings::ProjectSettingsResolver`] reports for the
+    /// `default_permission_mode` field + its source. The live permission
+    /// *decision* still flows through
+    /// [`crate::security::resolve_effective_mode`], which caps on
+    /// [`Self::max_permission_mode`] (a ceiling, not this default).
+    pub fn default_permission_mode(&self) -> Option<PermissionMode> {
+        self.default_permission_mode
+    }
+
+    /// The org-forced enterprise-data-privacy gate, if any (`design/12 §3.8`
+    /// `enterpriseDataPrivacy`, Task 310). Task 413 reads the resolved value.
+    pub fn enterprise_data_privacy(&self) -> Option<bool> {
+        self.enterprise_data_privacy
+    }
+
+    /// The org-pinned default LLM model, if any (`design/12 §3.8`
+    /// `defaultModel`, Task 310).
+    pub fn default_model(&self) -> Option<&str> {
+        self.default_model.as_deref()
+    }
+
+    /// The org-pinned Claude CLI executable path, if any (`design/12 §3.8`,
+    /// Task 310).
+    pub fn claude_executable_path(&self) -> Option<&Path> {
+        self.claude_executable_path.as_deref()
+    }
+
+    /// The org-pinned Codex CLI executable path, if any (`design/12 §3.8`,
+    /// Task 310).
+    pub fn codex_executable_path(&self) -> Option<&Path> {
+        self.codex_executable_path.as_deref()
+    }
+
+    /// The org-pinned Gemini CLI executable path, if any (`design/12 §3.8`,
+    /// Task 310).
+    pub fn gemini_executable_path(&self) -> Option<&Path> {
+        self.gemini_executable_path.as_deref()
+    }
 }
 
 /// On-disk schema for V0.1. Each field is optional so partial files
@@ -269,27 +368,44 @@ impl ManagedPolicy {
 /// optional for forward compatibility with the pre-Task-42 schema; an
 /// explicit higher value is rejected by [`load_managed_policy`].
 ///
-/// V1.0 security/pairing/remote fields use `#[serde(rename = "…")]` to
-/// pin the on-disk key spelling FROZEN per `design/12 §3.8`
-/// (camelCase) + `design/11 §6.4` (`disable_remote` is snake_case). The
-/// types are deliberately loose (`serde_json::Value` for the array/number
-/// fields that need per-field validation) so a single bad field reverts
-/// to its default + audits a `ManagedSettingsViolation` instead of
-/// failing the whole parse.
+/// **D9(b) camelCase canonicalization (Task 310, `design/12 §3.8`).**
+/// camelCase is the canonical on-disk spelling. Every key Task 32/42/211
+/// shipped in snake_case (`max_permission_mode`, `allow_yolo`,
+/// `allow_bypass_destructive_guard`, `preamble_template_path`,
+/// `max_reasoning_level`) keeps a `#[serde(alias = "<snake_case>")]` so
+/// already-deployed files (and Task 211's snake-case test fixtures) still
+/// parse unchanged. `disable_remote` keeps its snake_case canonical
+/// spelling (`design/11 §6.4`) while also accepting `disableRemote`.
+///
+/// The V1.0 security/pairing/remote + project-layer fields use
+/// `#[serde(rename = "…")]` to pin the camelCase key FROZEN per `design/12
+/// §3.8`. The types are deliberately loose (`serde_json::Value` for the
+/// array/number/string fields that need per-field validation) so a single
+/// bad field reverts to its default + audits a `ManagedSettingsViolation`
+/// instead of failing the whole parse.
 #[derive(Debug, Default, Deserialize)]
 struct ManagedFile {
     #[serde(default)]
     version: Option<u32>,
+    #[serde(rename = "maxPermissionMode", alias = "max_permission_mode")]
     max_permission_mode: Option<String>,
+    #[serde(rename = "allowYolo", alias = "allow_yolo")]
     allow_yolo: Option<bool>,
+    #[serde(
+        rename = "allowBypassDestructiveGuard",
+        alias = "allow_bypass_destructive_guard"
+    )]
     allow_bypass_destructive_guard: Option<bool>,
+    #[serde(rename = "preambleTemplatePath", alias = "preamble_template_path")]
     preamble_template_path: Option<PathBuf>,
+    #[serde(rename = "maxReasoningLevel", alias = "max_reasoning_level")]
     max_reasoning_level: Option<String>,
 
     // ---- V1.0 security/pairing/remote fields (Task 211) ----
-    // `disable_remote` is snake_case (design/11 §6.4); the rest are
-    // camelCase (design/12 §3.8). FROZEN spellings.
-    #[serde(default)]
+    // `disable_remote` keeps its snake_case canonical spelling
+    // (design/11 §6.4) + a camelCase alias; the rest are camelCase
+    // (design/12 §3.8). FROZEN spellings.
+    #[serde(rename = "disable_remote", alias = "disableRemote", default)]
     disable_remote: Option<serde_json::Value>,
     #[serde(rename = "allowedPairingDevices", default)]
     allowed_pairing_devices: Option<serde_json::Value>,
@@ -301,6 +417,21 @@ struct ManagedFile {
     audit_forward_endpoint: Option<serde_json::Value>,
     #[serde(rename = "denyFilesystemPaths", default)]
     deny_filesystem_paths: Option<serde_json::Value>,
+
+    // ---- V1.0 project-layer managed fields (Task 310, D9(b)) ----
+    // camelCase canonical (design/12 §3.8). FROZEN spellings.
+    #[serde(rename = "defaultPermissionMode", default)]
+    default_permission_mode: Option<String>,
+    #[serde(rename = "enterpriseDataPrivacy", default)]
+    enterprise_data_privacy: Option<serde_json::Value>,
+    #[serde(rename = "defaultModel", default)]
+    default_model: Option<serde_json::Value>,
+    #[serde(rename = "claudeExecutablePath", default)]
+    claude_executable_path: Option<serde_json::Value>,
+    #[serde(rename = "codexExecutablePath", default)]
+    codex_executable_path: Option<serde_json::Value>,
+    #[serde(rename = "geminiExecutablePath", default)]
+    gemini_executable_path: Option<serde_json::Value>,
 }
 
 /// The result of parsing `managed.json` with per-field validation
@@ -516,6 +647,54 @@ fn parse_managed_policy_load_at(path: &Path) -> Result<ManagedPolicyLoad> {
     )
     .unwrap_or_default();
 
+    // ---- V1.0 project-layer managed fields (Task 310) ----
+    let default_permission_mode = match parsed.default_permission_mode.as_deref() {
+        None => None,
+        Some(s) => match crate::security::permission::parse_permission_mode(s) {
+            Ok(m) => Some(m),
+            Err(_) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    value = %s,
+                    "managed.json defaultPermissionMode is not strict|normal|auto|yolo; ignoring"
+                );
+                violations.push(format!(
+                    "defaultPermissionMode '{s}' is not strict|normal|auto|yolo; reverted to default"
+                ));
+                None
+            }
+        },
+    };
+    let enterprise_data_privacy = validate_opt_bool(
+        path,
+        "enterpriseDataPrivacy",
+        parsed.enterprise_data_privacy,
+        &mut violations,
+    );
+    let default_model =
+        validate_opt_string(path, "defaultModel", parsed.default_model, &mut violations);
+    let claude_executable_path = validate_opt_string(
+        path,
+        "claudeExecutablePath",
+        parsed.claude_executable_path,
+        &mut violations,
+    )
+    .map(PathBuf::from);
+    let codex_executable_path = validate_opt_string(
+        path,
+        "codexExecutablePath",
+        parsed.codex_executable_path,
+        &mut violations,
+    )
+    .map(PathBuf::from);
+    let gemini_executable_path = validate_opt_string(
+        path,
+        "geminiExecutablePath",
+        parsed.gemini_executable_path,
+        &mut violations,
+    )
+    .map(PathBuf::from);
+
     let policy = ManagedPolicy {
         version,
         max_permission_mode,
@@ -529,6 +708,12 @@ fn parse_managed_policy_load_at(path: &Path) -> Result<ManagedPolicyLoad> {
         relay_url,
         audit_forward_endpoint,
         deny_filesystem_paths,
+        default_permission_mode,
+        enterprise_data_privacy,
+        default_model,
+        claude_executable_path,
+        codex_executable_path,
+        gemini_executable_path,
     };
     Ok(ManagedPolicyLoad { policy, violations })
 }
@@ -557,6 +742,33 @@ fn validate_bool(
                 json_type_name(&other)
             ));
             default
+        }
+    }
+}
+
+/// Validate a JSON value expected to be a bool, preserving the
+/// "absent → no override" distinction (Task 310). Absent/`null` → `None`;
+/// a bool → `Some(b)`; a non-bool → `None` + a violation.
+fn validate_opt_bool(
+    path: &Path,
+    field: &str,
+    value: Option<serde_json::Value>,
+    violations: &mut Vec<String>,
+) -> Option<bool> {
+    match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Bool(b)) => Some(b),
+        Some(other) => {
+            tracing::warn!(
+                path = %path.display(),
+                field,
+                "managed.json field is not a boolean; reverting to default"
+            );
+            violations.push(format!(
+                "{field} must be a boolean, got {}; reverted to default",
+                json_type_name(&other)
+            ));
+            None
         }
     }
 }
@@ -1186,6 +1398,117 @@ mod tests {
         let p = load_managed_policy(d.path()).unwrap();
         assert_eq!(p.max_paired_devices(), None);
         assert!(p.remote_disabled());
+    }
+
+    // ---- Task 310: D9(b) camelCase canonicalization + project-layer fields ----
+
+    #[test]
+    fn snake_case_aliases_still_parse() {
+        // 211 shipped these in snake_case; the D9(b) aliases keep them parsing.
+        let (_d, load) = write_policy(
+            r#"{
+                "max_permission_mode": "auto",
+                "allow_yolo": false,
+                "allow_bypass_destructive_guard": false,
+                "preamble_template_path": "/etc/preamble.md",
+                "max_reasoning_level": "high"
+            }"#,
+        );
+        assert_eq!(load.violations, Vec::<String>::new());
+        let p = load.policy;
+        assert_eq!(p.max_permission_mode, Some(PermissionMode::Auto));
+        assert!(!p.allow_yolo);
+        assert!(!p.allow_bypass_destructive_guard);
+        assert_eq!(
+            p.preamble_template_path,
+            Some(PathBuf::from("/etc/preamble.md"))
+        );
+        assert_eq!(p.max_reasoning_level.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn camel_case_canonical_spelling_parses() {
+        // The canonical camelCase spelling parses identically to the snake alias.
+        let (_d, load) = write_policy(
+            r#"{
+                "maxPermissionMode": "auto",
+                "allowYolo": false,
+                "allowBypassDestructiveGuard": false,
+                "preambleTemplatePath": "/etc/preamble.md",
+                "maxReasoningLevel": "high"
+            }"#,
+        );
+        assert_eq!(load.violations, Vec::<String>::new());
+        let p = load.policy;
+        assert_eq!(p.max_permission_mode, Some(PermissionMode::Auto));
+        assert!(!p.allow_yolo);
+        assert!(!p.allow_bypass_destructive_guard);
+        assert_eq!(p.max_reasoning_level.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn disable_remote_camel_alias_parses() {
+        let (_d, load) = write_policy(r#"{"disableRemote": true}"#);
+        assert!(load.policy.remote_disabled());
+    }
+
+    #[test]
+    fn project_layer_managed_fields_parse() {
+        let (_d, load) = write_policy(
+            r#"{
+                "version": 1,
+                "defaultPermissionMode": "strict",
+                "enterpriseDataPrivacy": true,
+                "defaultModel": "claude-4.7-sonnet",
+                "claudeExecutablePath": "/opt/anthropic/bin/claude",
+                "codexExecutablePath": "/opt/openai/bin/codex",
+                "geminiExecutablePath": "/opt/google/bin/gemini"
+            }"#,
+        );
+        assert_eq!(load.violations, Vec::<String>::new());
+        let p = load.policy;
+        assert_eq!(p.default_permission_mode(), Some(PermissionMode::Strict));
+        assert_eq!(p.enterprise_data_privacy(), Some(true));
+        assert_eq!(p.default_model(), Some("claude-4.7-sonnet"));
+        assert_eq!(
+            p.claude_executable_path(),
+            Some(Path::new("/opt/anthropic/bin/claude"))
+        );
+        assert_eq!(
+            p.codex_executable_path(),
+            Some(Path::new("/opt/openai/bin/codex"))
+        );
+        assert_eq!(
+            p.gemini_executable_path(),
+            Some(Path::new("/opt/google/bin/gemini"))
+        );
+    }
+
+    #[test]
+    fn project_layer_managed_fields_default_when_absent() {
+        let (_d, load) = write_policy(r#"{"version": 1}"#);
+        let p = load.policy;
+        assert_eq!(p.default_permission_mode(), None);
+        assert_eq!(p.enterprise_data_privacy(), None);
+        assert_eq!(p.default_model(), None);
+        assert_eq!(p.claude_executable_path(), None);
+    }
+
+    #[test]
+    fn invalid_enterprise_data_privacy_reverts_and_violates() {
+        let (_d, load) = write_policy(r#"{"enterpriseDataPrivacy": "yes", "defaultModel": "ok"}"#);
+        assert_eq!(load.policy.enterprise_data_privacy(), None);
+        assert_eq!(load.policy.default_model(), Some("ok"));
+        assert_eq!(load.violations.len(), 1);
+        assert!(load.violations[0].contains("enterpriseDataPrivacy"));
+    }
+
+    #[test]
+    fn invalid_default_permission_mode_reverts_and_violates() {
+        let (_d, load) = write_policy(r#"{"defaultPermissionMode": "ludicrous"}"#);
+        assert_eq!(load.policy.default_permission_mode(), None);
+        assert_eq!(load.violations.len(), 1);
+        assert!(load.violations[0].contains("defaultPermissionMode"));
     }
 
     #[test]

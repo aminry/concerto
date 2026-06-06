@@ -205,14 +205,22 @@ path-clean = "1"
 # input note — `blake2` ends up a single workspace pin either way).
 blake2 = "0.10"
 # Task 42: cross-platform filesystem notifications for the managed.json
-# hot-reload watcher in `crates/core/src/security/managed.rs`. Pinned to
-# notify 8 (current stable; v9 is still RC at this writing). CC0-1.0
-# itself — a public-domain dedication, functionally permissive and
-# compatible with the design/00 §6.11 "permissive-only" posture; the
-# license is added to `deny.toml` with a justification. The watcher
-# debounces events at 500ms and broadcasts the parsed
-# [`ManagedPolicy`] via a `tokio::sync::watch::Sender`.
-notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+# hot-reload watcher in `crates/core/src/security/managed.rs` (and, since
+# Task 310, the checked-in `project_settings.json` watcher in
+# `crates/core/src/settings/`). Pinned to notify 8 (current stable; v9 is
+# still RC at this writing). CC0-1.0 itself — a public-domain dedication,
+# functionally permissive and compatible with the design/00 §6.11
+# "permissive-only" posture; the license is added to `deny.toml` with a
+# justification. The watcher debounces events at 500ms and broadcasts the
+# parsed value via a `tokio::sync::watch::Sender`.
+#
+# Task 310: the feature set is a `[target.*]` split (see below the
+# `[workspace.dependencies]` table) so the Windows/Linux Core CI lanes
+# (Task 113) get the right backend — `macos_fsevent` on macOS, the portable
+# default backends (ReadDirectoryChangesW on Windows, inotify on Linux) on
+# the other two lanes. The base entry carries no features; the per-target
+# entries add them.
+notify = { version = "8", default-features = false }
 # Task 111: `concerto backup` streams the worktree directory tree into
 # `<out>/worktrees.tar`. `tar` is the pure-Rust, fully cross-platform archive
 # writer from the rust-lang org — it compiles on the Windows CI lane (no

@@ -64,7 +64,7 @@ pub async fn get(pool: &SqlitePool, id: &RepositoryId) -> Result<Option<Reposito
     let row = sqlx::query(
         "SELECT id, project_id, name, url, local_path,
                 clone_strategy, default_branch, cone_defaults_json,
-                last_fetch_at, fs_monitor_pid
+                action_prefs_json, last_fetch_at, fs_monitor_pid
          FROM repositories WHERE id = ?",
     )
     .bind(&id.0)
@@ -80,7 +80,7 @@ pub async fn list_by_project(pool: &SqlitePool, project_id: &str) -> Result<Vec<
     let rows = sqlx::query(
         "SELECT id, project_id, name, url, local_path,
                 clone_strategy, default_branch, cone_defaults_json,
-                last_fetch_at, fs_monitor_pid
+                action_prefs_json, last_fetch_at, fs_monitor_pid
          FROM repositories WHERE project_id = ? ORDER BY name",
     )
     .bind(project_id)
@@ -97,7 +97,7 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Repository>> {
     let rows = sqlx::query(
         "SELECT id, project_id, name, url, local_path,
                 clone_strategy, default_branch, cone_defaults_json,
-                last_fetch_at, fs_monitor_pid
+                action_prefs_json, last_fetch_at, fs_monitor_pid
          FROM repositories ORDER BY id",
     )
     .fetch_all(pool)
@@ -152,6 +152,11 @@ fn row_to_repository(row: sqlx::sqlite::SqliteRow) -> Repository {
         // `["<cone_path>", …]` JSON array, migration 0001 default `'[]'`).
         // The three-layer resolver reads this as the least-specific layer.
         cone_defaults_json: row.get::<String, _>("cone_defaults_json"),
+        // Task 310: the per-repo action-prefs local-DB layer (migration
+        // 0011, `design/04 §3.13`). A JSON object `{ "<action>": "<pref>" }`;
+        // SQL default `'{}'`. The settings resolver reads it under the
+        // checked-in `.concerto/action_prefs.toml` override.
+        action_prefs_json: row.get::<String, _>("action_prefs_json"),
         last_fetch_at: row.get::<Option<i64>, _>("last_fetch_at"),
         fs_monitor_pid: row.get::<Option<i64>, _>("fs_monitor_pid"),
     }

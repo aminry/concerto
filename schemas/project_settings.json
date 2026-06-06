@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://concerto.build/schemas/project_settings.json",
+  "title": "Concerto project_settings.json",
+  "description": "Checked-in project settings (design/03 §3.13). Lives at <project_root>/.concerto/project_settings.json and is the team-shared, git-tracked superset of the local-DB projects.settings_json row. Resolved per-field on the precedence stack: managed.json > this checked-in file > local DB > defaults. Allows // line comments (jsonc). New fields are append-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Points at this published schema so editors (VS Code / JetBrains) provide autocomplete + validation.",
+      "default": "https://concerto.build/schemas/project_settings.json"
+    },
+    "scripts": {
+      "type": "object",
+      "description": "Project lifecycle scripts. Each is a shell command run at the named lifecycle point.",
+      "additionalProperties": false,
+      "properties": {
+        "setup": {
+          "type": "string",
+          "description": "Run once when the project/workspace is first set up."
+        },
+        "setup_workarea": {
+          "type": "string",
+          "description": "Run when a new workarea (worktree) is created."
+        },
+        "run": {
+          "type": "string",
+          "description": "The project's run/dev command."
+        },
+        "archive": {
+          "type": "string",
+          "description": "Run when a workarea is archived (teardown/cleanup)."
+        }
+      }
+    },
+    "run_script_mode": {
+      "type": "string",
+      "description": "How lifecycle scripts run relative to each other.",
+      "enum": ["concurrent", "sequential"]
+    },
+    "enterprise_data_privacy": {
+      "type": "boolean",
+      "description": "When true, Maestro/external summaries are disabled for this project (enforced by Task 413). The org may force this via managed.json (enterpriseDataPrivacy)."
+    },
+    "default_permission_mode": {
+      "type": "string",
+      "description": "Project-default agent permission mode. The live permission decision walks session/workarea/workspace first and is capped by managed.json.maxPermissionMode; this is only the project-default layer (design/03 §3.13, design/04 §3.10).",
+      "enum": ["strict", "normal", "auto", "yolo"]
+    },
+    "default_deliberation_mode": {
+      "type": "string",
+      "description": "Project-default session deliberation mode (design/04 §3.12)."
+    },
+    "default_reasoning_level": {
+      "type": "string",
+      "description": "Project-default reasoning level (design/04 §3.12)."
+    },
+    "files_to_copy_rules": {
+      "type": "array",
+      "description": "Files-to-copy/symlink/exclude rules applied at workarea-create time (design/03 §3.10). Applied by Task 309; this file only declares them.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pattern", "mode"],
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "A gitignore-style glob matched against the reference worktree."
+          },
+          "mode": {
+            "type": "string",
+            "description": "What to do with matches: copy, symlink, or exclude.",
+            "enum": ["copy", "symlink", "exclude"]
+          }
+        }
+      }
+    },
+    "writable_paths_outside_worktree": {
+      "type": "array",
+      "description": "Absolute or worktree-relative paths the agent is permitted to write outside the worktree.",
+      "items": { "type": "string" }
+    }
+  }
+}

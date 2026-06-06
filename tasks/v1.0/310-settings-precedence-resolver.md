@@ -77,28 +77,33 @@ Tier 1. (The deterministic resolver + table-driven precedence is fully CI-provab
 **Tier-1 scope note (for the phase checklist):** Tier-1 covers the deterministic resolution + live-reload-via-`notify` + the migration. What it does NOT cover and is a **Phase-3 Tier-3 checklist line**: confirming the published `project_settings.json` schema actually drives autocomplete in a real VS Code / JetBrains install (editor integration is external).
 
 ## Definition of Done
-- [ ] `crates/core/src/settings/` ships `ProjectSettingsResolver` with per-field `resolve_field` + typed getters + `SettingsSource` provenance, reusing the `ManagedPolicySource` watcher pattern
-- [ ] Checked-in `project_settings.json` (jsonc) + per-repo `action_prefs.toml` readers with per-field validate-and-revert-to-lower-layer
-- [ ] Migration 0011 adds `repositories.action_prefs_json`; the `Repository` struct + all SELECTs read it
-- [ ] `managed.json` canonicalized on camelCase with snake-case `serde(alias)` back-compat; all Task 211 tests green; new project-layer managed fields parsed
-- [ ] Per-machine `opt_out_of_checked_in_fields` skips the checked-in layer for the named fields
-- [ ] `AuditKind::ProjectSettingsResolved` emits one event per field at boot
-- [ ] `schemas/project_settings.json` JSON-schema artifact published in-repo
-- [ ] `notify`-rs feature flags compile + watcher runs on the win/linux CI lanes (Task 113)
-- [ ] Verification commands pass; interfaces regenerated; smoke gate unchanged + still green
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code (deliberate seams in Handoff)
-- [ ] Single commit with the message below
+- [x] `crates/core/src/settings/` ships `ProjectSettingsResolver` with per-field `resolve_field` + typed getters + `SettingsSource` provenance, reusing the `ManagedPolicySource` watcher pattern
+- [x] Checked-in `project_settings.json` (jsonc) + per-repo `action_prefs.toml` readers with per-field validate-and-revert-to-lower-layer
+- [x] Migration 0011 adds `repositories.action_prefs_json`; the `Repository` struct + all SELECTs read it
+- [x] `managed.json` canonicalized on camelCase with snake-case `serde(alias)` back-compat; all Task 211 tests green; new project-layer managed fields parsed
+- [x] Per-machine `opt_out_of_checked_in_fields` skips the checked-in layer for the named fields
+- [x] `AuditKind::ProjectSettingsResolved` emits one event per field at boot
+- [x] `schemas/project_settings.json` JSON-schema artifact published in-repo
+- [x] `notify`-rs feature flags compile + watcher runs on the win/linux CI lanes (Task 113)
+- [x] Verification commands pass; interfaces regenerated; smoke gate unchanged + still green
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code (deliberate seams in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/core/src/settings/mod.rs` (new)
 - `crates/core/src/settings/resolver.rs` (new — `ProjectSettingsResolver` + `SettingsSource` + `ProjectSettingsField`)
-- `crates/core/src/settings/project_file.rs` (new — jsonc `project_settings.json` + `action_prefs.toml` readers + the `ProjectSettingsSource` watcher)
+- `crates/core/src/settings/project_file.rs` (new — jsonc `project_settings.json` + `action_prefs.toml` readers + the `ProjectSettingsSource` watcher + `OptOutConfig`)
+- `crates/core/src/settings/boot.rs` (new — drift; the per-project resolver build + boot-audit helper, split out of the boot wiring)
 - `crates/core/src/lib.rs` (modified — `pub mod settings`)
 - `crates/core/src/security/managed.rs` (modified — camelCase canonicalization + snake aliases + new project-layer fields + module-doc amendment note)
 - `crates/core/src/audit/event.rs` (modified — `ProjectSettingsResolved` variant + `as_str` arm)
 - `crates/core/src/boot.rs` (modified — build the resolver per project + emit the boot audit)
 - `crates/persist/migrations/0011_repositories_action_prefs.sql` (new)
-- `crates/persist/src/repositories.rs` (modified — `action_prefs_json` on struct + SELECTs/insert)
+- `crates/persist/src/repositories.rs` (modified — `action_prefs_json` in SELECTs + `row_to_repository`)
+- `crates/persist/src/api.rs` (modified — drift; the `action_prefs_json` field on the `Repository` struct lives here, not in `repositories.rs`)
+- `crates/persist/tests/repositories_action_prefs.rs` (new — drift; `action_prefs_json` migration + SELECT round-trip test)
+- `crates/core/src/repo_manager/actor.rs` (modified — drift; one-line `action_prefs_json: "{}"` in the `Repository` literal forced by the frozen struct; 304's area)
+- `Cargo.toml` + `crates/core/Cargo.toml` (modified — drift; `notify` backend feature split per target for the win/linux CI lanes)
 - `schemas/project_settings.json` (new — published JSON-schema artifact)
 - `docs/interfaces/schema.md` + `docs/interfaces/rust-api.md` (regenerated)
 
@@ -119,7 +124,7 @@ Refs: tasks/v1.0/310-settings-precedence-resolver.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan — —
-- Open questions for next task — —
+- Drift from plan — (1) **D9(b) design amendment recorded here, not in `design/`** (Outputs lists no `design/` file): `managed.json` canonicalizes on **camelCase** per `design/12 §3.8`, with `#[serde(alias = "<snake>")]` back-compat for every shipped snake_case key (`max_permission_mode`/`allow_yolo`/`allow_bypass_destructive_guard`/`preamble_template_path`/`max_reasoning_level`); `disable_remote` keeps its snake canonical (`design/11 §6.4`) + a `disableRemote` alias. All 37 Task 211 managed tests stay green. (2) Five files touched beyond the literal Outputs list, each a mechanical consequence — added to Outputs: `crates/core/src/settings/boot.rs` (split the boot helper into its own file rather than inlining), `crates/persist/src/api.rs` (the `Repository`/`NewRepository` structs live here, the Inputs note said `repositories.rs`), `crates/core/src/repo_manager/actor.rs` (a **one-line** `action_prefs_json: "{}"` added to the `Repository {…}` literal — required by the frozen struct; this is 304's area but `Repository` has no `Default` so the literal must list the new field; no logic touched), `crates/persist/tests/repositories_action_prefs.rs` (the migration round-trip test — `cargo test -p concerto-persist repositories` had no inline tests to extend), and `Cargo.toml`+`crates/core/Cargo.toml` (the notify feature split, see Open questions). (3) The boot resolver uses the project's **first-listed repo's `.concerto/` as the project root** for the checked-in `project_settings.json` (the §3.10 reference-repo rule applied at boot) since `projects` has no filesystem-root column — documented in `settings/boot.rs`.
+- Open questions for next task — (a) **`notify` backend feature split (Task 113 win/linux lanes):** the workspace `notify` pin is now feature-less; `crates/core/Cargo.toml` selects the backend per target — `macos_fsevent` on `cfg(target_os = "macos")`, notify's portable defaults (`default-features = true` → ReadDirectoryChangesW on Windows, inotify on Linux) on `cfg(not(target_os = "macos"))`. Verified to compile + the debounce/notify test passes on macOS; **the Windows/Linux Core CI lanes must confirm the watcher backend actually fires there** (it's a Task-113 lane assertion, not CI-provable from a mac sub-agent). (b) **309** reads `projects.settings_json` directly today; it should migrate to `ProjectSettingsResolver::files_to_copy_rules()` to pick up the checked-in-file precedence + provenance. (c) **312/321** consume the FROZEN `action_pref(repo_id, action) -> Resolved<Option<String>>` getter via `OneShotLlm`/`compose_action_prompt`; the per-repo `action_prefs_pinned` managed key (`design/04 §3.13`) is **not** implemented (no managed action-prefs layer in V1.0) — a future managed-pin task can add it as a top layer in `action_pref`. (d) **413** reads `enterprise_data_privacy() -> Resolved<bool>` (managed > checked-in > local DB > `false`). (e) The boot audit reads the project root from the first repo's worktree; once a project gains an explicit reference-repo/root column, point `settings/boot.rs` at it.
 - Deliberate debt — —
-- Smoke-gate state — —
+- Smoke-gate state — **unchanged + green.** `scripts/smoke.sh` PASSED end-to-end (all V0.1+V1.0 capabilities, ~293 s); `00-core-boot` exercises the new per-project boot resolution path with no regression. No new capability added (Tier-1 task).

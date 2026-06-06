@@ -206,6 +206,10 @@ impl RepoManager {
             // defaults later (Desktop, Task 322). Mirror the column default
             // here so the returned row matches what was just inserted.
             cone_defaults_json: "[]".to_string(),
+            // Task 310: a freshly-added repo has the SQL default (`'{}'`) for
+            // its action-prefs layer (migration 0011, `design/04 §3.13`);
+            // mirror the column default so the returned row matches the insert.
+            action_prefs_json: "{}".to_string(),
             last_fetch_at: None,
             // No daemon recorded until `clone_repo` finishes and the
             // post-clone fsmonitor bring-up persists a PID (Task 28).

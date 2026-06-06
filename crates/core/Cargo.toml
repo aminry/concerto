@@ -138,7 +138,11 @@ path-clean = { workspace = true }
 # reused by Task 205).
 blake2 = { workspace = true }
 # Task 42: filesystem-watch crate driving the managed.json hot-reload
-# watcher in `crates/core/src/security/managed.rs`. Workspace pin.
+# watcher in `crates/core/src/security/managed.rs` + (Task 310) the
+# checked-in `project_settings.json` watcher in `crates/core/src/settings/`.
+# Workspace pin; the *backend feature* is selected per target below (Task
+# 310) so the Windows/Linux Core CI lanes (Task 113) get a working backend
+# rather than the feature-less no-op the workspace base declares.
 notify = { workspace = true }
 # Task 45: VCS provider (`gh` CLI shell-out) writes PR title / body to
 # temp files and passes `--title-file` / `--body-file` so newlines and
@@ -173,6 +177,20 @@ ciborium = "0.2"
 # (`hex` itself is declared cross-platform in the main `[dependencies]`
 # block above, added by Task 206; this comment documents the unix cookie
 # consumer.)
+
+# Task 310: select the `notify` filesystem-watch backend per target so the
+# managed.json + project_settings.json watchers compile + run a real backend
+# on every Core CI lane (Task 113). The workspace base pin declares notify
+# with no default features; these per-target entries add the right backend,
+# and cargo unifies them with the base. macOS uses the FSEvents backend
+# (matches Task 42's original posture); Windows/Linux fall back to notify's
+# portable default backends (ReadDirectoryChangesW / inotify, plus the
+# debounced poll fallback) via `default-features = true`.
+[target.'cfg(target_os = "macos")'.dependencies]
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+notify = { version = "8" }
 
 [dev-dependencies]
 tempfile = "3"

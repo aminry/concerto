@@ -143,6 +143,15 @@ pub enum AuditKind {
     /// are flagged in the audit log (`ManagedSettingsViolation`) and the
     /// field reverts to the default"). One event per violation.
     ManagedSettingsViolation,
+    /// The effective value of one project/repository settings field was
+    /// resolved at Core boot (Task 310, `design/03 §3.13`). Emitted once per
+    /// `(project_id, field)` by the
+    /// [`crate::settings::ProjectSettingsResolver`]'s
+    /// `audit_resolved_at_boot`, with `{project_id, field, value_source}`
+    /// details so "why does this work on my machine but not yours"
+    /// investigations can see which layer (`managed` / `checked_in` /
+    /// `local_db` / `default`) supplied each field.
+    ProjectSettingsResolved,
 }
 
 impl AuditKind {
@@ -180,6 +189,7 @@ impl AuditKind {
             AuditKind::DestructiveCommandIntercepted => "destructive_command_intercepted",
             AuditKind::ManagedSettingsLoaded => "managed_settings_loaded",
             AuditKind::ManagedSettingsViolation => "managed_settings_violation",
+            AuditKind::ProjectSettingsResolved => "project_settings_resolved",
         }
     }
 }

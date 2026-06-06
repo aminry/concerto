@@ -352,6 +352,9 @@ CREATE INDEX idx_workspace_repos_position ON workspace_repos(workspace_id, posit
 ## `crates/persist/migrations/0010_workareas_status_finished_partial.sql`
 
 
+## `crates/persist/migrations/0011_repositories_action_prefs.sql`
+
+
 ## `crates/persist/migrations/0012_vcs_credentials.sql`
 
 ```sql

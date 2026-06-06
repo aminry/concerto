@@ -1,0 +1,15 @@
+-- Task 310: the local-DB layer of the three-layer project/repository
+-- settings precedence chain (managed > checked-in > local DB > defaults).
+--
+-- Per-repo action preferences (`design/04 §3.13`): the seven action keys
+-- `code_review` / `pr_create` / `error_fix` / `conflict_resolve` /
+-- `branch_rename` / `commit_message` / `digest_summary`, each a free-text
+-- pref injected only when that action runs. Stored as a flat JSON object
+-- `{ "<action>": "<pref text>", … }`; `{}` = no prefs (the default).
+--
+-- Plain `ADD COLUMN` (no CHECK, no table recreate) per PHASE3_PLANNING §3:
+-- malformed JSON is tolerated by the resolver's per-field validate-and-revert
+-- discipline, not enforced at the SQL layer. Migration 0011 is reserved for
+-- this task (0010 is reserved for task 307); the gap is deliberate and
+-- tolerated by sqlx on a fresh DB.
+ALTER TABLE repositories ADD COLUMN action_prefs_json TEXT NOT NULL DEFAULT '{}';
