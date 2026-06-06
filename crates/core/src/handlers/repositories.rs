@@ -15,9 +15,9 @@ use concerto_gix_wrap::{CloneProgressEvent, CloneStrategy, PrewarmProgressEvent}
 use concerto_persist::{RepositoryId, WorkareaId};
 use concerto_proto::v1::repositories_server::Repositories as RepositoriesService;
 use concerto_proto::v1::{
-    AddRepoRequest, CloneProgress, CloneRequest, EstimateRepoSizeRequest, ListRepositoriesRequest,
-    ListRepositoriesResponse, PrewarmProgress, PrewarmRequest, Repository, SetConesRequest,
-    SetConesResponse, SizeReport,
+    AddRepoRequest, CloneProgress, CloneRequest, ConeStats, EstimateConeSizeRequest,
+    EstimateRepoSizeRequest, ListRepositoriesRequest, ListRepositoriesResponse, PrewarmProgress,
+    PrewarmRequest, Repository, SetConesRequest, SetConesResponse, SizeReport,
 };
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -25,7 +25,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::error_map::error_to_status;
-use crate::repo_manager::RepoManager;
+use crate::repo_manager::{ConeSuggestError, RepoManager};
 
 /// Implements the generated `Repositories` service trait.
 ///
@@ -130,6 +130,30 @@ impl RepositoriesService for RepositoriesHandler {
         // persisted).
         Ok(Response::new(SetConesResponse {
             cone_paths: req.cone_paths,
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Repositories::EstimateConeSize")]
+    async fn estimate_cone_size(
+        &self,
+        request: Request<EstimateConeSizeRequest>,
+    ) -> Result<Response<ConeStats>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        let repo = RepositoryId(req.repository_id);
+        // Task 305: read the git index for the in-cone file count + disk-size
+        // estimate. Empty `cone_paths` falls back to the repo cone defaults,
+        // then to the whole tree (see `list_paths_in_cone`).
+        let stats = self
+            .repo_manager
+            .list_paths_in_cone(&repo, &req.cone_paths)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ConeStats {
+            file_count: stats.file_count,
+            disk_size_bytes: stats.disk_size_bytes,
         }))
     }
 
@@ -275,6 +299,27 @@ impl RepositoriesService for RepositoriesHandler {
         Ok(Response::new(ListRepositoriesResponse {
             repositories: rows.into_iter().map(repository_to_proto).collect(),
         }))
+    }
+}
+
+/// Map a [`ConeSuggestError`] to a gRPC [`Status`] (Task 305, D1).
+///
+/// The FROZEN contract: an **unwired** `suggest_cones` seam ([`ConeSuggestError::Unwired`])
+/// surfaces as `Status::unimplemented` — NOT an empty success and NOT a panic
+/// — so the (P4, Task 411) Maestro wiring is a pure addition. A real
+/// delegation failure once a suggester is injected flows through the usual
+/// [`error_to_status`] mapping.
+///
+/// `suggest_cones` has no gRPC RPC in P3 (`PHASE3_PLANNING` scopes 305's
+/// `suggest_cones` to a Rust trait seam only); this helper is the handler-layer
+/// mapping the P4 RPC will reuse verbatim, and the Tier-1 test asserts it
+/// against the unwired + injected-mock paths.
+pub fn cone_suggest_error_to_status(err: ConeSuggestError) -> Status {
+    match err {
+        ConeSuggestError::Unwired => {
+            Status::unimplemented("suggest_cones is wired in P4 (Maestro, Task 411)")
+        }
+        ConeSuggestError::Delegate(e) => error_to_status(e),
     }
 }
 

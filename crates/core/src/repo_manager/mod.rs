@@ -13,16 +13,20 @@
 //! repo-size → strategy recommendation, and the durable repo-local
 //! `concerto-state.json` (`repo_state`). Task 302 adds the sparse cones.
 //! Task 304 adds the idle blob prewarm scheduler + the cancellable
-//! `prewarm_blobs` / `PrewarmHandle` (`prefetch`). The cone-level size
-//! telemetry (305) remains a follow-on.
+//! `prewarm_blobs` / `PrewarmHandle` (`prefetch`). Task 305 adds the
+//! cone-level size telemetry (`list_paths_in_cone` → [`cone_stats::ConeStats`],
+//! read from the git index) + the unwired `suggest_cones` Maestro-delegate
+//! seam ([`cone_stats::ConeSuggester`]).
 
 pub mod actor;
+pub mod cone_stats;
 pub mod cones;
 pub mod fsmonitor;
 pub mod prefetch;
 mod repo_state;
 
 pub use actor::{RepoManager, RepoManagerActor, RepoManagerConfig};
+pub use cone_stats::{ConeStats, ConeSuggestError, ConeSuggester};
 pub use prefetch::{
     spawn_prefetch_scheduler, IdleState, NetState, PowerState, PrewarmHandle, PrewarmSignals,
 };

@@ -404,6 +404,142 @@ pub struct PrewarmProgressEvent {
     pub done: bool,
 }
 
+/// File count + disk-size estimate for a sparse cone, read from the git
+/// index (Task 305, `design/02 §3.2`/`§5.1`, the `ConeProbe → gix` arrow in
+/// `§6`).
+///
+/// Mirrors the on-wire `concerto.v1.ConeStats` shape. `file_count` is the
+/// number of tracked file entries the cone would materialize; `disk_size_bytes`
+/// is the sum of those entries' recorded sizes in the index. See
+/// [`cone_index_stats`] for the (FROZEN) estimate basis.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConeStats {
+    /// Tracked file entries under the cone prefixes (or all tracked files
+    /// when `cone_paths` is empty). Collapsed sparse-index directory entries
+    /// (out-of-cone trees) are NOT counted — only true file (blob) entries.
+    pub file_count: u64,
+    /// Sum of the counted entries' recorded sizes from the index, in bytes.
+    /// An order-of-magnitude estimate: a blobless clone's not-yet-fetched
+    /// blobs carry a recorded size of 0, so this is a lower bound until the
+    /// blobs are materialized (`design/02 §3.2` wants order-of-magnitude).
+    pub disk_size_bytes: u64,
+}
+
+/// Read the git index at `repo_dir` and compute the [`ConeStats`] for the
+/// file entries under `cone_paths` (Task 305, `design/02 §3.2`/`§5.1`).
+///
+/// **Reads the index, not the filesystem** (`design/02 §3.2`: "computes
+/// (file count, disk size) from the git index"). Opens the repo via `gix`,
+/// decodes the (possibly sparse) index, and for every tracked **file** entry
+/// whose repo-root-relative path falls under one of `cone_paths`:
+/// counts it and adds its recorded `entry.stat.size`.
+///
+/// **Cone prefix semantics.** A `cone_paths` entry is a directory prefix
+/// (forward-slash, repo-root-relative, leading/trailing `/` tolerated); an
+/// entry matches when its path equals the prefix or begins with
+/// `<prefix>/`. An empty `cone_paths` slice counts **every** tracked file
+/// entry (the caller resolves the cone-defaults fall-back before calling).
+///
+/// **Sparse-index honesty (`design/02 §3.2`, the task's sparse note).** On a
+/// sparse-cone repo the index is a *sparse* index: out-of-cone trees are
+/// collapsed to single directory entries (`entry.mode` is a tree, not a
+/// blob). Those collapsed directory entries are skipped — only true file
+/// (blob/symlink/commit-gitlink) entries are counted, so the count reflects
+/// "files the cone materializes," independent of which blobs are currently
+/// fetched. (A cone broader than what is materialized still counts correctly
+/// because the in-cone file entries are present in the index regardless of
+/// blob fetch state.)
+///
+/// **FROZEN estimate basis.** `disk_size_bytes` is summed from the index's
+/// recorded per-entry `stat.size`. For a blobless clone a not-yet-fetched
+/// blob's recorded size is 0, so the byte total is a lower bound — the
+/// picker (Task 322) wants an order-of-magnitude, not an exact footprint
+/// (`design/02 §3.2`). This basis is FROZEN.
+///
+/// Runs the blocking `gix` index decode on a worker thread. A repo that is
+/// not a git repository, or whose index cannot be decoded, surfaces as
+/// [`Error::Git`].
+pub async fn cone_index_stats(repo_dir: &Path, cone_paths: &[String]) -> Result<ConeStats> {
+    let repo_dir = repo_dir.to_path_buf();
+    let cones = cone_paths.to_vec();
+    tokio::task::spawn_blocking(move || cone_index_stats_blocking(&repo_dir, &cones))
+        .await
+        .map_err(|e| Error::Git(format!("cone_index_stats: join error: {e}")))?
+}
+
+fn cone_index_stats_blocking(repo_dir: &Path, cone_paths: &[String]) -> Result<ConeStats> {
+    let repo = gix::open(repo_dir).map_err(|e| Error::Git(format!("gix::open: {e}")))?;
+    let index = repo
+        .open_index()
+        .map_err(|e| Error::Git(format!("open_index: {e}")))?;
+
+    // Normalize cone prefixes once: strip leading/trailing `/`, drop empties
+    // (an empty/`.` prefix means "the whole tree", which we model as "no
+    // filter" below). Done once so the per-entry loop stays cheap on a large
+    // index.
+    let prefixes: Vec<&str> = cone_paths
+        .iter()
+        .map(|c| c.trim_start_matches('/').trim_end_matches('/'))
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    // An explicit empty cone (or a cone of only `.`/`/`) means the whole
+    // tree: when the caller passed paths but they all normalized away, that
+    // is "top-level + everything", so treat it as no filter too.
+    let count_all = prefixes.is_empty();
+
+    let mut file_count: u64 = 0;
+    let mut disk_size_bytes: u64 = 0;
+    for entry in index.entries() {
+        // Skip sparse-index collapsed directory entries + submodule gitlinks
+        // — only count true file-content entries (`design/02 §3.2`: count the
+        // files the cone would materialize, not the collapsed out-of-cone
+        // trees). A regular index entry is `FILE`, `FILE_EXECUTABLE`, or
+        // `SYMLINK`; `DIR` is the sparse-collapsed tree and `COMMIT` is a
+        // submodule gitlink.
+        use gix::index::entry::Mode;
+        if !matches!(
+            entry.mode,
+            Mode::FILE | Mode::FILE_EXECUTABLE | Mode::SYMLINK
+        ) {
+            continue;
+        }
+        let path = entry.path(&index);
+        let path = match std::str::from_utf8(path) {
+            Ok(p) => p,
+            // A non-UTF-8 path can't match a forward-slash cone prefix; count
+            // it only in the no-filter case (it is still a tracked file).
+            Err(_) => {
+                if count_all {
+                    file_count += 1;
+                    disk_size_bytes = disk_size_bytes.saturating_add(u64::from(entry.stat.size));
+                }
+                continue;
+            }
+        };
+        if count_all || path_under_any_prefix(path, &prefixes) {
+            file_count += 1;
+            disk_size_bytes = disk_size_bytes.saturating_add(u64::from(entry.stat.size));
+        }
+    }
+
+    Ok(ConeStats {
+        file_count,
+        disk_size_bytes,
+    })
+}
+
+/// True iff `path` (a forward-slash, repo-root-relative index path) sits
+/// under one of `prefixes` — i.e. equals a prefix exactly or begins with
+/// `<prefix>/`. The `/`-boundary check stops `app` from matching `apple/…`.
+fn path_under_any_prefix(path: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| {
+        path == *prefix
+            || (path.len() > prefix.len()
+                && path.as_bytes()[prefix.len()] == b'/'
+                && path.starts_with(prefix))
+    })
+}
+
 /// Materialize the blobs reachable in `cone_paths` at `commit` for a
 /// blobless clone at `repo_dir` (Task 304, `design/02 §3.3`/`§5.1`).
 ///

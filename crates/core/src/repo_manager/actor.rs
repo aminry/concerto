@@ -26,6 +26,9 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditWriter, EntityKind};
+use crate::repo_manager::cone_stats::{
+    ConeStats, ConeSuggestError, ConeSuggester, ConeSuggesterSeam,
+};
 use crate::repo_manager::prefetch::{BandwidthLimiter, PrewarmHandle, GLOBAL_PREWARM_CONCURRENCY};
 use crate::repo_manager::{cones, fsmonitor, prefetch, repo_state};
 use crate::supervisor::{Actor, ActorContext};
@@ -81,6 +84,13 @@ pub struct RepoManager {
     /// `never_prewarm` bundle; `boot.rs` injects the host bundle, and tests
     /// inject deterministic mocks.
     prewarm_signals: prefetch::PrewarmSignals,
+    /// Task 305: the unwired `suggest_cones` Maestro-delegate seam (D1). `None`
+    /// in P3 — [`Self::suggest_cones`] then returns [`ConeSuggestError::Unwired`]
+    /// (mapped to `Status::unimplemented`). Task 411 (P4) injects a
+    /// Maestro-backed [`ConeSuggester`] via [`Self::with_cone_suggester`]; no
+    /// proto/trait change then. The telemetry half ([`Self::list_paths_in_cone`])
+    /// is fully LIVE in P3 and does NOT use this seam.
+    cone_suggester: ConeSuggesterSeam,
 }
 
 impl RepoManager {
@@ -97,7 +107,19 @@ impl RepoManager {
             prewarm_sem: Arc::new(Semaphore::new(GLOBAL_PREWARM_CONCURRENCY)),
             bandwidth: BandwidthLimiter::new(),
             prewarm_signals: prefetch::never_prewarm_signals(),
+            // Task 305: unwired in P3. Task 411 (P4) injects the Maestro impl.
+            cone_suggester: None,
         }
+    }
+
+    /// Inject the `suggest_cones` Maestro-delegate [`ConeSuggester`] (Task 305
+    /// seam; the implementor lands in P4, Task 411). With this set,
+    /// [`Self::suggest_cones`] delegates to it; without it (the P3 default) the
+    /// call returns [`ConeSuggestError::Unwired`]. Mirrors
+    /// [`with_audit`](Self::with_audit).
+    pub fn with_cone_suggester(mut self, suggester: Arc<dyn ConeSuggester>) -> Self {
+        self.cone_suggester = Some(suggester);
+        self
     }
 
     /// Inject the prewarm scheduler's idle/power/net signal bundle (Task
@@ -726,6 +748,82 @@ impl RepoManager {
             &wa_cones,
             repo.as_str(),
         ))
+    }
+
+    /// Cone-level file-count + disk-size telemetry, read from the git
+    /// **index** (Task 305, `design/02 §3.2`/`§5.1`, the `ConeProbe → gix`
+    /// arrow in `§6`). FROZEN signature.
+    ///
+    /// Returns the [`ConeStats`] (`file_count` + `disk_size_bytes`) for the
+    /// tracked file entries the cone would materialize. This is the
+    /// deterministic, CI-provable telemetry that drives the cone-picker UI
+    /// (Task 322) and the P4 issue→workspace planner (Task 411) — distinct
+    /// from Task 301's pre-clone `EstimateRepoSize` (a remote-URL probe) and
+    /// Task 304's blob prewarm (a fetch, not a count).
+    ///
+    /// **Reads the index, never the filesystem** (`design/02 §3.2`). Skips
+    /// sparse-collapsed directory entries, so the count reflects "files the
+    /// cone materializes," independent of which blobs are currently fetched.
+    ///
+    /// Cone resolution:
+    /// - non-empty `cones` → honored verbatim (the prefixes to count under);
+    /// - empty `cones` → falls back to the repository's `cone_defaults_json`
+    ///   (the only inheritance layer reachable without a workarea context;
+    ///   the full three-layer resolver needs a `(workspace, workarea)` and is
+    ///   [`Self::resolve_for_workarea_repo`]'s job). When that is also empty
+    ///   every tracked file is counted (the whole materialized tree).
+    ///
+    /// An unknown `repo` → [`Error::NotFound`]; a repo dir that is not a git
+    /// repository / whose index cannot be decoded → [`Error::Git`].
+    pub async fn list_paths_in_cone(
+        &self,
+        repo: &RepositoryId,
+        cones: &[ConePath],
+    ) -> Result<ConeStats> {
+        let row = self
+            .get(repo)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("repository {repo} not found")))?;
+        let repo_dir = PathBuf::from(&row.local_path);
+
+        // Empty cones → fall back to the repo-level cone defaults
+        // (`repositories.cone_defaults_json`, the layer reachable here). An
+        // empty/unparsable defaults array leaves `effective` empty, which
+        // `cone_index_stats` reads as "count every tracked file".
+        let effective: Vec<ConePath> = if cones.is_empty() {
+            cones::resolve_cones(&row.cone_defaults_json, "{}", "null", repo.as_str())
+        } else {
+            cones.to_vec()
+        };
+
+        let stats = gixw::cone_index_stats(&repo_dir, &effective).await?;
+        Ok(stats.into())
+    }
+
+    /// Plan-mode cone suggestion delegate (Task 305, `design/02 §3.2`/`§9`,
+    /// D1). FROZEN behavior: an **unwired** seam returns
+    /// [`ConeSuggestError::Unwired`] (NOT an empty success, NOT a panic) so the
+    /// handler maps it to `Status::unimplemented`.
+    ///
+    /// The Repo Mgr only *publishes* this interface; the real LLM suggestion
+    /// delegates to the Maestro Agent (08), wired in P4 (Task 411) by
+    /// injecting a [`ConeSuggester`] via [`Self::with_cone_suggester`]. When
+    /// one is injected this delegates to it verbatim, so the P4 wiring is a
+    /// pure addition with no proto/trait change. The
+    /// [`Self::list_paths_in_cone`] telemetry half is independent + LIVE today.
+    pub async fn suggest_cones(
+        &self,
+        repo: &RepositoryId,
+        issue_text: &str,
+    ) -> std::result::Result<Vec<ConePath>, ConeSuggestError> {
+        match &self.cone_suggester {
+            Some(suggester) => suggester
+                .suggest_cones(repo, issue_text)
+                .await
+                .map_err(ConeSuggestError::Delegate),
+            // Unwired in P3 — the explicit FROZEN contract (D1).
+            None => Err(ConeSuggestError::Unwired),
+        }
     }
 
     /// Emit the `§8` "forced non-cone sparse config to cone mode" audit
