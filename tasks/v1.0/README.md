@@ -110,11 +110,11 @@ Spike tasks (Phase 1) do not ship product code. A spike produces **(a)** a throw
 
 ### 5.3 Per-type verification command sets
 
-The orchestrator re-runs these after each task (the task file's own `Verification` section may add more):
+The full per-type command set is below (the task file's own `Verification` section may add more). The orchestrator runs these **tiered** for speed (see `AUTO_EXECUTE_PROMPT.md` → *Concurrency model* / Step 4): a **fast local gate** before pushing each task, with the **expensive full test suite + smoke delegated to CI** as the authoritative pre-merge gate (CI re-runs the whole matrix anyway). The full local set is still the contract every task must pass *somewhere* (local or CI) before merge — nothing is skipped, only relocated.
 
-| Type | Commands the orchestrator re-runs |
+| Type | Full command set (fast-local gate **bold**; rest delegated to CI unless high-risk) |
 |---|---|
-| `rust` | `cargo check --workspace` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo test --workspace --no-fail-fast` · `cargo deny check` · `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` · `scripts/smoke.sh` (if the task's smoke field ≠ unchanged) |
+| `rust` | **`cargo check --workspace`** · **`cargo clippy --workspace --all-targets -- -D warnings`** · **`cargo fmt --all -- --check`** · **`cargo deny check`** · **`./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/`** · `cargo test --workspace --no-fail-fast` · `scripts/smoke.sh` (if the task's smoke field ≠ unchanged — then run locally too, it's high-risk). **Note on `cargo fmt`:** CI's `format.yml` runs `cargo fmt --all -- --check` (stable rustfmt; `--all` = every workspace member). `rustfmt.toml` sets `imports_granularity = "Crate"` (skipped on stable with a harmless warning) + `max_width = 100`; a plain `cargo fmt --check` (no `--all`) only checks the root package and will miss real drift — always use `--all`. |
 | `web-ts` | `pnpm -C apps/web typecheck` · `pnpm -C apps/web lint` · `pnpm -C apps/web test` · `pnpm -C apps/web build` · (+ Playwright headless suite if the task touches the data layer) |
 | `rn-mobile` | `pnpm -C apps/mobile typecheck` · `pnpm -C apps/mobile lint` · `pnpm -C apps/mobile test` · `pnpm -C apps/mobile exec expo prebuild --no-install` (compile gate) · simulator screenshot suite if present |
 | `infra-ops` | task-specific (e.g. `shellcheck scripts/*.sh`, a dry-run of the script, a CI-workflow lint); always states its exact gate |
@@ -122,6 +122,10 @@ The orchestrator re-runs these after each task (the task file's own `Verificatio
 | `doc` | `markdownlint` / link-check if configured; otherwise a human-read gate (operator spot-check) |
 
 The smoke gate (`scripts/smoke.sh`) grows the same way it did in V0.1 — Task 108 refactors it into composable per-capability checks plus a V1.0 manifest so each capability (pairing, files-transfer, multi-repo, maestro-digest, push-fanout) is a named check the relevant task turns on.
+
+### 5.4 Execution model (pipelined + bounded-parallel)
+
+`deps` define a **partial** order, not a strict serial one. The orchestrator (`AUTO_EXECUTE_PROMPT.md` → *Concurrency model*) overlaps wall-clock three ways without weakening any gate: **(1)** it pipelines — backgrounds a task's CI watch and starts the next eligible task instead of idling on `gh pr checks --watch`; **(2)** it builds up to **K = 3** *dependency-ready, file-disjoint* tasks concurrently, each in its own `git worktree`; **(3)** it validates tiered (§5.3). The invariant that never bends: **a task merges only after its CI is green AND every task it depends on is merged; `main` stays green; merges are serialized in dependency order and the other in-flight branches rebase onto each new `main`.** Two tasks that both write a hard-to-merge seam (a `*.proto`, a shared `mod.rs`/`lib.rs`/`boot.rs`, a migration) are never built concurrently; on any substantive rebase conflict the later task is re-dispatched fresh on the updated `main`. Each phase's concurrency/wave map (which tasks are safe to overlap) lives in that phase's planning addendum — for Phase 3, `PHASE3_PLANNING.md §8`.
 
 ---
 

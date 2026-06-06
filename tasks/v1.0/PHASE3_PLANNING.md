@@ -160,6 +160,39 @@ Tier-3 checklist's job, not these tasks'.
 
 ---
 
+## 8. Concurrency / wave map (pipelined + bounded-parallel execution)
+
+The orchestrator runs Phase 3 **pipelined and up to K = 3 file-disjoint tasks in flight** per
+`AUTO_EXECUTE_PROMPT.md` → *Concurrency model* (+ tiered validation, `README.md §5.3/§5.4`).
+This section is the phase-specific input to that model: the clusters, their shared seams, and
+which tasks are safe to overlap. **The merge invariant is unchanged: dependency-ordered,
+serialized merges; `main` always green; in-flight branches rebase onto each new `main`; a
+substantive rebase conflict → re-dispatch the later task fresh.**
+
+**Completion state (update as you go):** 301 ✅ merged · 302 ✅ merged · 303–324 + 315.0/320.5 pending.
+
+**Clusters (tasks inside a cluster share hot files → keep *intra*-cluster work sequential; parallelize *across* clusters):**
+
+| Cluster | Tasks | Hot shared files (intra-cluster collision) |
+|---|---|---|
+| **A — Repo-manager** | 303, 304, 305 | `crates/core/src/repo_manager/actor.rs`, `…/mod.rs`, `crates/core/src/handlers/repositories.rs`, `crates/proto/proto/concerto/v1/repositories.proto` (304 = `PrewarmBlobs`, 305 = `EstimateConeSize`/`ConeStats` — both append → collide). 303 is light (gix-wrap benches/tests + a small caller touch). |
+| **B — Workspace/Workarea/Session** | 306→307→308, 309, 311, 312 | `crates/core/src/workspace_manager/*`, `crates/persist/src/workareas.rs`, workareas/sessions proto, migrations 0009 (306) / 0010 (307). Largely a dependency chain already. |
+| **C — VCS** | 313→{314,316,317,320.5}, 315.0, 315, 318, 319, 320, 321 | `crates/vcs/*` (new, 313 freezes it — **must land first**), migrations 0012 (313)/0013 (315)/0014 (319), `Workareas` service proto (319/320), `crates/core/src/llm/oneshot.rs` (312 owns, 321 reuses). |
+| **D — Settings** | 310 | `crates/persist/src/repositories.rs` + `…/api.rs` (migration 0011 `action_prefs_json`) — **note this also collides with 305**, which reads `repositories.cone_defaults_json`; don't run 305 ∥ 310. |
+| **E — Desktop (web-ts)** | 322, 323, 324 | `apps/desktop/*` only — **file-disjoint from every Rust crate**, so a desktop task can overlap any Rust task once its Rust deps have merged. 322/323/324 collide with *each other* (same tree). |
+
+**Soft seam to watch:** `crates/core/src/boot.rs` (handle wiring) is touched by many tasks; additive wiring in different regions usually auto-merges on rebase, but if two in-flight tasks edit the same region it conflicts → fallback. Treat as watch-on-rebase, not a hard block.
+**Trivially-mergeable (never blocks concurrency):** `Cargo.lock`, workspace `Cargo.toml` member list, `docs/interfaces/*`, `scripts/smoke.manifest`, distinct `scripts/smoke.d/*`, distinct test files.
+
+**Eligibility each tick** = dependency-ready (per the README inventory + §6 refined deps) **AND** file-disjoint on a hard seam from every in-flight task. Refined deps that matter for ordering: 313 gates 314/315/316/317/320/320.5; 315.0 gates 315; 310 gates 312/321; 312 gates 321; 319 gates 320; 320 gates 320.5/324.
+
+**Suggested opening waves (illustrative — recompute eligibility each tick, prefer lowest-numbered + most-unblocking):**
+- **Wave 1 (ready now, disjoint):** `303` (cluster A, light) ∥ `313` (cluster C root — start it early, it unblocks the whole VCS cluster) ∥ `315.0` (doc, `design/` only — zero code collision, ideal filler).
+- **Wave 2:** as 313 merges → `317`/`316`/`314` become eligible (intra-C: serialize on `crates/vcs` source, or split by disjoint files); `306` (cluster B root) ∥ a cluster-A task (`304` or `305`, not both) ∥ `310` (settings — but **not** alongside `305`).
+- **Desktop tasks (322/323/324)** slot in as concurrency fillers against Rust work once their Rust deps (302✓/306, 308, 320) have merged — they never collide with Rust files.
+
+**If unsure whether two tasks are disjoint → serialize them.** A green `main` and correct interfaces outrank the speedup.
+
 *End of Phase-3 planning addendum. The 24 inventory task files (301–324) + the 2 inserts
 (315.0, 320.5) are written against this document, `README.md`, and the `design/` sections each
 cites.*
