@@ -57,7 +57,13 @@
 //!   materialization for a blobless clone (`ls-tree` → chunked
 //!   `cat-file --batch-check`), emitting [`api::PrewarmProgressEvent`].
 //!
-//! Cone-level size telemetry remains Task 305.
+//! Task 305 adds the cone-level size telemetry probe; signature frozen
+//! (`design/02 §3.2`/`§5.1`, the `ConeProbe → gix` arrow in `§6`):
+//!
+//! - [`api::cone_index_stats`] — read the (sparse) git index and return the
+//!   in-cone file count + recorded-size sum as a [`api::ConeStats`]. Reads
+//!   the index, NOT the filesystem; counts file entries under the cone
+//!   prefixes, skipping sparse-collapsed directory entries.
 
 pub mod api;
 pub mod cmd;
@@ -66,11 +72,11 @@ pub mod sparse;
 pub mod status;
 
 pub use api::{
-    apply_perf_config, clone_full, clone_with_strategy, commit_index, estimate_repo_size, fetch,
-    hard_reset, is_fsmonitor_alive, list_branches, prewarm_blobs_in_cone, ref_exists,
-    register_maintenance, rev_parse_head, start_fsmonitor, stop_fsmonitor, update_ref,
-    worktree_add, BranchRef, CloneProgressEvent, CloneStrategy, FetchReport, PrewarmProgressEvent,
-    ProgressSink, SizeReport,
+    apply_perf_config, clone_full, clone_with_strategy, commit_index, cone_index_stats,
+    estimate_repo_size, fetch, hard_reset, is_fsmonitor_alive, list_branches,
+    prewarm_blobs_in_cone, ref_exists, register_maintenance, rev_parse_head, start_fsmonitor,
+    stop_fsmonitor, update_ref, worktree_add, BranchRef, CloneProgressEvent, CloneStrategy,
+    ConeStats, FetchReport, PrewarmProgressEvent, ProgressSink, SizeReport,
 };
 // Task 302 sparse lifecycle surface.
 pub use sparse::{

@@ -26,6 +26,13 @@
 // `PrewarmProgress` is FROZEN by PHASE3_PLANNING §4.6. All existing RPCs +
 // field numbers are unchanged. (Task 305 owns the sibling
 // `EstimateConeSize`/`ConeStats` shapes; the two tasks do not collide.)
+//
+// Task 305 (V1.0, design/02 §3.2/§5.1/§5.2) appends the cone-level telemetry
+// probe `EstimateConeSize(EstimateConeSizeRequest) → ConeStats` (unary) after
+// `PrewarmBlobs`. `ConeStats` + `EstimateConeSizeRequest` are FROZEN by
+// PHASE3_PLANNING §4.6. This is the post-clone, per-cone, git-index-read probe
+// — distinct from Task 301's pre-clone `EstimateRepoSize` and Task 304's blob
+// prewarm. All existing RPCs + field numbers are unchanged.
 
 syntax = "proto3";
 
@@ -175,6 +182,34 @@ message PrewarmProgress {
   bool done = 3;
 }
 
+// Inputs for `Repositories.EstimateConeSize` (Task 305, design/02 §3.2/§5.1).
+// The cone-level, post-clone telemetry probe: given an already-added
+// repository and a set of `cone_paths`, the Repo Mgr reads the git index and
+// returns the file count + disk-size estimate the cone would materialize.
+// `cone_paths` are forward-slash, repo-root-relative directory prefixes. An
+// empty list falls back to the repository's `cone_defaults_json`, and when
+// that is also empty counts every tracked file in the index. Distinct from
+// Task 301's pre-clone `EstimateRepoSize` (which probes a remote URL).
+// FROZEN by PHASE3_PLANNING §4.6.
+message EstimateConeSizeRequest {
+  string repository_id = 1;
+  repeated string cone_paths = 2;
+}
+
+// Result of `Repositories.EstimateConeSize` (Task 305) — and the cone-picker
+// telemetry the Desktop (Task 322) renders. FROZEN by PHASE3_PLANNING §4.6:
+//   - `file_count` — tracked file entries the cone would materialize, read
+//     from the git index (NOT a filesystem walk; design/02 §3.2).
+//   - `disk_size_bytes` — sum of those entries' recorded sizes from the
+//     index. This is an order-of-magnitude estimate: a blobless clone's
+//     not-yet-fetched blobs carry a 0 recorded size, so the number is a
+//     lower bound until the blobs are materialized (design/02 §3.2 wants an
+//     order-of-magnitude for the picker). The estimate basis is FROZEN.
+message ConeStats {
+  uint64 file_count = 1;
+  uint64 disk_size_bytes = 2;
+}
+
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
@@ -182,4 +217,5 @@ service Repositories {
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
+  rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
 }

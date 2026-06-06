@@ -503,6 +503,24 @@ message PrewarmProgress {
 }
 ```
 
+### message `EstimateConeSizeRequest`
+
+```proto
+message EstimateConeSizeRequest {
+  string repository_id = 1;
+  repeated string cone_paths = 2;
+}
+```
+
+### message `ConeStats`
+
+```proto
+message ConeStats {
+  uint64 file_count = 1;
+  uint64 disk_size_bytes = 2;
+}
+```
+
 ### service `Repositories`
 
 ```proto
@@ -513,6 +531,7 @@ service Repositories {
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
+  rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
 }
 ```
 

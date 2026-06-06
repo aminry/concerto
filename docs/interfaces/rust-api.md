@@ -287,6 +287,22 @@ pub struct PrewarmProgressEvent {
 }
 ```
 
+### struct `ConeStats`
+
+```rust
+pub struct ConeStats {
+    /// Tracked file entries under the cone prefixes (or all tracked files
+    /// when `cone_paths` is empty). Collapsed sparse-index directory entries
+    /// (out-of-cone trees) are NOT counted — only true file (blob) entries.
+    pub file_count: u64,
+    /// Sum of the counted entries' recorded sizes from the index, in bytes.
+    /// An order-of-magnitude estimate: a blobless clone's not-yet-fetched
+    /// blobs carry a recorded size of 0, so this is a lower bound until the
+    /// blobs are materialized (`design/02 §3.2` wants order-of-magnitude).
+    pub disk_size_bytes: u64,
+}
+```
+
 ## `crates/identity/src/api.rs`
 
 ### struct `KeyPair`
