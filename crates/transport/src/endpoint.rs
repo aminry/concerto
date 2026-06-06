@@ -57,6 +57,11 @@ const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// the Core's pump tolerates (a missed lifecycle event is recoverable from
 /// `nat_stats`).
 const TELEMETRY_BROADCAST_CAP: usize = 256;
+/// Bound on one `0x04` Webhook exchange (read envelope → `WebhookSink::ingest` →
+/// write ack), so a malformed/stalled frame can't pin the per-connection task
+/// (`design/11 §3.4.1`, Task 315). Generous for a 25 MiB body + a Core HMAC +
+/// targeted-invalidate, bounded so a hung relay frame yields a clean drop.
+const WEBHOOK_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl PairingListener {
     /// Construct a listener bound to `token_hash` over `rx` (only the owning
@@ -111,6 +116,7 @@ impl IrohTransport {
             wakeup_rx: Arc::new(Mutex::new(Some(wakeup_rx))),
             mdns: Arc::new(Mutex::new(None)),
             telemetry_tx,
+            webhook_sink: Arc::new(Mutex::new(None)),
             shutdown: CancellationToken::new(),
         };
 
@@ -339,6 +345,15 @@ impl IrohTransport {
         self.wakeup_rx.lock().expect("wakeup lock").take()
     }
 
+    /// Install the Core-supplied inbound-webhook seam (`design/11 §3.4.1`, Task
+    /// 315) the serve loop hands every demuxed `0x04` stream's envelope to. Set by
+    /// the Core at `serve_iroh` (mirrors how the `ApiDispatcher` is injected).
+    /// Replaces any prior sink. Until set, a `0x04` stream is dropped with a
+    /// [`WebhookAck::Error`](crate::api::WebhookAck) ack (no Core consumer).
+    pub fn set_webhook_sink(&self, sink: Arc<dyn crate::api::WebhookSink>) {
+        *self.webhook_sink.lock().expect("webhook-sink lock") = Some(sink);
+    }
+
     /// Re-key a naturally-accepted session from its accept-time Iroh
     /// endpoint-id key onto the device **fingerprint** the gRPC auth layer
     /// validated (Task 217.5). Additive seam (not one of the frozen nine): the
@@ -397,6 +412,11 @@ impl IrohTransport {
                     let state = self.state.clone();
                     let pairing_tx = self.pairing_tx.clone();
                     let telemetry_tx = self.telemetry_tx.clone();
+                    let webhook_sink = self
+                        .webhook_sink
+                        .lock()
+                        .expect("webhook-sink lock")
+                        .clone();
                     let sd = shutdown.clone();
                     tokio::spawn(async move {
                         match incoming.await {
@@ -408,6 +428,7 @@ impl IrohTransport {
                                     state,
                                     pairing_tx,
                                     telemetry_tx,
+                                    webhook_sink,
                                     sd,
                                 )
                                 .await
@@ -479,6 +500,7 @@ impl IrohTransport {
 /// Serve every bidi stream on one Iroh connection, demultiplexing on the
 /// channel-tag byte (`design/11 §3.3`, §6.1).
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 async fn serve_conn<D: ApiDispatcher>(
     conn: Connection,
     dispatcher: Arc<D>,
@@ -486,6 +508,7 @@ async fn serve_conn<D: ApiDispatcher>(
     state: Arc<Mutex<TransportState>>,
     pairing_tx: Arc<Mutex<Option<([u8; 32], mpsc::Sender<IrohDuplex>)>>>,
     telemetry_tx: tokio::sync::broadcast::Sender<TransportTelemetry>,
+    webhook_sink: Option<Arc<dyn crate::api::WebhookSink>>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     // The transport keys its registry on the remote Iroh endpoint id so
@@ -621,6 +644,27 @@ async fn serve_conn<D: ApiDispatcher>(
                     }
                 }
             }
+            ChannelTag::Webhook => {
+                // `0x04` is deliberately NON-Noise (`design/11 §3.4.1`): the peer
+                // is GitHub-via-relay, not a paired device. Read the envelope off
+                // the RAW duplex, hand it to the Core's `WebhookSink`, write the
+                // ack back, and close the stream. Bound the whole exchange with a
+                // timeout so a malformed/stalled frame can't pin a per-connection
+                // task. A webhook-path failure must never break the loop — a
+                // failed exchange just drops this one stream.
+                let sink = webhook_sink.clone();
+                tokio::spawn(async move {
+                    if let Err(err) =
+                        tokio::time::timeout(WEBHOOK_EXCHANGE_TIMEOUT, serve_webhook(duplex, sink))
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(TransportError::Channel("webhook exchange timed out".into()))
+                            })
+                    {
+                        tracing::warn!(%err, "iroh webhook: exchange failed; dropping stream");
+                    }
+                });
+            }
         }
     };
 
@@ -648,6 +692,40 @@ async fn serve_conn<D: ApiDispatcher>(
         });
     }
     result
+}
+
+/// Serve one `0x04` Webhook stream (`design/11 §3.4.1`, Task 315): read the
+/// [`WebhookEnvelope`](crate::api::WebhookEnvelope) off the RAW duplex (no Noise),
+/// hand it to the Core's [`WebhookSink`](crate::api::WebhookSink), and write the
+/// ack byte back on the same duplex. When no sink is installed (no Core consumer)
+/// the stream is acked [`WebhookAck::Error`](crate::api::WebhookAck) so the relay
+/// returns a `5xx` and GitHub redelivers; a parse failure (malformed/oversized
+/// frame) is acked the same way before any sink invocation.
+async fn serve_webhook(
+    mut duplex: IrohDuplex,
+    sink: Option<Arc<dyn crate::api::WebhookSink>>,
+) -> Result<()> {
+    use crate::api::WebhookAck;
+
+    let envelope = match crate::webhook::read_envelope(&mut duplex).await {
+        Ok(env) => env,
+        Err(err) => {
+            // Malformed / oversized frame: ack Error (the relay → 5xx) and drop.
+            // We could not parse a valid frame, so this is not a clean 4xx reject.
+            let _ = crate::webhook::write_ack(&mut duplex, WebhookAck::Error).await;
+            return Err(err);
+        }
+    };
+
+    let ack = match sink {
+        Some(sink) => sink.ingest(envelope).await,
+        None => {
+            tracing::warn!("iroh webhook: no WebhookSink installed; acking Error (5xx)");
+            WebhookAck::Error
+        }
+    };
+
+    crate::webhook::write_ack(&mut duplex, ack).await
 }
 
 /// Build the one long-lived Iroh endpoint per `config` (`design/11 §3.1`).

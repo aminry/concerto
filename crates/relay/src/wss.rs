@@ -127,7 +127,7 @@ impl WssTlsConfig {
     /// the PEM cert chain + key. Pure TLS-server setup (no client auth — the
     /// browser authenticates to the *Core* via the inner Noise IK, not to the
     /// relay, `design/11 §3.9`).
-    fn rustls_server_config(&self) -> Result<tokio_rustls::rustls::ServerConfig> {
+    pub(crate) fn rustls_server_config(&self) -> Result<tokio_rustls::rustls::ServerConfig> {
         // PEM parsing via rustls-pki-types' `PemObject` (the maintained path —
         // `rustls-pemfile` is RUSTSEC-2025-0134 unmaintained and is just a thin
         // wrapper over this same code).

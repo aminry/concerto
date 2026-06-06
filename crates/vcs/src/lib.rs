@@ -45,6 +45,7 @@ pub mod jira;
 pub mod linear;
 pub mod provider;
 pub mod rate_limit;
+pub mod webhook;
 pub mod write_back;
 
 #[cfg(feature = "testkit")]
@@ -73,5 +74,9 @@ pub use rate_limit::{
     rate_limited_reset_at, OpPriority, RateLimitPools, RateLimitWarning, ResumeQueue,
     CHECK_RUN_BACKOFF_SECS, DEGRADE_FRACTION, DEPLOYMENT_SECS, PR_STATE_BACKGROUND_SECS,
     PR_STATE_FOREGROUND_SECS, REVIEW_THREAD_SECS, WARN_FRACTION,
+};
+pub use webhook::{
+    parse_event, verify_signature, IngestOutcome, ParsedEvent, WebhookPayload,
+    WebhookProviderSource, WebhookSecretSource,
 };
 pub use write_back::{IssueProvider, IssueRef, IssueTransition, IssueWriteBack, NoopWriteBack};

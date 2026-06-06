@@ -1093,6 +1093,14 @@ pub struct RelayConfig {
     /// and a malformed value fails fast, but this task does **not** stand up a
     /// WSS listener. `None` when unset.
     pub wss_listen_addr: Option<SocketAddr>,
+    /// `WEBHOOK_LISTEN_ADDR` — **Task 315** (the inbound-webhook route,
+    /// `design/11 §3.4.1`). When set, the relay serves
+    /// `POST /webhook/github/<endpoint_id>` over TLS on this address, opening an
+    /// ephemeral `0x04` Webhook bidi to the addressed Core. Additive to the
+    /// FROZEN env surface; a sibling of [`Self::wss_listen_addr`] (a separate
+    /// listener, mirroring its `Option<SocketAddr>` shape). `None` (unset) ⇒ no
+    /// webhook route (Iroh-only / WSS-only relay). A malformed value fails fast.
+    pub webhook_listen_addr: Option<SocketAddr>,
     /// `MAX_ROUTES` — the routing-table cap (`design/11 §6.3`). Registrations
     /// beyond it are rejected (and counted). Defaults to [`DEFAULT_MAX_ROUTES`].
     pub max_routes: usize,
@@ -1191,6 +1199,22 @@ pub struct WssBridgeMetrics {
 }
 ```
 
+### struct `WebhookRouteServer`
+
+```rust
+pub struct WebhookRouteServer {
+    pub(crate) inner: crate::webhook::WebhookRouteInner,
+}
+```
+
+### struct `WebhookRouteMetrics`
+
+```rust
+pub struct WebhookRouteMetrics {
+    pub(crate) inner: crate::metrics::WebhookMetricsInner,
+}
+```
+
 ### struct `Relay`
 
 ```rust
@@ -1278,6 +1302,61 @@ pub enum ChannelTag {
     PushHint = 0x02,
     /// The short-lived pairing channel (Noise XX over the token). Wire byte `0x03`.
     Pairing = 0x03,
+    /// The short-lived, **relay-originated** inbound-webhook channel
+    /// (`design/11 §3.4.1`, Task 315). Wire byte `0x04`. Unlike `0x01`/`0x02`/
+    /// `0x03` this channel does **NOT** establish Noise IK — the peer is
+    /// GitHub-via-relay, not a paired device; its authenticity floor is the
+    /// per-repo HMAC the Core verifies. The relay opens one ephemeral `0x04`
+    /// bidi, writes a single [`WebhookEnvelope`], reads the Core's one-byte ack,
+    /// and closes.
+    Webhook = 0x04,
+}
+```
+
+### struct `WebhookEnvelope`
+
+```rust
+pub struct WebhookEnvelope {
+    /// The `X-GitHub-Delivery` header (UUID string) — the idempotency key.
+    pub delivery_id: String,
+    /// The `X-Hub-Signature-256` header (`sha256=<hex>`), passed through verbatim.
+    pub signature_256: String,
+    /// The `X-GitHub-Event` header (`pull_request`/`check_run`/…).
+    pub event_type: String,
+    /// The addressed Core endpoint id from the `/webhook/github/<endpoint_id>`
+    /// path (carried so the Core can assert it matches its own identity).
+    pub endpoint_id: String,
+    /// The raw GitHub POST body bytes (opaque to the relay).
+    pub body: Vec<u8>,
+}
+```
+
+### enum `WebhookAck`
+
+```rust
+pub enum WebhookAck {
+    /// `0x00` → HTTP `200`: accepted — HMAC verified, processed (or idempotently
+    /// deduped).
+    Accepted = 0x00,
+    /// `0x01` → HTTP `400`: reject — HMAC mismatch, malformed/oversized frame, or
+    /// `endpoint_id` mismatch. Per `design/13 §8` the reason is NOT revealed to
+    /// the sender.
+    Reject = 0x01,
+    /// `0x02` → HTTP `500`: Core-internal error after a valid frame (GitHub
+    /// redelivers).
+    Error = 0x02,
+}
+```
+
+### trait `WebhookSink:`
+
+```rust
+pub trait WebhookSink: Send + Sync + 'static {
+    /// Process one inbound webhook envelope and return the ack the transport
+    /// writes back. The Core's impl runs idempotency → HMAC → parse →
+    /// targeted-invalidate, mapping the outcome to an ack (`design/13 §6.2`).
+    fn ingest(&self, envelope: WebhookEnvelope)
+        -> Pin<Box<dyn Future<Output = WebhookAck> + Send>>;
 }
 ```
 
@@ -1582,6 +1661,14 @@ pub struct IrohTransport {
     /// `transport.events` subject. Held as a `broadcast::Sender` so it can be
     /// published from spawned per-connection tasks with no receiver attached.
     pub(crate) telemetry_tx: tokio::sync::broadcast::Sender<TransportTelemetry>,
+    /// The Core-supplied inbound-webhook seam (`design/11 §3.4.1`, Task 315).
+    /// `None` until [`IrohTransport::set_webhook_sink`] is called (the Core wires
+    /// it at `serve_iroh`); when `None` the serve loop drops a `0x04` stream with
+    /// a [`WebhookAck::Error`] ack (no Core consumer). Held in a `Mutex<Option>`
+    /// so it can be installed after `start` without changing the FROZEN `serve`
+    /// signature.
+    #[allow(clippy::type_complexity)]
+    pub(crate) webhook_sink: Arc<Mutex<Option<Arc<dyn WebhookSink>>>>,
     pub(crate) shutdown: CancellationToken,
 }
 ```

@@ -898,6 +898,16 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         // stream to the shared dispatcher. A watcher task translates the runtime
         // shutdown token into `transport.stop()` (which cancels that internal
         // token + closes the endpoint cleanly — no leaked endpoint).
+        // Task 315: install the Core's inbound-webhook seam BEFORE the serve loop
+        // starts accepting, so any `0x04` Webhook stream is demuxed to the VCS
+        // `ingest_webhook` path (idempotency → constant-time HMAC → parse →
+        // targeted-invalidate) rather than dropped. The sink wraps a `VcsHandle`
+        // equipped with the keychain-backed webhook-secret + re-fetch-provider
+        // seams. Strictly additive: an unwired sink (or any webhook-path failure)
+        // never affects the poll path.
+        iroh.transport
+            .set_webhook_sink(crate::vcs::build_webhook_sink(vcs_handle.clone()));
+
         let serve_transport = Arc::clone(&iroh.transport);
         let stop_transport = Arc::clone(&iroh.transport);
         let stop_shutdown = shutdown.clone();

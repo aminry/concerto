@@ -353,6 +353,38 @@ impl Relay {
         Ok(Some(server))
     }
 
+    /// Start the inbound-webhook route (`design/11 §3.4.1`, Task 315) on the
+    /// `WEBHOOK_LISTEN_ADDR` ([`RelayConfig::webhook_listen_addr`]), sharing
+    /// **this** relay's Prometheus registry (so the webhook counters appear on the
+    /// same `/metrics` endpoint) and its embedded-relay URL (so the route dials
+    /// Cores through the same relay). Returns `Ok(None)` when `WEBHOOK_LISTEN_ADDR`
+    /// is unset (no webhook route — the route is opt-in, a sibling of the WSS
+    /// bridge). The returned [`WebhookRouteServer`] runs in the background until
+    /// its own shutdown / the relay's shared [`CancellationToken`].
+    pub async fn start_webhook_route(
+        &self,
+        tls: crate::api::WssTlsConfig,
+    ) -> Result<Option<crate::api::WebhookRouteServer>> {
+        let Some(listen_addr) = self.inner.config.webhook_listen_addr else {
+            return Ok(None);
+        };
+        let relay_url: iroh::RelayUrl = self
+            .relay_url()
+            .ok_or_else(|| RelayError::Server("relay URL unavailable for webhook route".into()))?
+            .parse()
+            .map_err(|e| RelayError::Server(format!("parsing relay URL for webhook route: {e}")))?;
+        let webhook_metrics = self.inner.metrics.webhook_metrics()?;
+        let server = crate::api::WebhookRouteServer::start(
+            listen_addr,
+            relay_url,
+            tls,
+            webhook_metrics,
+            self.inner.shutdown.clone(),
+        )
+        .await?;
+        Ok(Some(server))
+    }
+
     /// The shared relay state handle (for tests / the WSS bridge's `wss_bridges`
     /// assertions). Exposes the in-memory [`RelayState`] behind the same lock the
     /// relay drives; callers must not hold the lock across `.await`.

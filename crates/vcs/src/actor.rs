@@ -64,6 +64,18 @@ pub struct VcsHandle {
     /// [`VcsHandle::checks_sender`]) share one aggregator + one broadcast.
     /// In-memory only — never persisted (`design/13 §3.6`/R-3).
     checks: ChecksAggregator,
+    /// The per-repo webhook-secret seam (`VcsSecretSlot::WebhookSecret`, D4) the
+    /// `ingest_webhook` HMAC verify reads through (Task 315). `None` until the
+    /// Core wires the keychain source at boot (or a test injects a fake); a
+    /// `None` source ⇒ every webhook is dropped (no secret configured). Held as
+    /// an `Option<Arc<dyn …>>` so the handle stays cheap-clone + keychain-free
+    /// in the leaf crate.
+    webhook_secret_source: Option<Arc<dyn crate::webhook::WebhookSecretSource>>,
+    /// The per-repo provider seam (`design/13 §6.3`) the targeted-invalidation
+    /// path uses to eagerly re-fetch + emit fresh state on a verified webhook
+    /// (Task 315/316). `None` ⇒ the cache rows are still dropped (next read
+    /// refreshes); the webhook stays a strict accelerator.
+    webhook_provider_source: Option<Arc<dyn crate::webhook::WebhookProviderSource>>,
 }
 
 impl VcsHandle {
@@ -74,6 +86,8 @@ impl VcsHandle {
             gh_path: Arc::new(tokio::sync::OnceCell::new()),
             issue_cache: IssueCache::system(),
             checks: ChecksAggregator::new(),
+            webhook_secret_source: None,
+            webhook_provider_source: None,
         }
     }
 
@@ -85,7 +99,24 @@ impl VcsHandle {
             gh_path: Arc::new(tokio::sync::OnceCell::new()),
             issue_cache,
             checks: ChecksAggregator::new(),
+            webhook_secret_source: None,
+            webhook_provider_source: None,
         }
+    }
+
+    /// Install the inbound-webhook seams (Task 315): the per-repo HMAC-secret
+    /// source (`VcsSecretSlot::WebhookSecret`, D4) the verify reads through, and
+    /// the provider source the targeted-invalidation re-fetch uses (`design/13
+    /// §6.3`). The Core wires these at boot; the Tier-2 tests inject fakes.
+    /// Returns the handle for chaining (the wiring site holds the result).
+    pub fn with_webhook_sources(
+        mut self,
+        secret_source: Arc<dyn crate::webhook::WebhookSecretSource>,
+        provider_source: Arc<dyn crate::webhook::WebhookProviderSource>,
+    ) -> Self {
+        self.webhook_secret_source = Some(secret_source);
+        self.webhook_provider_source = Some(provider_source);
+        self
     }
 
     /// The shared review-thread / check-run / deployment aggregator (Task 316).
@@ -385,6 +416,227 @@ impl VcsHandle {
         }
     }
 
+    // ---- Task 315: inbound-webhook ingest ----
+
+    /// Ingest an inbound GitHub webhook for `repo` (`design/13 §5.1`, the FROZEN
+    /// method). The pipeline order is FROZEN (`design/13 §6.2`):
+    ///
+    /// 1. **Idempotency first** — dedupe on `payload.delivery_id` via the
+    ///    restart-surviving `webhook_deliveries` table (migration 0013). A replay
+    ///    is dropped and acked `200` (so GitHub stops retrying); it never touches
+    ///    the secret or the parser.
+    /// 2. **HMAC verify** — recompute HMAC-SHA256 over the raw body with the
+    ///    per-repo `VcsSecretSlot::WebhookSecret` and constant-time-compare
+    ///    against `payload.signature_256`. A mismatch / missing-secret /
+    ///    missing-signature is dropped + logged with NO sender-visible reason
+    ///    (`design/13 §8`) → [`IngestOutcome::Reject`] (`4xx`).
+    /// 3. **Parse** by `event_type`; an unknown/unparseable event is a no-op
+    ///    `200` (forward-compat).
+    /// 4. **Targeted cache invalidation** (`design/13 §6.3`) — drop just the
+    ///    affected PR / check / deployment cache rows; best-effort eager
+    ///    re-fetch + emit via the provider seam. A failure here NEVER breaks the
+    ///    poll path: an authentic-but-uninvalidatable webhook still acks `200`.
+    ///
+    /// Returns the [`IngestOutcome`] the Core maps to the transport ack byte.
+    /// Never errors out of band — every failure mode maps to a defined outcome
+    /// (the FROZEN signature returns `Result`, but the body is total).
+    pub async fn ingest_webhook(
+        &self,
+        repo: &RepositoryId,
+        payload: crate::webhook::WebhookPayload,
+    ) -> Result<crate::webhook::IngestOutcome> {
+        use crate::webhook::{parse_event, verify_signature, IngestOutcome};
+
+        // 1. Idempotency first — cheapest, drops replays without the secret.
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let newly_inserted = {
+            let mut writer = self.persistence.writer().await;
+            match concerto_persist::webhook_deliveries::insert_delivery_if_absent(
+                &mut writer,
+                &payload.delivery_id,
+                &repo.0,
+                now_ms,
+            )
+            .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    // The idempotency DB write failed — a Core-internal error
+                    // after an otherwise-valid frame. Ack 5xx; GitHub redelivers.
+                    tracing::warn!(error = %e, repo = %repo, "webhook: idempotency insert failed");
+                    return Ok(IngestOutcome::Error);
+                }
+            }
+        };
+        if !newly_inserted {
+            // Replay (same delivery_id) — drop, ack 200 so GitHub stops retrying.
+            tracing::debug!(
+                delivery_id = %payload.delivery_id,
+                repo = %repo,
+                "webhook: replay (delivery-id already seen); dropping, ack 200"
+            );
+            return Ok(IngestOutcome::Accepted);
+        }
+
+        // 2. HMAC verify — constant-time, keyed by the per-repo webhook secret.
+        let secret = match &self.webhook_secret_source {
+            Some(src) => match src.webhook_secret(&repo.0).await {
+                Ok(Some(s)) => s,
+                Ok(None) => {
+                    // No secret configured for this repo — the webhook is not
+                    // set up. Drop + log; NO sender-visible reason (`design/13 §8`).
+                    tracing::warn!(repo = %repo, "webhook: no secret configured; dropping (4xx)");
+                    return Ok(IngestOutcome::Reject);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, repo = %repo, "webhook: secret load failed; dropping (5xx)");
+                    return Ok(IngestOutcome::Error);
+                }
+            },
+            None => {
+                tracing::warn!(repo = %repo, "webhook: no secret source wired; dropping (4xx)");
+                return Ok(IngestOutcome::Reject);
+            }
+        };
+        if !verify_signature(&secret, &payload.body, &payload.signature_256) {
+            // Mismatch / missing signature — drop + log, NO sender-visible reason.
+            tracing::warn!(
+                repo = %repo,
+                event = %payload.event_type,
+                "webhook: HMAC verification failed; dropping (4xx)"
+            );
+            return Ok(IngestOutcome::Reject);
+        }
+
+        // 3. Parse the event (a malformed/unknown body is a no-op 200).
+        let parsed = parse_event(&payload.event_type, &payload.body);
+        tracing::debug!(
+            repo = %repo,
+            event = %payload.event_type,
+            delivery_id = %payload.delivery_id,
+            "webhook: verified; ingesting"
+        );
+
+        // 4. Targeted cache invalidation (`design/13 §6.3`). Best-effort — any
+        //    error here is logged and swallowed: the webhook is authentic + the
+        //    delivery is recorded, so the accelerator simply no-op'd. The poll
+        //    path is untouched.
+        if let Err(e) = self.invalidate_for_event(repo, &parsed).await {
+            tracing::warn!(error = %e, repo = %repo, "webhook: targeted invalidation failed (poll path unaffected)");
+        }
+
+        Ok(IngestOutcome::Accepted)
+    }
+
+    /// Apply the §6.3 targeted invalidation for a parsed event: locate the
+    /// affected cache rows (by `(repo, sha)` / PR number / `(repo, ref)`) from the
+    /// `pull_requests` cache, build a provider via the seam, and drive the
+    /// [`ChecksAggregator`] invalidate path (drop + re-fetch + emit). An
+    /// [`ParsedEvent::Unhandled`] event is a no-op.
+    async fn invalidate_for_event(
+        &self,
+        repo: &RepositoryId,
+        parsed: &crate::webhook::ParsedEvent,
+    ) -> Result<()> {
+        use crate::webhook::ParsedEvent;
+
+        // No provider seam wired → drop is a no-op (next poll refreshes). The
+        // delivery is recorded; the accelerator is just inactive.
+        let Some(provider_src) = &self.webhook_provider_source else {
+            return Ok(());
+        };
+
+        let repo_full = self.resolve_repo_full_name(repo).await?;
+        let provider = match provider_src.provider_for(&repo_full).await? {
+            Some(p) => p,
+            None => return Ok(()), // no credential wired → drop is a no-op.
+        };
+
+        match parsed {
+            ParsedEvent::CheckRun { sha } => {
+                // Invalidate the check cache for every workarea that has a cached
+                // PR at this head SHA in this repo (each workarea has its own
+                // `checks.<wa>.<repo>` subject).
+                for (workarea_id, _pr_number) in self.workareas_for_sha(repo, sha).await? {
+                    self.checks
+                        .invalidate_check_runs(&provider, &workarea_id, &repo.0, &repo_full, sha)
+                        .await?;
+                }
+            }
+            ParsedEvent::PullRequest { number } => {
+                for workarea_id in self.workareas_for_pr(repo, *number).await? {
+                    let pr = crate::provider::ProviderPrId::new(repo_full.clone(), *number);
+                    self.checks
+                        .invalidate_threads(&provider, &workarea_id, &repo.0, pr)
+                        .await?;
+                }
+            }
+            ParsedEvent::Deployment { ref_ } => {
+                for (workarea_id, _pr_number) in self.workareas_for_ref(repo, ref_).await? {
+                    self.checks
+                        .invalidate_deployments(&provider, &workarea_id, &repo.0, &repo_full, ref_)
+                        .await?;
+                }
+            }
+            ParsedEvent::Unhandled => {}
+        }
+        Ok(())
+    }
+
+    /// Distinct `(workarea_id, pr_number)` for cached PRs in `repo` at `head_sha`.
+    async fn workareas_for_sha(
+        &self,
+        repo: &RepositoryId,
+        sha: &str,
+    ) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT DISTINCT workarea_id, pr_number FROM pull_requests
+             WHERE repository_id = ? AND head_sha = ?",
+        )
+        .bind(&repo.0)
+        .bind(sha)
+        .fetch_all(self.persistence.readers())
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        Ok(rows)
+    }
+
+    /// Distinct `workarea_id` for cached PRs in `repo` with `pr_number`.
+    async fn workareas_for_pr(&self, repo: &RepositoryId, pr_number: i64) -> Result<Vec<String>> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT workarea_id FROM pull_requests
+             WHERE repository_id = ? AND pr_number = ?",
+        )
+        .bind(&repo.0)
+        .bind(pr_number)
+        .fetch_all(self.persistence.readers())
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        Ok(rows.into_iter().map(|(w,)| w).collect())
+    }
+
+    /// Distinct `(workarea_id, pr_number)` for cached PRs in `repo` whose head
+    /// branch matches `ref_` (a deployment ref is typically a branch name).
+    async fn workareas_for_ref(
+        &self,
+        repo: &RepositoryId,
+        ref_: &str,
+    ) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT DISTINCT workarea_id, pr_number FROM pull_requests
+             WHERE repository_id = ? AND head_ref = ?",
+        )
+        .bind(&repo.0)
+        .bind(ref_)
+        .fetch_all(self.persistence.readers())
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        Ok(rows)
+    }
+
     // ---- internal helpers ----
 
     async fn load_repository(&self, id: &RepositoryId) -> Result<Repository> {
@@ -401,6 +653,33 @@ impl VcsHandle {
                 row.url
             ))
         })
+    }
+
+    /// Resolve the internal [`RepositoryId`] for a GitHub `owner/repo` full name
+    /// (Task 315): scan the `repositories` rows, parse each row's clone URL with
+    /// [`repo_full_name_from_url`], and return the first id whose full name
+    /// matches (case-insensitively — GitHub treats owner/repo as
+    /// case-insensitive). Returns `None` when no tracked repository matches (the
+    /// webhook targets a repo this Core does not manage). Used by the Core's
+    /// `WebhookSink` to map an inbound webhook body's `repository.full_name` onto
+    /// the per-repo HMAC secret + cache rows.
+    pub async fn resolve_repo_id_by_full_name(
+        &self,
+        full_name: &str,
+    ) -> Result<Option<RepositoryId>> {
+        let rows = sqlx::query_as::<_, (String, String)>("SELECT id, url FROM repositories")
+            .fetch_all(self.persistence.readers())
+            .await
+            .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        let target = full_name.to_ascii_lowercase();
+        for (id, url) in rows {
+            if let Some(name) = repo_full_name_from_url(&url) {
+                if name.to_ascii_lowercase() == target {
+                    return Ok(Some(RepositoryId(id)));
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn upsert_from_detail(

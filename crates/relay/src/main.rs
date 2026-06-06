@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use concerto_relay::config::{
     ENV_BANDWIDTH_CAP_PER_ENDPOINT, ENV_MAX_ROUTES, ENV_PROMETHEUS_LISTEN_ADDR,
-    ENV_RELAY_LISTEN_ADDR, ENV_WSS_LISTEN_ADDR,
+    ENV_RELAY_LISTEN_ADDR, ENV_WEBHOOK_LISTEN_ADDR, ENV_WSS_LISTEN_ADDR,
 };
 use concerto_relay::{Relay, RelayConfig, RelayError, WssTlsConfig};
 
@@ -51,6 +51,12 @@ ENVIRONMENT VARIABLES (design/11 §6.3):
     {ENV_WSS_TLS_CERT_PATH}             PEM cert chain the WSS bridge terminates TLS
                                   with. Unset ⇒ ephemeral self-signed (dev only).
     {ENV_WSS_TLS_KEY_PATH}              PEM private key paired with the cert above.
+    {ENV_WEBHOOK_LISTEN_ADDR}           host:port for the inbound-webhook route
+                                  (design/11 §3.4.1). Set ⇒ the relay serves
+                                  POST /webhook/github/<endpoint_id>, opening an
+                                  ephemeral 0x04 Webhook bidi to the addressed
+                                  Core; unset ⇒ no webhook route. Reuses the WSS
+                                  TLS cert/key above.
     {ENV_MAX_ROUTES}                  max routing-table entries (a node handles
                                   10k-50k). Default 50000.
     {ENV_BANDWIDTH_CAP_PER_ENDPOINT}   max forwarded bytes per endpoint. Unset =
@@ -123,20 +129,37 @@ fn main() -> ExitCode {
         // `WSS_LISTEN_ADDR`. Unset ⇒ Iroh-only relay (unchanged from Task 214).
         // Kept alive for the relay's lifetime; its background loop runs until the
         // relay's shutdown token fires.
-        let _wss_bridge = match build_wss_tls() {
-            Ok(tls) => match relay.start_wss_bridge(tls).await {
-                Ok(Some(bridge)) => {
-                    tracing::info!(wss_listen = %bridge.local_addr(), "WSS bridge listening");
-                    Some(bridge)
-                }
-                Ok(None) => None, // WSS_LISTEN_ADDR unset — Iroh-only.
-                Err(e) => {
-                    eprintln!("error: starting WSS bridge: {e}");
-                    return ExitCode::FAILURE;
-                }
-            },
+        // The WSS bridge + the inbound-webhook route (Task 315) share the same
+        // outer TLS material; build it once. Both are opt-in (their respective
+        // listen-addr env vars); unset ⇒ that path is simply not served.
+        let tls = match build_wss_tls() {
+            Ok(tls) => tls,
             Err(e) => {
-                eprintln!("error: loading WSS TLS material: {e}");
+                eprintln!("error: loading WSS/webhook TLS material: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let _wss_bridge = match relay.start_wss_bridge(tls.clone()).await {
+            Ok(Some(bridge)) => {
+                tracing::info!(wss_listen = %bridge.local_addr(), "WSS bridge listening");
+                Some(bridge)
+            }
+            Ok(None) => None, // WSS_LISTEN_ADDR unset — Iroh-only.
+            Err(e) => {
+                eprintln!("error: starting WSS bridge: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        // The inbound-webhook route (`design/11 §3.4.1`): opt-in on
+        // `WEBHOOK_LISTEN_ADDR`. Kept alive for the relay's lifetime.
+        let _webhook_route = match relay.start_webhook_route(tls).await {
+            Ok(Some(route)) => {
+                tracing::info!(webhook_listen = %route.local_addr(), "webhook route listening");
+                Some(route)
+            }
+            Ok(None) => None, // WEBHOOK_LISTEN_ADDR unset — no webhook route.
+            Err(e) => {
+                eprintln!("error: starting webhook route: {e}");
                 return ExitCode::FAILURE;
             }
         };
