@@ -52,16 +52,19 @@ Both backends implement the same `GitHubBackend` trait. Switching is per-call; t
 
 ### 3.2 Webhooks: an HTTPS endpoint on the Core, reachable via relay
 
-**Choice:** The Core's `concerto-relay` route includes a `/webhook/github/<endpoint_id>` URL that GitHub can register against. The relay forwards the webhook payload to the Core over the existing Iroh tunnel.
+**Choice:** The Core's `concerto-relay` route includes a `/webhook/github/<endpoint_id>` URL that GitHub can register against. The relay forwards the webhook to the Core over a dedicated, short-lived transport channel.
+
+> **V1.0 amendment (2026-06-05) — precise relay→Core framing, per `PHASE3_PLANNING §1 D3` + `§4.2`; the wire shape is FROZEN in `design/11 §3.4.1`.**
+> The original wording ("forwards the webhook payload to the Core over the **existing** Iroh tunnel") was imprecise — there may be **no live device session** when a webhook lands, so there is no "existing" tunnel to reuse. The precise framing: on each `POST /webhook/github/<endpoint_id>`, the relay opens an **ephemeral `0x04` Webhook bidi** to the addressed Core's `endpoint_id` (a new reserved channel tag, `design/11 §3.3`/`§3.4.1`; **not** the long-lived `0x01` API channel), writes a single **`WebhookEnvelope`** — `delivery_id` (`X-GitHub-Delivery`), `signature_256` (`X-Hub-Signature-256`, passed through verbatim), `event_type` (`X-GitHub-Event`), `endpoint_id`, and the opaque `body` (≤ 25 MiB) — reads the Core's one-byte ack, and chains the corresponding HTTP status (`200`/`4xx`/`5xx`) back to GitHub. The `0x04` channel runs **no Noise**: the peer is GitHub-via-relay, not a paired device, so authenticity rests entirely on the HMAC the Core verifies (below). See `design/11 §3.4.1` for the FROZEN envelope encoding, the body ceiling, and the ack→HTTP-status mapping Task 315 implements on both the relay-write and Core-read sides.
 
 **Why through the relay:**
 - The Core typically doesn't have a public IP.
 - GitHub requires a stable HTTPS URL.
 - Reusing the relay infrastructure means no new public service.
 
-The webhook secret (HMAC) is rotated per-pairing and verified at the Core; the relay forwards opaque bytes.
+The webhook secret (HMAC) is the per-repo `VcsSecretSlot::WebhookSecret` (Task 313), rotated per-pairing and verified **only at the Core**; the relay forwards opaque body bytes and never holds the secret (`design/11 §3.9` carve-out). The Core recomputes HMAC-SHA256 over the body and constant-time-compares before acting.
 
-If webhook delivery fails (relay unreachable, secret mismatch), the Core falls back to polling.
+If webhook delivery fails (relay unreachable, Core offline, secret mismatch), the Core falls back to polling (`§3.3`). The relay itself **does not buffer** a delivery it cannot route — it drops + logs + returns `5xx` so GitHub redelivers (`§8`, `design/11 §3.4.1`).
 
 ### 3.3 Polling cadence
 
@@ -279,17 +282,21 @@ sequenceDiagram
     participant Trans as Transport (11)
     participant Vcs as VCS Provider
     participant Cache
-    GH->>Relay: POST /webhook/github/<endpoint_id><br/>X-Hub-Signature
-    Relay->>Trans: forward over Iroh stream (opaque bytes)
+    GH->>Relay: POST /webhook/github/<endpoint_id><br/>X-Hub-Signature-256, X-GitHub-Delivery
+    Relay->>Trans: ephemeral 0x04 Webhook bidi: write WebhookEnvelope<br/>(delivery_id, signature_256, event_type, endpoint_id, body)
     Trans->>Vcs: ingest_webhook(repo, payload)
-    Vcs->>Vcs: verify HMAC against webhook_secrets[repo]
+    Vcs->>Vcs: verify HMAC against VcsSecretSlot::WebhookSecret (constant-time)
     Vcs->>Vcs: parse event (PR / check_run / deploy / etc.)
     Vcs->>Cache: update affected rows
-    Vcs-->>Trans: 200 OK to GH (chained back)
+    Vcs-->>Trans: ack byte (0x00=200 / 0x01=4xx / 0x02=5xx)
+    Trans-->>Relay: ack on the same 0x04 bidi
+    Relay-->>GH: HTTP status (chained back), then close bidi
     Vcs-->>Bcast: emit checks.<workspace_id> event
 ```
 
-Webhook payloads are validated before update. Replay attacks are blocked by the GitHub delivery-id idempotency cache (1h TTL).
+> **V1.0 amendment (2026-06-05):** the `Relay→Trans` arrow is the **ephemeral `0x04` Webhook bidi** carrying the `WebhookEnvelope` (FROZEN in `design/11 §3.4.1` per `PHASE3_PLANNING §1 D3`/`§4.2`), **not** the long-lived API tunnel. The Core's status is returned as a **one-byte ack** on the same bidi, which the relay maps to the HTTP status it chains back to GitHub (`0x00`→`200`, `0x01`→`4xx`, `0x02`→`5xx`), then closes the stream.
+
+Webhook payloads are validated before update. Replay attacks are blocked by the GitHub delivery-id idempotency cache — the persistent `webhook_deliveries` table (migration `0013`, Task 315) keyed on `delivery_id`, so dedup survives a Core restart.
 
 ### 6.3 Cache invalidation
 
@@ -373,8 +380,9 @@ sequenceDiagram
 |---|---|---|
 | Auth failure (PAT invalid) | 401 from GH | Surface "GitHub auth expired"; UI walks user through PAT setup |
 | Rate limit hit | 403 X-RateLimit-Remaining=0 | Queue calls until reset; UI banner; degrade polling cadence |
-| Webhook HMAC mismatch | sig verify fail | Drop payload; log; do NOT inform sender (could be probe) |
-| Webhook stale (replay) | Delivery-ID seen | Drop |
+| Webhook HMAC mismatch | sig verify fail | Drop payload; log; do NOT inform sender (could be probe). Core acks `0x01`→ relay returns `400` to GitHub (`design/11 §3.4.1`) |
+| Webhook stale (replay) | Delivery-ID seen (`webhook_deliveries`, migration `0013`) | Drop; Core acks `0x00`→`200` (idempotent success, so GitHub stops redelivering) |
+| **Offline Core when a webhook lands** (V1.0 amendment 2026-06-05, per `PHASE3_PLANNING §1 D3`) | Relay's `0x04` dial to `<endpoint_id>` fails (no route / Core down / dial timeout) | Relay **drops + logs** the attempt (endpoint id + delivery id + timestamp; never the body) and returns `502`/`503` to GitHub → GitHub redelivers per its own retry policy. The relay **does not buffer** (near-stateless, `design/11 §3.2`/`§3.4.1`). The Core's standing fallback for the gap is polling (`§3.3`). |
 | Network timeout to GH | reqwest timeout | Retry with backoff (max 3); fall back to cached state with "stale" badge |
 | GitHub API schema change (new fields) | octocrab handles gracefully (unknown fields ignored) | OK — forward-compat works |
 | GitHub API schema removal | Field missing | Surface to user; degrade gracefully (omit affected info) |
