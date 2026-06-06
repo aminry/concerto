@@ -333,6 +333,13 @@ pub struct Repository {
     /// Repository-level sparse-cone defaults, a JSON `["<cone_path>", …]`
     /// array (Task 302, `design/02 §3.2`). Defaults to `"[]"`.
     pub cone_defaults_json: String,
+    /// Per-repo action preferences, a JSON object keyed by the seven action
+    /// names (Task 310, `design/04 §3.13`, migration 0011) — the local-DB
+    /// layer of the settings precedence chain. Defaults to `"{}"`. Read by
+    /// the `ProjectSettingsResolver` as the per-repo `action_prefs.<action>`
+    /// layer (managed > checked-in `.concerto/action_prefs.toml` > this >
+    /// default).
+    pub action_prefs_json: String,
     pub last_fetch_at: Option<i64>,
     /// PID of the `git fsmonitor--daemon` process supervising this repo,
     /// or `None` when no daemon is recorded. Task 28 writes this via

@@ -773,6 +773,27 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         }
     }
 
+    // Task 310: resolve every project's three-layer settings
+    // (managed > checked-in > local DB > defaults) and emit one
+    // `ProjectSettingsResolved{project_id, field, value_source}` audit per
+    // field, mirroring how `load_managed_policy_audited` is called once at
+    // boot (`design/03 §3.13`). The per-machine opt-out config + the
+    // checked-in `project_settings.json` / `action_prefs.toml` files live
+    // under `~/.concerto/` + each repo's worktree `.concerto/`. Best-effort:
+    // a resolution failure for one project logs + skips; it never gates boot.
+    let settings_home_concerto = home_dir.join(".concerto");
+    match crate::settings::resolve_and_audit_all_projects(
+        &persistence,
+        config_dir.as_path(),
+        &settings_home_concerto,
+        &audit_writer,
+    )
+    .await
+    {
+        Ok(n) => tracing::debug!(events = n, "project-settings boot resolution complete"),
+        Err(e) => tracing::warn!(error = %e, "project-settings boot resolution failed"),
+    }
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
     // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`

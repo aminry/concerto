@@ -33,6 +33,7 @@ pub mod runtime;
 #[cfg(unix)]
 pub mod scheduler;
 pub mod security;
+pub mod settings;
 pub mod signals;
 pub mod skills;
 #[cfg(unix)]
