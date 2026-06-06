@@ -10,14 +10,20 @@
 //!   that emits `workspace.events: created / archived` for the future
 //!   `Streams` service to subscribe to (Task 24).
 //!
-//! ## V0.1 contract (locked by Task 19)
+//! ## Contract (Task 19, relaxed to 1..N by Task 306)
 //!
-//! - `create_workspace` enforces `repository_ids.len() == 1` and
-//!   returns [`SINGLE_REPO_WIRE_CODE`] inside an [`Error::Validation`]
-//!   if violated. The gRPC handler maps this to `INVALID_ARGUMENT`.
+//! - `create_workspace` accepts **1..N** repositories (Task 306 dropped
+//!   the V0.1 single-repo guard). It rejects an empty set with
+//!   [`NO_REPOS_WIRE_CODE`] and a repeated id with
+//!   [`DUPLICATE_REPO_WIRE_CODE`], both inside an [`Error::Validation`]
+//!   the gRPC handler maps to `INVALID_ARGUMENT`. [`SINGLE_REPO_WIRE_CODE`]
+//!   is retired as an active rejection (kept defined for one release for
+//!   client back-compat; no code path emits it).
 //! - `name` must derive to a non-empty slug.
 //! - `project_id` must exist in `projects`.
 //! - Every `repository_id` must exist and belong to that `project_id`.
+//! - `update_workspace_repos` re-validates + re-positions the set and
+//!   emits `workspace.events: repos updated` (`design/03 §5.1`, §6.1).
 //! - Slug collisions inside a project auto-suffix `-2`, `-3`, … with a
 //!   bound on retries to stop a runaway loop.
 
@@ -35,11 +41,26 @@ use tokio::sync::broadcast;
 
 use crate::supervisor::{Actor, ActorContext};
 
-/// Wire-code surfaced inside the [`Error::Validation`] payload when a
-/// caller requests a multi-repo workspace in V0.1. The handler maps
-/// this to `INVALID_ARGUMENT` and ships it in
-/// `ConcertoError.code` for clients to switch on.
+/// Wire-code the V0.1 Core surfaced when a caller requested a multi-repo
+/// workspace. **Retired by Task 306** — multi-repo workspaces are now
+/// supported, so no code path emits this. Kept defined for one release so
+/// clients still switching on the string compile; remove once every
+/// client has migrated.
+#[deprecated(
+    since = "1.0.0",
+    note = "multi-repo workspaces are supported as of Task 306; this rejection no longer fires"
+)]
 pub const SINGLE_REPO_WIRE_CODE: &str = "workspace.v0_single_repo_only";
+
+/// Wire-code surfaced inside the [`Error::Validation`] payload when a
+/// caller requests a workspace with an **empty** repository set (Task
+/// 306). The handler maps this to `INVALID_ARGUMENT`.
+pub const NO_REPOS_WIRE_CODE: &str = "workspace.no_repos";
+
+/// Wire-code surfaced inside the [`Error::Validation`] payload when a
+/// caller lists the **same** repository id twice (Task 306). The handler
+/// maps this to `INVALID_ARGUMENT`.
+pub const DUPLICATE_REPO_WIRE_CODE: &str = "workspace.duplicate_repo";
 
 /// Maximum number of slug-suffix retries before giving up. 100 keeps
 /// runaway loops bounded; the user-visible UI would never realistically
@@ -71,6 +92,11 @@ pub enum WorkspaceEvent {
     /// only clears `workspaces.archived_at`; workareas remain
     /// individually archived.
     Restored(Workspace),
+    /// A workspace's repository set was edited (Task 306,
+    /// `design/03 §5.3` "repos updated"). Payload is the workspace row;
+    /// subscribers re-read `workspace_repos` (ordered by `position`) for
+    /// the new set.
+    ReposUpdated(Workspace),
 }
 
 /// Cloneable handle to the Workspace Manager's shared state.
@@ -163,12 +189,6 @@ impl WorkspaceManager {
         if name.is_empty() {
             return Err(Error::Validation("name is required".into()));
         }
-        if repository_ids.len() != 1 {
-            return Err(Error::Validation(format!(
-                "{SINGLE_REPO_WIRE_CODE}: V0.1 supports exactly one repository per workspace; got {}",
-                repository_ids.len()
-            )));
-        }
         let base_slug = derive_slug(name);
         if base_slug.is_empty() {
             return Err(Error::Validation(format!(
@@ -189,22 +209,12 @@ impl WorkspaceManager {
             return Err(Error::NotFound(format!("project {project_id} not found")));
         }
 
-        // Repositories must exist and belong to the project.
-        let repos =
-            concerto_persist::repositories::list_by_project(self.persistence.readers(), project_id)
-                .await?;
-        let mut repo_ids = Vec::with_capacity(repository_ids.len());
-        for rid in repository_ids {
-            let row = repos.iter().find(|r: &&Repository| r.id.as_str() == rid);
-            match row {
-                Some(r) => repo_ids.push(r.id.clone()),
-                None => {
-                    return Err(Error::NotFound(format!(
-                        "repository {rid} not found in project {project_id}"
-                    )));
-                }
-            }
-        }
+        // Validate the 1..N repo set: non-empty, no dups, each exists +
+        // belongs to the project. `repo_ids` preserves the caller's order
+        // (= the declaration order persisted as `workspace_repos.position`).
+        let repo_ids = self
+            .validate_workspace_repos(project_id, repository_ids)
+            .await?;
 
         // ---- Persistence: one transaction, slug-collision retry ------------
         let now_ms = now_unix_ms();
@@ -302,6 +312,99 @@ impl WorkspaceManager {
             );
         }
         Ok(workspace)
+    }
+
+    /// Validate a workspace's 1..N repository set (Task 306).
+    ///
+    /// Checks, in order (returning the first failure for a good error):
+    /// 1. **non-empty** — an empty set is rejected with
+    ///    [`NO_REPOS_WIRE_CODE`] (`INVALID_ARGUMENT`).
+    /// 2. **no duplicates** — a repeated id is rejected with
+    ///    [`DUPLICATE_REPO_WIRE_CODE`] (`INVALID_ARGUMENT`).
+    /// 3. **exists + belongs** — every id must exist in `repositories`
+    ///    AND have `project_id == project_id` (else `NotFound`).
+    ///
+    /// Returns the resolved [`RepositoryId`]s **in caller order**, which
+    /// is the declaration order persisted as `workspace_repos.position`.
+    /// Shared by [`Self::create_workspace`] and
+    /// [`Self::update_workspace_repos`].
+    async fn validate_workspace_repos(
+        &self,
+        project_id: &str,
+        repository_ids: &[String],
+    ) -> Result<Vec<RepositoryId>> {
+        if repository_ids.is_empty() {
+            return Err(Error::Validation(format!(
+                "{NO_REPOS_WIRE_CODE}: a workspace must declare at least one repository"
+            )));
+        }
+        // Reject duplicates (a repo listed twice).
+        let mut seen = std::collections::HashSet::with_capacity(repository_ids.len());
+        for rid in repository_ids {
+            if !seen.insert(rid.as_str()) {
+                return Err(Error::Validation(format!(
+                    "{DUPLICATE_REPO_WIRE_CODE}: repository {rid} is listed more than once"
+                )));
+            }
+        }
+        // Each must exist and belong to the project.
+        let repos =
+            concerto_persist::repositories::list_by_project(self.persistence.readers(), project_id)
+                .await?;
+        let mut repo_ids = Vec::with_capacity(repository_ids.len());
+        for rid in repository_ids {
+            match repos.iter().find(|r: &&Repository| r.id.as_str() == rid) {
+                Some(r) => repo_ids.push(r.id.clone()),
+                None => {
+                    return Err(Error::NotFound(format!(
+                        "repository {rid} not found in project {project_id}"
+                    )));
+                }
+            }
+        }
+        Ok(repo_ids)
+    }
+
+    /// Replace a workspace's repository set (`design/03 §5.1`, §6.1 —
+    /// "edit the repo list"; Task 306).
+    ///
+    /// Re-validates the set (non-empty / no-dups / each exists + belongs
+    /// to the workspace's project) via [`Self::validate_workspace_repos`],
+    /// then re-positions it: `workspace_repos.position` = the index of
+    /// each id in `repository_ids` (declaration order). Emits a
+    /// [`WorkspaceEvent::Created`]-sibling `repos updated` event on the
+    /// `workspace.events` broadcast.
+    ///
+    /// Note: this edits the *declared* repo set; it materializes nothing
+    /// on disk. Existing workareas keep their already-materialized
+    /// worktrees; the new set takes effect for workareas created after.
+    pub async fn update_workspace_repos(
+        &self,
+        id: &WorkspaceId,
+        repository_ids: &[String],
+    ) -> Result<()> {
+        let workspace = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workspace {id} not found")))?;
+
+        let repo_ids = self
+            .validate_workspace_repos(&workspace.project_id, repository_ids)
+            .await?;
+
+        let mut writer = self.persistence.writer().await;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::workspaces::update_repos(&mut tx, id, &repo_ids).await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        drop(writer);
+
+        // `workspace.events: repos updated` (`design/03 §5.3`). The
+        // payload carries the post-update workspace row, mirroring
+        // `Created` / `Restored`. (A typed audit-log `AuditKind` for repo
+        // edits is deferred — `audit/event.rs` is out of this task's
+        // Outputs; the broadcast event is the §5.3 surface.)
+        let _ = self.events.send(WorkspaceEvent::ReposUpdated(workspace));
+        Ok(())
     }
 
     /// Look up a workspace by id.
@@ -603,6 +706,141 @@ fn _path_marker(_p: PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a `WorkspaceManager` over a fresh tempdir SQLite DB plus a
+    /// seeded project + N repos, and return the manager, the project id,
+    /// and the repo ids (Task 306 helper).
+    async fn seed_manager(
+        repo_names: &[&str],
+    ) -> (tempfile::TempDir, WorkspaceManager, String, Vec<String>) {
+        use concerto_persist::{
+            NewProject, NewRepository, Persistence, PersistenceConfig, ProjectId, RepositoryId,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let persist = Persistence::open(PersistenceConfig {
+            db_path: dir.path().join("test.db"),
+            max_readers: 2,
+        })
+        .await
+        .expect("open");
+
+        let project_id = "proj-1".to_string();
+        let mut repo_ids = Vec::new();
+        {
+            let mut w = persist.writer().await;
+            concerto_persist::projects::insert(
+                &mut w,
+                NewProject {
+                    id: ProjectId(project_id.clone()),
+                    name: "Test".to_string(),
+                    icon: None,
+                    created_at: 1,
+                },
+            )
+            .await
+            .expect("insert project");
+            for name in repo_names {
+                let rid = format!("repo-{name}");
+                concerto_persist::repositories::insert(
+                    &mut w,
+                    NewRepository {
+                        id: RepositoryId(rid.clone()),
+                        project_id: project_id.clone(),
+                        name: name.to_string(),
+                        url: format!("file:///tmp/{name}.git"),
+                        local_path: format!("/tmp/repos/{name}"),
+                        clone_strategy: "full".to_string(),
+                        default_branch: "main".to_string(),
+                    },
+                )
+                .await
+                .expect("insert repo");
+                repo_ids.push(rid);
+            }
+        }
+
+        let manager = WorkspaceManager::new(Arc::new(persist), Arc::new(dir.path().to_path_buf()));
+        (dir, manager, project_id, repo_ids)
+    }
+
+    #[tokio::test]
+    async fn create_workspace_accepts_multi_repo_in_declaration_order() {
+        let (_dir, mgr, project_id, repos) = seed_manager(&["api", "android", "ios"]).await;
+        let ws = mgr
+            .create_workspace(&project_id, "Cross Platform", &repos, None, None)
+            .await
+            .expect("multi-repo create");
+        let listed = mgr.list_repos(&ws.id).await.expect("list_repos");
+        let listed_strs: Vec<String> = listed.iter().map(|r| r.0.clone()).collect();
+        assert_eq!(listed_strs, repos, "repos returned in declaration order");
+    }
+
+    #[tokio::test]
+    async fn create_workspace_rejects_empty_dup_and_foreign() {
+        let (_dir, mgr, project_id, repos) = seed_manager(&["api"]).await;
+
+        // Empty.
+        let empty = mgr
+            .create_workspace(&project_id, "Empty", &[], None, None)
+            .await
+            .expect_err("empty set rejected");
+        assert!(matches!(empty, Error::Validation(m) if m.contains(NO_REPOS_WIRE_CODE)));
+
+        // Duplicate.
+        let dup = mgr
+            .create_workspace(
+                &project_id,
+                "Dup",
+                &[repos[0].clone(), repos[0].clone()],
+                None,
+                None,
+            )
+            .await
+            .expect_err("duplicate rejected");
+        assert!(matches!(dup, Error::Validation(m) if m.contains(DUPLICATE_REPO_WIRE_CODE)));
+
+        // Foreign / unknown.
+        let foreign = mgr
+            .create_workspace(&project_id, "Foreign", &["nope".to_string()], None, None)
+            .await
+            .expect_err("foreign rejected");
+        assert!(matches!(foreign, Error::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_repos_revalidates_and_repositions() {
+        let (_dir, mgr, project_id, repos) = seed_manager(&["api", "android", "ios"]).await;
+        let ws = mgr
+            .create_workspace(&project_id, "WS", &repos, None, None)
+            .await
+            .expect("create");
+
+        // Reorder + reduce to [ios, api].
+        let reordered = vec![repos[2].clone(), repos[0].clone()];
+        mgr.update_workspace_repos(&ws.id, &reordered)
+            .await
+            .expect("update_workspace_repos");
+        let listed: Vec<String> = mgr
+            .list_repos(&ws.id)
+            .await
+            .expect("list_repos")
+            .iter()
+            .map(|r| r.0.clone())
+            .collect();
+        assert_eq!(listed, reordered, "set re-positioned in new order");
+
+        // Re-validation still applies: empty + dup rejected.
+        assert!(matches!(
+            mgr.update_workspace_repos(&ws.id, &[]).await,
+            Err(Error::Validation(_))
+        ));
+        assert!(matches!(
+            mgr.update_workspace_repos(&ws.id, &[repos[0].clone(), repos[0].clone()])
+                .await,
+            Err(Error::Validation(_))
+        ));
+    }
 
     #[test]
     fn slug_basic() {

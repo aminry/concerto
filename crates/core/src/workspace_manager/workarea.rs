@@ -4,10 +4,18 @@
 //! the [`WorkareaManager`] handle owns workarea lifecycle (create / get /
 //! list / archive), worktree setup, and the `.context/` skeleton.
 //!
-//! ## V0.1 contract (locked by Task 20)
+//! ## Contract (Task 20, generalized to 1..N repos by Task 306)
 //!
 //! - `create_workarea` validates the workspace exists, is not archived,
-//!   and has exactly one repository attached.
+//!   and has **at least one** repository attached (a 0-repo workspace is
+//!   rejected per `design/03 §8`). It then materializes **one worktree
+//!   per repo** (in `workspace_repos.position` order) inside a single
+//!   workarea root: `git worktree add` + per-repo files-to-copy +
+//!   per-repo `workarea_repos` row, with the `.context/` skeleton laid
+//!   down once at the root. All DB writes commit in one transaction; any
+//!   per-repo `git worktree add` failure aborts the whole create and
+//!   cleans up every worktree built so far (the soft `partial` path is
+//!   Task 307).
 //! - Composer-name allocation picks the lowest-index name in
 //!   [`crate::workspace_manager::COMPOSERS`] not already in use within
 //!   the workspace; falls back to `<composer>-N` when the pool is
@@ -23,12 +31,14 @@
 //!   │   ├── PROMPT.md
 //!   │   ├── todos.md
 //!   │   └── scratch/
-//!   └── <repo.name>/        ← git worktree add target
+//!   ├── <repo[0].name>/     ← git worktree add target (one per repo)
+//!   ├── <repo[1].name>/
+//!   └── …
 //!   ```
 //! - `.context/` is appended to each worktree's `.git/info/exclude` so
 //!   agent scratch is not tracked.
-//! - Workarea row + `workarea_repos` row + `created → active` status
-//!   transition all commit in one transaction.
+//! - Workarea row + one `workarea_repos` row **per repo** + `created →
+//!   active` status transition all commit in one transaction.
 //! - On success, [`WorkareaEvent::Created`] is published on the
 //!   broadcast channel.
 
@@ -161,16 +171,24 @@ impl WorkareaManager {
 
     /// Create a workarea.
     ///
-    /// Steps (per `design/03 §3.3` + §6.2):
-    /// 1. Validate workspace exists + not archived; resolve its repo.
-    /// 2. Ensure the repo is cloned on disk (via [`RepoManager`]).
+    /// Steps (per `design/03 §3.3` + §6.2; generalized to 1..N repos by
+    /// Task 306):
+    /// 1. Validate workspace exists + not archived; resolve its repos in
+    ///    `workspace_repos.position` order (≥1 required, `design/03 §8`).
+    /// 2. Ensure each repo is cloned on disk (via [`RepoManager`]).
     /// 3. Allocate a composer name + branch + worktree root path.
-    /// 4. Run `git worktree add` into `<worktree_root>/<repo.name>/`.
-    /// 5. Lay down `.context/{PROMPT.md, todos.md, scratch/}`.
-    /// 6. Append `.context/` to the worktree's `.git/info/exclude`.
-    /// 7. Persist `workareas` (status `"created"`) + `workarea_repos` +
-    ///    transition to `"active"` in one transaction.
-    /// 8. Emit [`WorkareaEvent::Created`].
+    /// 4. Lay down `.context/{PROMPT.md, todos.md, scratch/}` once at the
+    ///    workarea root.
+    /// 5. For **each** repo (in position order): run `git worktree add`
+    ///    into `<worktree_root>/<repo.name>/`, append `.context/` to that
+    ///    worktree's `.git/info/exclude`, and apply files-to-copy.
+    /// 6. Persist `workareas` (status `"created"`) + one `workarea_repos`
+    ///    row per repo + transition to `"active"` in one transaction.
+    /// 7. Emit [`WorkareaEvent::Created`].
+    ///
+    /// Any per-repo `git worktree add` failure aborts the whole create
+    /// and removes every worktree built so far (the soft `partial`
+    /// path is Task 307).
     pub async fn create_workarea(
         &self,
         workspace_id: &str,
@@ -194,42 +212,53 @@ impl WorkareaManager {
             )));
         }
 
-        // V0.1: exactly one repository attached.
+        // Task 306: 1..N repositories attached, in `workspace_repos.position`
+        // order (the FROZEN declaration order). A 0-repo workspace is
+        // rejected here per `design/03 §8` (such a workspace can't
+        // materialize any worktree).
         let repo_ids =
             concerto_persist::workspaces::list_repos(self.persistence.readers(), &ws_id).await?;
-        if repo_ids.len() != 1 {
+        if repo_ids.is_empty() {
             return Err(Error::Validation(format!(
-                "workarea.v0_single_repo_only: V0.1 supports workspaces with exactly one repository; workspace {workspace_id} has {}",
-                repo_ids.len()
+                "workspace.no_repos: workspace {workspace_id} has no repositories attached; \
+                 add at least one repo before creating a workarea"
             )));
         }
-        let repo_id = &repo_ids[0];
-        let repo: Repository =
-            concerto_persist::repositories::get(self.persistence.readers(), repo_id)
+        // Resolve each repo row (in position order). The `local_path` /
+        // `name` drive the per-repo clone + worktree path below.
+        let mut repos: Vec<Repository> = Vec::with_capacity(repo_ids.len());
+        for repo_id in &repo_ids {
+            let repo = concerto_persist::repositories::get(self.persistence.readers(), repo_id)
                 .await?
                 .ok_or_else(|| {
                     Error::Internal(format!(
                         "workspace_repos points at non-existent repository {repo_id}"
                     ))
                 })?;
+            repos.push(repo);
+        }
 
-        // Ensure the repo is cloned on disk. If `local_path/.git`
+        // Ensure every repo is cloned on disk. If `local_path/.git`
         // already exists, the prior clone is reused. Otherwise we clone
         // synchronously (no progress sink — workarea creation is a
         // single user-facing action, the gRPC reply is the progress).
-        let repo_local = PathBuf::from(&repo.local_path);
-        if !repo_local.join(".git").exists() && !repo_local.join("HEAD").exists() {
-            // Not a clone yet. Drive the per-repo lock + clone via the
-            // RepoManager so a concurrent create_workarea on the same
-            // repo serializes. `clone_repo` is idempotent at the FS
-            // layer (git refuses if dest exists & non-empty).
-            self.repo_manager.clone_repo(&repo.id, None).await?;
+        // Driven once up-front (outside the composer-retry loop) so a
+        // collision retry doesn't re-clone.
+        for repo in &repos {
+            let repo_local = PathBuf::from(&repo.local_path);
+            if !repo_local.join(".git").exists() && !repo_local.join("HEAD").exists() {
+                // Not a clone yet. Drive the per-repo lock + clone via the
+                // RepoManager so a concurrent create_workarea on the same
+                // repo serializes. `clone_repo` is idempotent at the FS
+                // layer (git refuses if dest exists & non-empty).
+                self.repo_manager.clone_repo(&repo.id, None).await?;
+            }
         }
 
         // Allocate composer name with collision retry. The loop body
-        // computes the candidate, builds on-disk artefacts, then opens
-        // a transaction. On UNIQUE violation we roll back, clean up the
-        // FS work, and try the next name.
+        // computes the candidate, builds on-disk artefacts for **every**
+        // repo, then opens a transaction. On UNIQUE violation we roll
+        // back, clean up the FS work for all repos, and try the next name.
         let now_ms = now_unix_ms();
         let mut attempt: u32 = 0;
         let workarea = loop {
@@ -259,48 +288,92 @@ impl WorkareaManager {
                 .join("workspaces")
                 .join(&workspace.slug)
                 .join(&composer);
-            let repo_worktree = worktree_root.join(&repo.name);
 
             // 1. Ensure the workarea root directory exists. If a prior
             //    failed attempt left stuff behind we'll discover and
             //    remove it before re-trying.
             tokio::fs::create_dir_all(&worktree_root).await?;
 
-            // 2. Run `git worktree add` for the repo. This is the
-            //    expensive step.
-            concerto_gix_wrap::worktree_add(&repo_local, &branch, &repo_worktree).await?;
-
-            // 3. Create `.context/` skeleton (Task 30 expansion: adds
-            //    `checkpoints/` and seeds PROMPT.md / todos.md bodies).
+            // 2. Create the `.context/` skeleton ONCE at the workarea
+            //    root (Task 30 expansion: adds `checkpoints/` and seeds
+            //    PROMPT.md / todos.md bodies). Shared across all repos.
             context_dir::apply(&worktree_root).await?;
 
-            // 4. Append `.context/` to the worktree's
-            //    `.git/info/exclude`. Each worktree owns its own
-            //    `.git/info/`; the worktree's `.git` is a pointer file,
-            //    so we resolve the real `info/` via git's own layout.
-            append_context_to_git_exclude(&repo_worktree).await?;
+            // 3. For each repo (in position order): worktree add +
+            //    exclude + files-to-copy. Track the per-repo worktree
+            //    paths so a per-repo failure (or a later UNIQUE collision)
+            //    can clean up every worktree built so far. A `git worktree
+            //    add` failure aborts the whole create (the soft `partial`
+            //    path is Task 307).
+            let mut built: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(repos.len());
+            let mut worktree_setup_err: Option<Error> = None;
+            for repo in &repos {
+                let repo_local = PathBuf::from(&repo.local_path);
+                let repo_worktree = worktree_root.join(&repo.name);
 
-            // 5. Apply files-to-copy rules from
-            //    `<repo.local_path>/.concerto/.worktreeinclude` into
-            //    this repo's new worktree. Missing rules file → no-op.
-            //    The `ignore` walker is sync; offload to a blocking
-            //    pool so the reactor stays responsive on big trees.
-            //    V0.1 single-repo simplification: the project's
-            //    reference worktree is the workspace's only repo
-            //    (`repo.local_path`).
-            let project_root = repo_local.clone();
-            let dest_root = repo_worktree.clone();
-            let applied_count = tokio::task::spawn_blocking(move || {
-                files_to_copy::apply(&project_root, &dest_root)
-            })
-            .await
-            .map_err(|e| Error::Internal(format!("files_to_copy join: {e}")))??;
-            tracing::debug!(applied = applied_count, "files_to_copy applied");
+                // 3a. Run `git worktree add` for this repo (the expensive
+                //     step). On failure, stop and abort the whole create.
+                if let Err(e) =
+                    concerto_gix_wrap::worktree_add(&repo_local, &branch, &repo_worktree).await
+                {
+                    worktree_setup_err = Some(e);
+                    break;
+                }
+                built.push((repo_local.clone(), repo_worktree.clone()));
 
-            // 6. Persist row + junction + status transition in one tx.
+                // 3b. Append `.context/` to this worktree's
+                //     `.git/info/exclude`. Each worktree owns its own
+                //     `.git/info/`; the worktree's `.git` is a pointer
+                //     file, so we resolve the real `info/` via git's
+                //     own layout.
+                if let Err(e) = append_context_to_git_exclude(&repo_worktree).await {
+                    worktree_setup_err = Some(e);
+                    break;
+                }
+
+                // 3c. Apply files-to-copy rules from this repo's
+                //     `.concerto/.worktreeinclude` into its new worktree.
+                //     Missing rules file → no-op. The `ignore` walker is
+                //     sync; offload to a blocking pool. Per-repo reference
+                //     worktree = that repo's `local_path` (the multi-repo
+                //     reference-repo selection for cross-repo includes is
+                //     Task 309's job — `workspace_repos.position` 0 is the
+                //     reference; this task keeps the existing per-repo
+                //     call working).
+                let project_root = repo_local.clone();
+                let dest_root = repo_worktree.clone();
+                let applied = tokio::task::spawn_blocking(move || {
+                    files_to_copy::apply(&project_root, &dest_root)
+                })
+                .await
+                .map_err(|e| Error::Internal(format!("files_to_copy join: {e}")));
+                match applied {
+                    Ok(Ok(applied_count)) => {
+                        tracing::debug!(
+                            repo = %repo.id,
+                            applied = applied_count,
+                            "files_to_copy applied"
+                        );
+                    }
+                    Ok(Err(e)) | Err(e) => {
+                        worktree_setup_err = Some(e);
+                        break;
+                    }
+                }
+            }
+
+            // If any per-repo step failed, clean up every worktree built
+            // so far + the root, then propagate the error (whole-create
+            // abort; no `partial` — Task 307).
+            if let Some(e) = worktree_setup_err {
+                cleanup_worktrees(&built, &worktree_root).await;
+                return Err(e);
+            }
+
+            // 4. Persist row + one junction row per repo + status
+            //    transition in one tx.
             let id = WorkareaId(uuid::Uuid::now_v7().to_string());
             let worktree_root_str = worktree_root.to_string_lossy().into_owned();
-            let worktree_path_str = repo_worktree.to_string_lossy().into_owned();
 
             let mut writer = self.persistence.writer().await;
             let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
@@ -318,29 +391,32 @@ impl WorkareaManager {
 
             match concerto_persist::workareas::insert(&mut tx, new_workarea).await {
                 Ok(_) => {
-                    concerto_persist::workareas::insert_workarea_repo(
-                        &mut tx,
-                        NewWorkareaRepo {
-                            workarea_id: id.clone(),
-                            repository_id: repo.id.clone(),
-                            worktree_path: worktree_path_str.clone(),
-                            branch_override: None,
-                            // Task 302: the single-repo V0.1 create path seeds
-                            // the default-empty cone (`"[]"`). The multi-repo
-                            // create path (306/307) will resolve + seed the
-                            // three-layer inherited cone here instead.
-                            sparse_cones_json: NewWorkareaRepo::empty_cones(),
-                        },
-                    )
-                    .await?;
+                    // One `workarea_repos` row per repo (in position order).
+                    for repo in &repos {
+                        let repo_worktree = worktree_root.join(&repo.name);
+                        concerto_persist::workareas::insert_workarea_repo(
+                            &mut tx,
+                            NewWorkareaRepo {
+                                workarea_id: id.clone(),
+                                repository_id: repo.id.clone(),
+                                worktree_path: repo_worktree.to_string_lossy().into_owned(),
+                                branch_override: None,
+                                // Task 302: seed the default-empty cone
+                                // (`"[]"`) per repo. The three-layer
+                                // inherited cone resolution + seeding is
+                                // owned by 302/305; this task wires the
+                                // per-repo loop.
+                                sparse_cones_json: NewWorkareaRepo::empty_cones(),
+                            },
+                        )
+                        .await?;
+                    }
                     concerto_persist::workareas::update_status(&mut tx, &id, "active").await?;
                     // Stamp `files_to_copy_applied: true` onto the
                     // workarea's `settings_json` so a future re-run of
                     // the resolver short-circuits idempotently
                     // (`tasks/30 §Scope — in` last bullet). The full
-                    // settings_json schema is design/03 §3.14; V0.1
-                    // owns only this key. Other tasks (Maestro,
-                    // deliberation defaults) will merge their keys in.
+                    // settings_json schema is design/03 §3.14.
                     let settings_json = r#"{"files_to_copy_applied":true}"#.to_string();
                     concerto_persist::workareas::set_settings_json(&mut tx, &id, &settings_json)
                         .await?;
@@ -363,21 +439,17 @@ impl WorkareaManager {
                 Err(Error::Sqlx(boxed))
                     if concerto_persist::workareas::is_unique_violation(&boxed) =>
                 {
-                    // Roll back the DB tx, undo the worktree, and pick
+                    // Roll back the DB tx, undo every worktree, and pick
                     // the next composer.
                     let _ = tx.rollback().await;
                     drop(writer);
-                    // Best-effort cleanup of the worktree we created.
-                    // `gix-wrap` exposes `worktree_add` only; for the
-                    // rare collision path we shell out directly to
-                    // `git worktree remove --force` so the next
-                    // attempt has a clean filesystem.
-                    let _ = remove_worktree_best_effort(&repo_local, &repo_worktree).await;
-                    let _ = tokio::fs::remove_dir_all(&worktree_root).await;
+                    cleanup_worktrees(&built, &worktree_root).await;
                     continue;
                 }
                 Err(other) => {
                     let _ = tx.rollback().await;
+                    drop(writer);
+                    cleanup_worktrees(&built, &worktree_root).await;
                     return Err(other);
                 }
             }
@@ -887,6 +959,21 @@ async fn resolve_gitdir(worktree: &Path) -> Result<PathBuf> {
         "worktree .git pointer file at {} is missing a `gitdir:` line",
         dot_git.display()
     )))
+}
+
+/// Best-effort cleanup of every per-repo worktree built during a failed
+/// `create_workarea` attempt (a UNIQUE composer collision, a per-repo
+/// `git worktree add` failure, or a DB error mid-tx; Task 306). Each
+/// `(repo_local, worktree_dir)` pair is removed via
+/// [`remove_worktree_best_effort`], then the shared `worktree_root` (and
+/// the `.context/` skeleton under it) is removed wholesale. All errors
+/// are swallowed — the next composer attempt re-creates the tree, and
+/// the abort path has already captured the real error to propagate.
+async fn cleanup_worktrees(built: &[(PathBuf, PathBuf)], worktree_root: &Path) {
+    for (repo_local, worktree_dir) in built {
+        let _ = remove_worktree_best_effort(repo_local, worktree_dir).await;
+    }
+    let _ = tokio::fs::remove_dir_all(worktree_root).await;
 }
 
 /// Shell out to `git worktree remove --force <dest>` for the rare

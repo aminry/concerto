@@ -343,6 +343,12 @@ CREATE INDEX idx_pull_requests_workarea ON pull_requests(workarea_id);
 CREATE INDEX idx_pull_requests_repo ON pull_requests(repository_id);
 ```
 
+## `crates/persist/migrations/0009_workspace_repos_position.sql`
+
+```sql
+CREATE INDEX idx_workspace_repos_position ON workspace_repos(workspace_id, position);
+```
+
 ## `crates/persist/migrations/0012_vcs_credentials.sql`
 
 ```sql

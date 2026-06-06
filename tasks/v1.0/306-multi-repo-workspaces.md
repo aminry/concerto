@@ -65,16 +65,16 @@ Tier 1.
 **Tier-1 scope.** This is pure Core + persistence logic, fully CI-provable against `file://` fixture repos with a stubbed/echo agent. The Tier-3 line it gestures at — sparse+blobless clone of a real >10 GB monorepo with <30 s p50 workspace creation — is the **Phase-3 manual checklist**'s job (and Task 301/302/303's perf gates), not this task.
 
 ## Definition of Done
-- [ ] Migration 0009 adds `workspace_repos.position` (+ index); `cargo test -p concerto-persist` confirms backfill of existing rows to 0
-- [ ] `update_repos` writes position = slice index; `list_repos` orders by `(position, repository_id)`; documented as FROZEN
-- [ ] `create_workspace` accepts 1..N repos; rejects empty (`workspace.no_repos`), dups (`workspace.duplicate_repo`), foreign/non-existent repos; the single-repo guard is gone
-- [ ] `update_workspace_repos` handle method validates + re-positions + emits `workspace.events`
-- [ ] `create_workarea` loops all repos in one transaction (worktree per repo, `workarea_repos` row per repo, `.context/` once); single-repo path unchanged; whole-create rollback on any per-repo failure
-- [ ] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
-- [ ] No files outside Outputs modified
-- [ ] Interfaces regenerated + committed (`schema.md`)
-- [ ] Smoke gate green (unchanged)
-- [ ] Single commit with the message below
+- [x] Migration 0009 adds `workspace_repos.position` (+ index); `cargo test -p concerto-persist` confirms backfill of existing rows to 0
+- [x] `update_repos` writes position = slice index; `list_repos` orders by `(position, repository_id)`; documented as FROZEN
+- [x] `create_workspace` accepts 1..N repos; rejects empty (`workspace.no_repos`), dups (`workspace.duplicate_repo`), foreign/non-existent repos; the single-repo guard is gone
+- [x] `update_workspace_repos` handle method validates + re-positions + emits `workspace.events`
+- [x] `create_workarea` loops all repos in one transaction (worktree per repo, `workarea_repos` row per repo, `.context/` once); single-repo path unchanged; whole-create rollback on any per-repo failure
+- [x] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
+- [x] No files outside Outputs modified (two mechanical forced call-site updates — `handlers/streams.rs`, `workspace_manager/mod.rs` — documented in Handoff Drift)
+- [x] Interfaces regenerated + committed (`schema.md`)
+- [x] Smoke gate green (unchanged)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/persist/migrations/0009_workspace_repos_position.sql` (new)
@@ -99,7 +99,7 @@ Refs: tasks/v1.0/306-multi-repo-workspaces.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan: —
-- Open questions for next task: —
-- Deliberate debt: —
-- Smoke-gate state: —
+- Drift from plan: **(1)** `update_workspace_repos` is a `WorkspaceManager` **Rust handle method only** (per `design/03 §5.1`), not a new gRPC RPC — adding a `Workspaces.UpdateWorkspaceRepos` proto RPC was avoided to keep `proto.md` unchanged as the task required; clients still edit repos via the handle (08/10 consume it; a wire RPC, if 322 needs one, is 322's to add). Tested via a direct-handle unit test. **(2)** Two files outside the listed Outputs were touched as mechanical, forced call-site updates: `crates/core/src/handlers/streams.rs` (added the exhaustive-match arm for the new `WorkspaceEvent::ReposUpdated` → `kind = "repos_updated"`, the §5.3 "repos updated" surface) and `crates/core/src/workspace_manager/mod.rs` (re-export the new `NO_REPOS_WIRE_CODE`/`DUPLICATE_REPO_WIRE_CODE` consts + `#[allow(deprecated)]` on the retained `SINGLE_REPO_WIRE_CODE` re-export). **(3)** `SINGLE_REPO_WIRE_CODE` is now `#[deprecated]` (kept defined for one release of client back-compat per the locked surface); the V0.1 `multi_repo_rejected_with_typed_wire_code` integration test was replaced by `multi_repo_create_persists_positions` + empty/dup/foreign reject tests.
+- Open questions for next task: **307** owns migration `0010` (`workareas.status` CHECK-widen with `finished`/`partial`) + the soft per-repo `git worktree add` failure → `partial` path; this task aborts the whole create on any per-repo failure and cleans up all worktrees built so far (`cleanup_worktrees`). **309** reads `workspace_repos.position` — the FROZEN reference repo is `workspaces::list_repos(...)[0]` (position 0); this task seeds the default-empty cone (`"[]"`) per repo and calls `files_to_copy::apply(repo_local, repo_worktree)` per repo (each repo's own `local_path` is its reference for now — cross-repo `.worktreeinclude` reference-repo selection is 309's). **302/305** own the three-layer cone resolution that replaces the per-repo `empty_cones()` seed.
+- Deliberate debt: — (no `TODO`/`FIXME`/`unimplemented!()` added; the per-repo cone-seed-as-empty and per-repo files-to-copy reference are documented seams owned by 302/305/309, not debt).
+- Smoke-gate state: **unchanged / green.** `scripts/smoke.sh --only workspace-workarea` passes (31 s, all checks incl. `sparse-cone-clone`) — the V0.1 single-repo `workspace-workarea` check stays green through the relaxed 1..N path (1 repo → position 0 → one worktree, byte-identical). No `multi-repo` smoke capability added (deferred to the Phase-3 Tier-3 checklist "create a multi-repo workspace" + Task 322's UI, per the task's Verification §7).

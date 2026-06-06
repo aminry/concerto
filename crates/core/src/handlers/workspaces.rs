@@ -3,9 +3,11 @@
 //! Translates `concerto.v1.Workspaces` requests into calls against
 //! [`crate::workspace_manager::WorkspaceManager`]. V0.1 surface:
 //!
-//! - `CreateWorkspace` — enforces single-repo + slug derivation;
-//!   rejects multi-repo with `INVALID_ARGUMENT` +
-//!   `ConcertoError{code="workspace.v0_single_repo_only"}` per spec.
+//! - `CreateWorkspace` — accepts 1..N repos (Task 306) + slug
+//!   derivation; rejects an empty set (`workspace.no_repos`), a repeated
+//!   id (`workspace.duplicate_repo`), and foreign/unknown repos, all as
+//!   `INVALID_ARGUMENT` / `NOT_FOUND`. The V0.1 single-repo rejection is
+//!   retired.
 //! - `GetWorkspace` — returns the persisted row.
 //! - `ListWorkspaces` — scoped by project.
 //! - `ArchiveWorkspace` — idempotent UPDATE.

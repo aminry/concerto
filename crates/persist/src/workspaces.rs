@@ -20,6 +20,7 @@
 //! CREATE TABLE workspace_repos (
 //!     workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
 //!     repository_id   TEXT NOT NULL REFERENCES repositories(id),
+//!     position        INTEGER NOT NULL DEFAULT 0,   -- migration 0009
 //!     PRIMARY KEY (workspace_id, repository_id)
 //! );
 //! ```
@@ -27,6 +28,17 @@
 //! `permission_mode` is nullable — NULL means "inherit from project"
 //! per `design/03 §3.2`. Callers serialize permission modes via the
 //! lowercase strings the CHECK constraint enforces.
+//!
+//! ## Repo-ordering contract (FROZEN by Task 306)
+//!
+//! `workspace_repos.position` (migration 0009) is the canonical,
+//! deterministic repo order for a workspace. [`update_repos`] assigns
+//! `position` = the 0-based index of each `RepositoryId` in the passed
+//! slice (insertion order = declaration order = merge/UI order), and
+//! [`list_repos`] returns rows ordered by `(position, repository_id)`.
+//! This is the ordering Task 309's reference repo ("first by position")
+//! and the stable multi-repo UI (Task 322) key off; do **not** re-derive
+//! repo order from `repository_id` after this task.
 
 use concerto_error::{Error, Result};
 use sqlx::{Row, SqliteConnection, SqlitePool};
@@ -117,11 +129,16 @@ pub async fn restore(conn: &mut SqliteConnection, id: &WorkspaceId) -> Result<()
     Ok(())
 }
 
-/// Replace the set of `workspace_repos` rows for a workspace.
+/// Replace the set of `workspace_repos` rows for a workspace, stamping a
+/// deterministic [`position`](self#repo-ordering-contract-frozen-by-task-306).
 ///
-/// V0.1 only ever writes a single repo; the API is plural so V1.0
-/// multi-repo workspaces can re-use it. Clears existing junction rows
-/// before inserting, so the operation is idempotent under retry.
+/// **Ordering contract (FROZEN by Task 306):** each row's `position` is
+/// set to the 0-based index of its `RepositoryId` in `repo_ids`, so the
+/// caller's slice order is the canonical repo order (insertion order =
+/// declaration order = merge/UI order). [`list_repos`] reads it back in
+/// `(position, repository_id)` order. Clears existing junction rows
+/// before inserting, so the operation is idempotent under retry and a
+/// re-call with a reordered slice re-positions the set.
 pub async fn update_repos(
     conn: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
@@ -132,25 +149,35 @@ pub async fn update_repos(
         .execute(&mut *conn)
         .await
         .map_err(|e| Error::Sqlx(Box::new(e)))?;
-    for repo_id in repo_ids {
-        sqlx::query("INSERT INTO workspace_repos (workspace_id, repository_id) VALUES (?, ?)")
-            .bind(&workspace_id.0)
-            .bind(&repo_id.0)
-            .execute(&mut *conn)
-            .await
-            .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    for (position, repo_id) in repo_ids.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO workspace_repos (workspace_id, repository_id, position) VALUES (?, ?, ?)",
+        )
+        .bind(&workspace_id.0)
+        .bind(&repo_id.0)
+        .bind(position as i64)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
     }
     Ok(())
 }
 
 /// List repository ids attached to a workspace via `workspace_repos`.
-/// Sorted by `repository_id` so output is deterministic.
+///
+/// **Ordering contract (FROZEN by Task 306):** rows come back ordered by
+/// `(position, repository_id)` — `position` (migration 0009) is the
+/// canonical declaration order [`update_repos`] stamped; the
+/// `repository_id` tiebreak keeps the read deterministic in the unlikely
+/// event two rows ever share a position. Task 309's reference repo is
+/// `list_repos(...)[0]`.
 pub async fn list_repos(
     pool: &SqlitePool,
     workspace_id: &WorkspaceId,
 ) -> Result<Vec<RepositoryId>> {
     let rows = sqlx::query(
-        "SELECT repository_id FROM workspace_repos WHERE workspace_id = ? ORDER BY repository_id",
+        "SELECT repository_id FROM workspace_repos WHERE workspace_id = ? \
+         ORDER BY position, repository_id",
     )
     .bind(&workspace_id.0)
     .fetch_all(pool)

@@ -10,18 +10,21 @@
 //! - archive (`ArchiveWorkspace`) and re-fetch to verify `archived_at`
 //! - verify slug-collision auto-suffix (second workspace with the same
 //!   name gets `-2` slug)
-//! - verify V0.1 multi-repo rejection returns
-//!   `INVALID_ARGUMENT` + wire code `workspace.v0_single_repo_only`.
+//! - verify multi-repo create (Task 306): a 3-repo workspace persists
+//!   three `workspace_repos` rows with positions 0/1/2 in declaration
+//!   order
+//! - verify empty-repo / duplicate-repo / foreign-repo creates are
+//!   rejected (`workspace.no_repos` / `workspace.duplicate_repo` /
+//!   `NOT_FOUND`).
 
 #![cfg(unix)]
 
 use std::path::Path;
 
 use concerto_proto::v1::{
-    AddRepoRequest, ConcertoError, CreateWorkspaceRequest, ListWorkspacesRequest, WorkspaceId,
+    AddRepoRequest, CreateWorkspaceRequest, ListWorkspacesRequest, WorkspaceId,
 };
 use concerto_test_harness::CoreUnderTest;
-use prost::Message;
 use tonic::Code;
 
 /// Insert a `projects` row directly into the Core's SQLite file. The
@@ -197,39 +200,132 @@ async fn slug_collision_auto_suffix() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn multi_repo_rejected_with_typed_wire_code() {
+async fn multi_repo_create_persists_positions() {
+    // Task 306: a 3-repo workspace persists three `workspace_repos` rows
+    // with `position` 0/1/2 in the caller's declaration order.
     let core = CoreUnderTest::spawn().await.expect("spawn core");
     let project_id = "multi-repo-project".to_string();
     insert_project(&core.db_path, &project_id).await;
-    let repo_a = register_repo(&core, &project_id, "repo-a").await;
-    let repo_b = register_repo(&core, &project_id, "repo-b").await;
+    // Register out of alphabetical order so a `position`-driven read is
+    // distinguishable from the old `ORDER BY repository_id`.
+    let repo_api = register_repo(&core, &project_id, "api").await;
+    let repo_android = register_repo(&core, &project_id, "android").await;
+    let repo_ios = register_repo(&core, &project_id, "ios").await;
+    // Declaration order: api, android, ios (NOT id-sorted).
+    let declared = vec![repo_api.clone(), repo_android.clone(), repo_ios.clone()];
+
+    let mut wsc = core.workspaces_client().await.expect("workspaces client");
+    let ws = wsc
+        .create_workspace(CreateWorkspaceRequest {
+            project_id: project_id.clone(),
+            name: "Cross Platform".to_string(),
+            repository_ids: declared.clone(),
+            permission_mode: None,
+            description: None,
+        })
+        .await
+        .expect("multi-repo create should succeed")
+        .into_inner();
+    assert_eq!(ws.slug, "cross-platform");
+
+    let pool = core.db().await.expect("db");
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT repository_id, position FROM workspace_repos \
+         WHERE workspace_id = ? ORDER BY position",
+    )
+    .bind(&ws.id)
+    .fetch_all(&pool)
+    .await
+    .expect("workspace_repos rows");
+    assert_eq!(rows.len(), 3, "three workspace_repos rows");
+    assert_eq!(rows[0], (repo_api, 0));
+    assert_eq!(rows[1], (repo_android, 1));
+    assert_eq!(rows[2], (repo_ios, 2));
+
+    core.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_repo_set_rejected() {
+    let core = CoreUnderTest::spawn().await.expect("spawn core");
+    let project_id = "empty-repo-project".to_string();
+    insert_project(&core.db_path, &project_id).await;
 
     let mut wsc = core.workspaces_client().await.expect("workspaces client");
     let err = wsc
         .create_workspace(CreateWorkspaceRequest {
             project_id: project_id.clone(),
-            name: "Two Repos".to_string(),
-            repository_ids: vec![repo_a, repo_b],
+            name: "No Repos".to_string(),
+            repository_ids: vec![],
             permission_mode: None,
             description: None,
         })
         .await
-        .expect_err("multi-repo create must fail");
+        .expect_err("empty-repo create must fail");
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert!(
+        err.message().contains("workspace.no_repos"),
+        "expected workspace.no_repos wire code; got {:?}",
+        err.message()
+    );
+
+    core.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duplicate_repo_rejected() {
+    let core = CoreUnderTest::spawn().await.expect("spawn core");
+    let project_id = "dup-repo-project".to_string();
+    insert_project(&core.db_path, &project_id).await;
+    let repo = register_repo(&core, &project_id, "dup-repo").await;
+
+    let mut wsc = core.workspaces_client().await.expect("workspaces client");
+    let err = wsc
+        .create_workspace(CreateWorkspaceRequest {
+            project_id: project_id.clone(),
+            name: "Dup".to_string(),
+            repository_ids: vec![repo.clone(), repo.clone()],
+            permission_mode: None,
+            description: None,
+        })
+        .await
+        .expect_err("duplicate-repo create must fail");
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert!(
+        err.message().contains("workspace.duplicate_repo"),
+        "expected workspace.duplicate_repo wire code; got {:?}",
+        err.message()
+    );
+
+    core.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn foreign_repo_rejected() {
+    // A repo id that does not belong to the project is NOT_FOUND.
+    let core = CoreUnderTest::spawn().await.expect("spawn core");
+    let project_id = "foreign-repo-project".to_string();
+    let other_project = "other-project".to_string();
+    insert_project(&core.db_path, &project_id).await;
+    insert_project(&core.db_path, &other_project).await;
+    let foreign = register_repo(&core, &other_project, "foreign-repo").await;
+
+    let mut wsc = core.workspaces_client().await.expect("workspaces client");
+    let err = wsc
+        .create_workspace(CreateWorkspaceRequest {
+            project_id: project_id.clone(),
+            name: "Foreign".to_string(),
+            repository_ids: vec![foreign],
+            permission_mode: None,
+            description: None,
+        })
+        .await
+        .expect_err("foreign-repo create must fail");
     assert_eq!(
         err.code(),
-        Code::InvalidArgument,
-        "expected INVALID_ARGUMENT, got {:?}",
+        Code::NotFound,
+        "a repo from another project should be NOT_FOUND; got {:?}",
         err.code()
-    );
-    // `ConcertoError.code` carries the generic `"validation"` wire
-    // code; the specific subcode `workspace.v0_single_repo_only` is
-    // prefixed onto the message body per the locked surface.
-    let details = ConcertoError::decode(err.details()).expect("decode ConcertoError details");
-    assert_eq!(details.code, "validation");
-    assert!(
-        details.message.contains("workspace.v0_single_repo_only"),
-        "ConcertoError.message should embed the wire code subcode; got {:?}",
-        details.message
     );
 
     core.shutdown().await.expect("shutdown");
