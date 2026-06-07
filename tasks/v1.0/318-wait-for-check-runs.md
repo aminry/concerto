@@ -63,15 +63,15 @@ Add the `SchedulerHandle::wait_for_check_runs(repo, sha, timeout)` primitive (`d
 7. `scripts/smoke.sh` → **unchanged** (no smoke capability; the real coordinated merge that exercises this is 320 + the Tier-3 checklist).
 
 ## Definition of Done
-- [ ] `SchedulerHandle::wait_for_check_runs(repo, sha, timeout, required)` implemented per the FROZEN `design/05 §5.1` signature (+ the `required` caller-param)
-- [ ] FROZEN exponential backoff `[1,2,4,8,16,30]`-cap shared identically with `design/13 §3.3` (reused from 314's constant if present)
-- [ ] `RequiredChecks::{AllTerminal, Named}` (default `AllTerminal`); resolves on the required set terminal or wall-clock timeout (timeout → `timed_out:true`, never `Err`)
-- [ ] `CheckRunsSource` trait injected (impl'd by `VcsHandle`); Tier-1 tests use an in-process stub + `tokio::time::pause`
-- [ ] Optional `checks.<wa>.<repo>` webhook wake short-circuits a backoff sleep; absent it, pure-polling still works (Tier-1)
-- [ ] `boot.rs` wires the source via a post-construction setter (no boot reordering); `SchedulerHandle::new` V0.1 signature unchanged
-- [ ] All `rust` §5.3 commands pass; interfaces regenerated (rust-api.md); no proto change
-- [ ] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
-- [ ] Single commit with the message below
+- [x] `SchedulerHandle::wait_for_check_runs(repo, sha, timeout, required)` implemented per the FROZEN `design/05 §5.1` signature (+ the `required` caller-param)
+- [x] FROZEN exponential backoff `[1,2,4,8,16,30]`-cap shared identically with `design/13 §3.3` (reused from 314's constant if present)
+- [x] `RequiredChecks::{AllTerminal, Named}` (default `AllTerminal`); resolves on the required set terminal or wall-clock timeout (timeout → `timed_out:true`, never `Err`)
+- [x] `CheckRunsSource` trait injected (impl'd by `VcsHandle`); Tier-1 tests use an in-process stub + `tokio::time::pause`
+- [x] Optional `checks.<wa>.<repo>` webhook wake short-circuits a backoff sleep; absent it, pure-polling still works (Tier-1)
+- [x] `boot.rs` wires the source via a post-construction setter (no boot reordering); `SchedulerHandle::new` V0.1 signature unchanged
+- [x] All `rust` §5.3 commands pass; interfaces regenerated (rust-api.md); no proto change
+- [x] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/core/src/scheduler/wait_checks.rs` (new — `wait_for_check_runs`, `ChecksOutcome`, `RequiredChecks`, `CheckRunsSource`, `CheckRunSnapshot`, `CHECK_RUN_BACKOFF_SECS`)
@@ -96,7 +96,7 @@ Refs: tasks/v1.0/318-wait-for-check-runs.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan: —
-- Open questions for next task: —
-- Deliberate debt: —
-- Smoke-gate state: —
+- Drift from plan: (1) The `impl CheckRunsSource for VcsHandle` lives in `crates/core/src/vcs/mod.rs`, not the `crates/core/src/vcs/actor.rs` named in Outputs — `actor.rs` is in the `concerto-vcs` leaf crate (post-313 relocation) which must not depend on the Core, so the local-trait impl for the foreign handle (allowed by the orphan rule) belongs in the Core-side `vcs` shim (`mod.rs`). (2) Outputs expected the new public types in `docs/interfaces/rust-api.md`, but `scripts/regen-interfaces.sh` only indexes `crates/<crate>/src/api.rs` files — the types live in `scheduler/wait_checks.rs`, so the regen is a no-op (no drift) and `git diff --exit-code docs/interfaces/` is clean (CI passes). The FROZEN signatures are documented in the module + the task contract instead. (3) Tests landed in BOTH `crates/core/tests/wait_for_check_runs.rs` (integration, through the public `SchedulerHandle` API — what the verification command `cargo test -p concerto-core wait_for_check_runs` matches) AND `scheduler::wait_checks::tests` (unit, driving the bare `run_wait_loop`); the prior WIP had zero tests.
+- Open questions for next task: 320 calls `wait_for_check_runs(repo, sha, timeout, RequiredChecks::AllTerminal)` on its own task between PR-set members; it must `set_check_runs_source` is already wired at boot (no action needed). The webhook fast-path is advisory only — 320 must NOT rely on it for correctness (the authoritative state always comes from the re-poll); a missed/absent webhook costs at most one backoff step.
+- Deliberate debt: The webhook wake filters on `repository_id` only (not `sha`) — a `checks.<wa>.<repo>` event for a *different* SHA on the same repo will short-circuit one backoff sleep and trigger an early re-poll. This is harmless (the re-poll re-reads the authoritative state for the awaited SHA) but slightly over-eager; acceptable because the wake is advisory and the poll is the source of truth.
+- Smoke-gate state: unchanged (`scripts/smoke.sh` untouched — no smoke capability; the coordinated merge that exercises this is 320 + the Tier-3 checklist). Full `rust` gate green: `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --no-fail-fast`, `cargo deny check`, `regen-interfaces.sh` + `git diff --exit-code docs/interfaces/`, and `cargo fmt --all -- --check` all clean.

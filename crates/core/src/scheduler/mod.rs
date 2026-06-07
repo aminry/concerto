@@ -25,8 +25,13 @@
 
 pub mod actor;
 pub mod fire_loop;
+pub mod wait_checks;
 
 pub use actor::{
     CreateScheduleRequest, SchedulerActor, SchedulerConfig, SchedulerHandle, INTERVAL_MAX_SECONDS,
     INTERVAL_MIN_SECONDS, LOOP_EXPIRY_DEFAULT_MS,
+};
+pub use wait_checks::{
+    check_run_backoff_secs, no_vcs_source, CheckRunSnapshot, CheckRunsSource, ChecksOutcome,
+    RequiredChecks, WebhookWake, CHECK_RUN_BACKOFF_SECS,
 };

@@ -773,6 +773,17 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         }
     }
 
+    // Task 318: wire the VCS handle as the Scheduler's check-runs source for
+    // `wait_for_check_runs` (the gate Task 320's coordinated PR-set merge blocks
+    // on). The VCS handle does not exist when the Scheduler is constructed
+    // (~line 638, before this point), so we install it via a post-construction
+    // setter rather than reordering the boot sequence. `VcsHandle` implements
+    // `CheckRunsSource` (delegating to `get_check_runs` + subscribing to the
+    // `checks.<wa>.<repo>` webhook emits for the fast-path). Unix-gated to match
+    // the `#[cfg(unix)]` `scheduler_handle` above (Windows scheduler = Task 702/P7).
+    #[cfg(unix)]
+    scheduler_handle.set_check_runs_source(Arc::new(vcs_handle.clone()));
+
     // Task 310: resolve every project's three-layer settings
     // (managed > checked-in > local DB > defaults) and emit one
     // `ProjectSettingsResolved{project_id, field, value_source}` audit per
