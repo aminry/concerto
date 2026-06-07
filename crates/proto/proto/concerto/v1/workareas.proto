@@ -160,6 +160,19 @@ message GetWorkareaPrSetResponse {
   repeated PullRequest pull_requests = 1;
 }
 
+// Task 319: inputs for `Workareas.SetMergeOrder`. Identifies one PR within a
+// workarea's implicit PR set by its `(workarea_id, repository_id)` key — the
+// FROZEN `UNIQUE(workarea_id, repository_id)` invariant — and writes its new
+// `merge_order`. Returns the re-ordered `GetWorkareaPrSetResponse` so the
+// caller (Task 324's drag UI) re-renders from the authoritative order in one
+// round-trip. No dependency-graph inference; ordering is pure insertion-order
+// + this manual reorder (`PHASE3_PLANNING.md D7`).
+message SetMergeOrderRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  int64 merge_order = 3;
+}
+
 service Workareas {
   rpc CreateWorkarea(CreateWorkareaRequest) returns (Workarea);
   rpc GetWorkarea(WorkareaId) returns (Workarea);
@@ -182,8 +195,13 @@ service Workareas {
   // entry-ceremony + managed.json policy enforcement. Returns the
   // updated `Workarea` row.
   rpc SetWorkareaBypassDestructiveGuard(SetWorkareaBypassDestructiveGuardRequest) returns (Workarea);
-  // Task 45: list every cached PR row for this workarea (implicit PR
-  // set per `design/13 §4`). V0.1 returns rows ordered by `pr_number`;
-  // PR-set merge ordering (`merge_order`) is V1.0.
+  // Task 45/319: list every cached PR row for this workarea (implicit PR
+  // set per `design/13 §4`), ordered `(merge_order, pr_number)`. Task 319
+  // fulfilled the V0.1 promise that merge ordering is V1.0.
   rpc GetWorkareaPrSet(WorkareaId) returns (GetWorkareaPrSetResponse);
+  // Task 319: set one PR's `merge_order` within its workarea's PR set and
+  // return the re-ordered set. The coordinated merge/revert RPCs
+  // (`GetWorkareaMergePlan` / `MergeWorkareaPrSet` / `RevertWorkareaPrSet`)
+  // are RESERVED for Task 320.
+  rpc SetMergeOrder(SetMergeOrderRequest) returns (GetWorkareaPrSetResponse);
 }

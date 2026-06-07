@@ -693,24 +693,39 @@ impl VcsHandle {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let new_id = PullRequestId(uuid::Uuid::now_v7().to_string());
-        let row = NewPullRequest {
-            id: new_id,
-            workarea_id: workarea_id.clone(),
-            repository_id: repository_id.clone(),
-            provider: "github".to_string(),
-            pr_number: detail.number,
-            base_ref: detail.base_ref_name.clone(),
-            head_ref: detail.head_ref_name.clone(),
-            state: detail.state.to_lowercase(),
-            title: detail.title.clone(),
-            body: detail.body.clone(),
-            url: detail.url.clone(),
-            head_sha: detail.head_ref_oid.clone(),
-            created_at: now_ms,
-            updated_at: now_ms,
-        };
+        // `owner/repo` for the GraphQL endpoint (Task 316). The `gh` CLI
+        // detail does not carry the GraphQL node id, so `external_id` stays
+        // `''` on this path — octocrab create populates it (Task 313/316).
+        let repository_full_name = self
+            .resolve_repo_full_name(repository_id)
+            .await
+            .unwrap_or_default();
         let id = {
+            // Take the writer lock ONCE so the insertion-order `MAX` and the
+            // upsert are atomic (Task 319 D7). `merge_order` only takes effect
+            // on the first insert; a re-sync preserves the user's reorder.
             let mut writer = self.persistence.writer().await;
+            let merge_order =
+                concerto_persist::pull_requests::next_merge_order(&mut writer, workarea_id).await?;
+            let row = NewPullRequest {
+                id: new_id,
+                workarea_id: workarea_id.clone(),
+                repository_id: repository_id.clone(),
+                provider: "github".to_string(),
+                pr_number: detail.number,
+                base_ref: detail.base_ref_name.clone(),
+                head_ref: detail.head_ref_name.clone(),
+                state: detail.state.to_lowercase(),
+                title: detail.title.clone(),
+                body: detail.body.clone(),
+                url: detail.url.clone(),
+                head_sha: detail.head_ref_oid.clone(),
+                merge_order,
+                external_id: String::new(),
+                repository_full_name,
+                created_at: now_ms,
+                updated_at: now_ms,
+            };
             concerto_persist::pull_requests::upsert(&mut writer, row).await?
         };
         concerto_persist::pull_requests::get(self.persistence.readers(), &id)

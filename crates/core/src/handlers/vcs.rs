@@ -600,6 +600,9 @@ fn pull_request_to_proto(row: PersistPullRequest) -> ProtoPullRequest {
         body: row.body,
         url: row.url,
         head_sha: row.head_sha,
+        merge_order: row.merge_order,
+        external_id: row.external_id,
+        repository_full_name: row.repository_full_name,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }

@@ -34,6 +34,17 @@ message PullRequest {
   string head_sha = 12;
   int64 created_at = 13;
   int64 updated_at = 14;
+  // Task 319 (migration 0014). Position of this PR within its workarea's
+  // merge plan; default = insertion order (`max(merge_order)+1` per
+  // workarea), user-reorderable via `Workareas.SetMergeOrder`. Fields 1..14
+  // stay FROZEN from Task 45.
+  int64 merge_order = 15;
+  // The PR's GraphQL node id (octocrab needs it for review-thread / resolve
+  // mutations, Task 316). Empty for rows created before octocrab was wired.
+  string external_id = 16;
+  // The `owner/repo` string the GraphQL endpoint keys on (Task 316). Empty
+  // for pre-octocrab rows.
+  string repository_full_name = 17;
 }
 
 // A single GitHub check run for `head_sha`. Mirrors `gh pr view --json

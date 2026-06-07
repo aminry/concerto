@@ -1008,6 +1008,19 @@ pub struct NewPullRequest {
     pub body: String,
     pub url: String,
     pub head_sha: String,
+    /// Position of this PR within its workarea's merge plan (Task 319,
+    /// migration 0014). Default = insertion order (`max(merge_order)+1`
+    /// per workarea); the caller computes it (see
+    /// [`crate::pull_requests::next_merge_order`]) and it is PRESERVED
+    /// across upserts so a re-sync never clobbers a user's reorder.
+    pub merge_order: i64,
+    /// The PR's GraphQL node id (octocrab needs it for review-thread /
+    /// resolve mutations, Task 316). `''` for rows created before Task 313
+    /// wired octocrab. Refreshed on upsert.
+    pub external_id: String,
+    /// The `owner/repo` string the GraphQL endpoint keys on (Task 316).
+    /// `''` for pre-octocrab rows. Refreshed on upsert.
+    pub repository_full_name: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -1029,6 +1042,14 @@ pub struct PullRequest {
     pub body: String,
     pub url: String,
     pub head_sha: String,
+    /// Merge-plan position (migration 0014, Task 319). See
+    /// [`NewPullRequest::merge_order`].
+    pub merge_order: i64,
+    /// GraphQL node id (Task 316); `''` for pre-octocrab rows.
+    pub external_id: String,
+    /// `owner/repo` for the GraphQL endpoint (Task 316); `''` for
+    /// pre-octocrab rows.
+    pub repository_full_name: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
