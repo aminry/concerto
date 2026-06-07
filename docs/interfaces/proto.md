@@ -1545,6 +1545,17 @@ message PullRequest {
   string head_sha = 12;
   int64 created_at = 13;
   int64 updated_at = 14;
+  // Task 319 (migration 0014). Position of this PR within its workarea's
+  // merge plan; default = insertion order (`max(merge_order)+1` per
+  // workarea), user-reorderable via `Workareas.SetMergeOrder`. Fields 1..14
+  // stay FROZEN from Task 45.
+  int64 merge_order = 15;
+  // The PR's GraphQL node id (octocrab needs it for review-thread / resolve
+  // mutations, Task 316). Empty for rows created before octocrab was wired.
+  string external_id = 16;
+  // The `owner/repo` string the GraphQL endpoint keys on (Task 316). Empty
+  // for pre-octocrab rows.
+  string repository_full_name = 17;
 }
 ```
 
@@ -1959,6 +1970,16 @@ message GetWorkareaPrSetResponse {
 }
 ```
 
+### message `SetMergeOrderRequest`
+
+```proto
+message SetMergeOrderRequest {
+  string workarea_id = 1;
+  string repository_id = 2;
+  int64 merge_order = 3;
+}
+```
+
 ### service `Workareas`
 
 ```proto
@@ -1984,10 +2005,15 @@ service Workareas {
   // entry-ceremony + managed.json policy enforcement. Returns the
   // updated `Workarea` row.
   rpc SetWorkareaBypassDestructiveGuard(SetWorkareaBypassDestructiveGuardRequest) returns (Workarea);
-  // Task 45: list every cached PR row for this workarea (implicit PR
-  // set per `design/13 §4`). V0.1 returns rows ordered by `pr_number`;
-  // PR-set merge ordering (`merge_order`) is V1.0.
+  // Task 45/319: list every cached PR row for this workarea (implicit PR
+  // set per `design/13 §4`), ordered `(merge_order, pr_number)`. Task 319
+  // fulfilled the V0.1 promise that merge ordering is V1.0.
   rpc GetWorkareaPrSet(WorkareaId) returns (GetWorkareaPrSetResponse);
+  // Task 319: set one PR's `merge_order` within its workarea's PR set and
+  // return the re-ordered set. The coordinated merge/revert RPCs
+  // (`GetWorkareaMergePlan` / `MergeWorkareaPrSet` / `RevertWorkareaPrSet`)
+  // are RESERVED for Task 320.
+  rpc SetMergeOrder(SetMergeOrderRequest) returns (GetWorkareaPrSetResponse);
 }
 ```
 

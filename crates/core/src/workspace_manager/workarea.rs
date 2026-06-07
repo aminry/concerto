@@ -613,10 +613,9 @@ impl WorkareaManager {
 
     /// List the cached `pull_requests` rows for this workarea.
     ///
-    /// Task 45: the workarea's PR set is the implicit set of rows
-    /// keyed by `workarea_id` (`design/13 §4`). V0.1 returns them
-    /// ordered by `pr_number`; PR-set merge ordering (`merge_order`)
-    /// is V1.0.
+    /// Task 45/319: the workarea's PR set is the implicit set of rows
+    /// keyed by `workarea_id` (`design/13 §4`), ordered
+    /// `(merge_order, pr_number)` — the user-reorderable merge plan.
     pub async fn list_pr_set(
         &self,
         workarea_id: &WorkareaId,
@@ -624,6 +623,42 @@ impl WorkareaManager {
         if self.get(workarea_id).await?.is_none() {
             return Err(Error::NotFound(format!("workarea {workarea_id} not found")));
         }
+        concerto_persist::pull_requests::list_by_workarea(self.persistence.readers(), workarea_id)
+            .await
+    }
+
+    /// Task 319: set the `merge_order` of the PR in `workarea_id` for
+    /// `repository_id`, then return the re-ordered PR set. Validates that
+    /// the workarea and a matching PR row both exist (`NotFound`
+    /// otherwise). Mirrors the `Update*` "return the updated entity"
+    /// convention so the Desktop drag UI (Task 324) re-renders from the
+    /// authoritative order in one round-trip.
+    pub async fn set_merge_order(
+        &self,
+        workarea_id: &WorkareaId,
+        repository_id: &concerto_persist::RepositoryId,
+        order: i64,
+    ) -> Result<Vec<concerto_persist::PullRequest>> {
+        if self.get(workarea_id).await?.is_none() {
+            return Err(Error::NotFound(format!("workarea {workarea_id} not found")));
+        }
+        let pr_id = concerto_persist::pull_requests::id_by_workarea_repo(
+            self.persistence.readers(),
+            workarea_id,
+            repository_id,
+        )
+        .await?
+        .ok_or_else(|| {
+            Error::NotFound(format!(
+                "workarea {workarea_id} has no PR for repository {repository_id}"
+            ))
+        })?;
+
+        {
+            let mut writer = self.persistence.writer().await;
+            concerto_persist::pull_requests::set_merge_order(&mut writer, &pr_id, order).await?;
+        }
+
         concerto_persist::pull_requests::list_by_workarea(self.persistence.readers(), workarea_id)
             .await
     }

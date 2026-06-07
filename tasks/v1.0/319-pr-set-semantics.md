@@ -71,15 +71,15 @@ Make the implicit per-workarea PR set first-class with a persisted, user-reorder
 8. `scripts/smoke.sh` → **unchanged** (no smoke capability; coordinated merge is 320).
 
 ## Definition of Done
-- [ ] Migration `0014` ADDs `merge_order`/`external_id`/`repository_full_name` to `pull_requests` (additive; 0008 `UNIQUE` + columns untouched); reserved-number check noted in Handoff
-- [ ] `NewPullRequest`/`PullRequest` + `upsert` + `list_by_workarea` thread the three fields; `merge_order` preserved on re-upsert, `external_id`/`repository_full_name` refreshed
-- [ ] Insertion-order default (`max(merge_order)+1` per workarea) assigned atomically under the writer lock; `set_merge_order` helper
-- [ ] `GetWorkareaPrSet` ordered `(merge_order, pr_number)`; `SetMergeOrder` RPC on the `Workareas` service returns the re-ordered set
-- [ ] proto: `PullRequest` += 15/16/17, `SetMergeOrderRequest` + `SetMergeOrder` RPC — FROZEN numbers; 320's merge/revert/plan RPCs NOT added here
-- [ ] Both `pull_request_to_proto` copies populate the new fields
-- [ ] All `rust` §5.3 commands pass; interfaces regenerated (proto.md + rust-api.md)
-- [ ] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
-- [ ] Single commit with the message below
+- [x] Migration `0014` ADDs `merge_order`/`external_id`/`repository_full_name` to `pull_requests` (additive; 0008 `UNIQUE` + columns untouched); reserved-number check noted in Handoff
+- [x] `NewPullRequest`/`PullRequest` + `upsert` + `list_by_workarea` thread the three fields; `merge_order` preserved on re-upsert, `external_id`/`repository_full_name` refreshed
+- [x] Insertion-order default (`max(merge_order)+1` per workarea) assigned atomically under the writer lock; `set_merge_order` helper
+- [x] `GetWorkareaPrSet` ordered `(merge_order, pr_number)`; `SetMergeOrder` RPC on the `Workareas` service returns the re-ordered set
+- [x] proto: `PullRequest` += 15/16/17, `SetMergeOrderRequest` + `SetMergeOrder` RPC — FROZEN numbers; 320's merge/revert/plan RPCs NOT added here
+- [x] Both `pull_request_to_proto` copies populate the new fields
+- [x] All `rust` §5.3 commands pass; interfaces regenerated (proto.md + rust-api.md)
+- [x] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/persist/migrations/0014_pull_requests_merge_order.sql` (new)
@@ -107,7 +107,7 @@ Refs: tasks/v1.0/319-pr-set-semantics.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan: —
-- Open questions for next task: —
-- Deliberate debt: —
-- Smoke-gate state: —
+- Drift from plan: (1) `upsert_from_detail` lives in `crates/vcs/src/actor.rs`, NOT `crates/core/src/vcs/actor.rs` — 313 relocated it into the `concerto-vcs` crate; this task edited the real location. (2) `crates/core/tests/webhook_ingest.rs` (one `NewPullRequest` literal) was beyond the listed `Outputs` but had to gain the three new fields to compile — a mechanical add, no behavior change. (3) Added a `pull_requests::id_by_workarea_repo(pool, workarea_id, repository_id)` persist helper (not named in Outputs) so `SetMergeOrder` can turn the wire's `(workarea, repository)` key into the row primary key — the `SetMergeOrderRequest` keys on `(workarea_id, repository_id)`, and the seam needed a read path. (4) Migration reserved-number check: highest on `main` is `0013_webhook_deliveries.sql`; all upstream Phase-3 migrations (0009–0013) landed as planned, so `0014` is the natural next number — no gap, not renumbered. (5) Fixed a real seeded-draft bug: `crates/persist/tests/pull_requests_merge_order.rs` used `uuid::Uuid::now_v7()` but `concerto-persist` has no `uuid` dev-dep (would not compile under clippy `--all-targets`); switched its `new_pr` helper to a deterministic `pr-{workarea}-{repo}` id (the upsert keys on `(workarea_id, repository_id)`, so a stable id is correct and avoids a new dependency). The core test's `uuid` use is fine — `concerto-core` already depends on `uuid`.
+- Open questions for next task (320): `GetWorkareaPrSet` returns the set ordered `(merge_order, pr_number)` — iterate it directly for coordinated merge; reverse it for coordinated revert (`design/13 §3.5`). `merge_order` is dense-on-first-insert (0,1,2,…) but `SetMergeOrder` writes arbitrary i64 (the tests use `-1`/`-5` to move-to-front), so 320 must NOT assume contiguous/non-negative orders — sort, don't index. `external_id`/`repository_full_name` are `''` on `gh`-CLI-created rows (only octocrab populates `external_id`); 316's GraphQL paths must tolerate empty values. `WorkareaManager::set_merge_order(workarea_id, repository_id, order)` + `list_pr_set(workarea_id)` are the manager-level handles; `GetWorkareaMergePlan`/`MergeWorkareaPrSet`/`RevertWorkareaPrSet` proto RPCs are RESERVED and NOT added (320 owns them on the `Workareas` service).
+- Deliberate debt: none. No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code. `external_id` is never populated by the `gh`-CLI upsert path (only `repository_full_name` is, via `resolve_repo_full_name`); this is by design (313/316's octocrab create populates `external_id`), defaulting to `''` per the migration.
+- Smoke-gate state: unchanged (no smoke capability added; coordinated merge is task 320). Full `rust` gate green: `cargo check`/`clippy -D warnings`/`test --workspace --no-fail-fast` (853 passed, 0 failed, incl. 6 new persist + 4 new core tests) / `cargo deny check` (RUSTSEC-2023-0071 ratified, no new advisory) / `regen-interfaces.sh` + `git diff --exit-code docs/interfaces/` clean / `cargo fmt --all -- --check` clean.
