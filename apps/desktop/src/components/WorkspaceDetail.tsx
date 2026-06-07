@@ -1,34 +1,37 @@
-// Workspace detail panel. Renders the selected workspace's JSON and
-// hosts the "+ New Workarea" button. V0.1 deliberately keeps the panel
-// narrow; the real three-panel layout (composer status, agent
-// transcript, diff viewer) arrives in Task 46+.
+// Workspace detail panel — shown when a workspace (not a workarea) is
+// selected. Renders the design/15 §3.4 "When a workspace is selected"
+// summary (the workspace's parallel workareas with status dots, a
+// cross-workarea PR-set slot, and a "+ new workarea" affordance) via
+// `WorkspaceSummary`, and hosts the create-workarea flow.
 //
-// Task 322: "+ New Workarea" now opens a sparse-cone picker (a small
-// dialog) so the user can size each repo's cone before the workarea is
+// Task 323 replaced the V0.1 `JSON.stringify` dump with the summary so a
+// user can compare a workspace's parallel attempts at a glance.
+//
+// Task 322: "+ new workarea" opens a sparse-cone picker (a small dialog)
+// so the user can size each repo's cone before the workarea is
 // materialized. The chosen per-repo cones thread into `createWorkarea`,
 // which applies them via `Repositories.SetCones` after create (see
 // `api/workareas.ts`). A repo left blank inherits the workspace/repo cone
-// defaults (the three-layer resolver, Task 302). The summary/workarea-list
-// view + multi-agent session tabs are Task 323, not here.
+// defaults (the three-layer resolver, Task 302). Task 323 owns the summary
+// list around this button; the create/cone-picker flow stays 322's — the
+// summary's affordance just triggers the dialog the parent owns.
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useUiStore } from "../state/useUiStore";
-import { useWorkspace } from "../hooks/useWorkspaces";
 import { createWorkarea } from "../api/workareas";
 import { listRepositories, type Repository } from "../api/repositories";
 import { formatError } from "../api/errors";
 import { ConePicker, coneSelections } from "./ConePicker";
+import { WorkspaceSummary } from "./WorkspaceSummary";
 import { Button } from "./ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Dialog } from "./ui/dialog";
 
 export function WorkspaceDetail(): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId);
   const projectId = useUiStore((s) => s.selectedProjectId);
   const setWorkspaceExpanded = useUiStore((s) => s.setWorkspaceExpanded);
-  const workspaceQuery = useWorkspace(selectedWorkspaceId);
   const queryClient = useQueryClient();
 
   const [coneModalOpen, setConeModalOpen] = useState(false);
@@ -78,37 +81,15 @@ export function WorkspaceDetail(): JSX.Element {
 
   return (
     <main className="h-full p-6 overflow-auto space-y-4">
-      <div className="flex justify-end">
-        <Button
-          disabled={mutation.isPending}
-          onClick={() => setConeModalOpen(true)}
-        >
-          + New Workarea
-        </Button>
-      </div>
+      <WorkspaceSummary
+        workspaceId={selectedWorkspaceId}
+        onNewWorkarea={() => setConeModalOpen(true)}
+      />
       {mutation.isError && (
         <p className="text-xs text-err">
           Failed to create workarea: {formatError(mutation.error)}
         </p>
       )}
-      <Card>
-        <CardHeader>
-          <CardTitle>Workspace</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {workspaceQuery.isLoading && <p>Loading…</p>}
-          {workspaceQuery.isError && (
-            <p className="text-err">
-              Failed to load: {String(workspaceQuery.error)}
-            </p>
-          )}
-          {workspaceQuery.data && (
-            <pre className="text-xs whitespace-pre-wrap text-accent font-mono">
-              {JSON.stringify(workspaceQuery.data, null, 2)}
-            </pre>
-          )}
-        </CardContent>
-      </Card>
 
       <Dialog
         open={coneModalOpen}
