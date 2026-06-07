@@ -36,7 +36,24 @@ export type RpcMethod =
   | "Sessions.ResizeSession"
   | "Sessions.ListMcpServers"
   | "Schedules.ListSchedules"
-  | "Skills.ListSkills";
+  | "Skills.ListSkills"
+  // Task 324 — VCS + coordinated-merge surface (design/15 §3.4). The
+  // strings match the Rust shell dispatch table (`<Service>.<Rpc>`)
+  // exactly. The `Vcs.*` RPCs are FROZEN at Task 45 (+ 316); the
+  // `Workareas.*` PR-set RPCs are FROZEN at Task 319 (`SetMergeOrder`) /
+  // Task 320 (`MergeWorkareaPrSet`/`RevertWorkareaPrSet`/merge plan).
+  // `MergeWorkareaPrSet` is a server-stream RPC — the renderer consumes its
+  // lifecycle through the `pr_set.events.<wa>` pub/sub subject (NOT
+  // `callRpc`); the string is listed for parity with the shell dispatch.
+  | "Vcs.GetChecks"
+  | "Vcs.GetPullRequest"
+  | "Vcs.CreatePullRequest"
+  | "Vcs.MergePullRequest"
+  | "Workareas.GetWorkareaPrSet"
+  | "Workareas.SetMergeOrder"
+  | "Workareas.GetWorkareaMergePlan"
+  | "Workareas.RevertWorkareaPrSet"
+  | "Workareas.MergeWorkareaPrSet";
 
 export async function callRpc<TRequest, TResponse>(
   method: RpcMethod,
