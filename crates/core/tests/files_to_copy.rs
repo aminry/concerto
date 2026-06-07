@@ -253,6 +253,251 @@ async fn create_workarea_applies_files_to_copy_rules() {
     core.shutdown().await.expect("shutdown");
 }
 
+/// Attach a SECOND repo to an existing seeded workspace at `position = 1`
+/// (a non-reference repo). Returns its `name` + clone path so the test can
+/// assert the reference-worktree files land in this repo's worktree too.
+async fn attach_second_repo(
+    core: &CoreUnderTest,
+    s: &Seeded,
+    slug: &str,
+) -> (String, std::path::PathBuf) {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    let (bare_url, _bare, _work) = make_bare_with_commit().await;
+    // Leak the temp dirs so the bare/work survive for the test duration.
+    std::mem::forget(_bare);
+    std::mem::forget(_work);
+
+    let project_id = format!("proj-{slug}");
+    let repo_id = format!("repo2-{slug}");
+    let repo_name = format!("name2-{slug}");
+    let local_path = core.data_dir.join("repos").join(&repo_id);
+
+    let opts = SqliteConnectOptions::new()
+        .filename(&core.db_path)
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .expect("open db");
+    sqlx::query(
+        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+    )
+    .bind(&repo_id)
+    .bind(&project_id)
+    .bind(&repo_name)
+    .bind(&bare_url)
+    .bind(local_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("insert repo2");
+    sqlx::query(
+        "INSERT INTO workspace_repos (workspace_id, repository_id, position) VALUES (?, ?, 1)",
+    )
+    .bind(&s.workspace_id)
+    .bind(&repo_id)
+    .execute(&pool)
+    .await
+    .expect("insert workspace_repos pos 1");
+    pool.close().await;
+
+    tokio::fs::create_dir_all(local_path.parent().unwrap())
+        .await
+        .unwrap();
+    let out = Command::new("git")
+        .args(["clone", bare_url.as_str(), &local_path.to_string_lossy()])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .await
+        .expect("git clone repo2");
+    assert!(out.status.success(), "repo2 clone failed");
+
+    (repo_name, local_path)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn create_workarea_reference_worktree_lands_in_all_repos() {
+    // Task 309: the reference worktree = the first repo by
+    // `workspace_repos.position`. A `.worktreeinclude` + `.env` in the
+    // reference repo must materialize the `.env` in EVERY repo's worktree.
+    let core = CoreUnderTest::spawn().await.expect("spawn core");
+    let s = seed(&core, "ftc-multi").await;
+    let (repo2_name, _repo2_local) = attach_second_repo(&core, &s, "ftc-multi").await;
+
+    // Reference repo (position 0) carries the rules + the source file.
+    let concerto_dir = s.repo_local_path.join(".concerto");
+    tokio::fs::create_dir_all(&concerto_dir).await.unwrap();
+    tokio::fs::write(concerto_dir.join(".worktreeinclude"), ".env\n")
+        .await
+        .unwrap();
+    tokio::fs::write(s.repo_local_path.join(".env"), b"SHARED=1\n")
+        .await
+        .unwrap();
+
+    let mut wac = core.workareas_client().await.expect("workareas client");
+    let wa = wac
+        .create_workarea(CreateWorkareaRequest {
+            workspace_id: s.workspace_id.clone(),
+            permission_mode: None,
+        })
+        .await
+        .expect("CreateWorkarea")
+        .into_inner();
+
+    let base = core
+        .data_dir
+        .join("workspaces")
+        .join(&s.workspace_slug)
+        .join(&wa.composer_name);
+
+    // Reference repo's worktree.
+    let ref_env = base.join(&s.repo_name).join(".env");
+    assert_eq!(
+        tokio::fs::read(&ref_env).await.unwrap(),
+        b"SHARED=1\n",
+        "reference repo gets its own .env"
+    );
+    // Non-reference repo's worktree ALSO gets the reference-worktree .env.
+    let other_env = base.join(&repo2_name).join(".env");
+    assert_eq!(
+        tokio::fs::read(&other_env).await.unwrap(),
+        b"SHARED=1\n",
+        "reference-worktree .env lands in the second repo's worktree"
+    );
+
+    core.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn create_workarea_checked_in_worktreeinclude_wins_over_db_rules() {
+    // Task 309 / design §3.13: a checked-in `.worktreeinclude` WINS over the
+    // local-DB `files_to_copy_rules`. Seed BOTH: the DB rules would copy
+    // `db_only.txt`; the checked-in file copies `checked_in.txt` only.
+    let core = CoreUnderTest::spawn().await.expect("spawn core");
+    let s = seed(&core, "ftc-precedence").await;
+
+    // Local-DB rules (would copy db_only.txt).
+    {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let opts = SqliteConnectOptions::new()
+            .filename(&core.db_path)
+            .create_if_missing(false);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("db");
+        sqlx::query("UPDATE projects SET settings_json = ? WHERE id = ?")
+            .bind(r#"{"files_to_copy_rules":[{"pattern":"db_only.txt","mode":"copy"}]}"#)
+            .bind(format!("proj-{}", "ftc-precedence"))
+            .execute(&pool)
+            .await
+            .expect("update settings_json");
+        pool.close().await;
+    }
+
+    // Checked-in file (copies checked_in.txt only) — should WIN.
+    let concerto_dir = s.repo_local_path.join(".concerto");
+    tokio::fs::create_dir_all(&concerto_dir).await.unwrap();
+    tokio::fs::write(concerto_dir.join(".worktreeinclude"), "checked_in.txt\n")
+        .await
+        .unwrap();
+    tokio::fs::write(s.repo_local_path.join("checked_in.txt"), b"ci\n")
+        .await
+        .unwrap();
+    tokio::fs::write(s.repo_local_path.join("db_only.txt"), b"db\n")
+        .await
+        .unwrap();
+
+    let mut wac = core.workareas_client().await.expect("workareas client");
+    let wa = wac
+        .create_workarea(CreateWorkareaRequest {
+            workspace_id: s.workspace_id.clone(),
+            permission_mode: None,
+        })
+        .await
+        .expect("CreateWorkarea")
+        .into_inner();
+
+    let repo_worktree = core
+        .data_dir
+        .join("workspaces")
+        .join(&s.workspace_slug)
+        .join(&wa.composer_name)
+        .join(&s.repo_name);
+
+    assert!(
+        repo_worktree.join("checked_in.txt").is_file(),
+        "checked-in .worktreeinclude rule applied"
+    );
+    assert!(
+        !repo_worktree.join("db_only.txt").exists(),
+        "DB rule must NOT apply — checked-in file wins"
+    );
+
+    core.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn create_workarea_uses_db_rules_when_no_checked_in_file() {
+    // Task 309: with NO checked-in `.worktreeinclude`, the local-DB
+    // `files_to_copy_rules` (via the Task-310 resolver) are the rule set.
+    let core = CoreUnderTest::spawn().await.expect("spawn core");
+    let s = seed(&core, "ftc-dbonly").await;
+
+    {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let opts = SqliteConnectOptions::new()
+            .filename(&core.db_path)
+            .create_if_missing(false);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("db");
+        sqlx::query("UPDATE projects SET settings_json = ? WHERE id = ?")
+            .bind(r#"{"files_to_copy_rules":[{"pattern":".env","mode":"copy"}]}"#)
+            .bind(format!("proj-{}", "ftc-dbonly"))
+            .execute(&pool)
+            .await
+            .expect("update settings_json");
+        pool.close().await;
+    }
+    // No `.concerto/.worktreeinclude`.
+    tokio::fs::write(s.repo_local_path.join(".env"), b"FROMDB=1\n")
+        .await
+        .unwrap();
+
+    let mut wac = core.workareas_client().await.expect("workareas client");
+    let wa = wac
+        .create_workarea(CreateWorkareaRequest {
+            workspace_id: s.workspace_id.clone(),
+            permission_mode: None,
+        })
+        .await
+        .expect("CreateWorkarea")
+        .into_inner();
+
+    let env = core
+        .data_dir
+        .join("workspaces")
+        .join(&s.workspace_slug)
+        .join(&wa.composer_name)
+        .join(&s.repo_name)
+        .join(".env");
+    assert_eq!(
+        tokio::fs::read(&env).await.unwrap(),
+        b"FROMDB=1\n",
+        "DB rules applied when no checked-in file"
+    );
+
+    core.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn create_workarea_rejects_path_escape_via_symlink() {
     let core = CoreUnderTest::spawn().await.expect("spawn core");

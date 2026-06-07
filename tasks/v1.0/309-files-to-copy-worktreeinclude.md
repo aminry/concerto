@@ -68,16 +68,16 @@ Tier 1.
 **Tier-1 scope.** Fully CI-provable on fixture filesystems across both CI lanes. The one **Tier-3 confidence** remainder — real Windows junction + long-path behavior on a physical Windows machine — is folded into the Phase-3 manual checklist's existing cross-platform-worktree line (`design/03 §10`); the fallback **logic** is gated here.
 
 ## Definition of Done
-- [ ] Reference worktree = first repo by `workspace_repos.position`; sources resolve there, rules apply into every repo's worktree (per-repo native matches handled per repo)
-- [ ] Checked-in `.worktreeinclude` wins over local-DB `files_to_copy_rules`; `parse_json_rules` parses the §3.10 JSON form into `Vec<Rule>`
-- [ ] Windows `create_symlink` fallback: junction (dir) / hardlink (file) / copy-with-warning (unsupported) — no `Error::Internal` for symlink mode on any platform
-- [ ] Broken-symlink + fallback-to-copy warnings emitted as `WorkareaEvent` chips (non-blocking); escape (`..`/out-of-root) still a hard error
-- [ ] All V0.1 FROZEN invariants preserved (parse grammar, Mode set, last-match-wins, escape rejection, `.git/` skip, idempotency)
-- [ ] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams — e.g. the 310 resolver swap — in Handoff)
-- [ ] No files outside Outputs modified
-- [ ] Interfaces regenerated + committed if a `pub` Rust surface changed (`rust-api.md`)
-- [ ] Smoke gate green (unchanged)
-- [ ] Single commit with the message below
+- [x] Reference worktree = first repo by `workspace_repos.position`; sources resolve there, rules apply into every repo's worktree (per-repo native matches handled per repo)
+- [x] Checked-in `.worktreeinclude` wins over local-DB `files_to_copy_rules`; `parse_json_rules` parses the §3.10 JSON form into `Vec<Rule>`
+- [x] Windows `create_symlink` fallback: junction (dir) / hardlink (file) / copy-with-warning (unsupported) — no `Error::Internal` for symlink mode on any platform
+- [x] Broken-symlink + fallback-to-copy warnings emitted as `WorkareaEvent` chips (non-blocking); escape (`..`/out-of-root) still a hard error
+- [x] All V0.1 FROZEN invariants preserved (parse grammar, Mode set, last-match-wins, escape rejection, `.git/` skip, idempotency)
+- [x] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams — e.g. the 310 resolver swap — in Handoff)
+- [x] No files outside Outputs modified (one expected addition: `crates/core/src/handlers/streams.rs` — the exhaustive `WorkareaEvent` match needs the new `FilesToCopyWarning` arm; see Drift)
+- [x] Interfaces regenerated + committed if a `pub` Rust surface changed (`rust-api.md`) — regen ran; no diff (these are internal-module `pub` symbols, not tracked in `rust-api.md`)
+- [x] Smoke gate green (unchanged)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/core/src/workspace_manager/files_to_copy.rs` (modified — reference-relative source root, `apply_for_repo`, `parse_json_rules`, `ApplyReport`, Windows `create_symlink` arm, warning surface; module header updated to drop the V0.1-simplification notes)
@@ -101,7 +101,7 @@ Refs: tasks/v1.0/309-files-to-copy-worktreeinclude.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan: —
-- Open questions for next task: —
-- Deliberate debt: —
-- Smoke-gate state: —
+- Drift from plan: one file beyond `Outputs` — `crates/core/src/handlers/streams.rs` — the new `WorkareaEvent::FilesToCopyWarning` variant requires an arm in the exhaustive `map_workarea_event` match (maps to the opaque `kind` `files_to_copy_warning`, no proto change). 310 had **already landed**, so 309 consumes its resolver per 310's handoff — `WorkareaManager::resolve_files_to_copy_rules` reads the checked-in `<reference>/.concerto/.worktreeinclude` first (wins; `files_to_copy::parse`), and ONLY on its absence falls back to `ProjectSettingsResolver::files_to_copy_rules()` (which itself layers checked-in `project_settings.json` > local-DB `settings_json` > default). Note: 310's resolver tracks `project_settings.json`'s `files_to_copy_rules` field — NOT the repo-local `.worktreeinclude` file — so 309 still owns the `.worktreeinclude` read + the "checked-in file wins over DB" ordering (`design §3.13`). No raw `settings_json` read in 309. The Windows junction uses the `cmd /C mklink /J` builtin (no junction crate) to keep `cargo deny` std-only; junctions are absolute (documented Windows divergence from the Unix relative-symlink invariant).
+- Open questions for next task: none. The new `WorkareaEvent::FilesToCopyWarning { id, repository_id, message }` rides `workarea.events` with the opaque `kind` string `files_to_copy_warning` (no proto change); Desktop chip rendering is 322/323. The real-Windows junction/long-path confidence item stays on the Phase-3 manual cross-platform-worktree checklist (`design §10`) — the fallback *logic* is gated here via the `#[cfg(windows)]` unit test on Task 113's lane.
+- Deliberate debt: none in new code (no TODO/FIXME/unimplemented). The 310 swap is already done (310 landed). Path escape is now a HARD abort of the whole create (not a soft `partial`) per `design §3.10`; a broken symlink / Windows copy-fallback is a non-blocking warning, matching the prior soft posture for source-missing.
+- Smoke-gate state: GREEN, unchanged (`scripts/smoke.sh` PASSED, 105s). Full gate clean: `cargo check --workspace`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace --no-fail-fast` (incl. 5 `files_to_copy` integration tests + 21 module unit tests), `cargo deny check`, `cargo fmt --all --check`, `regen-interfaces` (no diff).

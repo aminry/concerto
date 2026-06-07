@@ -169,6 +169,17 @@ pub enum WorkareaEvent {
         repository_full_name: String,
         pr_number: i64,
     },
+    /// Task 309: a non-blocking files-to-copy warning chip (`design/03 §3.10`).
+    /// Emitted per warning during `create_workarea` — a broken `symlink`-mode
+    /// source ("symlink to `<path>` is broken") or a Windows/unsupported-FS
+    /// fallback-to-copy ("symlinks unsupported here — copied `<path>` instead").
+    /// Carries the workarea id, the affected repo, and the chip message; the
+    /// chip rendering is the client's (Tasks 322/323). Never blocks the create.
+    FilesToCopyWarning {
+        id: WorkareaId,
+        repository_id: String,
+        message: String,
+    },
     /// Task 312: a workarea's branch was renamed across its repos
     /// (`design/03 §3.6`). Carries the id + the from→to names + how many repos
     /// renamed cleanly vs. were skipped/suffixed on a remote conflict
@@ -747,6 +758,21 @@ impl WorkareaManager {
             }
         }
 
+        // Task 309: resolve the files-to-copy rule set ONCE, against the
+        // **reference worktree** = the first repo by `workspace_repos.position`
+        // (`repos[0]`; `design/03 §3.10` "default: first listed repo"). The
+        // rules apply into EVERY repo's worktree, with sources always resolved
+        // against this reference root. A checked-in
+        // `<reference>/.concerto/.worktreeinclude` WINS over the local-DB
+        // `files_to_copy_rules` (`design/03 §3.13`); when absent we fall back to
+        // the Task-310 resolver's `files_to_copy_rules()` (which itself layers
+        // checked-in `project_settings.json` > local DB > default).
+        let reference_repo = &repos[0];
+        let reference_root = PathBuf::from(&reference_repo.local_path);
+        let copy_rules = self
+            .resolve_files_to_copy_rules(reference_repo, &reference_root)
+            .await?;
+
         // Allocate composer name with collision retry. The loop body
         // computes the candidate, builds on-disk artefacts for **every**
         // repo, then opens a transaction. On UNIQUE violation we roll
@@ -811,6 +837,10 @@ impl WorkareaManager {
             // The first error seen — propagated verbatim if we end up
             // aborting (no repo succeeded).
             let mut first_err: Option<Error> = None;
+            // Task 309: non-blocking files-to-copy warnings collected during
+            // the loop, keyed by repo id; emitted as `FilesToCopyWarning`
+            // events AFTER the commit (the workarea id is known only then).
+            let mut copy_warnings: Vec<(String, String)> = Vec::new();
 
             for (idx, repo) in repos.iter().enumerate() {
                 let repo_local = PathBuf::from(&repo.local_path);
@@ -843,29 +873,46 @@ impl WorkareaManager {
                     continue;
                 }
 
-                // 3c. Apply files-to-copy rules from this repo's
-                //     `.concerto/.worktreeinclude` into its new worktree.
-                //     Missing rules file → no-op. The `ignore` walker is
-                //     sync; offload to a blocking pool. Per-repo reference
-                //     worktree = that repo's `local_path` (the multi-repo
-                //     reference-repo selection for cross-repo includes is
-                //     Task 309's job — `workspace_repos.position` 0 is the
-                //     reference; this task keeps the existing per-repo
-                //     call working).
-                let project_root = repo_local.clone();
+                // 3c. Apply the resolved files-to-copy rule set into this
+                //     repo's new worktree. Task 309: sources resolve against the
+                //     **reference worktree** (`reference_root`, first repo by
+                //     position) — NOT this repo's `local_path` — so a
+                //     reference-worktree `.env` lands in every repo's worktree
+                //     (`design/03 §3.10`). The `ignore` walker is sync; offload
+                //     to a blocking pool.
+                let ref_root = reference_root.clone();
                 let dest_root = repo_worktree.clone();
+                let rules = copy_rules.clone();
                 let applied = tokio::task::spawn_blocking(move || {
-                    files_to_copy::apply(&project_root, &dest_root)
+                    files_to_copy::apply_for_repo(&ref_root, &dest_root, &rules)
                 })
                 .await
                 .map_err(|e| Error::Internal(format!("files_to_copy join: {e}")));
                 match applied {
-                    Ok(Ok(applied_count)) => {
+                    Ok(Ok(report)) => {
                         tracing::debug!(
                             repo = %repo.id,
-                            applied = applied_count,
+                            applied = report.applied,
+                            warnings = report.warnings.len(),
                             "files_to_copy applied"
                         );
+                        // Non-blocking warning chips (broken symlinks / copy
+                        // fallbacks) — queued, emitted post-commit.
+                        for w in &report.warnings {
+                            copy_warnings.push((repo.id.0.clone(), w.message()));
+                        }
+                    }
+                    // A path escape (`..` / symlink out of the reference or
+                    // destination root) is a HARD error at create
+                    // (`design/03 §3.10`): abort the whole create + clean up
+                    // every worktree, never a soft `partial`.
+                    Ok(Err(e @ Error::Validation(_)))
+                        if e.to_string().contains("file_to_copy.escapes_project_root") =>
+                    {
+                        tracing::warn!(repo = %repo.id, error = %e, "files_to_copy path escape; aborting create");
+                        let _ = remove_worktree_best_effort(&repo_local, &repo_worktree).await;
+                        cleanup_worktrees(&built, &worktree_root).await;
+                        return Err(e);
                     }
                     Ok(Err(e)) | Err(e) => {
                         tracing::warn!(repo = %repo.id, error = %e, "files_to_copy failed; marking repo for partial");
@@ -969,6 +1016,15 @@ impl WorkareaManager {
                             failed_repository_ids: failed_repo_ids.clone(),
                         });
                     }
+                    // Task 309: emit the non-blocking files-to-copy warning
+                    // chips now that the workarea id is committed + known.
+                    for (repository_id, message) in &copy_warnings {
+                        let _ = self.events.send(WorkareaEvent::FilesToCopyWarning {
+                            id: id.clone(),
+                            repository_id: repository_id.clone(),
+                            message: message.clone(),
+                        });
+                    }
                     break Workarea {
                         id,
                         workspace_id: ws_id.clone(),
@@ -1004,6 +1060,74 @@ impl WorkareaManager {
 
         let _ = self.events.send(WorkareaEvent::Created(workarea.clone()));
         Ok(workarea)
+    }
+
+    /// Task 309: resolve the files-to-copy rule set for a workarea's
+    /// **reference worktree** (`design/03 §3.10`/§3.13).
+    ///
+    /// Precedence (FROZEN, checked-in `.worktreeinclude` wins):
+    /// 1. If `<reference_root>/.concerto/.worktreeinclude` exists, its parsed
+    ///    rules ARE the rule set — a checked-in, team-shared, targeted file
+    ///    that wins over the local DB (`design/03 §3.13`).
+    /// 2. Otherwise the Task-310 [`ProjectSettingsResolver::files_to_copy_rules`]
+    ///    — which itself layers the checked-in `project_settings.json` >
+    ///    local-DB `projects.settings_json` > empty default. We consume the
+    ///    resolver (per 310's handoff) rather than reading `settings_json` raw,
+    ///    so 310 owns the layering + provenance and 309 owns the apply.
+    ///
+    /// Either way the result is one `Vec<files_to_copy::Rule>` threaded into the
+    /// per-repo apply loop.
+    async fn resolve_files_to_copy_rules(
+        &self,
+        reference_repo: &Repository,
+        reference_root: &Path,
+    ) -> Result<Vec<files_to_copy::Rule>> {
+        // (1) Checked-in `.worktreeinclude` wins.
+        let include_path = reference_root.join(files_to_copy::WORKTREEINCLUDE_RELPATH);
+        match tokio::fs::read_to_string(&include_path).await {
+            Ok(text) => {
+                tracing::debug!(
+                    repo = %reference_repo.id,
+                    "files_to_copy: using checked-in .worktreeinclude (wins over local DB)"
+                );
+                return Ok(files_to_copy::parse(&text));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
+
+        // (2) Fall back to the Task-310 resolver's `files_to_copy_rules()`
+        // (checked-in project_settings.json > local DB > default).
+        let project_id = concerto_persist::ProjectId(reference_repo.project_id.clone());
+        let managed =
+            crate::security::managed::load_managed_policy(&self.config_dir).unwrap_or_default();
+        let opt_out = crate::settings::OptOutConfig::default();
+        let resolver = crate::settings::build_resolver_for_project(
+            &self.persistence,
+            &project_id,
+            managed,
+            &opt_out,
+        )
+        .await?;
+        let resolved = resolver.files_to_copy_rules();
+        tracing::debug!(
+            repo = %reference_repo.id,
+            source = ?resolved.source,
+            rules = resolved.value.len(),
+            "files_to_copy: resolved rule set from project settings"
+        );
+        Ok(resolved
+            .value
+            .into_iter()
+            .map(|r| files_to_copy::Rule {
+                pattern: r.pattern,
+                mode: match r.mode {
+                    crate::settings::FilesToCopyMode::Copy => files_to_copy::Mode::Copy,
+                    crate::settings::FilesToCopyMode::Symlink => files_to_copy::Mode::Symlink,
+                    crate::settings::FilesToCopyMode::Exclude => files_to_copy::Mode::Exclude,
+                },
+            })
+            .collect())
     }
 
     /// Look up a workarea by id.

@@ -1272,6 +1272,11 @@ fn map_workarea_event(ev: WorkareaEvent) -> Event {
         WorkareaEvent::PrSetIssueWriteBack { id, .. } => {
             (id.to_string(), "pr_set:issue_write_back".to_string())
         }
+        // Task 309: a files-to-copy warning chip rides `workarea.events` with a
+        // `files_to_copy_warning` kind (no proto change — opaque `kind` string).
+        WorkareaEvent::FilesToCopyWarning { id, .. } => {
+            (id.to_string(), "files_to_copy_warning".to_string())
+        }
         // Task 312: the branch-rename hook rides `workarea.events` with a
         // `branch_renamed` kind (no proto change — opaque `kind` string).
         WorkareaEvent::BranchRenamed { id, .. } => (id.to_string(), "branch_renamed".to_string()),
