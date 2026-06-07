@@ -20,8 +20,9 @@ use concerto_proto::v1::{
     ArchiveWorkareaRequest, CreateWorkareaRequest, DiffHunk as ProtoDiffHunk,
     DiffKind as ProtoDiffKind, DiffPayload as ProtoDiffPayload, FileDiff as ProtoFileDiff,
     GetDiffRequest, GetWorkareaPrSetResponse, ListWorkareasRequest, ListWorkareasResponse,
-    PermissionMode, PullRequest as ProtoPullRequest, SetWorkareaBypassDestructiveGuardRequest,
-    UpdateWorkareaPermissionModeRequest, Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
+    PermissionMode, PullRequest as ProtoPullRequest, SetMergeOrderRequest,
+    SetWorkareaBypassDestructiveGuardRequest, UpdateWorkareaPermissionModeRequest,
+    Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
 };
 use tonic::{Request, Response, Status};
 
@@ -233,6 +234,30 @@ impl WorkareasService for WorkareasHandler {
         }))
     }
 
+    #[tracing::instrument(skip_all, name = "Workareas::SetMergeOrder")]
+    async fn set_merge_order(
+        &self,
+        request: Request<SetMergeOrderRequest>,
+    ) -> Result<Response<GetWorkareaPrSetResponse>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        let workarea_id = PersistWorkareaId(req.workarea_id);
+        let repository_id = PersistRepositoryId(req.repository_id);
+        let rows = self
+            .workarea_manager
+            .set_merge_order(&workarea_id, &repository_id, req.merge_order)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(GetWorkareaPrSetResponse {
+            pull_requests: rows.into_iter().map(pull_request_to_proto).collect(),
+        }))
+    }
+
     #[tracing::instrument(skip_all, name = "Workareas::SetWorkareaBypassDestructiveGuard")]
     async fn set_workarea_bypass_destructive_guard(
         &self,
@@ -347,6 +372,9 @@ fn pull_request_to_proto(row: concerto_persist::PullRequest) -> ProtoPullRequest
         body: row.body,
         url: row.url,
         head_sha: row.head_sha,
+        merge_order: row.merge_order,
+        external_id: row.external_id,
+        repository_full_name: row.repository_full_name,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
