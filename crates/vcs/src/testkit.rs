@@ -330,6 +330,40 @@ impl FakeLinear {
             .await;
     }
 
+    /// Mount a `POST /graphql` whose request body contains `needle` → JSON
+    /// `body` (Task 320.5 write-back). Lets one fake serve the workflow-states
+    /// query and the `issueUpdate` mutation distinctly (match on `"team"` vs
+    /// `"issueUpdate"`). wiremock matches the most-recently-mounted matcher
+    /// first, so mount the more specific needle last.
+    pub async fn mount_graphql_matching(&self, needle: &str, body: serde_json::Value) {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(wiremock::matchers::body_string_contains(needle))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Number of `POST /graphql` requests whose body contains `needle` the fake
+    /// has served (Task 320.5: assert the `issueUpdate` mutation was sent).
+    pub async fn graphql_request_count(&self, needle: &str) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .map(|reqs| {
+                reqs.iter()
+                    .filter(|r| {
+                        r.method == wiremock::http::Method::POST
+                            && r.url.path() == "/graphql"
+                            && std::str::from_utf8(&r.body)
+                                .map(|b| b.contains(needle))
+                                .unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// Number of requests the fake has received so far. Lets the 1 h-cache test
     /// assert the second fetch served from cache made NO second HTTP call.
     pub async fn request_count(&self) -> usize {
@@ -405,6 +439,32 @@ impl FakeJira {
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(&self.server)
             .await;
+    }
+
+    /// Mount a `POST <path>` → status (Task 320.5 write-back: the transition
+    /// apply returns `204 No Content` on success). Body is ignored by the fake.
+    pub async fn mount_post_status(&self, path_str: &str, status: u16) {
+        Mock::given(method("POST"))
+            .and(path(path_str))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Number of `POST <path>` requests the fake has served (Task 320.5: assert
+    /// the transition was applied exactly once).
+    pub async fn post_request_count(&self, path_str: &str) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .map(|reqs| {
+                reqs.iter()
+                    .filter(|r| {
+                        r.method == wiremock::http::Method::POST && r.url.path() == path_str
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     /// Number of requests received (cache / retry assertions).

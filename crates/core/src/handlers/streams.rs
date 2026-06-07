@@ -1267,6 +1267,11 @@ fn map_workarea_event(ev: WorkareaEvent) -> Event {
         }
         WorkareaEvent::PrSetMerged { id, .. } => (id.to_string(), "pr_set:merged".to_string()),
         WorkareaEvent::PrReverted { id, .. } => (id.to_string(), "pr_set:reverted".to_string()),
+        // Task 320.5: the post-merge issue write-back result rides `workarea.events`
+        // with a `pr_set:issue_write_back` kind (the richer JSON rides `pr_set.events`).
+        WorkareaEvent::PrSetIssueWriteBack { id, .. } => {
+            (id.to_string(), "pr_set:issue_write_back".to_string())
+        }
         // Task 312: the branch-rename hook rides `workarea.events` with a
         // `branch_renamed` kind (no proto change — opaque `kind` string).
         WorkareaEvent::BranchRenamed { id, .. } => (id.to_string(), "branch_renamed".to_string()),
@@ -1332,6 +1337,30 @@ fn pr_set_event_frame(ev: &WorkareaEvent) -> Option<Vec<u8>> {
             "repository_full_name": repository_full_name,
             "pr_number": pr_number,
         }),
+        // Task 320.5: the post-merge issue write-back informational frame
+        // (`design/13 §12 R-9`). `{ kind, workarea_id, issue_ref, outcome, detail }`
+        // — `issue_ref` is the `provider:external_id` spelling (empty when the
+        // ref was absent/unresolvable, i.e. a `skipped` outcome).
+        WorkareaEvent::PrSetIssueWriteBack {
+            id,
+            provider,
+            external_id,
+            outcome,
+            detail,
+        } => {
+            let issue_ref = if external_id.is_empty() {
+                String::new()
+            } else {
+                format!("{provider}:{external_id}")
+            };
+            serde_json::json!({
+                "kind": "issue_write_back",
+                "workarea_id": id.to_string(),
+                "issue_ref": issue_ref,
+                "outcome": outcome,
+                "detail": detail,
+            })
+        }
         _ => return None,
     };
     Some(json.to_string().into_bytes())
@@ -1359,7 +1388,8 @@ fn pr_set_event_workarea_id(ev: &WorkareaEvent) -> Option<String> {
         WorkareaEvent::PrSetMergeStepCompleted { id, .. }
         | WorkareaEvent::PrSetMergeFailedStep { id, .. }
         | WorkareaEvent::PrSetMerged { id, .. }
-        | WorkareaEvent::PrReverted { id, .. } => Some(id.to_string()),
+        | WorkareaEvent::PrReverted { id, .. }
+        | WorkareaEvent::PrSetIssueWriteBack { id, .. } => Some(id.to_string()),
         _ => None,
     }
 }

@@ -400,3 +400,107 @@ async fn issue_body_never_persisted() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Task 320.5 — the REAL Linear/Jira write-back (issueUpdate / POST transitions)
+// against the testkit FakeLinear / FakeJira doubles.
+// ---------------------------------------------------------------------------
+
+use async_trait::async_trait;
+use concerto_vcs::{LinearJiraWriteBack, WriteBackTokens};
+
+/// A static token resolver: returns one fixed token for any provider (the
+/// wiremock fake does not verify it). `None` ⇒ no credential (the
+/// not-authenticated path).
+struct StaticTokens(Option<&'static str>);
+
+#[async_trait]
+impl WriteBackTokens for StaticTokens {
+    async fn token(&self, _provider: IssueProvider) -> concerto_error::Result<Option<SecretValue>> {
+        Ok(self.0.map(|t| SecretValue::new(t.to_string())))
+    }
+}
+
+#[tokio::test]
+async fn linear_write_back_runs_issue_update_to_completed_state() {
+    let linear = FakeLinear::start().await;
+    // The states query (body contains "team") and the issueUpdate mutation
+    // (body contains "issueUpdate") are served distinctly; mount the more
+    // specific needle last so wiremock prefers it.
+    linear
+        .mount_graphql_matching("team", fixture("linear_issue_states.json"))
+        .await;
+    linear
+        .mount_graphql_matching("issueUpdate", fixture("linear_issue_update.json"))
+        .await;
+
+    let wb = LinearJiraWriteBack::new(Arc::new(StaticTokens(Some("lin-token"))))
+        .expect("build write-back")
+        .with_linear_base(&linear.base_uri());
+
+    let issue_ref = IssueRef {
+        provider: IssueProvider::Linear,
+        external_id: "ENG-123".to_string(),
+        project_url: "https://linear.app/acme".to_string(),
+    };
+    wb.transition_on_merge(&issue_ref, IssueTransition::MergedDone)
+        .await
+        .expect("linear transition");
+
+    // The issueUpdate mutation was actually sent.
+    assert_eq!(
+        linear.graphql_request_count("issueUpdate").await,
+        1,
+        "exactly one issueUpdate mutation"
+    );
+}
+
+#[tokio::test]
+async fn jira_write_back_posts_done_transition() {
+    let jira = FakeJira::start().await;
+    jira.mount_get_json(
+        "/rest/api/3/issue/PROJ-45/transitions",
+        fixture("jira_transitions.json"),
+    )
+    .await;
+    jira.mount_post_status("/rest/api/3/issue/PROJ-45/transitions", 204)
+        .await;
+
+    let wb = LinearJiraWriteBack::new(Arc::new(StaticTokens(Some("jira-token"))))
+        .expect("build write-back")
+        .with_jira_base(&jira.base_uri());
+
+    let issue_ref = IssueRef {
+        provider: IssueProvider::Jira,
+        external_id: "PROJ-45".to_string(),
+        project_url: "https://acme.atlassian.net".to_string(),
+    };
+    wb.transition_on_merge(&issue_ref, IssueTransition::MergedDone)
+        .await
+        .expect("jira transition");
+
+    // The transition POST landed (the "Done"-category transition id 31).
+    assert_eq!(
+        jira.post_request_count("/rest/api/3/issue/PROJ-45/transitions")
+            .await,
+        1,
+        "exactly one transition POST"
+    );
+}
+
+#[tokio::test]
+async fn write_back_without_credential_errors() {
+    // No connected credential → the trait errors (the Core hook turns this into
+    // a `failed` event, never failing the merge — see the core integration test).
+    let wb = LinearJiraWriteBack::new(Arc::new(StaticTokens(None))).expect("build");
+    let issue_ref = IssueRef {
+        provider: IssueProvider::Linear,
+        external_id: "ENG-1".to_string(),
+        project_url: "https://linear.app/acme".to_string(),
+    };
+    let err = wb
+        .transition_on_merge(&issue_ref, IssueTransition::MergedDone)
+        .await
+        .expect_err("no credential");
+    assert!(matches!(err, concerto_error::Error::VcsNotAuthenticated(_)));
+}
