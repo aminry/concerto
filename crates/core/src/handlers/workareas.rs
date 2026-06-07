@@ -28,7 +28,8 @@ use concerto_proto::v1::{
     PullRequest as ProtoPullRequest, RevertOutcome as ProtoRevertOutcome,
     RevertReport as ProtoRevertReport, RevertStep as ProtoRevertStep, RevertWorkareaPrSetRequest,
     SetMergeOrderRequest, SetWorkareaBypassDestructiveGuardRequest,
-    UpdateWorkareaPermissionModeRequest, Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
+    SetWorkareaExcludeFromMaestroRequest, UpdateWorkareaPermissionModeRequest,
+    Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
 };
 use concerto_vcs::provider::MergeMethod;
 use futures::Stream;
@@ -392,6 +393,24 @@ impl WorkareasService for WorkareasHandler {
             .map_err(error_to_status)?;
         Ok(Response::new(revert_report_to_proto(report)))
     }
+
+    #[tracing::instrument(skip_all, name = "Workareas::SetWorkareaExcludeFromMaestro")]
+    async fn set_workarea_exclude_from_maestro(
+        &self,
+        request: Request<SetWorkareaExcludeFromMaestroRequest>,
+    ) -> Result<Response<ProtoWorkarea>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        let id = PersistWorkareaId(req.workarea_id);
+        let row = self
+            .workarea_manager
+            .set_exclude_from_maestro(&id, req.exclude)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(workarea_to_proto(row)))
+    }
 }
 
 fn merge_plan_to_proto(plan: MergePlan) -> ProtoMergePlan {
@@ -497,6 +516,11 @@ fn revert_report_to_proto(r: RevertReport) -> ProtoRevertReport {
 }
 
 fn workarea_to_proto(row: concerto_persist::Workarea) -> ProtoWorkarea {
+    // Task 311: derive the typed `exclude_from_maestro` bool from the
+    // `settings_json` source of truth. This is the ONLY place the JSON→bool
+    // projection happens, so every `Workarea` the service emits (Get / List /
+    // Create / the toggle RPC) is consistent.
+    let exclude_from_maestro = Some(derive_exclude_from_maestro(&row.settings_json));
     ProtoWorkarea {
         id: row.id.to_string(),
         workspace_id: row.workspace_id.to_string(),
@@ -508,7 +532,24 @@ fn workarea_to_proto(row: concerto_persist::Workarea) -> ProtoWorkarea {
         created_at: Some(epoch_ms_to_ts(row.created_at)),
         last_activity_at: row.last_activity_at.map(epoch_ms_to_ts),
         archived_at: row.archived_at.map(epoch_ms_to_ts),
+        exclude_from_maestro,
     }
+}
+
+/// Task 311: project `workareas.settings_json` → the typed
+/// `exclude_from_maestro` bool. Absent / `false` / non-bool / malformed /
+/// non-object ⇒ `false` (the safe default: a workarea is visible to Maestro
+/// unless explicitly excluded). The source of truth is the JSON key in
+/// `settings_json` (`design/03 §3.14`); this is the derived-settings-key
+/// precedent for future typed projections (`PHASE3_PLANNING §2`, row 311).
+pub(crate) fn derive_exclude_from_maestro(settings_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(settings_json)
+        .ok()
+        .and_then(|v| {
+            v.get("exclude_from_maestro")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 fn epoch_ms_to_ts(ms: i64) -> prost_types::Timestamp {
