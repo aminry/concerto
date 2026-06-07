@@ -70,16 +70,16 @@ Surface two V1.0 multi-X capabilities in the Desktop that the Core now permits b
 **Tier-2 double + what it does NOT cover.** The double is **vitest + mocked `invoke`** (no Core; `apps/desktop` has no Playwright). It proves the parallel-workarea summary + multi-agent tab UI logic. It does **NOT** cover real Claude+Codex+Gemini running concurrently on one workarea or real edit-mutex contention on real agents → covered by Task 308's Core tests (the serialization) + the Phase-3 Tier-3 checklist confidence ("create a multi-repo workspace"; multi-session is exercised live there).
 
 ## Definition of Done
-- [ ] `WorkspaceDetail.tsx` shows the `design/15 §3.4` workspace summary (workarea list + status dots + "+ new workarea" + cross-workarea PR-set placeholder), replacing the JSON dump
-- [ ] Summary reuses `WorkareaList`/`workareaStatusToDot`; live-updates via `workarea.events`; row click selects the workarea
-- [ ] `SessionRegion`'s `NewSessionMenu` offers `{claude, codex, gemini}` (echo decision documented); `createSession` carries the picked `agentKind`
-- [ ] >1 concurrent session renders >1 tab; per-session `agent_kind`/status chips render (vitest-covered)
-- [ ] Edit-mutex contention surfaced as a non-blocking inline notice (server-side mutex NOT re-implemented)
-- [ ] `workareaStatusToDot` handles any new 307 statuses (`finished`/`partial`); no proto/SQL/RPC locked by this task
-- [ ] All four `pnpm -C apps/desktop` commands pass; vitest covers the cases above
-- [ ] No `TODO`/`FIXME` in new code (deliberate seams in Handoff); no files outside Outputs modified
-- [ ] Coordination note with Task 322 on the shared "+ New Workarea" button recorded in Handoff
-- [ ] Single commit with the message below
+- [x] `WorkspaceDetail.tsx` shows the `design/15 §3.4` workspace summary (workarea list + status dots + "+ new workarea" + cross-workarea PR-set placeholder), replacing the JSON dump
+- [x] Summary reuses `WorkareaList`/`workareaStatusToDot`; live-updates via `workarea.events`; row click selects the workarea
+- [x] `SessionRegion`'s `NewSessionMenu` offers `{claude, codex, gemini}` (echo decision documented); `createSession` carries the picked `agentKind`
+- [x] >1 concurrent session renders >1 tab; per-session `agent_kind`/status chips render (vitest-covered)
+- [x] Edit-mutex contention surfaced as a non-blocking inline notice (server-side mutex NOT re-implemented)
+- [x] `workareaStatusToDot` handles any new 307 statuses (`finished`/`partial`); no proto/SQL/RPC locked by this task
+- [x] All four `pnpm -C apps/desktop` commands pass; vitest covers the cases above
+- [x] No `TODO`/`FIXME` in new code (deliberate seams in Handoff); no files outside Outputs modified
+- [x] Coordination note with Task 322 on the shared "+ New Workarea" button recorded in Handoff
+- [x] Single commit with the message below
 
 ## Outputs
 - `apps/desktop/src/components/WorkspaceDetail.tsx` (modified — render the summary instead of the JSON dump)
@@ -102,4 +102,7 @@ Refs: tasks/v1.0/323-desktop-parallel-workareas-ui.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan / Open questions for next task / Deliberate debt / Smoke-gate state — —
+- **Drift from plan.** Stayed within Outputs — no extra files. Two small implementation choices: (1) the edit-mutex contention surface is implemented as a local `useEditMutexContention` helper hook + a `EDIT_MUTEX_BLOCKED_WIRE_CODE` constant **inlined inside `SessionRegion.tsx`** (not a new `src/hooks/` file) to respect the Outputs list — it subscribes to the active session's `session.events.<sid>` via the existing `useEventSubscription` + `oneofVariant` (already exported from `api/sessions.ts`, no edit there) and parses the `ApprovalResolved.decision` string per Task 308's contract. The `api/sessions.ts` `SessionEventPayload.kind` union still doesn't list `ApprovalResolved` (a P3 frame variant); we read it dynamically via `oneofVariant`, so no type-file edit was needed — if a future task wants it statically typed, add the variant to that union (recorded as a deliberate seam, not debt). (2) The summary's "+ new workarea" button is a callback (`onNewWorkarea`) into the parent `WorkspaceDetail`, which keeps owning the Task-322 cone-picker dialog (see coordination note below).
+- **Open questions for next task.** Task 324 fills the cross-workarea PR-set slot: `WorkspaceSummary.tsx`'s `renderPrSetStatus(workarea)` is the single typed seam (currently returns `"—"` per row, binds no PR-set RPC) — 324 replaces that function (or the right-hand column) with the live aggregation. The `WorkspaceSummary` public props (`{ workspaceId, onNewWorkarea }`) are FROZEN for 324. Contention contract consumed from Task 308: the blocked write rides `session.events.<sid>` as an `ApprovalResolved` whose `decision` is `"workarea.edit_mutex.blocked: blocked on session <id>"` (no new proto field) — if a future task moves it to a dedicated frame, update the parser in `useEditMutexContention`.
+- **Deliberate debt.** (a) **echo dropped from the new-session menu** — `AGENT_MENU_ITEMS` is now exactly `{claude, codex, gemini}` (the user-creatable `agent_kind` CHECK subset; `maestro` excluded as P4-internal). `echo` is the V0.1 smoke agent; `scripts/smoke.sh` creates its echo session directly via the Core, not through this menu, so dropping it from the UI does not touch the smoke gate. (b) The contention notice is **best-effort + scoped to the active session only** — if a *background* (non-active) session is blocked, its notice surfaces when the user switches to that tab on the next emitted frame (the subscription follows `activeSessionId`); a per-tab persistent badge is a polish follow-on, not required here. (c) No session-overflow affordance added beyond the existing `overflow-x-auto` strip (`Scope — out`). (d) `workareaStatusToDot` maps `finished`→idle/grey and `partial`→warning/amber (the 307-added statuses), matching the design's "done = idle, partial = needs-review" semantics.
+- **Coordination note with Task 322 (shared "+ New Workarea" button).** Task 322 had already landed in this worktree's base (the cone-picker + `createWorkarea({ cones })` flow live in `WorkspaceDetail.tsx`). This task did **not** rewrite that flow: it removed the standalone top-of-panel "+ New Workarea" button and routed the summary's "+ new workarea" affordance into the **same** parent-owned cone-picker dialog/mutation via the `onNewWorkarea` callback. So there is exactly one create path; 322's cone picker is reused as-is. **Smoke-gate state: unchanged/green** — no `src-tauri` Rust touched, smoke gate (Core-side) is out of scope for this TS-only task. Tier-2 double = vitest + mocked `invoke` + `@testing-library/react`; it proves the summary/tab/contention **UI logic** but does NOT cover real Claude+Codex+Gemini running concurrently on one workarea or real edit-mutex contention on real agents (Task 308 Core tests + the Phase-3 Tier-3 multi-repo checklist cover that). Gate: `typecheck` + `lint` + `test` (63 passed) + `build` all clean.

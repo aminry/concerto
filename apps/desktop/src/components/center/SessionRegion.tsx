@@ -12,7 +12,15 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { useUiStore } from "../../state/useUiStore";
 import { useSessions } from "../../hooks/useSessions";
-import { createSession, deleteSession, type Session } from "../../api/sessions";
+import { useEventSubscription } from "../../hooks/useEventSubscription";
+import {
+  createSession,
+  deleteSession,
+  oneofVariant,
+  type Session,
+  type SessionEventPayload,
+  type StreamEvent,
+} from "../../api/sessions";
 import { errorMessage } from "../../api/client";
 import { SessionTab } from "../SessionTab";
 import { SessionTerminal } from "../SessionTerminal";
@@ -41,6 +49,11 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
 
   const [confirmSession, setConfirmSession] = useState<Session | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Task 323: the per-workarea edit-mutex contention notice for the active
+  // session ("blocked on <other session>"). Surfaced when the Core reports
+  // a write was serialized away — see the subscription below. Non-blocking
+  // + dismissible; the strip stays intact.
+  const [contention, setContention] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeSessionId && sessions.length > 0) {
@@ -50,6 +63,20 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
 
   const activeSession =
     sessions.find((s) => s.id === activeSessionId) ?? null;
+
+  // Task 323 — surface the per-workarea edit-mutex contention EFFECT (the
+  // mutex itself is server-side, Task 308 / design/04 §3.5; this only
+  // displays it). Per Task 308's handoff the blocked write rides the
+  // existing `session.events` stream as an `ApprovalResolved` whose
+  // `decision` string carries the typed `workarea.edit_mutex.blocked`
+  // wire-code + the holder description ("blocked on session <id>"). We
+  // subscribe to the ACTIVE session's events and lift that description into
+  // a dismissible inline notice scoped to that session. No client-side
+  // serialization — we only read what the Core already emitted.
+  useEffect(() => {
+    setContention(null);
+  }, [activeSessionId]);
+  useEditMutexContention(activeSessionId, setContention);
   const sessionDisabled =
     activeSession === null ||
     !["starting", "running", "awaiting"].includes(activeSession.status);
@@ -125,6 +152,21 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
             type="button"
             onClick={() => setActionError(null)}
             className="text-err/80 hover:text-err shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {contention && (
+        <div
+          role="status"
+          className="shrink-0 flex items-center justify-between gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-1.5 text-xs text-warn"
+        >
+          <span className="truncate">{contention}</span>
+          <button
+            type="button"
+            onClick={() => setContention(null)}
+            className="text-warn/80 hover:text-warn shrink-0"
           >
             Dismiss
           </button>
@@ -244,11 +286,72 @@ function NewSessionMenu({
           </span>
         )
       }
-      items={[
-        { id: "claude", label: "claude", description: "Claude Code" },
-        { id: "echo", label: "echo", description: "smoke test" },
-      ]}
+      items={AGENT_MENU_ITEMS}
       onSelect={onPick}
     />
   );
 }
+
+/// The user-creatable agent set for the "+ new session" menu (Task 323,
+/// design/15 §3.4). FROZEN: these `id`s are the `agent_kind` strings passed
+/// to `createSession` and MUST match the Core's `sessions.agent_kind` CHECK
+/// spelling exactly. The CHECK set is `('claude','codex','gemini','maestro')`;
+/// `maestro` is the P4-internal orchestrator (Task 415), not a
+/// user-creatable tab, so it is excluded here. The V0.1 `echo` smoke agent
+/// is dropped from the menu (smoke.sh creates its echo session directly via
+/// the Core, not through this menu — see Handoff).
+const AGENT_MENU_ITEMS = [
+  { id: "claude", label: "claude", description: "Claude Code" },
+  { id: "codex", label: "codex", description: "OpenAI Codex" },
+  { id: "gemini", label: "gemini", description: "Gemini CLI" },
+] as const;
+
+/// Subscribe to the active session's `session.events.<sid>` stream and lift
+/// any per-workarea edit-mutex contention ("blocked on <other session>")
+/// into the `onContention` setter. The mutex is server-side (Task 308); the
+/// blocked write rides the existing stream as an `ApprovalResolved` whose
+/// `decision` string starts with the `workarea.edit_mutex.blocked`
+/// wire-code (see SessionRegion's note). We parse that string and surface a
+/// human-readable notice. Read-only — no client-side serialization.
+function useEditMutexContention(
+  sessionId: string | null,
+  onContention: (msg: string) => void,
+): void {
+  useEventSubscription<StreamEvent>(
+    sessionId ? `session.events.${sessionId}` : "",
+    (event) => {
+      // Oneof variants serialize PascalCase by prost's serde default;
+      // `oneofVariant` accepts both spellings.
+      const session = oneofVariant<SessionEventPayload>(
+        event.body,
+        "Session",
+        "session",
+      );
+      const kind = session?.kind;
+      if (!kind) return;
+      // `ApprovalResolved` isn't in the V0.1 SessionEventPayload.kind union;
+      // read it dynamically. Its `decision` string carries the typed
+      // wire-code + holder description when a write was serialized away.
+      const resolved = oneofVariant<{ decision?: string }>(
+        kind,
+        "ApprovalResolved",
+        "approval_resolved",
+      );
+      const decision = resolved?.decision ?? "";
+      if (decision.startsWith(EDIT_MUTEX_BLOCKED_WIRE_CODE)) {
+        // `decision` is "workarea.edit_mutex.blocked: blocked on session
+        // <id>"; show the human half after the wire-code prefix.
+        const detail =
+          decision.slice(EDIT_MUTEX_BLOCKED_WIRE_CODE.length + 2).trim() ||
+          "blocked on another session";
+        onContention(`Edit serialized — ${detail}`);
+      }
+    },
+  );
+}
+
+/// Typed wire-code the Core (Task 308) prefixes onto the `ApprovalResolved`
+/// decision string when a write-class tool call is rejected because another
+/// session on the same workarea holds the edit mutex. Mirrors
+/// `EDIT_MUTEX_BLOCKED_WIRE_CODE` in the Core's `workspace_manager`.
+const EDIT_MUTEX_BLOCKED_WIRE_CODE = "workarea.edit_mutex.blocked";
