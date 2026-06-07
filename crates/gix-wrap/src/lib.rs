@@ -74,9 +74,9 @@ pub mod status;
 pub use api::{
     apply_perf_config, clone_full, clone_with_strategy, commit_index, cone_index_stats,
     estimate_repo_size, fetch, hard_reset, is_fsmonitor_alive, list_branches,
-    prewarm_blobs_in_cone, ref_exists, register_maintenance, rev_parse_head, start_fsmonitor,
-    stop_fsmonitor, update_ref, worktree_add, BranchRef, CloneProgressEvent, CloneStrategy,
-    ConeStats, FetchReport, PrewarmProgressEvent, ProgressSink, SizeReport,
+    prewarm_blobs_in_cone, ref_exists, register_maintenance, rename_branch, rev_parse_head,
+    start_fsmonitor, stop_fsmonitor, update_ref, worktree_add, BranchRef, CloneProgressEvent,
+    CloneStrategy, ConeStats, FetchReport, PrewarmProgressEvent, ProgressSink, SizeReport,
 };
 // Task 302 sparse lifecycle surface.
 pub use sparse::{
@@ -241,5 +241,49 @@ mod tests {
             wt.join("README.md").exists(),
             "worktree should be checked out"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_branch_renames_the_checked_out_branch() {
+        let (url, _bare, _work) = make_bare_with_commit().await;
+        let dest_root = TempDir::new().unwrap();
+        let dest = dest_root.path().join("clone");
+        clone_full(&url, &dest, None).await.expect("clone");
+
+        // Create a worktree on `concerto/bach`, then rename it.
+        let wt = dest_root.path().join("wt");
+        worktree_add(&dest, "concerto/bach", &wt)
+            .await
+            .expect("worktree_add");
+
+        rename_branch(&wt, "concerto/bach", "feat/idempotency-keys")
+            .await
+            .expect("rename_branch");
+
+        let branches = list_branches(&dest).await.expect("list");
+        assert!(
+            branches
+                .iter()
+                .any(|b| b.name == "feat/idempotency-keys" && !b.is_remote),
+            "expected the renamed local branch; got {branches:?}"
+        );
+        assert!(
+            !branches
+                .iter()
+                .any(|b| b.name == "concerto/bach" && !b.is_remote),
+            "old branch name should be gone; got {branches:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_branch_errors_when_old_missing() {
+        let (url, _bare, _work) = make_bare_with_commit().await;
+        let dest_root = TempDir::new().unwrap();
+        let dest = dest_root.path().join("clone");
+        clone_full(&url, &dest, None).await.expect("clone");
+
+        // Renaming a branch that does not exist is a clean error, not a panic.
+        let err = rename_branch(&dest, "does-not-exist", "whatever").await;
+        assert!(err.is_err(), "expected an error for a missing old branch");
     }
 }

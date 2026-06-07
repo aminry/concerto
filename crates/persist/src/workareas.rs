@@ -458,6 +458,24 @@ pub async fn set_bypass_destructive_guard(
     Ok(())
 }
 
+/// Overwrite a workarea's `branch_name` column. Used by Task 312's
+/// branch-rename hook after the per-repo `git branch -m` loop succeeds.
+/// The workarea-level `branch_name` is the shared name every repo's worktree
+/// in the workarea uses (`design/03` R-1 — per-repo override is V2.0).
+pub async fn set_branch_name(
+    conn: &mut SqliteConnection,
+    id: &WorkareaId,
+    branch_name: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE workareas SET branch_name = ? WHERE id = ?")
+        .bind(branch_name)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 /// Overwrite a workarea's `settings_json` column with `payload` (a JSON
 /// string the caller has already serialized). Used by Task 30's
 /// files-to-copy resolver to stamp the idempotency flag after rules are

@@ -764,6 +764,26 @@ pub async fn worktree_add(repo_dir: &Path, branch: &str, dest: &Path) -> Result<
     .map(|_| ())
 }
 
+/// Rename branch `old` to `new` in the repository at `repo_dir` (Task 312,
+/// `design/03 §3.6`).
+///
+/// Wraps `git branch -m <old> <new>`. Branch ops are git-authoritative
+/// (`design/02 §3.1`), so this is a shell-out (mirroring [`worktree_add`])
+/// rather than a `gix` ref edit. `git branch -m` updates the branch ref, moves
+/// any reflog, and re-points HEAD + the checked-out worktree at the new name in
+/// one atomic operation — the exact "rename the branch the worktree is on"
+/// semantics the branch-rename hook needs, identical on the win/linux CI lanes
+/// (Task 113).
+///
+/// A failure (e.g. `new` already exists locally, or `old` does not) surfaces as
+/// [`Error::Git`]; the caller (the cross-repo rename loop) treats a single
+/// repo's failure as non-fatal and continues with the others.
+pub async fn rename_branch(repo_dir: &Path, old: &str, new: &str) -> Result<()> {
+    cmd::run(&["branch", "-m", old, new], repo_dir)
+        .await
+        .map(|_| ())
+}
+
 // ---------------------------------------------------------------------------
 // Task 34: checkpoint plumbing — commit the worktree to a tree, store it as
 // a commit, point a namespaced ref at it, and (on revert) hard-reset the

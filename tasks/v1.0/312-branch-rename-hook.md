@@ -75,15 +75,15 @@ Tier 1. **Tier-1 covers the deterministic path; the live-LLM path is wired in P4
 **Tier-1 scope note (for the phase checklist):** Tier-1 proves the cross-repo `git branch -m` logic + the deterministic suggestion + the seam shape. What it does NOT cover: the **quality of a real-LLM branch suggestion** — that is judged at the **Phase-4** gate once Task 412 wires the live provider behind the `OneShotLlm` seam (D1). No Phase-3 Tier-3 line is needed; this is the documented P4 hand-off, not un-automatable physical reality.
 
 ## Definition of Done
-- [ ] `crates/core/src/llm/oneshot.rs` ships the FROZEN `OneShotLlm` trait + `OneShotRequest` + `ActionKind` (seven actions) + **live** `DeterministicOneShot` + `compose_action_prompt` reading 310's resolved `action_prefs`
-- [ ] The real-LLM provider is an **unwired** seam (manager holds `Arc<dyn OneShotLlm>` defaulting to `DeterministicOneShot`); no provider/CLI/network in this task (D1)
-- [ ] `gix-wrap::rename_branch` (`git branch -m` shell-out) added; `worktree_add` pattern mirrored
-- [ ] `WorkareaManager::{suggest_workarea_branch_name, rename_workarea_branch}` with **cross-repo apply + per-repo remote-conflict skip + `-N` suffix** (partial success, no abort)
-- [ ] `workareas.branch_name` updated; `WorkareaEvent::BranchRenamed` + `AuditKind::BranchRenamed` emitted
-- [ ] First-message trigger wired OR the ingress-wiring seam documented in Handoff (rename itself fully testable)
-- [ ] Verification commands pass; interfaces regenerated; smoke gate unchanged + green
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code (the unwired-provider seam + any trigger seam documented in Handoff)
-- [ ] Single commit with the message below
+- [x] `crates/core/src/llm/oneshot.rs` ships the FROZEN `OneShotLlm` trait + `OneShotRequest` + `ActionKind` (seven actions) + **live** `DeterministicOneShot` + `compose_action_prompt` reading 310's resolved `action_prefs`
+- [x] The real-LLM provider is an **unwired** seam (manager holds `Arc<dyn OneShotLlm>` defaulting to `DeterministicOneShot`); no provider/CLI/network in this task (D1)
+- [x] `gix-wrap::rename_branch` (`git branch -m` shell-out) added; `worktree_add` pattern mirrored
+- [x] `WorkareaManager::{suggest_workarea_branch_name, rename_workarea_branch}` with **cross-repo apply + per-repo remote-conflict skip + `-N` suffix** (partial success, no abort)
+- [x] `workareas.branch_name` updated; `WorkareaEvent::BranchRenamed` + `AuditKind::BranchRenamed` emitted
+- [x] First-message trigger wired OR the ingress-wiring seam documented in Handoff (rename itself fully testable)
+- [x] Verification commands pass; interfaces regenerated; smoke gate unchanged + green
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code (the unwired-provider seam + any trigger seam documented in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/core/src/llm/mod.rs` (new — `pub mod oneshot`)
@@ -111,7 +111,8 @@ Refs: tasks/v1.0/312-branch-rename-hook.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan — —
-- Open questions for next task — —
-- Deliberate debt — —
-- Smoke-gate state — —
+- **The seam 321 reuses (FROZEN, do NOT re-lock):** `crates/core/src/llm/oneshot.rs` exports `trait OneShotLlm { async fn suggest(&self, req: OneShotRequest) -> Result<String> }` (`#[async_trait]`), `OneShotRequest { action: ActionKind, repo_id: String, prompt: String, context: String }` (+ `OneShotRequest::new(action, repo_id, prompt, context)`), the seven-variant `ActionKind` (`code_review/pr_create/error_fix/conflict_resolve/branch_rename/commit_message/digest_summary`, with `as_str()`), the LIVE `DeterministicOneShot`, and `compose_action_prompt(action: ActionKind, pref: &Resolved<Option<String>>, context: &str) -> String`. **For PR title/body (321): use `ActionKind::PrCreate`; `DeterministicOneShot` already returns a `"<title>\n\n<body>"` template — split on the FIRST `"\n\n"` (title = before, body = after). Build the request via `OneShotRequest::new`, get the pref from `resolver.action_pref(repo_id, ActionKind::PrCreate.as_str())`, compose with `compose_action_prompt`, then `manager.one_shot.suggest(req).await` (the manager already holds `Arc<dyn OneShotLlm>` defaulting to `DeterministicOneShot`).** Add NO new LLM machinery — 412 swaps the provider via `WorkareaManager::with_one_shot(Arc<dyn OneShotLlm>)`. `compose_action_prompt`'s pref param is exactly 310's `action_pref` return type (`Resolved<Option<String>>`); pass it through, never re-resolve inside the helper.
+- **First-message trigger is an UNWIRED ingress seam (deliberate, one-line follow-on).** `suggest_workarea_branch_name(id, first_message)` is a directly-callable manager method but is NOT yet fired from the Local API message ingress — the ingress (`design/03 §7.2`) does not expose a clean first-user-message hook today, and building that plumbing belongs to the message-ingress subsystem, not this task. To wire it: at the message ingress, on the first user message of any session in a workarea, call `suggest_workarea_branch_name` → surface the proposed name to the user → on confirm call `rename_workarea_branch(id, confirmed)`. The rename apply is fully tested + usable standalone without the trigger.
+- **No gRPC RPC added (decided in-task).** The design routes the rename trigger through the Local API message ingress, not a dedicated RPC, so `SuggestWorkareaBranchName`/`RenameWorkareaBranch` RPCs are intentionally NOT on the `Workareas` service. The Desktop branch-rename UX task can append thin RPCs over `WorkareaManager::{suggest_workarea_branch_name, rename_workarea_branch}` later (do not renumber). The `WorkareaEvent::BranchRenamed` event already rides `workarea.events` with the opaque `branch_renamed` kind (no `streams.proto` change — `handlers/streams.rs` maps it), so the Desktop can observe renames today.
+- **Drift from plan / debt:** (1) The `Outputs` row "`docs/interfaces/rust-api.md` (regenerated; gains the `llm` module + `BranchRenamed`/`ActionPrefInjected` audit kinds + `gix-wrap::rename_branch`)" produced **no diff** — `scripts/regen-interfaces.sh` only scrapes `pub trait/struct/enum` brace-blocks from `crates/*/src/api.rs`. This task adds free `fn`s (`rename_branch`), enum *variants* (`AuditKind`/`WorkareaEvent`), and a module outside `api.rs` (`crates/core/src/llm/`, and `concerto-core` has no `src/api.rs` at all) — none of which the generator emits. So `docs/interfaces/` is byte-identical and the CI "interface summaries" check passes; the doc simply does not enumerate these (matches existing behaviour for other core methods/audit kinds). No action needed; flagged so 321/412 don't expect the `llm` seam to show up in `rust-api.md`. (2) `AuditKind::ActionPrefInjected` is emitted via `tracing::info!(audit.kind=…)` (the established audit precedent), not a structured audit-store write — same pattern as every other `AuditKind` today. (3) No migration (uses the existing `workareas.branch_name` column + 310's `action_prefs_json`). All within `Outputs`.
+- **Smoke-gate state — unchanged + green.** No new capability, no `scripts/smoke.d/*` entry, `scripts/` untouched. Full gate clean: `cargo check`/`clippy -D warnings`/`fmt --check` (only the expected `imports_granularity` nightly noise) green; `cargo test -p concerto-core --lib llm` 7/7, `--test branch_rename` 5/5, `concerto-gix-wrap` rename 2/2, `cargo test --workspace --no-fail-fast` all pass; `cargo deny check` advisories/bans/licenses/sources ok; `regen-interfaces.sh` → no diff.

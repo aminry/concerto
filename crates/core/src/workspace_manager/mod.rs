@@ -36,6 +36,7 @@ pub use edit_mutex::{
 pub use fsm::{transition, WorkareaEvent as WorkareaFsmEvent, WorkareaState};
 pub use workarea::{
     FailureKind, MergeOpts, MergePlan, MergeProgress, MergeReport, MergeStep, PrSetVcs,
-    ProgressSink, RevertOpts, RevertOutcome, RevertReport, RevertStep, WorkareaEvent,
-    WorkareaManager, WorkareaManagerActor, WorkareaManagerConfig, DEFAULT_MERGE_CHECK_TIMEOUT,
+    ProgressSink, RenameReport, RepoRenameOutcome, RepoRenameStep, RevertOpts, RevertOutcome,
+    RevertReport, RevertStep, WorkareaEvent, WorkareaManager, WorkareaManagerActor,
+    WorkareaManagerConfig, DEFAULT_MERGE_CHECK_TIMEOUT,
 };

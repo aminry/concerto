@@ -59,6 +59,10 @@ use tokio::sync::{broadcast, mpsc};
 
 #[cfg(unix)]
 use crate::agent_supervisor::AgentSupervisorHandle;
+use crate::audit::AuditKind;
+use crate::llm::{
+    compose_action_prompt, ActionKind, DeterministicOneShot, OneShotLlm, OneShotRequest,
+};
 use crate::repo_manager::RepoManager;
 use crate::supervisor::{Actor, ActorContext};
 use crate::workspace_manager::archive::{
@@ -146,6 +150,17 @@ pub enum WorkareaEvent {
         id: WorkareaId,
         repository_full_name: String,
         pr_number: i64,
+    },
+    /// Task 312: a workarea's branch was renamed across its repos
+    /// (`design/03 §3.6`). Carries the id + the from→to names + how many repos
+    /// renamed cleanly vs. were skipped/suffixed on a remote conflict
+    /// (`design/03 §8`), so the UI can surface "renamed N repos; skipped M".
+    BranchRenamed {
+        id: WorkareaId,
+        from: String,
+        to: String,
+        renamed: usize,
+        skipped: usize,
     },
 }
 
@@ -321,6 +336,66 @@ pub trait PrSetVcs: Send + Sync + 'static {
     ) -> Result<ProviderRevertReport>;
 }
 
+// ===========================================================================
+// Task 312 — branch-rename hook (`design/03 §3.6`/§7.2/§8)
+// ===========================================================================
+
+/// Per-repo outcome of a branch rename (`design/03 §3.6`/§8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoRenameOutcome {
+    /// `git branch -m <old> <new>` succeeded; the repo is on `new`.
+    Renamed,
+    /// `new` already exists on this repo's remote with different content
+    /// (`design/03 §8`): the rename targeted `<new>-N` instead and the user is
+    /// warned. `actual` is the suffixed name applied.
+    SkippedRemoteConflict { actual: String },
+    /// The per-repo `git branch -m` failed for another reason. The error
+    /// detail is recorded; the other repos still renamed (partial success).
+    Failed { detail: String },
+}
+
+/// One repo's line in a [`RenameReport`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoRenameStep {
+    pub repository_id: String,
+    pub outcome: RepoRenameOutcome,
+}
+
+/// Summary of a [`WorkareaManager::rename_workarea_branch`] call — the contract
+/// the UI/warning surface reads (`design/03 §3.6`). Names the repos that
+/// renamed cleanly and the ones skipped + suffixed on a remote conflict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameReport {
+    /// The workarea-level branch name persisted after the loop (the requested
+    /// `new`; the per-repo `-N` suffixing is local to the conflicting repos).
+    pub branch_name: String,
+    pub steps: Vec<RepoRenameStep>,
+}
+
+impl RenameReport {
+    /// Count of repos that renamed cleanly to the requested name.
+    pub fn renamed_count(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|s| matches!(s.outcome, RepoRenameOutcome::Renamed))
+            .count()
+    }
+
+    /// Count of repos skipped (remote conflict → `-N` suffix) or failed.
+    pub fn skipped_count(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.outcome,
+                    RepoRenameOutcome::SkippedRemoteConflict { .. }
+                        | RepoRenameOutcome::Failed { .. }
+                )
+            })
+            .count()
+    }
+}
+
 /// Cloneable handle to the Workarea Manager's shared state.
 #[derive(Clone)]
 pub struct WorkareaManager {
@@ -360,6 +435,12 @@ pub struct WorkareaManager {
     /// to a typed "unsupported on this platform" error.
     #[cfg(unix)]
     scheduler: Option<crate::scheduler::SchedulerHandle>,
+    /// Task 312: the one-shot LLM seam used by
+    /// [`Self::suggest_workarea_branch_name`] (`PHASE3_PLANNING §4.4`). Defaults
+    /// to the LIVE [`DeterministicOneShot`] impl (D1); Task 412 swaps in the
+    /// real pluggable provider via [`Self::with_one_shot`]. Always populated
+    /// (the default is the live path, NOT a stub).
+    one_shot: Arc<dyn OneShotLlm>,
 }
 
 impl WorkareaManager {
@@ -385,7 +466,17 @@ impl WorkareaManager {
             pr_set_vcs: None,
             #[cfg(unix)]
             scheduler: None,
+            // D1: the deterministic impl is the LIVE Phase-3 path, not a stub.
+            one_shot: Arc::new(DeterministicOneShot),
         }
+    }
+
+    /// Task 312: swap the one-shot LLM seam (`PHASE3_PLANNING §4.4`). The
+    /// default is the LIVE [`DeterministicOneShot`]; Phase 4 (Task 412) wires
+    /// the real pluggable provider behind the [`OneShotLlm`] trait here.
+    pub fn with_one_shot(mut self, one_shot: Arc<dyn OneShotLlm>) -> Self {
+        self.one_shot = one_shot;
+        self
     }
 
     /// Task 320: attach the [`concerto_vcs::VcsHandle`] as the coordinated-merge
@@ -905,6 +996,252 @@ impl WorkareaManager {
 
         concerto_persist::pull_requests::list_by_workarea(self.persistence.readers(), workarea_id)
             .await
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 312 — branch-rename hook (`design/03 §3.6`/§7.2/§8)
+    // -----------------------------------------------------------------------
+
+    /// Task 312: propose a branch name for a workarea from a user message
+    /// (`design/03 §3.6`/§7.2).
+    ///
+    /// Resolves the workarea's reference repo (the first `workarea_repos` row),
+    /// builds the per-project settings resolver (Task 310), reads the resolved
+    /// `action_prefs.branch_rename` pref, composes the action prompt via
+    /// [`compose_action_prompt`], and asks the [`OneShotLlm`] seam for a
+    /// suggestion. Per **D1** the LIVE Phase-3 path is the deterministic
+    /// slug-from-prompt impl; the real pluggable provider is wired in Phase 4
+    /// (Task 412) and judged at that gate.
+    ///
+    /// `first_message` is the first user message that triggers the rename. The
+    /// **first-message trigger** itself lives at the Local API message ingress
+    /// (`design/03 §7.2`); since that ingress does not yet expose a clean hook,
+    /// this is a directly-callable manager method — the ingress-wiring seam is a
+    /// one-line follow-on (see Handoff). The rename apply
+    /// ([`Self::rename_workarea_branch`]) is fully usable without it.
+    ///
+    /// When a pref is injected, an `ActionPrefInjected` audit line records
+    /// `{action, repo_id, pref_hash, tokens_added}` (`design/04 §3.13`).
+    pub async fn suggest_workarea_branch_name(
+        &self,
+        id: &WorkareaId,
+        first_message: &str,
+    ) -> Result<String> {
+        // Workarea must exist.
+        if self.get(id).await?.is_none() {
+            return Err(Error::NotFound(format!("workarea {id} not found")));
+        }
+
+        // The reference repo = the first `workarea_repos` row (the §3.10
+        // reference-repo rule applied to the workarea's repo set). A workarea
+        // always has ≥1 repo (`design/03 §8`).
+        let repos =
+            concerto_persist::workareas::list_workarea_repos(self.persistence.readers(), id)
+                .await?;
+        let reference = repos
+            .first()
+            .ok_or_else(|| Error::Internal(format!("workarea {id} has no repos")))?;
+        let repo_id = reference.0.clone();
+
+        // Resolve the per-project settings so we can read the repo's resolved
+        // `action_prefs.branch_rename` (Task 310). The project id comes off the
+        // reference repo's row.
+        let repo = concerto_persist::repositories::get(self.persistence.readers(), &repo_id)
+            .await?
+            .ok_or_else(|| {
+                Error::Internal(format!("workarea {id} reference repo {repo_id} not found"))
+            })?;
+        let project_id = concerto_persist::ProjectId(repo.project_id.clone());
+
+        let managed =
+            crate::security::managed::load_managed_policy(&self.config_dir).unwrap_or_default();
+        let opt_out = crate::settings::OptOutConfig::default();
+        let resolver = crate::settings::build_resolver_for_project(
+            &self.persistence,
+            &project_id,
+            managed,
+            &opt_out,
+        )
+        .await?;
+        let pref = resolver.action_pref(&repo_id.0, ActionKind::BranchRename.as_str());
+
+        // Audit the pref injection when a pref is actually present
+        // (`design/04 §3.13`: `ActionPrefInjected{action, repo_id, pref_hash,
+        // tokens_added}`).
+        if let Some(p) = pref.value.as_deref().filter(|p| !p.trim().is_empty()) {
+            tracing::info!(
+                audit.kind = AuditKind::ActionPrefInjected.as_str(),
+                audit.scope = "repository",
+                audit.action = ActionKind::BranchRename.as_str(),
+                audit.repository_id = %repo_id,
+                audit.pref_hash = %short_hash(p),
+                audit.tokens_added = approx_tokens(p),
+                "action pref injected into one-shot prompt"
+            );
+        }
+
+        let prompt = compose_action_prompt(ActionKind::BranchRename, &pref, first_message);
+        let req = OneShotRequest::new(
+            ActionKind::BranchRename,
+            repo_id.0.clone(),
+            prompt,
+            first_message.to_string(),
+        );
+        self.one_shot.suggest(req).await
+    }
+
+    /// Task 312: rename a workarea's branch across **every** repo
+    /// (`design/03 §3.6`/§7.2/§8).
+    ///
+    /// For each repo in the workarea (its worktree): if `new` already exists on
+    /// that repo's remote with **different content**, the rename is skipped for
+    /// that repo and the repo's branch is instead renamed to `<new>-N`
+    /// (`design/03 §8`); otherwise `git branch -m <old> <new>`. A per-repo
+    /// failure does **not** abort the others (partial success). The
+    /// workarea-level `workareas.branch_name` is updated to `new`, a
+    /// [`WorkareaEvent::BranchRenamed`] is broadcast, and a `branch_renamed`
+    /// audit line records the from→to + renamed/skipped counts. The returned
+    /// [`RenameReport`] names every repo's outcome for the warning surface.
+    pub async fn rename_workarea_branch(&self, id: &WorkareaId, new: &str) -> Result<RenameReport> {
+        let workarea = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {id} not found")))?;
+        let old = workarea.branch_name.clone();
+
+        let new = new.trim();
+        if new.is_empty() {
+            return Err(Error::Validation("branch name is required".into()));
+        }
+        if new == old {
+            // No-op rename: report every repo as already-renamed without
+            // touching git or the row.
+            let repos =
+                concerto_persist::workareas::list_workarea_repos(self.persistence.readers(), id)
+                    .await?;
+            return Ok(RenameReport {
+                branch_name: old,
+                steps: repos
+                    .into_iter()
+                    .map(|(rid, _)| RepoRenameStep {
+                        repository_id: rid.0,
+                        outcome: RepoRenameOutcome::Renamed,
+                    })
+                    .collect(),
+            });
+        }
+
+        let repos =
+            concerto_persist::workareas::list_workarea_repos(self.persistence.readers(), id)
+                .await?;
+
+        let mut steps: Vec<RepoRenameStep> = Vec::with_capacity(repos.len());
+        for (repo_id, worktree_path) in &repos {
+            let worktree = PathBuf::from(worktree_path);
+
+            // Detect a remote-conflict: `new` already exists on this repo's
+            // remote with content that differs from this worktree's `old`
+            // branch head (`design/03 §8`). `list_branches` returns remote refs
+            // shortened (e.g. `origin/feat/x`); match either the bare name or
+            // any `*/<new>` remote ref.
+            let branches = match concerto_gix_wrap::list_branches(&worktree).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(repo = %repo_id, error = %e, "list_branches failed during rename; treating as no remote conflict");
+                    Vec::new()
+                }
+            };
+            let local_old_commit = branches
+                .iter()
+                .find(|b| !b.is_remote && b.name == old)
+                .map(|b| b.commit.clone());
+            let remote_new = branches
+                .iter()
+                .find(|b| b.is_remote && (b.name == new || b.name.ends_with(&format!("/{new}"))));
+            let conflict = match (remote_new, &local_old_commit) {
+                // Remote already has `new` and it points at a DIFFERENT commit
+                // than our local branch → conflict.
+                (Some(r), Some(local)) => &r.commit != local,
+                // Remote has `new` but we can't read the local head → be
+                // conservative and treat as a conflict (skip + suffix).
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+
+            let target = if conflict {
+                next_suffixed_name(new, &branches)
+            } else {
+                new.to_string()
+            };
+
+            match concerto_gix_wrap::rename_branch(&worktree, &old, &target).await {
+                Ok(()) => {
+                    let outcome = if conflict {
+                        tracing::warn!(
+                            repo = %repo_id,
+                            workarea = %id,
+                            requested = new,
+                            applied = %target,
+                            "branch rename skipped on remote conflict; suffixed"
+                        );
+                        RepoRenameOutcome::SkippedRemoteConflict { actual: target }
+                    } else {
+                        RepoRenameOutcome::Renamed
+                    };
+                    steps.push(RepoRenameStep {
+                        repository_id: repo_id.0.clone(),
+                        outcome,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(repo = %repo_id, workarea = %id, error = %e, "git branch -m failed; continuing with other repos");
+                    steps.push(RepoRenameStep {
+                        repository_id: repo_id.0.clone(),
+                        outcome: RepoRenameOutcome::Failed {
+                            detail: e.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+
+        // Update the workarea-level branch name to the requested `new` (the
+        // per-repo `-N` suffixing is local to the conflicting repos; the shared
+        // workarea name is the user's chosen name, `design/03` R-1).
+        {
+            let mut writer = self.persistence.writer().await;
+            let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+            concerto_persist::workareas::set_branch_name(&mut tx, id, new).await?;
+            tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        }
+
+        let report = RenameReport {
+            branch_name: new.to_string(),
+            steps,
+        };
+        let renamed = report.renamed_count();
+        let skipped = report.skipped_count();
+
+        tracing::info!(
+            audit.kind = AuditKind::BranchRenamed.as_str(),
+            audit.scope = "workarea",
+            audit.workarea_id = %id,
+            audit.from = %old,
+            audit.to = new,
+            audit.renamed = renamed,
+            audit.skipped = skipped,
+            "workarea branch renamed across repos"
+        );
+
+        let _ = self.events.send(WorkareaEvent::BranchRenamed {
+            id: id.clone(),
+            from: old,
+            to: new.to_string(),
+            renamed,
+            skipped,
+        });
+
+        Ok(report)
     }
 
     // -----------------------------------------------------------------------
@@ -2080,6 +2417,45 @@ fn now_unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Task 312: pick the lowest `<base>-N` (`N` starting at 2) not already present
+/// among `branches` (`design/03 §8`). Checks both local + remote (shortened)
+/// names so the suffixed target collides with neither.
+fn next_suffixed_name(base: &str, branches: &[concerto_gix_wrap::BranchRef]) -> String {
+    let taken = |candidate: &str| {
+        branches
+            .iter()
+            .any(|b| b.name == candidate || b.name.ends_with(&format!("/{candidate}")))
+    };
+    for n in 2..=u32::MAX {
+        let candidate = format!("{base}-{n}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+    }
+    // Practically unreachable (the loop ranges over u32); fall back to a
+    // timestamp-suffixed name rather than panic.
+    format!("{base}-{}", now_unix_ms())
+}
+
+/// Task 312: a short, stable hash of an action pref for the `ActionPrefInjected`
+/// audit detail (`design/04 §3.13` `pref_hash`) — diagnostics only, NOT
+/// cryptographic. Lets "why is the prompt so long" investigations correlate a
+/// pref version without writing the pref text (which may be long) into the
+/// audit line.
+fn short_hash(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Task 312: a coarse token-count estimate for the `tokens_added` audit detail
+/// (`design/04 §3.13`). ~4 chars/token is the standard rule-of-thumb; this is a
+/// diagnostic order-of-magnitude, not a tokenizer.
+fn approx_tokens(s: &str) -> u64 {
+    (s.len() as u64).div_ceil(4)
 }
 
 /// Task 320: heuristically classify a VCS merge error as a merge conflict

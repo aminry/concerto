@@ -152,6 +152,17 @@ pub enum AuditKind {
     /// investigations can see which layer (`managed` / `checked_in` /
     /// `local_db` / `default`) supplied each field.
     ProjectSettingsResolved,
+    /// A workarea's branch was renamed across its repos (Task 312,
+    /// `design/03 §3.6`). Emitted by
+    /// [`crate::workspace_manager::WorkareaManager::rename_workarea_branch`]
+    /// with the from→to names + the renamed/skipped repo counts.
+    BranchRenamed,
+    /// A per-action repository preference was injected into a one-shot LLM
+    /// prompt (Task 312, `design/04 §3.13`). Records `{action, repo_id,
+    /// pref_hash, tokens_added}` so a pref that grows long enough to dominate
+    /// the prompt is visible in diagnostics before the user notices. Emitted by
+    /// the one-shot suggestion path when a pref is actually injected.
+    ActionPrefInjected,
 }
 
 impl AuditKind {
@@ -190,6 +201,8 @@ impl AuditKind {
             AuditKind::ManagedSettingsLoaded => "managed_settings_loaded",
             AuditKind::ManagedSettingsViolation => "managed_settings_violation",
             AuditKind::ProjectSettingsResolved => "project_settings_resolved",
+            AuditKind::BranchRenamed => "branch_renamed",
+            AuditKind::ActionPrefInjected => "action_pref_injected",
         }
     }
 }
