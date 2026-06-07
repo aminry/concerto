@@ -49,7 +49,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
 use concerto_persist::{
-    NewWorkarea, NewWorkareaRepo, Persistence, Repository, Workarea, WorkareaId, WorkspaceId,
+    NewWorkarea, NewWorkareaRepo, Persistence, Repository, RepositoryId, Workarea, WorkareaId,
+    WorkspaceId,
 };
 use concerto_vcs::provider::{
     MergeMethod, MergeReport as ProviderMergeReport, RevertReport as ProviderRevertReport,
@@ -68,6 +69,7 @@ use crate::supervisor::{Actor, ActorContext};
 use crate::workspace_manager::archive::{
     recreate_worktrees, remove_worktrees_and_root, ArchiveOpts,
 };
+use crate::workspace_manager::pr_compose::{self, PrComposeContext};
 use crate::workspace_manager::{context_dir, files_to_copy, COMPOSERS};
 
 /// Maximum number of composer-name suffix retries before giving up. 100
@@ -441,6 +443,21 @@ pub struct WorkareaManager {
     /// real pluggable provider via [`Self::with_one_shot`]. Always populated
     /// (the default is the live path, NOT a stub).
     one_shot: Arc<dyn OneShotLlm>,
+    /// Task 321: the raw [`concerto_vcs::VcsHandle`] the PR-create path
+    /// ([`Self::create_pr_for_repo`]) drives after [`Self::compose_pr`] fills
+    /// the title/body. Wired at boot via [`Self::with_vcs`] (same call as the
+    /// Task-320 `pr_set_vcs`). `None` ⇒ `create_pr_for_repo` returns a typed
+    /// `vcs.not_configured` error. The standalone [`Self::compose_pr`] entry
+    /// point needs no VCS handle, so it is fully testable without it.
+    vcs: Option<concerto_vcs::VcsHandle>,
+    /// Task 321: whether a **real** one-shot LLM provider has been injected (via
+    /// [`Self::with_one_shot`]). `false` ⇒ the default [`DeterministicOneShot`]
+    /// is the seam, which IS the LIVE Phase-3 fallback — so `compose_pr` skips
+    /// the LLM call entirely and uses the deterministic `<composer> · <branch>`
+    /// title + last-message body directly (D1). `true` ⇒ the 2 s-budgeted LLM
+    /// path runs first, falling back to the deterministic composer on
+    /// error/timeout. The real provider is wired in P4 (Task 412).
+    has_llm_provider: bool,
 }
 
 impl WorkareaManager {
@@ -468,6 +485,8 @@ impl WorkareaManager {
             scheduler: None,
             // D1: the deterministic impl is the LIVE Phase-3 path, not a stub.
             one_shot: Arc::new(DeterministicOneShot),
+            vcs: None,
+            has_llm_provider: false,
         }
     }
 
@@ -476,6 +495,11 @@ impl WorkareaManager {
     /// the real pluggable provider behind the [`OneShotLlm`] trait here.
     pub fn with_one_shot(mut self, one_shot: Arc<dyn OneShotLlm>) -> Self {
         self.one_shot = one_shot;
+        // Task 321: a real provider is now wired — `compose_pr` runs the
+        // 2 s-budgeted LLM path (with the deterministic fallback). The default
+        // `DeterministicOneShot` IS the fallback, so it is not treated as a
+        // provider for PR composition.
+        self.has_llm_provider = true;
         self
     }
 
@@ -485,6 +509,9 @@ impl WorkareaManager {
     /// per member). Mirrors the [`Self::with_agent_supervisor`] builder pattern;
     /// populated at boot after the VCS handle exists.
     pub fn with_vcs(mut self, vcs: concerto_vcs::VcsHandle) -> Self {
+        // Task 321: also hold the raw handle so `create_pr_for_repo` can drive
+        // the actual PR create after `compose_pr` fills the title/body.
+        self.vcs = Some(vcs.clone());
         self.pr_set_vcs = Some(Arc::new(VcsHandleMerger { vcs }));
         self
     }
@@ -1088,6 +1115,290 @@ impl WorkareaManager {
             first_message.to_string(),
         );
         self.one_shot.suggest(req).await
+    }
+
+    /// Task 321: compose a PR `(title, body)` for `ctx` (FROZEN entry point,
+    /// `design/13 §3.4` + §12 R-4).
+    ///
+    /// **On by default, with a 2 s deterministic fallback.** The flow:
+    /// 1. Build the base prompt and route it through
+    ///    [`compose_action_prompt`]`(ActionKind::PrCreate, …)` so the repo's
+    ///    resolved `action_prefs.pr_create` pref (Task 310) is injected
+    ///    per-repo (prefs do not bleed across repos in a multi-repo workarea).
+    /// 2. Read the `pr_compose` opt-out (default **on**) from the project's
+    ///    `settings_json`. When **on** and a non-default [`OneShotLlm`] provider
+    ///    is configured, call [`OneShotLlm::suggest`] under a
+    ///    [`pr_compose::LLM_TIMEOUT`] (2 s) budget.
+    /// 3. **Always** fall back to the deterministic composer
+    ///    ([`DeterministicOneShot`], the LIVE Phase-3 path per **D1**) on
+    ///    opt-out, no provider, error, or timeout — a readable
+    ///    `<composer> · <branch>` title + the last user message as the body.
+    /// 4. Fold the repo's `.github/pull_request_template.md` (when present) and
+    ///    **always** append the Concerto footer.
+    ///
+    /// PR creation never fails or blocks because of the LLM: the 2 s timeout +
+    /// the always-available deterministic fallback are a hard contract. The
+    /// live-LLM-quality path is wired in P4 (Task 412) and judged at that gate.
+    pub async fn compose_pr(&self, ctx: PrComposeContext) -> Result<(String, String)> {
+        // (1) The per-repo `action_prefs.pr_create` pref (Task 310), resolved
+        // via the project settings resolver. The reference repo is `ctx.repository_id`.
+        let repo =
+            concerto_persist::repositories::get(self.persistence.readers(), &ctx.repository_id)
+                .await?
+                .ok_or_else(|| {
+                    Error::Internal(format!("repository {} not found", ctx.repository_id))
+                })?;
+        let project_id = concerto_persist::ProjectId(repo.project_id.clone());
+
+        let managed =
+            crate::security::managed::load_managed_policy(&self.config_dir).unwrap_or_default();
+        let opt_out = crate::settings::OptOutConfig::default();
+        let resolver = crate::settings::build_resolver_for_project(
+            &self.persistence,
+            &project_id,
+            managed,
+            &opt_out,
+        )
+        .await?;
+        let pref = resolver.action_pref(&ctx.repository_id.0, ActionKind::PrCreate.as_str());
+
+        // Audit the pref injection when a pref is actually present
+        // (`design/04 §3.13`: `ActionPrefInjected{action, repo_id, pref_hash,
+        // tokens_added}`) — mirrors the branch-rename path.
+        if let Some(p) = pref.value.as_deref().filter(|p| !p.trim().is_empty()) {
+            tracing::info!(
+                audit.kind = AuditKind::ActionPrefInjected.as_str(),
+                audit.scope = "repository",
+                audit.action = ActionKind::PrCreate.as_str(),
+                audit.repository_id = %ctx.repository_id,
+                audit.pref_hash = %short_hash(p),
+                audit.tokens_added = approx_tokens(p),
+                "action pref injected into one-shot prompt"
+            );
+        }
+
+        // The base prompt the (P4) LLM would compose from: the last user
+        // message + any change summary. The deterministic impl ignores the
+        // prompt in favour of the `context`, but `compose_action_prompt` runs
+        // regardless so the pref-injection wiring is correct + tested.
+        let base_prompt = {
+            let mut p = ctx.last_user_message.trim().to_string();
+            let summary = ctx.change_summary.trim();
+            if !summary.is_empty() {
+                if !p.is_empty() {
+                    p.push_str("\n\n");
+                }
+                p.push_str(summary);
+            }
+            p
+        };
+        let prompt = compose_action_prompt(ActionKind::PrCreate, &pref, &base_prompt);
+
+        // (2) The `pr_compose` opt-out (default ON). Read from the project's
+        // `settings_json` directly — the Task-310 resolver does not yet expose
+        // a `pr_compose` accessor and the `repositories` table has no
+        // `settings_json` column, so the project layer is the available
+        // opt-out surface (no migration). FROZEN key `pr_compose`.
+        let compose_enabled = self.pr_compose_enabled(&project_id).await;
+
+        // (3) LLM path (under the 2 s budget) when composition is on AND a real
+        // provider is wired; else / on failure the deterministic composer (the
+        // LIVE Phase-3 path). In P3 no provider is wired (412), so the normal
+        // run is the deterministic branch — `<composer> · <branch>` title +
+        // last-message body.
+        let (title, composed_body) = if compose_enabled && self.has_llm_provider {
+            let req = OneShotRequest::new(
+                ActionKind::PrCreate,
+                ctx.repository_id.0.clone(),
+                prompt,
+                ctx.last_user_message.clone(),
+            );
+            match tokio::time::timeout(pr_compose::LLM_TIMEOUT, self.one_shot.suggest(req)).await {
+                Ok(Ok(text)) => {
+                    let (t, b) = pr_compose::split_title_body(&text);
+                    // A blank suggestion (or a title-only one with no body) is
+                    // backfilled by the deterministic composer so the body is
+                    // never empty before the template + footer.
+                    if t.is_empty() {
+                        pr_compose::deterministic_title_body(&ctx)
+                    } else if b.is_empty() {
+                        let (_dt, db) = pr_compose::deterministic_title_body(&ctx);
+                        (t, db)
+                    } else {
+                        (t, b)
+                    }
+                }
+                // Provider error OR the 2 s timeout (`Elapsed`) → deterministic
+                // fallback. PR creation never blocks past the budget.
+                Ok(Err(e)) => {
+                    tracing::debug!(error = %e, "pr_compose: provider error; using deterministic fallback");
+                    pr_compose::deterministic_title_body(&ctx)
+                }
+                Err(_elapsed) => {
+                    tracing::debug!(
+                        "pr_compose: provider exceeded 2s budget; using deterministic fallback"
+                    );
+                    pr_compose::deterministic_title_body(&ctx)
+                }
+            }
+        } else {
+            pr_compose::deterministic_title_body(&ctx)
+        };
+
+        // (4) Fold the repo's PR template (when present) + always append the
+        // footer. Pure string ops — no LLM.
+        let template = self
+            .read_pr_template(&ctx.workarea_id, &ctx.repository_id)
+            .await;
+        let body = pr_compose::assemble_body(&ctx, &composed_body, template.as_deref());
+        Ok((title, body))
+    }
+
+    /// Task 321: read the `pr_compose` opt-out from the project's
+    /// `settings_json` (default **on**; absent / unparseable ⇒ on). FROZEN key
+    /// [`pr_compose::PR_COMPOSE_KEY`].
+    async fn pr_compose_enabled(&self, project_id: &concerto_persist::ProjectId) -> bool {
+        let raw = match concerto_persist::projects::get_settings_json(
+            self.persistence.readers(),
+            project_id,
+        )
+        .await
+        {
+            Ok(Some(s)) => s,
+            // No row / read error → default on (the safe, design-default path).
+            _ => return true,
+        };
+        serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|v| v.get(pr_compose::PR_COMPOSE_KEY).and_then(|b| b.as_bool()))
+            .unwrap_or(true)
+    }
+
+    /// Task 321: read `.github/pull_request_template.md` from the repo's
+    /// worktree (`design/13 §3.4` step 3). Returns `None` when absent /
+    /// unreadable (multi-repo workareas read each repo's own template — no
+    /// bleed). Best-effort: a read failure degrades to "no template".
+    async fn read_pr_template(
+        &self,
+        workarea_id: &WorkareaId,
+        repository_id: &RepositoryId,
+    ) -> Option<String> {
+        let worktree = concerto_persist::workareas::get_workarea_repo_worktree_path(
+            self.persistence.readers(),
+            workarea_id,
+            repository_id,
+        )
+        .await
+        .ok()
+        .flatten()?;
+        let path = Path::new(&worktree)
+            .join(".github")
+            .join("pull_request_template.md");
+        tokio::fs::read_to_string(&path).await.ok()
+    }
+
+    /// Task 321: create a PR for `repository_id` in `workarea_id`, composing the
+    /// title/body when the caller leaves them empty (`design/13 §3.4`).
+    ///
+    /// Resolves the workarea-side composition context (composer, branch, last
+    /// user message, agent kind), runs [`Self::compose_pr`] when
+    /// `title`/`body` are both empty (the **caller override** wins when either
+    /// is supplied — the V0.1 caller contract), and feeds the result into the
+    /// [`concerto_vcs::VcsHandle::create_pr`] → persist → emit path.
+    ///
+    /// Returns a typed `vcs.not_configured` error when no VCS handle is wired
+    /// (see [`Self::with_vcs`]).
+    pub async fn create_pr_for_repo(
+        &self,
+        workarea_id: &WorkareaId,
+        repository_id: &RepositoryId,
+        base_ref: &str,
+        head_ref: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<concerto_persist::PullRequest> {
+        let vcs = self
+            .vcs
+            .as_ref()
+            .ok_or_else(|| Error::Validation("vcs.not_configured".to_string()))?;
+
+        // Caller override: when BOTH title and body are non-empty the agent/UI
+        // supplied them — used verbatim, composition skipped (V0.1 contract).
+        let (final_title, final_body) = match pr_compose::caller_override(title, body) {
+            Some(pair) => pair,
+            None => {
+                let ctx = self
+                    .resolve_pr_compose_context(workarea_id, repository_id, head_ref)
+                    .await?;
+                self.compose_pr(ctx).await?
+            }
+        };
+
+        vcs.create_pr(
+            workarea_id,
+            repository_id,
+            base_ref,
+            head_ref,
+            &final_title,
+            &final_body,
+        )
+        .await
+    }
+
+    /// Task 321: resolve the workarea-side [`PrComposeContext`] for a PR-create
+    /// (`design/13 §3.4` step 1). Composer + branch come off the workarea row;
+    /// `branch` prefers the supplied `head_ref` (the actual PR head) and falls
+    /// back to the workarea branch; the last user message + agent kind come off
+    /// the workarea's most-recent session chat.
+    async fn resolve_pr_compose_context(
+        &self,
+        workarea_id: &WorkareaId,
+        repository_id: &RepositoryId,
+        head_ref: &str,
+    ) -> Result<PrComposeContext> {
+        let workarea = self
+            .get(workarea_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {workarea_id} not found")))?;
+        let branch = if head_ref.trim().is_empty() {
+            workarea.branch_name.clone()
+        } else {
+            head_ref.to_string()
+        };
+        let agent_kind = self.newest_agent_kind(workarea_id).await;
+        Ok(PrComposeContext {
+            workarea_id: workarea_id.clone(),
+            repository_id: repository_id.clone(),
+            composer: workarea.composer_name,
+            branch,
+            // The last user message is the agent/UI's to supply on a direct
+            // `compose_pr` call (`design/13 §3.4` step 1). There is no
+            // chat-message query helper in the persist surface (adding one is
+            // out of this task's Outputs), so the workarea-side driver leaves
+            // it empty; the deterministic composer's `<composer> · <branch>`
+            // title + "Opened by Concerto." body keep the fallback useful. See
+            // Handoff.
+            last_user_message: String::new(),
+            change_summary: String::new(),
+            agent_kind,
+        })
+    }
+
+    /// Task 321: best-effort agent kind for the footer — the newest session's
+    /// `agent_kind`. Empty when the workarea has no sessions yet (the footer
+    /// renders `unknown`).
+    async fn newest_agent_kind(&self, workarea_id: &WorkareaId) -> String {
+        match concerto_persist::sessions::list_by_workarea(self.persistence.readers(), workarea_id)
+            .await
+        {
+            // `list_by_workarea` returns rows `started_at DESC`; the first is
+            // the most recent.
+            Ok(sessions) => sessions
+                .first()
+                .map(|s| s.agent_kind.clone())
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        }
     }
 
     /// Task 312: rename a workarea's branch across **every** repo

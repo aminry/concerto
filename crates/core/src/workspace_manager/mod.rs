@@ -15,6 +15,7 @@ pub mod context_dir;
 pub mod edit_mutex;
 pub mod files_to_copy;
 pub mod fsm;
+pub mod pr_compose;
 pub mod workarea;
 
 pub use actor::{
@@ -34,6 +35,7 @@ pub use edit_mutex::{
     EDIT_MUTEX_BLOCKED_WIRE_CODE,
 };
 pub use fsm::{transition, WorkareaEvent as WorkareaFsmEvent, WorkareaState};
+pub use pr_compose::PrComposeContext;
 pub use workarea::{
     FailureKind, MergeOpts, MergePlan, MergeProgress, MergeReport, MergeStep, PrSetVcs,
     ProgressSink, RenameReport, RepoRenameOutcome, RepoRenameStep, RevertOpts, RevertOutcome,
