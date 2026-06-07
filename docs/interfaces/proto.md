@@ -1980,6 +1980,157 @@ message SetMergeOrderRequest {
 }
 ```
 
+### message `MergePlan`
+
+```proto
+message MergePlan {
+  string workarea_id = 1;
+  repeated MergeStep steps = 2;
+}
+```
+
+### message `MergeStep`
+
+```proto
+message MergeStep {
+  int32 step = 1;
+  int32 total = 2;
+  string repository_id = 3;
+  string repository_full_name = 4;
+  int64 pr_number = 5;
+  string head_sha = 6;
+  int64 merge_order = 7;
+  string state = 8;
+}
+```
+
+### message `MergeWorkareaPrSetRequest`
+
+```proto
+message MergeWorkareaPrSetRequest {
+  string workarea_id = 1;
+  string method = 2;
+  uint64 timeout_secs = 3;
+  bool allow_failing_checks = 4;
+}
+```
+
+### message `MergeProgress`
+
+```proto
+message MergeProgress {
+  oneof event {
+    MergeStepStarted step_started = 1;
+    MergeStepCompleted step_completed = 2;
+    MergeStepFailed step_failed = 3;
+    MergeSetMerged set_merged = 4;
+    MergeSetPaused set_paused = 5;
+  }
+}
+```
+
+### message `MergeStepStarted`
+
+```proto
+message MergeStepStarted {
+  int32 step = 1;
+  int32 total = 2;
+  string repository_full_name = 3;
+  int64 pr_number = 4;
+}
+```
+
+### message `MergeStepCompleted`
+
+```proto
+message MergeStepCompleted {
+  int32 step = 1;
+  int32 total = 2;
+  string merge_sha = 3;
+}
+```
+
+### message `MergeStepFailed`
+
+```proto
+message MergeStepFailed {
+  int32 step = 1;
+  int32 total = 2;
+  string reason = 3;
+  FailureKind kind = 4;
+}
+```
+
+### message `MergeSetMerged`
+
+```proto
+message MergeSetMerged {
+  int32 total = 1;
+}
+```
+
+### message `MergeSetPaused`
+
+```proto
+message MergeSetPaused {
+  int32 paused_at_step = 1;
+  int32 total = 2;
+  string reason = 3;
+}
+```
+
+### enum `FailureKind`
+
+```proto
+enum FailureKind {
+  FAILURE_KIND_UNSPECIFIED = 0;
+  FAILURE_KIND_CHECKS_FAILED = 1;
+  FAILURE_KIND_CHECKS_TIMEOUT = 2;
+  FAILURE_KIND_MERGE_CONFLICT = 3;
+  FAILURE_KIND_MERGE_REJECTED = 4;
+}
+```
+
+### message `RevertWorkareaPrSetRequest`
+
+```proto
+message RevertWorkareaPrSetRequest {
+  string workarea_id = 1;
+  bool hard_reset = 2;
+}
+```
+
+### message `RevertReport`
+
+```proto
+message RevertReport {
+  string workarea_id = 1;
+  repeated RevertStep steps = 2;
+}
+```
+
+### message `RevertStep`
+
+```proto
+message RevertStep {
+  string repository_full_name = 1;
+  int64 pr_number = 2;
+  RevertOutcome outcome = 3;
+  string detail = 4;
+}
+```
+
+### enum `RevertOutcome`
+
+```proto
+enum RevertOutcome {
+  REVERT_OUTCOME_UNSPECIFIED = 0;
+  REVERT_OUTCOME_REVERTED = 1;
+  REVERT_OUTCOME_SKIPPED = 2;
+  REVERT_OUTCOME_FAILED = 3;
+}
+```
+
 ### service `Workareas`
 
 ```proto
@@ -2014,6 +2165,15 @@ service Workareas {
   // (`GetWorkareaMergePlan` / `MergeWorkareaPrSet` / `RevertWorkareaPrSet`)
   // are RESERVED for Task 320.
   rpc SetMergeOrder(SetMergeOrderRequest) returns (GetWorkareaPrSetResponse);
+  // Task 320: coordinated PR-set merge/revert (`design/03 §5.1`/§6.4,
+  // `design/13 §3.5`). The loop lives on the `WorkareaManager` (NOT the VCS
+  // layer, NOT the Scheduler): ordered merge → `wait_for_check_runs(post-merge
+  // SHA, 10m)` → continue / pause-on-fail surfaced over the `MergeProgress`
+  // stream as "Step N of M failed". Coordinated revert walks the merged members
+  // in reverse `merge_order` (revert-commit default; `hard_reset` opt-in).
+  rpc GetWorkareaMergePlan(WorkareaId) returns (MergePlan);
+  rpc MergeWorkareaPrSet(MergeWorkareaPrSetRequest) returns (stream MergeProgress);
+  rpc RevertWorkareaPrSet(RevertWorkareaPrSetRequest) returns (RevertReport);
 }
 ```
 

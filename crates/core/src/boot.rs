@@ -801,6 +801,17 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     #[cfg(unix)]
     scheduler_handle.set_check_runs_source(Arc::new(vcs_handle.clone()));
 
+    // Task 320: wire the VCS handle + the Scheduler into the Workarea Manager so
+    // its coordinated PR-set merge loop can drive single-PR merge/revert (via the
+    // VCS handle) and block on `wait_for_check_runs` (via the Scheduler) between
+    // members. `with_vcs` is cross-platform (the merge seam wraps the VcsHandle);
+    // `with_scheduler` is `#[cfg(unix)]`-gated to match the unix-only Scheduler
+    // (Windows scheduler = Task 702/Phase 7) — on non-unix the coordinated merge
+    // RPC compiles but returns a typed "unsupported on this platform" error.
+    let workarea_handle = workarea_handle.with_vcs(vcs_handle.clone());
+    #[cfg(unix)]
+    let workarea_handle = workarea_handle.with_scheduler(scheduler_handle.clone());
+
     // Task 310: resolve every project's three-layer settings
     // (managed > checked-in > local DB > defaults) and emit one
     // `ProjectSettingsResolved{project_id, field, value_source}` audit per

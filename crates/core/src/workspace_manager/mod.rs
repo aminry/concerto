@@ -34,4 +34,8 @@ pub use edit_mutex::{
     EDIT_MUTEX_BLOCKED_WIRE_CODE,
 };
 pub use fsm::{transition, WorkareaEvent as WorkareaFsmEvent, WorkareaState};
-pub use workarea::{WorkareaEvent, WorkareaManager, WorkareaManagerActor, WorkareaManagerConfig};
+pub use workarea::{
+    FailureKind, MergeOpts, MergePlan, MergeProgress, MergeReport, MergeStep, PrSetVcs,
+    ProgressSink, RevertOpts, RevertOutcome, RevertReport, RevertStep, WorkareaEvent,
+    WorkareaManager, WorkareaManagerActor, WorkareaManagerConfig, DEFAULT_MERGE_CHECK_TIMEOUT,
+};
