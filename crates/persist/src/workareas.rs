@@ -494,3 +494,54 @@ pub async fn set_settings_json(
         .map_err(|e| Error::Sqlx(Box::new(e)))?;
     Ok(())
 }
+
+/// Set a single key on a workarea's `settings_json` object **without
+/// clobbering sibling keys** — the read-modify-write counterpart to
+/// [`set_settings_json`] (which overwrites the whole blob).
+///
+/// Task 311 (`design/03 §3.14`): the precedent for derived-settings keys
+/// (`exclude_from_maestro`, …) that live in `settings_json`. The existing
+/// blob is parsed as a JSON object, `key` is set to `value`, and the merged
+/// object is re-serialized + persisted — preserving `files_to_copy_applied`
+/// and any future keys. A malformed/empty/non-object existing blob is
+/// treated defensively as `{}` (the bad value is discarded, the one key is
+/// written onto a fresh object).
+///
+/// Takes `&mut SqliteConnection` so the SELECT + UPDATE run on the same
+/// connection (the caller scopes the writer); the read uses the writer
+/// connection so a concurrent writer cannot interleave between the read and
+/// the write.
+pub async fn set_settings_json_key(
+    conn: &mut SqliteConnection,
+    id: &WorkareaId,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<()> {
+    let existing: Option<String> = sqlx::query("SELECT settings_json FROM workareas WHERE id = ?")
+        .bind(&id.0)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?
+        .map(|r| r.get::<String, _>("settings_json"));
+
+    let mut obj = match existing.as_deref() {
+        Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
+            // Only an object is a valid settings blob; anything else
+            // (malformed, a bare scalar, an array) is discarded → `{}`.
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        },
+        None => serde_json::Map::new(),
+    };
+    obj.insert(key.to_string(), value);
+
+    let payload = serde_json::to_string(&serde_json::Value::Object(obj))
+        .map_err(|e| Error::Internal(format!("serialize settings_json: {e}")))?;
+    sqlx::query("UPDATE workareas SET settings_json = ? WHERE id = ?")
+        .bind(&payload)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}

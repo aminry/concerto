@@ -2966,6 +2966,54 @@ impl WorkareaManager {
             .ok_or_else(|| Error::Internal(format!("workarea {id} vanished mid-update")))
     }
 
+    /// Task 311: set the per-workarea `exclude_from_maestro` privacy toggle
+    /// (`design/03 §3.14`).
+    ///
+    /// A **non-clobbering read-modify-write** of `workareas.settings_json`:
+    /// the existing JSON object is parsed, the `exclude_from_maestro` key is
+    /// set/overwritten to `exclude`, and the merged object is persisted —
+    /// preserving `files_to_copy_applied` and every other key. The storage
+    /// stays in `settings_json` (no new column, no migration); the returned
+    /// `Workarea` carries the updated raw blob, from which the handler derives
+    /// the typed proto `exclude_from_maestro` bool.
+    ///
+    /// This is the derived-settings-key precedent (`PHASE3_PLANNING §2`,
+    /// row 311). The actual privacy *enforcement* (blanking an excluded
+    /// workarea's chat summaries) is Maestro Task 413, Phase 4.
+    pub async fn set_exclude_from_maestro(
+        &self,
+        id: &WorkareaId,
+        exclude: bool,
+    ) -> Result<Workarea> {
+        self.get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {id} not found")))?;
+
+        let mut writer = self.persistence.writer().await;
+        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        concerto_persist::workareas::set_settings_json_key(
+            &mut tx,
+            id,
+            "exclude_from_maestro",
+            serde_json::Value::Bool(exclude),
+        )
+        .await?;
+        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+        drop(writer);
+
+        tracing::info!(
+            audit.kind = "exclude_from_maestro_changed",
+            audit.scope = "workarea",
+            audit.workarea_id = %id,
+            audit.to = exclude,
+            "workarea exclude_from_maestro changed"
+        );
+
+        self.get(id)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("workarea {id} vanished mid-update")))
+    }
+
     /// Internal hook used by [`super::WorkspaceManager::archive`]:
     /// stop the live sessions + (optionally) tear down the worktree for
     /// one workarea, WITHOUT touching the workarea's DB row. The caller

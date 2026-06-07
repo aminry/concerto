@@ -67,14 +67,14 @@ Tier 1. (Pure schema-passthrough + API; the privacy *behavior* is verified in Ma
 **Tier-1 scope note (for the phase checklist):** Tier-1 covers the toggle + storage + typed read. What it does NOT cover is the actual **privacy enforcement** — that an excluded workarea leaks only hard facts to the Concerto chat — which is **Maestro Task 413**, verified at the **Phase-4** manual checklist ("confirm an excluded workarea leaks only hard facts"). No Phase-3 Tier-3 line is needed here.
 
 ## Definition of Done
-- [ ] `WorkareaManager::set_exclude_from_maestro(id, bool) -> Workarea` with **non-clobbering** read-modify-write of `settings_json`
-- [ ] `Workarea.exclude_from_maestro = 11` (`optional bool`) appended + derived in `workarea_to_proto` on every returned `Workarea`
-- [ ] `SetWorkareaExcludeFromMaestro` RPC + request message appended to the `Workareas` service; handler wired
-- [ ] No migration (JSON key in existing `settings_json` column)
-- [ ] Tests cover set/read, sibling-key preservation, clear, malformed-blob, proto-field-on-Get/List
-- [ ] Verification commands pass; interfaces regenerated; smoke gate unchanged + green
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code (Maestro consumer seam noted in Handoff)
-- [ ] Single commit with the message below
+- [x] `WorkareaManager::set_exclude_from_maestro(id, bool) -> Workarea` with **non-clobbering** read-modify-write of `settings_json`
+- [x] `Workarea.exclude_from_maestro = 11` (`optional bool`) appended + derived in `workarea_to_proto` on every returned `Workarea`
+- [x] `SetWorkareaExcludeFromMaestro` RPC + request message appended to the `Workareas` service; handler wired
+- [x] No migration (JSON key in existing `settings_json` column)
+- [x] Tests cover set/read, sibling-key preservation, clear, malformed-blob, proto-field-on-Get/List
+- [x] Verification commands pass; interfaces regenerated; smoke gate unchanged + green
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code (Maestro consumer seam noted in Handoff)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/proto/proto/concerto/v1/workareas.proto` (modified — `Workarea.exclude_from_maestro = 11` + `SetWorkareaExcludeFromMaestroRequest` + the RPC)
@@ -99,7 +99,7 @@ Refs: tasks/v1.0/311-exclude-from-maestro.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan — —
-- Open questions for next task — —
-- Deliberate debt — —
-- Smoke-gate state — —
+- Drift from plan — None. Built exactly to `Scope — in`: persist `workareas::set_settings_json_key(conn, id, key, serde_json::Value)` (the non-clobbering read-modify-write helper, sibling to `set_settings_json`), `WorkareaManager::set_exclude_from_maestro(id, bool) -> Workarea` (load → key-merge in a txn → reload), proto `Workarea.exclude_from_maestro = 11` (`optional bool`) + `SetWorkareaExcludeFromMaestroRequest {workarea_id=1; exclude=2}` + the `SetWorkareaExcludeFromMaestro` RPC, derived in `workarea_to_proto` via the new `pub(crate) derive_exclude_from_maestro(&str) -> bool`. No `WorkareaEvent` variant added (the plan made it optional and the flag is read on demand by Maestro). Field numbers 1–10 + existing RPCs untouched; only `docs/interfaces/proto.md` regenerated (no schema/rust-api delta → confirms no migration).
+- Open questions for next task — **P4 Maestro Task 413** is the consumer: it reads `exclude_from_maestro` (typed proto bool, or `workareas.settings_json.exclude_from_maestro` directly) to expose only hard facts (status/branch/repo) and blank summaries, rendering `[private workarea, name only]` (`design/08 §3.3`). This task ships only the toggle + storage + typed read — no Maestro behavior, no `WorkareaContext.exclude_from_maestro` accessor (left to 413 per the task's "don't pre-build Maestro hooks"). Desktop 322+ consumes the proto field for the toggle UI.
+- Deliberate debt — None. The derive defaults absent/`false`/non-bool/malformed/non-object `settings_json` → `false` (workarea visible unless explicitly excluded); the persist merge discards a malformed/non-object existing blob as `{}` (defensive, per Scope — in). The projection lives in exactly one place (`derive_exclude_from_maestro`) so every emitted `Workarea` is consistent. `set_settings_json_key` is the reusable precedent for future derived settings keys (`PHASE3_PLANNING §2`).
+- Smoke-gate state — Unchanged + green. No new capability, no `scripts/smoke.sh` edit; pure persist + proto + handler. Full `rust` gate clean: `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --no-fail-fast` (all pass, incl. the 6 new `workareas_exclude_maestro` tests), `cargo deny check` (advisories/bans/licenses/sources ok — no new deps), `cargo fmt --all -- --check`, and `regen-interfaces.sh` + `git diff --exit-code docs/interfaces/` (only `proto.md`, committed).

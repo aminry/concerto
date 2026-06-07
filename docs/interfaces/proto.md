@@ -1841,6 +1841,14 @@ message Workarea {
   google.protobuf.Timestamp created_at = 8;
   optional google.protobuf.Timestamp last_activity_at = 9;
   optional google.protobuf.Timestamp archived_at = 10;
+  // Task 311: the derived-settings-key projection of
+  // `workareas.settings_json.exclude_from_maestro` (design/03 §3.14). Source
+  // of truth is the JSON key in `settings_json`; this typed bool is derived in
+  // `workarea_to_proto` (absent/false/malformed ⇒ false). `optional` so a
+  // future "unknown" state is representable, matching `permission_mode`.
+  // Maestro (Task 413, Phase 4) reads it to blank an excluded workarea's
+  // chat summaries; this task ships only the toggle + storage + typed read.
+  optional bool exclude_from_maestro = 11;
 }
 ```
 
@@ -2100,6 +2108,15 @@ message RevertWorkareaPrSetRequest {
 }
 ```
 
+### message `SetWorkareaExcludeFromMaestroRequest`
+
+```proto
+message SetWorkareaExcludeFromMaestroRequest {
+  string workarea_id = 1;
+  bool exclude = 2;
+}
+```
+
 ### message `RevertReport`
 
 ```proto
@@ -2174,6 +2191,10 @@ service Workareas {
   rpc GetWorkareaMergePlan(WorkareaId) returns (MergePlan);
   rpc MergeWorkareaPrSet(MergeWorkareaPrSetRequest) returns (stream MergeProgress);
   rpc RevertWorkareaPrSet(RevertWorkareaPrSetRequest) returns (RevertReport);
+  // Task 311: set the per-workarea `exclude_from_maestro` privacy toggle
+  // (stored in `workareas.settings_json`; design/03 §3.14) and return the
+  // updated `Workarea` with the derived `exclude_from_maestro` field set.
+  rpc SetWorkareaExcludeFromMaestro(SetWorkareaExcludeFromMaestroRequest) returns (Workarea);
 }
 ```
 
