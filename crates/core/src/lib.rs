@@ -24,6 +24,7 @@ pub mod conn_transport;
 pub mod connect_bridge;
 pub mod error_map;
 pub mod handlers;
+pub mod llm;
 pub mod log_fields;
 pub mod log_filter;
 pub mod logging;

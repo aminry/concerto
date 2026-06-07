@@ -1267,6 +1267,9 @@ fn map_workarea_event(ev: WorkareaEvent) -> Event {
         }
         WorkareaEvent::PrSetMerged { id, .. } => (id.to_string(), "pr_set:merged".to_string()),
         WorkareaEvent::PrReverted { id, .. } => (id.to_string(), "pr_set:reverted".to_string()),
+        // Task 312: the branch-rename hook rides `workarea.events` with a
+        // `branch_renamed` kind (no proto change — opaque `kind` string).
+        WorkareaEvent::BranchRenamed { id, .. } => (id.to_string(), "branch_renamed".to_string()),
     };
     Event {
         offset: 0,
