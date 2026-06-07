@@ -33,11 +33,15 @@ import { useQueries } from "@tanstack/react-query";
 
 import { getWorkareaRepoDiff } from "../../api/diff";
 import { diffQueryKey } from "../../hooks/useDiff";
+import { usePrSet } from "../../hooks/usePrSet";
 import { useWorkareaRepos } from "../../hooks/useWorkareaRepos";
 import { useUiStore } from "../../state/useUiStore";
 import { useWorkarea } from "../../hooks/useWorkareas";
 import { StatusDot, type DotStatus } from "../ui/status-dot";
 import { DiffViewer } from "./DiffViewer";
+import { ChecksPanel } from "./ChecksPanel";
+import { PrPanel } from "./PrPanel";
+import { PrSetActions } from "./PrSetActions";
 
 /// The three Code & PRs views, keyed to the matching right-rail tab ids.
 export type CodePrSubTab = "diff" | "checks" | "pr";
@@ -87,8 +91,29 @@ export function CodePrRegion({ subTab }: CodePrRegionProps): JSX.Element {
   const selectedRepo =
     repos.find((r) => r.id === selectedRepoId) ?? repos[0] ?? null;
 
+  // Per-repo dirty map for the workarea-wide "Create PRs for all dirty repos"
+  // action — reuses the diff probes already running above.
+  const dirtyByRepo: Record<string, boolean> = {};
+  repos.forEach((r, i) => {
+    dirtyByRepo[r.id] = (diffResults[i]?.data?.files.length ?? 0) > 0;
+  });
+
+  // The workarea's implicit PR set (Task 319 ordering); used to resolve the
+  // selected repo's PR for the Level-2 Checks/PR panels.
+  const prSetQuery = usePrSet(workareaId);
+  const prs = prSetQuery.data ?? [];
+  const selectedPr =
+    prs.find((p) => p.repository_id === selectedRepo?.id) ?? null;
+
   return (
     <section className="h-full flex flex-col min-h-0 p-2 gap-2">
+      {workarea ? (
+        <PrSetActions
+          workareaId={workarea.id}
+          repos={repos}
+          dirtyByRepo={dirtyByRepo}
+        />
+      ) : null}
       <div className="shrink-0 flex items-center gap-2 overflow-x-auto">
         <span className="text-xs uppercase tracking-wide text-faint shrink-0">
           Repo:
@@ -131,23 +156,26 @@ export function CodePrRegion({ subTab }: CodePrRegionProps): JSX.Element {
         )}
       </div>
       <div className="flex-1 min-h-0 rounded border border-border overflow-hidden">
-        {subTab === "diff" ? (
-          workarea ? (
-            <DiffViewer
-              workareaId={workarea.id}
-              repositoryId={selectedRepo?.id ?? null}
-            />
-          ) : (
-            <Placeholder>Select a workarea to view its diff.</Placeholder>
-          )
+        {!workarea ? (
+          <Placeholder>Select a workarea.</Placeholder>
+        ) : subTab === "diff" ? (
+          <DiffViewer
+            workareaId={workarea.id}
+            repositoryId={selectedRepo?.id ?? null}
+          />
+        ) : subTab === "checks" ? (
+          <ChecksPanel
+            workareaId={workarea.id}
+            repositoryId={selectedRepo?.id ?? null}
+            pr={selectedPr}
+          />
         ) : (
-          <Placeholder>
-            {subTab === "checks" ? (
-              <span>CI checks panel arrives in V1.0.</span>
-            ) : (
-              <span>Pull-request panel arrives with the GitHub surface.</span>
-            )}
-          </Placeholder>
+          <PrPanel
+            workareaId={workarea.id}
+            repositoryId={selectedRepo?.id ?? null}
+            headBranch={workarea.branch_name ?? null}
+            pr={selectedPr}
+          />
         )}
       </div>
     </section>

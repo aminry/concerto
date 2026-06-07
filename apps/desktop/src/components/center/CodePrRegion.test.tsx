@@ -16,6 +16,19 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
+// Task 324: CodePrRegion now mounts PrSetActions, which subscribes to
+// `pr_set.events.<wa>` via `onConcertoEvent`. Stub the event-bus bridge so the
+// jsdom run has no Tauri runtime (mirrors SessionRegion.test).
+vi.mock("../../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/client")>();
+  return {
+    ...actual,
+    onConcertoEvent: vi.fn(async () => () => {}),
+    subscribe: vi.fn(async () => "sub-1"),
+    unsubscribe: vi.fn(async () => {}),
+  };
+});
+
 // Capture the props DiffViewer receives without mounting Monaco.
 const diffViewerSpy = vi.fn();
 vi.mock("./DiffViewer", () => ({
@@ -53,6 +66,10 @@ function mockInvoke(): void {
         return Promise.resolve({ repositories: repos });
       case "Workareas.GetWorkareaRepoDiff":
         return Promise.resolve({ files: [] });
+      case "Workareas.GetWorkareaPrSet":
+        return Promise.resolve({ pull_requests: [] });
+      case "Vcs.GetChecks":
+        return Promise.resolve({ checks: [] });
       default:
         return Promise.resolve(undefined);
     }

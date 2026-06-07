@@ -23,6 +23,10 @@ export function useEventSubscription<T>(
   callbackRef.current = callback;
 
   useEffect(() => {
+    // An empty subject means "no live stream wanted yet" (e.g. ids not
+    // resolved). Skip rather than open a `concerto/` subscription.
+    if (!subject) return;
+
     let subscriptionId: string | null = null;
     let unlisten: (() => void) | null = null;
     let cancelled = false;
