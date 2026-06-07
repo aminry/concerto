@@ -230,6 +230,14 @@ pub struct AgentSupervisorHandle {
     /// via `current_exe().parent().join(...)` at start_session time.
     host_bin: Arc<PathBuf>,
     sessions: Arc<Mutex<HashMap<SessionId, SessionEntry>>>,
+    /// Task 308: the shared per-workarea edit-mutex registry
+    /// (`design/04 §3.5`, `PHASE3_PLANNING §2`). Acquired around
+    /// write-class tool execution (`Write`/`Edit`/`MultiEdit`/
+    /// `NotebookEdit` + commit) so two sessions on the same workarea
+    /// never clobber each other mid-edit. The **same** `Arc` is held by
+    /// the Workarea Manager (which reads the holder for diagnostics).
+    /// `None` when not wired (unit tests that never exercise a write).
+    edit_mutex: Option<Arc<crate::workspace_manager::EditMutexRegistry>>,
 }
 
 impl AgentSupervisorHandle {
@@ -248,7 +256,24 @@ impl AgentSupervisorHandle {
             config_dir,
             host_bin: Arc::new(host_bin),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            edit_mutex: None,
         }
+    }
+
+    /// Task 308: attach the shared per-workarea edit-mutex registry
+    /// (`PHASE3_PLANNING §2`). The supervisor acquires the workarea's
+    /// lock (10s timeout) around a session's write-class tool execution;
+    /// the loser fails fast with the `workarea.edit_mutex.blocked` error
+    /// naming the holder. The **same** `Arc` is handed to the Workarea
+    /// Manager (read-only `holder()` access). Mirrors the existing
+    /// `with_*` builder pattern. Construct exactly one registry in
+    /// `boot.rs` and `Arc::clone` it into both subsystems.
+    pub fn with_edit_mutex_registry(
+        mut self,
+        registry: Arc<crate::workspace_manager::EditMutexRegistry>,
+    ) -> Self {
+        self.edit_mutex = Some(registry);
+        self
     }
 
     /// Borrow the shared persistence handle. Used by the gRPC
@@ -662,6 +687,7 @@ impl AgentSupervisorHandle {
         let bypass = bypass_for_session(&self.persistence, &session_id).await;
         let pump_resolver = PermissionResolver::new(permission_mode_enum, bypass);
         let pump_ack_watermark = Arc::clone(&ack_watermark);
+        let pump_edit_mutex = self.edit_mutex.clone();
         tokio::spawn(async move {
             run_read_pump(
                 read_half,
@@ -681,6 +707,7 @@ impl AgentSupervisorHandle {
                 pump_writer,
                 pump_resolver,
                 pump_ack_watermark,
+                pump_edit_mutex,
             )
             .await;
         });
@@ -1383,6 +1410,7 @@ impl AgentSupervisorHandle {
         let bypass = bypass_for_session(&self.persistence, session_id).await;
         let pump_resolver = PermissionResolver::new(permission_mode_enum, bypass);
         let pump_ack_watermark = Arc::clone(&ack_watermark);
+        let pump_edit_mutex = self.edit_mutex.clone();
         tokio::spawn(async move {
             run_read_pump(
                 read_half,
@@ -1402,6 +1430,7 @@ impl AgentSupervisorHandle {
                 pump_writer,
                 pump_resolver,
                 pump_ack_watermark,
+                pump_edit_mutex,
             )
             .await;
         });
@@ -1495,6 +1524,7 @@ async fn run_read_pump(
     writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
     resolver: PermissionResolver,
     ack_watermark: Arc<std::sync::atomic::AtomicU64>,
+    edit_mutex: Option<Arc<crate::workspace_manager::EditMutexRegistry>>,
 ) {
     use std::sync::atomic::Ordering;
 
@@ -1591,6 +1621,7 @@ async fn run_read_pump(
                         &parser,
                         &pending_approvals,
                         &writer,
+                        &edit_mutex,
                     )
                     .await;
                 }
@@ -2046,6 +2077,7 @@ async fn dispatch_parse_event(
     parser: &Arc<dyn ParserPack>,
     pending_approvals: &Arc<Mutex<PendingApprovals>>,
     writer: &Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    edit_mutex: &Option<Arc<crate::workspace_manager::EditMutexRegistry>>,
 ) {
     match ev {
         ParseEvent::Bytes(data) => {
@@ -2209,8 +2241,54 @@ async fn dispatch_parse_event(
             let urgent = destructive.is_some();
             let destructive_label: Option<String> = destructive.map(|m| m.label.to_string());
 
+            // Task 308: this tool is write-class (`Write`/`Edit`/
+            // `MultiEdit`/`NotebookEdit`) — its execution must hold the
+            // per-workarea edit mutex so two sessions on the same workarea
+            // never clobber each other mid-edit (`design/04 §3.5`). Reads
+            // (`Read`/`Grep`/diff/status) are NOT gated. The lock is
+            // acquired at the point the agent is allowed to proceed: just
+            // before the approval bytes are injected. On a 10s timeout the
+            // blocked session fails fast — we override to a deny and emit
+            // the `workarea.edit_mutex.blocked` error naming the holder
+            // (never an indefinite queue, `design/04 R-5`).
+            let is_write = crate::workspace_manager::is_write_class(&tool);
+
             match decision {
                 Decision::AutoApprove | Decision::AutoApproveOnce | Decision::AutoDeny => {
+                    // Task 308: for an approving write-class decision,
+                    // acquire the workarea edit mutex before injecting.
+                    // A block flips this to a fast-fail deny.
+                    let mut edit_guard: Option<crate::workspace_manager::EditGuard> = None;
+                    let approving =
+                        matches!(decision, Decision::AutoApprove | Decision::AutoApproveOnce);
+                    if is_write && approving {
+                        if let Some(reg) = edit_mutex {
+                            match reg
+                                .acquire(
+                                    workarea_id,
+                                    session_id,
+                                    crate::workspace_manager::DEFAULT_EDIT_MUTEX_TIMEOUT,
+                                )
+                                .await
+                            {
+                                Ok(g) => edit_guard = Some(g),
+                                Err(blocked) => {
+                                    emit_edit_mutex_blocked(
+                                        session_id,
+                                        &approval_id,
+                                        &tool,
+                                        &blocked,
+                                        events,
+                                        events_replay,
+                                        parser,
+                                        writer,
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            }
+                        }
+                    }
                     // Persist the auto-row up front + inject the bytes
                     // right back into the agent's stdin. Task 41:
                     // when the policy floor (deny-list) forced the
@@ -2250,6 +2328,12 @@ async fn dispatch_parse_event(
                     };
                     push_replay(events_replay, resolved.clone()).await;
                     let _ = events.send(resolved);
+                    // Task 308: release the workarea edit lock once the
+                    // approval bytes have been injected (the write is now
+                    // unblocked into the agent). Explicit drop documents
+                    // the hold span; the guard would release on scope-end
+                    // regardless. `None` for reads / unwired registries.
+                    drop(edit_guard);
                 }
                 Decision::MustAsk => {
                     // Persist the pending row + create the oneshot
@@ -2297,9 +2381,54 @@ async fn dispatch_parse_event(
                     let events_replay_for_waiter = Arc::clone(events_replay);
                     let session_id_for_waiter = session_id.clone();
                     let tool_for_waiter = tool;
+                    // Task 308: capture what the waiter needs to gate a
+                    // write-class injection on the workarea edit mutex.
+                    let edit_mutex_for_waiter = edit_mutex.clone();
+                    let workarea_for_waiter = workarea_id.clone();
+                    let approval_id_for_block = approval_id.clone();
                     tokio::spawn(async move {
                         match rx.await {
                             Ok(d) => {
+                                // Task 308: a user-approved write-class
+                                // tool acquires the workarea edit mutex
+                                // before its bytes are injected. A block
+                                // (10s) fails the call fast with the
+                                // `workarea.edit_mutex.blocked` error
+                                // naming the holder, then injects a deny.
+                                let approving =
+                                    matches!(d, Decision::AutoApprove | Decision::AutoApproveOnce);
+                                let mut edit_guard: Option<crate::workspace_manager::EditGuard> =
+                                    None;
+                                if approving
+                                    && crate::workspace_manager::is_write_class(&tool_for_waiter)
+                                {
+                                    if let Some(reg) = &edit_mutex_for_waiter {
+                                        match reg
+                                            .acquire(
+                                                &workarea_for_waiter,
+                                                &session_id_for_waiter,
+                                                crate::workspace_manager::DEFAULT_EDIT_MUTEX_TIMEOUT,
+                                            )
+                                            .await
+                                        {
+                                            Ok(g) => edit_guard = Some(g),
+                                            Err(blocked) => {
+                                                emit_edit_mutex_blocked(
+                                                    &session_id_for_waiter,
+                                                    &approval_id_for_block,
+                                                    &tool_for_waiter,
+                                                    &blocked,
+                                                    &events_for_waiter,
+                                                    &events_replay_for_waiter,
+                                                    &parser,
+                                                    &writer,
+                                                )
+                                                .await;
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
                                 let bytes = parser.inject_approval(d);
                                 if !bytes.is_empty() {
                                     let mut w = writer.lock().await;
@@ -2318,6 +2447,8 @@ async fn dispatch_parse_event(
                                 };
                                 push_replay(&events_replay_for_waiter, resolved.clone()).await;
                                 let _ = events_for_waiter.send(resolved);
+                                // Release the edit lock after injection.
+                                drop(edit_guard);
                             }
                             Err(_) => {
                                 // Sender dropped — session ended.
@@ -2328,6 +2459,53 @@ async fn dispatch_parse_event(
             }
         }
     }
+}
+
+/// Task 308: a write-class tool call was blocked on the per-workarea
+/// edit mutex (another session on the same workarea holds it past the
+/// 10s timeout). Fail the call fast (`design/04 R-5`: reject, don't
+/// queue): inject a deny so the agent's own tool call errors cleanly,
+/// and emit an `ApprovalResolved` carrying the
+/// `workarea.edit_mutex.blocked` wire-code + the holder description as
+/// the `decision` string. Task 323's UI renders this as the "blocked on
+/// `<session>`" indicator; here it rides the existing
+/// `session.events` / `workarea.events` stream — no new proto field.
+#[allow(clippy::too_many_arguments)]
+async fn emit_edit_mutex_blocked(
+    session_id: &SessionId,
+    approval_id: &str,
+    tool: &str,
+    blocked: &crate::workspace_manager::EditBlocked,
+    events: &broadcast::Sender<AgentEvent>,
+    events_replay: &Arc<Mutex<Vec<AgentEvent>>>,
+    parser: &Arc<dyn ParserPack>,
+    writer: &Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+) {
+    tracing::info!(
+        session = %session_id,
+        tool = %tool,
+        holder = ?blocked.holder,
+        wire_code = crate::workspace_manager::EDIT_MUTEX_BLOCKED_WIRE_CODE,
+        "write-class tool call blocked on per-workarea edit mutex; rejecting"
+    );
+    // Inject a deny so the wrapped agent CLI's own approval prompt
+    // resolves to "no" and the tool call surfaces as a clean error
+    // rather than hanging on the menu.
+    let bytes = parser.inject_approval(Decision::AutoDeny);
+    if !bytes.is_empty() {
+        let mut w = writer.lock().await;
+        let _ = write_frame(&mut *w, &HostFrame::StdinBytes { data: bytes }).await;
+    }
+    let resolved = AgentEvent::ApprovalResolved {
+        session_id: session_id.clone(),
+        approval_id: approval_id.to_string(),
+        tool: tool.to_string(),
+        // `decision` carries the typed wire-code + the holder description
+        // ("workarea.edit_mutex.blocked: blocked on session <id>").
+        decision: blocked.to_string(),
+    };
+    push_replay(events_replay, resolved.clone()).await;
+    let _ = events.send(resolved);
 }
 
 fn map_msg_role(r: MsgRole) -> MessageRole {
@@ -2516,6 +2694,7 @@ pub async fn adopt_resume_session(
     let pump_writer = Arc::clone(&writer_arc);
     let pump_resolver = resolver;
     let pump_ack_watermark = Arc::clone(&ack_watermark);
+    let pump_edit_mutex = handle.edit_mutex.clone();
 
     tokio::spawn(async move {
         run_read_pump(
@@ -2536,6 +2715,7 @@ pub async fn adopt_resume_session(
             pump_writer,
             pump_resolver,
             pump_ack_watermark,
+            pump_edit_mutex,
         )
         .await;
     });
