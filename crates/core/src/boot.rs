@@ -546,6 +546,15 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         )
         .await?;
 
+    // Task 308: the single shared per-workarea edit-mutex registry
+    // (`design/04 §3.5`, `PHASE3_PLANNING §2`). Constructed exactly once
+    // and `Arc::clone`d into BOTH the Workarea Manager (which reads the
+    // holder for diagnostics) and the Agent Supervisor (which acquires
+    // the lock around write-class tool calls). Two registries would
+    // defeat the cross-session lock, so the single instance is
+    // load-bearing.
+    let edit_mutex_registry = Arc::new(crate::workspace_manager::EditMutexRegistry::new());
+
     // Task 20: spawn the Workarea Manager. The handle owns workarea
     // creation (composer-name allocation, worktree setup, `.context/`
     // skeleton) and emits `workarea.events` on its broadcast channel.
@@ -555,7 +564,13 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         Arc::clone(&data_dir),
         Arc::clone(&config_dir),
     );
-    let workarea_handle = workarea_actor.handle();
+    // Task 308: hand the Workarea Manager an `Arc` to the SAME edit-mutex
+    // registry the Agent Supervisor acquires on writes, so it can read the
+    // holder for UI / diagnostics. Cross-platform (the registry type is
+    // not `#[cfg(unix)]`).
+    let workarea_handle = workarea_actor
+        .handle()
+        .with_edit_mutex_registry(Arc::clone(&edit_mutex_registry));
     drop(workarea_actor);
     let workarea_factory_persistence = Arc::clone(&persistence);
     let workarea_factory_repo = repo_handle.clone();
@@ -589,7 +604,9 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
             Arc::clone(&config_dir),
             host_bin.clone(),
         );
-        let handle = actor.handle();
+        let handle = actor
+            .handle()
+            .with_edit_mutex_registry(Arc::clone(&edit_mutex_registry));
         drop(actor);
         let factory_persistence = Arc::clone(&persistence);
         let factory_data_dir = Arc::clone(&data_dir);

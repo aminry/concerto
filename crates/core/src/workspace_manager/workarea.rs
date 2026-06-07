@@ -138,6 +138,13 @@ pub struct WorkareaManager {
     /// in-process unit tests that don't spawn agent hosts.
     #[cfg(unix)]
     agent_supervisor: Option<AgentSupervisorHandle>,
+    /// Task 308: the shared per-workarea edit-mutex registry. The
+    /// Workarea Manager holds an `Arc` to the **same** registry the Agent
+    /// Supervisor acquires on writes (constructed once in `boot.rs`), so
+    /// it can read [`crate::workspace_manager::EditMutexRegistry::holder`]
+    /// for UI / diagnostics ("blocked on `<session>`"). `None` in unit
+    /// tests that don't wire it.
+    edit_mutex: Option<Arc<crate::workspace_manager::EditMutexRegistry>>,
 }
 
 impl WorkareaManager {
@@ -159,6 +166,7 @@ impl WorkareaManager {
             events,
             #[cfg(unix)]
             agent_supervisor: None,
+            edit_mutex: None,
         }
     }
 
@@ -170,6 +178,33 @@ impl WorkareaManager {
     pub fn with_agent_supervisor(mut self, supervisor: AgentSupervisorHandle) -> Self {
         self.agent_supervisor = Some(supervisor);
         self
+    }
+
+    /// Task 308: attach the shared per-workarea edit-mutex registry
+    /// (`PHASE3_PLANNING §2`). The **same** `Arc` is handed to the Agent
+    /// Supervisor (which acquires the lock on write-class tool calls) so
+    /// both subsystems share one lock per workarea. The Workarea Manager
+    /// only ever *reads* the holder via [`Self::edit_mutex_holder`].
+    /// Mirrors the [`Self::with_agent_supervisor`] / `with_audit` builder
+    /// pattern. Construct exactly one registry in `boot.rs`.
+    pub fn with_edit_mutex_registry(
+        mut self,
+        registry: Arc<crate::workspace_manager::EditMutexRegistry>,
+    ) -> Self {
+        self.edit_mutex = Some(registry);
+        self
+    }
+
+    /// Task 308: the session currently holding `workarea`'s edit lock, or
+    /// `None` if the registry isn't wired, no lock exists for the
+    /// workarea, or it is unheld. For UI / diagnostics only — acquiring
+    /// the lock is the Agent Supervisor's job.
+    pub async fn edit_mutex_holder(
+        &self,
+        workarea: &WorkareaId,
+    ) -> Option<concerto_persist::SessionId> {
+        let reg = self.edit_mutex.as_ref()?;
+        reg.holder(workarea).await
     }
 
     /// Subscribe to `workarea.events`.

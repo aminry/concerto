@@ -12,6 +12,7 @@ pub mod actor;
 pub mod archive;
 pub mod composers;
 pub mod context_dir;
+pub mod edit_mutex;
 pub mod files_to_copy;
 pub mod fsm;
 pub mod workarea;
@@ -28,5 +29,9 @@ pub use actor::{
 pub use actor::SINGLE_REPO_WIRE_CODE;
 pub use archive::ArchiveOpts;
 pub use composers::COMPOSERS;
+pub use edit_mutex::{
+    is_write_class, EditBlocked, EditGuard, EditMutexRegistry, DEFAULT_EDIT_MUTEX_TIMEOUT,
+    EDIT_MUTEX_BLOCKED_WIRE_CODE,
+};
 pub use fsm::{transition, WorkareaEvent as WorkareaFsmEvent, WorkareaState};
 pub use workarea::{WorkareaEvent, WorkareaManager, WorkareaManagerActor, WorkareaManagerConfig};

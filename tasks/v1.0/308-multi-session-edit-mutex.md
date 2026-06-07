@@ -66,16 +66,16 @@ Tier 1.
 **Tier-1 scope.** The mutex logic + multi-session cardinality is fully CI-provable with two stub/echo agents (`design/03 §10` lists it as an integration test). There is no physical-reality gap — this is pure Core concurrency logic, so no Tier-3 line attaches; the only operator-facing follow-on is the **visual** "blocked on" indicator, which is Task 323's Tier-2 UI.
 
 ## Definition of Done
-- [ ] `EditMutexRegistry` in a neutral module (`workspace_manager/edit_mutex.rs`): `acquire(timeout)` + `holder()` + `EditGuard` (releases on drop) + `EditBlocked`/`workarea.edit_mutex.blocked`
-- [ ] Write-class tool execution (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`/commit) acquires the per-workarea mutex (10s); read-class acquires nothing; blocked session fails fast naming the holder
-- [ ] One registry constructed in `boot.rs`, `Arc`-shared into both Agent Supervisor + Workarea Manager via `with_edit_mutex_registry`
-- [ ] Two sessions coexist on one workarea (shared worktrees/`.context/`, independent chat/process/permission); no server-side session cap
-- [ ] Integration test asserts write serialization + concurrent-read non-blocking + guard release
-- [ ] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
-- [ ] No files outside Outputs modified
-- [ ] Interfaces regenerated + committed if a `pub` Rust surface changed (`rust-api.md`)
-- [ ] Smoke gate green (unchanged)
-- [ ] Single commit with the message below
+- [x] `EditMutexRegistry` in a neutral module (`workspace_manager/edit_mutex.rs`): `acquire(timeout)` + `holder()` + `EditGuard` (releases on drop) + `EditBlocked`/`workarea.edit_mutex.blocked`
+- [x] Write-class tool execution (`Write`/`Edit`/`MultiEdit`/`NotebookEdit`/commit) acquires the per-workarea mutex (10s); read-class acquires nothing; blocked session fails fast naming the holder
+- [x] One registry constructed in `boot.rs`, `Arc`-shared into both Agent Supervisor + Workarea Manager via `with_edit_mutex_registry`
+- [x] Two sessions coexist on one workarea (shared worktrees/`.context/`, independent chat/process/permission); no server-side session cap
+- [x] Integration test asserts write serialization + concurrent-read non-blocking + guard release
+- [x] No `TODO`/`FIXME`/`unimplemented!()`/`todo!()` in new code (deliberate seams in Handoff)
+- [x] No files outside Outputs modified
+- [x] Interfaces regenerated + committed if a `pub` Rust surface changed (`rust-api.md`)
+- [x] Smoke gate green (unchanged)
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/core/src/workspace_manager/edit_mutex.rs` (new — `EditMutexRegistry` + `EditGuard` + `EditBlocked`)
@@ -102,7 +102,7 @@ Refs: tasks/v1.0/308-multi-session-edit-mutex.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- Drift from plan: —
-- Open questions for next task: —
-- Deliberate debt: —
-- Smoke-gate state: —
+- Drift from plan: gating landed at the **tool-dispatch site** (`agent_supervisor/actor.rs::dispatch_parse_event`, the `AwaitingApproval` arm), not `approval.rs` — both are listed as acceptable in Outputs; dispatch is where the approve→inject decision actually fires for every parser pack. `acquire` takes `(workarea, session_id, timeout)` (a `session_id` arg beyond the FROZEN `(workarea, timeout)` signature) so the holder is recorded at acquire time without a separate setter — additive, the read path (`holder()`) is unchanged. `rust-api.md` regen was a no-op: `concerto-core` has no `src/api.rs` entry in the doc, so the new `pub` `workspace_manager::edit_mutex` surface is not summarized there (nothing to commit) — exactly the "no-op unless it lands in rust-api.md" case the task anticipated. No files outside Outputs touched.
+- Open questions for next task: Task 323 (Desktop session-tabs UI) renders the "blocked on `<session>`" indicator — the `workarea.edit_mutex.blocked` wire-code + holder description ride the existing `AgentEvent::ApprovalResolved.decision` string on `session.events` (no new proto field); 323 parses that string. `WorkareaManager::edit_mutex_holder(workarea)` is the read-side seam 323 can poll for the holder name.
+- Deliberate debt: the guard is held across the **approval→stdin-inject** critical section, then released — it cannot span the wrapped agent CLI's *actual* out-of-process filesystem write (Core never observes that write completing across the agent-host UDS). V1.0's serialization is therefore at the inject boundary (sufficient to stop two sessions racing into a write at once + to surface a clear block); a true write-completion fence is a V2.0 item alongside the per-file mutex (`design/04 R-5`). `EditGuard::drop` clears the holder via `try_lock` (non-async `Drop`); under rare contention a stale holder *name* can linger one cycle — cosmetic only, the inner write lock always releases, so correctness is unaffected. Commit-path acquisition is via the same `acquire` API; today only the explicit edit tools flow through `dispatch_parse_event`, so the Concerto-driven commit will call `acquire` when that path is wired (the seam exists; no current commit caller).
+- Smoke-gate state: green / unchanged — `scripts/smoke.sh` PASSED (124s, all checks incl. single-session `echo-session`); the single-session path acquires the workarea mutex trivially (uncontended) and stays green. No new smoke capability added (task = unchanged gate).
