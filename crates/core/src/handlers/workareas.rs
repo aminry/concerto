@@ -10,6 +10,8 @@
 //! - `ArchiveWorkarea` — idempotent UPDATE (status → archived, sets
 //!   `archived_at`).
 
+use std::pin::Pin;
+
 use async_trait::async_trait;
 use concerto_persist::{
     RepositoryId as PersistRepositoryId, WorkareaId as PersistWorkareaId,
@@ -17,17 +19,28 @@ use concerto_persist::{
 };
 use concerto_proto::v1::workareas_server::Workareas as WorkareasService;
 use concerto_proto::v1::{
-    ArchiveWorkareaRequest, CreateWorkareaRequest, DiffHunk as ProtoDiffHunk,
-    DiffKind as ProtoDiffKind, DiffPayload as ProtoDiffPayload, FileDiff as ProtoFileDiff,
-    GetDiffRequest, GetWorkareaPrSetResponse, ListWorkareasRequest, ListWorkareasResponse,
-    PermissionMode, PullRequest as ProtoPullRequest, SetMergeOrderRequest,
-    SetWorkareaBypassDestructiveGuardRequest, UpdateWorkareaPermissionModeRequest,
-    Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
+    merge_progress, ArchiveWorkareaRequest, CreateWorkareaRequest, DiffHunk as ProtoDiffHunk,
+    DiffKind as ProtoDiffKind, DiffPayload as ProtoDiffPayload, FailureKind as ProtoFailureKind,
+    FileDiff as ProtoFileDiff, GetDiffRequest, GetWorkareaPrSetResponse, ListWorkareasRequest,
+    ListWorkareasResponse, MergePlan as ProtoMergePlan, MergeProgress as ProtoMergeProgress,
+    MergeSetMerged, MergeSetPaused, MergeStep as ProtoMergeStep, MergeStepCompleted,
+    MergeStepFailed, MergeStepStarted, MergeWorkareaPrSetRequest, PermissionMode,
+    PullRequest as ProtoPullRequest, RevertOutcome as ProtoRevertOutcome,
+    RevertReport as ProtoRevertReport, RevertStep as ProtoRevertStep, RevertWorkareaPrSetRequest,
+    SetMergeOrderRequest, SetWorkareaBypassDestructiveGuardRequest,
+    UpdateWorkareaPermissionModeRequest, Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
 };
+use concerto_vcs::provider::MergeMethod;
+use futures::Stream;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::error_map::error_to_status;
-use crate::workspace_manager::{ArchiveOpts, WorkareaManager};
+use crate::workspace_manager::{
+    ArchiveOpts, FailureKind, MergeOpts, MergePlan, MergeProgress, MergeStep, RevertOpts,
+    RevertOutcome, RevertReport, RevertStep, WorkareaManager, DEFAULT_MERGE_CHECK_TIMEOUT,
+};
 
 /// Implements the generated `Workareas` service trait.
 #[derive(Clone)]
@@ -274,6 +287,212 @@ impl WorkareasService for WorkareasHandler {
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(workarea_to_proto(row)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workareas::GetWorkareaMergePlan")]
+    async fn get_workarea_merge_plan(
+        &self,
+        request: Request<ProtoWorkareaId>,
+    ) -> Result<Response<ProtoMergePlan>, Status> {
+        let req = request.into_inner();
+        if req.value.is_empty() {
+            return Err(Status::invalid_argument("workarea id is required"));
+        }
+        let id = PersistWorkareaId(req.value);
+        let plan = self
+            .workarea_manager
+            .get_workarea_merge_plan(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(merge_plan_to_proto(plan)))
+    }
+
+    /// Streaming response type for `Workareas.MergeWorkareaPrSet`.
+    type MergeWorkareaPrSetStream =
+        Pin<Box<dyn Stream<Item = Result<ProtoMergeProgress, Status>> + Send + 'static>>;
+
+    #[tracing::instrument(skip_all, name = "Workareas::MergeWorkareaPrSet")]
+    async fn merge_workarea_pr_set(
+        &self,
+        request: Request<MergeWorkareaPrSetRequest>,
+    ) -> Result<Response<Self::MergeWorkareaPrSetStream>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        let method = MergeMethod::parse(&req.method).map_err(error_to_status)?;
+        let timeout = if req.timeout_secs == 0 {
+            DEFAULT_MERGE_CHECK_TIMEOUT
+        } else {
+            std::time::Duration::from_secs(req.timeout_secs)
+        };
+        let opts = MergeOpts {
+            method,
+            timeout,
+            allow_failing_checks: req.allow_failing_checks,
+        };
+        let id = PersistWorkareaId(req.workarea_id);
+
+        // Mirror the `Repositories.Clone` streaming handler: the merge loop runs
+        // on a spawned task that owns the `mpsc::Sender<MergeProgress>`; the
+        // handler returns the `ReceiverStream` immediately so the client sees
+        // frames live. A terminal `Err` (e.g. policy.locked, NotFound) is
+        // forwarded as the last stream item.
+        let (out_tx, out_rx) = mpsc::channel::<Result<ProtoMergeProgress, Status>>(32);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<MergeProgress>(32);
+
+        // Forwarder: reshape each domain `MergeProgress` into the proto frame.
+        let out_tx_for_forward = out_tx.clone();
+        let forward_handle = tokio::spawn(async move {
+            while let Some(ev) = ev_rx.recv().await {
+                if out_tx_for_forward
+                    .send(Ok(merge_progress_to_proto(ev)))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        // Worker: drive the coordinated merge loop. Closing `ev_tx` (by drop)
+        // ends the forwarder; an early `Err` is sent on the outbound channel.
+        let manager = self.workarea_manager.clone();
+        let out_tx_for_worker = out_tx;
+        tokio::spawn(async move {
+            let result = manager.merge_workarea_pr_set(&id, opts, ev_tx).await;
+            let _ = forward_handle.await;
+            if let Err(err) = result {
+                let _ = out_tx_for_worker.send(Err(error_to_status(err))).await;
+            }
+            // Dropping `out_tx_for_worker` terminates the client stream.
+        });
+
+        let stream: Self::MergeWorkareaPrSetStream = Box::pin(ReceiverStream::new(out_rx));
+        Ok(Response::new(stream))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workareas::RevertWorkareaPrSet")]
+    async fn revert_workarea_pr_set(
+        &self,
+        request: Request<RevertWorkareaPrSetRequest>,
+    ) -> Result<Response<ProtoRevertReport>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        let id = PersistWorkareaId(req.workarea_id);
+        let opts = RevertOpts {
+            hard_reset: req.hard_reset,
+        };
+        let report = self
+            .workarea_manager
+            .revert_workarea_pr_set(&id, opts)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(revert_report_to_proto(report)))
+    }
+}
+
+fn merge_plan_to_proto(plan: MergePlan) -> ProtoMergePlan {
+    ProtoMergePlan {
+        workarea_id: plan.workarea_id,
+        steps: plan.steps.into_iter().map(merge_step_to_proto).collect(),
+    }
+}
+
+fn merge_step_to_proto(s: MergeStep) -> ProtoMergeStep {
+    ProtoMergeStep {
+        step: s.step,
+        total: s.total,
+        repository_id: s.repository_id,
+        repository_full_name: s.repository_full_name,
+        pr_number: s.pr_number,
+        head_sha: s.head_sha,
+        merge_order: s.merge_order,
+        state: s.state,
+    }
+}
+
+fn failure_kind_to_proto(k: FailureKind) -> ProtoFailureKind {
+    match k {
+        FailureKind::ChecksFailed => ProtoFailureKind::ChecksFailed,
+        FailureKind::ChecksTimeout => ProtoFailureKind::ChecksTimeout,
+        FailureKind::MergeConflict => ProtoFailureKind::MergeConflict,
+        FailureKind::MergeRejected => ProtoFailureKind::MergeRejected,
+    }
+}
+
+fn merge_progress_to_proto(p: MergeProgress) -> ProtoMergeProgress {
+    let event = match p {
+        MergeProgress::StepStarted {
+            step,
+            total,
+            repository_full_name,
+            pr_number,
+        } => merge_progress::Event::StepStarted(MergeStepStarted {
+            step,
+            total,
+            repository_full_name,
+            pr_number,
+        }),
+        MergeProgress::StepCompleted {
+            step,
+            total,
+            merge_sha,
+        } => merge_progress::Event::StepCompleted(MergeStepCompleted {
+            step,
+            total,
+            merge_sha,
+        }),
+        MergeProgress::StepFailed {
+            step,
+            total,
+            reason,
+            kind,
+        } => merge_progress::Event::StepFailed(MergeStepFailed {
+            step,
+            total,
+            reason,
+            kind: failure_kind_to_proto(kind) as i32,
+        }),
+        MergeProgress::SetMerged { total } => {
+            merge_progress::Event::SetMerged(MergeSetMerged { total })
+        }
+        MergeProgress::SetPaused {
+            paused_at_step,
+            total,
+            reason,
+        } => merge_progress::Event::SetPaused(MergeSetPaused {
+            paused_at_step,
+            total,
+            reason,
+        }),
+    };
+    ProtoMergeProgress { event: Some(event) }
+}
+
+fn revert_outcome_to_proto(o: RevertOutcome) -> ProtoRevertOutcome {
+    match o {
+        RevertOutcome::Reverted => ProtoRevertOutcome::Reverted,
+        RevertOutcome::Skipped => ProtoRevertOutcome::Skipped,
+        RevertOutcome::Failed => ProtoRevertOutcome::Failed,
+    }
+}
+
+fn revert_step_to_proto(s: RevertStep) -> ProtoRevertStep {
+    ProtoRevertStep {
+        repository_full_name: s.repository_full_name,
+        pr_number: s.pr_number,
+        outcome: revert_outcome_to_proto(s.outcome) as i32,
+        detail: s.detail,
+    }
+}
+
+fn revert_report_to_proto(r: RevertReport) -> ProtoRevertReport {
+    ProtoRevertReport {
+        workarea_id: r.workarea_id,
+        steps: r.steps.into_iter().map(revert_step_to_proto).collect(),
     }
 }
 

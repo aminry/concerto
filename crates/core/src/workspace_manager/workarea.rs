@@ -44,15 +44,18 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
 use concerto_persist::{
     NewWorkarea, NewWorkareaRepo, Persistence, Repository, Workarea, WorkareaId, WorkspaceId,
 };
+use concerto_vcs::provider::{
+    MergeMethod, MergeReport as ProviderMergeReport, RevertReport as ProviderRevertReport,
+};
 use sqlx::Connection;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 #[cfg(unix)]
 use crate::agent_supervisor::AgentSupervisorHandle;
@@ -116,6 +119,206 @@ pub enum WorkareaEvent {
         id: WorkareaId,
         failed_repository_ids: Vec<String>,
     },
+    /// Task 320: one coordinated-merge step succeeded (merged + checks passed).
+    /// Carries the workarea id + `(step, total)` + the merged repo + merge SHA.
+    /// Rides `workarea.events` AND the new `pr_set.events` subject (opaque JSON).
+    PrSetMergeStepCompleted {
+        id: WorkareaId,
+        step: i32,
+        total: i32,
+        repository_full_name: String,
+        pr_number: i64,
+        merge_sha: String,
+    },
+    /// Task 320: a coordinated-merge step FAILED (checks failed / timed out /
+    /// merge rejected). The loop pauses here without auto-reverting (`design/03
+    /// §6.4`); the UI surfaces "Step N of M failed — auto-revert?".
+    PrSetMergeFailedStep {
+        id: WorkareaId,
+        step: i32,
+        total: i32,
+        reason: String,
+    },
+    /// Task 320: every member of the PR set merged + passed checks.
+    PrSetMerged { id: WorkareaId, total: i32 },
+    /// Task 320: one member of the set was reverted by a coordinated revert.
+    PrReverted {
+        id: WorkareaId,
+        repository_full_name: String,
+        pr_number: i64,
+    },
+}
+
+// ===========================================================================
+// Task 320 — coordinated PR-set merge / revert types + the VCS merge seam
+// ===========================================================================
+
+/// Default `wait_for_check_runs` timeout for a coordinated-merge step
+/// (`design/13 §3.5` / `design/05 §7.4`): 10 minutes.
+pub const DEFAULT_MERGE_CHECK_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// One ordered member of a workarea's coordinated-merge plan (`design/03 §3.9`).
+/// The `(repo, PR)` tuple resolved from the `pull_requests` rows, sorted by
+/// `merge_order` (Task 319). `step`/`total` are 1-based positional indices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeStep {
+    pub step: i32,
+    pub total: i32,
+    pub repository_id: String,
+    pub repository_full_name: String,
+    pub pr_number: i64,
+    pub head_sha: String,
+    pub merge_order: i64,
+    pub state: String,
+}
+
+/// The read-only coordinated-merge preview (`design/03 §5.1`): the ordered list
+/// of `(repo, PR)` steps the UI renders and the merge loop iterates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergePlan {
+    pub workarea_id: String,
+    pub steps: Vec<MergeStep>,
+}
+
+/// Options for [`WorkareaManager::merge_workarea_pr_set`].
+#[derive(Debug, Clone)]
+pub struct MergeOpts {
+    /// Merge method (`merge|squash|rebase`).
+    pub method: MergeMethod,
+    /// Per-step `wait_for_check_runs` timeout.
+    pub timeout: Duration,
+    /// `design/03/13 R-6` merge-anyway-despite-red override. Gated by
+    /// `managed.json`'s `allowMergeWithFailingChecks`; when permitted, a
+    /// non-`passed` checks outcome is a typed warning + audit entry instead of a
+    /// pause.
+    pub allow_failing_checks: bool,
+}
+
+impl Default for MergeOpts {
+    fn default() -> Self {
+        Self {
+            method: MergeMethod::Merge,
+            timeout: DEFAULT_MERGE_CHECK_TIMEOUT,
+            allow_failing_checks: false,
+        }
+    }
+}
+
+/// Options for [`WorkareaManager::revert_workarea_pr_set`].
+#[derive(Debug, Clone, Default)]
+pub struct RevertOpts {
+    /// Opt into the hard-reset strategy (`design/13 R-5`); default is the
+    /// revert-commit strategy.
+    pub hard_reset: bool,
+}
+
+/// Why a coordinated-merge step failed (mirrors the proto `FailureKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    ChecksFailed,
+    ChecksTimeout,
+    MergeConflict,
+    MergeRejected,
+}
+
+/// A single frame emitted on the [`ProgressSink`] as the coordinated merge runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeProgress {
+    StepStarted {
+        step: i32,
+        total: i32,
+        repository_full_name: String,
+        pr_number: i64,
+    },
+    StepCompleted {
+        step: i32,
+        total: i32,
+        merge_sha: String,
+    },
+    StepFailed {
+        step: i32,
+        total: i32,
+        reason: String,
+        kind: FailureKind,
+    },
+    SetMerged {
+        total: i32,
+    },
+    SetPaused {
+        paused_at_step: i32,
+        total: i32,
+        reason: String,
+    },
+}
+
+/// The channel the merge loop feeds [`MergeProgress`] frames into; the gRPC
+/// server-stream handler holds the receiver and forwards them to the client.
+pub type ProgressSink = mpsc::Sender<MergeProgress>;
+
+/// Summary returned by [`WorkareaManager::merge_workarea_pr_set`]. The stream is
+/// the source of truth for the live client; this is the terminal verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReport {
+    /// How many members merged successfully (and passed checks / were
+    /// overridden).
+    pub merged_steps: i32,
+    /// Total members in the plan.
+    pub total: i32,
+    /// `Some(n)` (1-based) when the loop paused at step `n` without merging it;
+    /// `None` when the whole set merged.
+    pub paused_at_step: Option<i32>,
+}
+
+/// Per-member outcome of a coordinated revert (mirrors the proto `RevertStep`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevertOutcome {
+    Reverted,
+    Skipped,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertStep {
+    pub repository_full_name: String,
+    pub pr_number: i64,
+    pub outcome: RevertOutcome,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertReport {
+    pub workarea_id: String,
+    pub steps: Vec<RevertStep>,
+}
+
+/// The single-PR merge/revert seam the coordinated loop drives (`design/13
+/// §3.5`: the loop sequences `VcsProvider::merge_pr` / `revert_pr`). A local
+/// trait over the foreign [`concerto_vcs::VcsHandle`] (allowed by the orphan
+/// rule, mirroring 318's `CheckRunsSource for VcsHandle`) so tests can inject a
+/// scripted double without spinning up `gh`/octocrab. The production impl builds
+/// an octocrab provider from the keychain PAT and routes through the trait.
+#[async_trait]
+pub trait PrSetVcs: Send + Sync + 'static {
+    /// Merge one PR, returning the post-merge merge-commit SHA (`design/13
+    /// §7.2`: the SHA `wait_for_check_runs` waits on is the MERGE commit, not the
+    /// PR head).
+    async fn merge_pr(
+        &self,
+        repository_id: &concerto_persist::RepositoryId,
+        repository_full_name: &str,
+        pr_number: i64,
+        method: MergeMethod,
+    ) -> Result<ProviderMergeReport>;
+
+    /// Revert one merged PR (revert-commit by default; `hard_reset` opt-in,
+    /// `design/13 R-5`).
+    async fn revert_pr(
+        &self,
+        repository_id: &concerto_persist::RepositoryId,
+        repository_full_name: &str,
+        pr_number: i64,
+        hard_reset: bool,
+    ) -> Result<ProviderRevertReport>;
 }
 
 /// Cloneable handle to the Workarea Manager's shared state.
@@ -145,6 +348,18 @@ pub struct WorkareaManager {
     /// for UI / diagnostics ("blocked on `<session>`"). `None` in unit
     /// tests that don't wire it.
     edit_mutex: Option<Arc<crate::workspace_manager::EditMutexRegistry>>,
+    /// Task 320: the single-PR merge/revert seam the coordinated loop drives.
+    /// Wired at boot via [`Self::with_vcs`]; tests inject a scripted double via
+    /// [`Self::with_pr_set_vcs`]. `None` ⇒ the coordinated merge/revert return a
+    /// typed `vcs.not_configured` error.
+    pr_set_vcs: Option<Arc<dyn PrSetVcs>>,
+    /// Task 320: the Scheduler handle whose `wait_for_check_runs` the merge loop
+    /// blocks on between members (Task 318). `#[cfg(unix)]`-gated to match the
+    /// unix-only Scheduler module (agent-host PTY is unix-only in V1.0; Windows
+    /// scheduler is Task 702/Phase 7). On non-unix the coordinated merge degrades
+    /// to a typed "unsupported on this platform" error.
+    #[cfg(unix)]
+    scheduler: Option<crate::scheduler::SchedulerHandle>,
 }
 
 impl WorkareaManager {
@@ -167,7 +382,36 @@ impl WorkareaManager {
             #[cfg(unix)]
             agent_supervisor: None,
             edit_mutex: None,
+            pr_set_vcs: None,
+            #[cfg(unix)]
+            scheduler: None,
         }
+    }
+
+    /// Task 320: attach the [`concerto_vcs::VcsHandle`] as the coordinated-merge
+    /// VCS seam (FROZEN signature). Wraps the handle into the production
+    /// [`PrSetVcs`] impl (which builds an octocrab provider from the keychain PAT
+    /// per member). Mirrors the [`Self::with_agent_supervisor`] builder pattern;
+    /// populated at boot after the VCS handle exists.
+    pub fn with_vcs(mut self, vcs: concerto_vcs::VcsHandle) -> Self {
+        self.pr_set_vcs = Some(Arc::new(VcsHandleMerger { vcs }));
+        self
+    }
+
+    /// Task 320: inject a [`PrSetVcs`] double directly (tests). Production uses
+    /// [`Self::with_vcs`].
+    pub fn with_pr_set_vcs(mut self, vcs: Arc<dyn PrSetVcs>) -> Self {
+        self.pr_set_vcs = Some(vcs);
+        self
+    }
+
+    /// Task 320: attach the Scheduler handle whose `wait_for_check_runs` the
+    /// merge loop blocks on (FROZEN signature). `#[cfg(unix)]`-gated — the
+    /// Scheduler module is unix-only. Populated at boot.
+    #[cfg(unix)]
+    pub fn with_scheduler(mut self, scheduler: crate::scheduler::SchedulerHandle) -> Self {
+        self.scheduler = Some(scheduler);
+        self
     }
 
     /// Attach an [`AgentSupervisorHandle`] so archive cascades can stop
@@ -661,6 +905,490 @@ impl WorkareaManager {
 
         concerto_persist::pull_requests::list_by_workarea(self.persistence.readers(), workarea_id)
             .await
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 320 — coordinated PR-set merge / revert (`design/03 §3.9`/§6.4)
+    // -----------------------------------------------------------------------
+
+    /// Task 320: the read-only coordinated-merge preview (`design/03 §5.1`). Load
+    /// the workarea's PR set ordered by `merge_order` (Task 319's `list_pr_set`,
+    /// already sorted `(merge_order, pr_number)`) and project each member to a
+    /// [`MergeStep`]. Rejects a non-existent workarea with `NotFound`.
+    pub async fn get_workarea_merge_plan(&self, workarea_id: &WorkareaId) -> Result<MergePlan> {
+        // `list_pr_set` does the existence check (NotFound) + the ordered load.
+        let rows = self.list_pr_set(workarea_id).await?;
+        let total = rows.len() as i32;
+        let steps = rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, pr)| MergeStep {
+                step: (i as i32) + 1,
+                total,
+                repository_id: pr.repository_id.0,
+                repository_full_name: pr.repository_full_name,
+                pr_number: pr.pr_number,
+                head_sha: pr.head_sha,
+                merge_order: pr.merge_order,
+                state: pr.state,
+            })
+            .collect();
+        Ok(MergePlan {
+            workarea_id: workarea_id.0.clone(),
+            steps,
+        })
+    }
+
+    /// Task 320: the coordinated PR-set merge loop (`design/13 §3.5`, `design/03
+    /// §6.4`). For each member in `merge_order`: emit `StepStarted` → `merge_pr`
+    /// (capturing the post-merge merge-commit SHA, `design/13 §7.2`) →
+    /// `wait_for_check_runs(post-merge SHA, opts.timeout, all-terminal)` (Task
+    /// 318). On `passed`, mark the cache row merged + emit `StepCompleted` +
+    /// broadcast `PrSetMergeStepCompleted` and continue. On fail/timeout, emit
+    /// `StepFailed` + `SetPaused` + broadcast `PrSetMergeFailedStep`, **pause**
+    /// (stop the loop, return `paused_at_step`), and do NOT auto-revert (the
+    /// caller/UI picks fix-resume or [`Self::revert_workarea_pr_set`]). When the
+    /// whole set merges, emit `SetMerged` + broadcast `PrSetMerged`.
+    ///
+    /// `opts.allow_failing_checks` (the `design/03/13 R-6` merge-anyway override)
+    /// is gated by `managed.json`'s `allowMergeWithFailingChecks`; when the policy
+    /// forbids it the request is rejected with [`Error::PolicyLocked`]
+    /// (`policy.locked` → `PERMISSION_DENIED`) BEFORE any merge. When permitted, a
+    /// non-`passed` outcome is a typed warning + audit entry instead of a pause.
+    ///
+    /// `#[cfg(unix)]` — references `crate::scheduler::wait_for_check_runs`, which
+    /// is unix-only (agent-host PTY; Windows scheduler is Task 702/Phase 7). The
+    /// non-unix stub returns a typed "unsupported on this platform" error so the
+    /// gRPC surface still compiles + degrades cleanly.
+    #[cfg(unix)]
+    pub async fn merge_workarea_pr_set(
+        &self,
+        workarea_id: &WorkareaId,
+        opts: MergeOpts,
+        progress: ProgressSink,
+    ) -> Result<MergeReport> {
+        use crate::scheduler::wait_checks::RequiredChecks;
+
+        let vcs = self
+            .pr_set_vcs
+            .as_ref()
+            .ok_or_else(|| Error::Vcs("vcs.not_configured: VCS handle not wired".into()))?;
+        let scheduler = self.scheduler.as_ref().ok_or_else(|| {
+            Error::Vcs("scheduler.not_configured: scheduler handle not wired".into())
+        })?;
+
+        // R-6: the merge-anyway override is gated by managed.json BEFORE any
+        // merge runs (a locked policy must never let one PR slip through).
+        if opts.allow_failing_checks {
+            self.enforce_merge_anyway_allowed()?;
+        }
+
+        let plan = self.get_workarea_merge_plan(workarea_id).await?;
+        let total = plan.steps.len() as i32;
+
+        // Empty PR set → a 0-step success (no error, `design/13 §3.5`).
+        if plan.steps.is_empty() {
+            let _ = progress.send(MergeProgress::SetMerged { total: 0 }).await;
+            let _ = self.events.send(WorkareaEvent::PrSetMerged {
+                id: workarea_id.clone(),
+                total: 0,
+            });
+            return Ok(MergeReport {
+                merged_steps: 0,
+                total: 0,
+                paused_at_step: None,
+            });
+        }
+
+        let mut merged_steps = 0i32;
+        for member in &plan.steps {
+            let repo_id = concerto_persist::RepositoryId(member.repository_id.clone());
+
+            let _ = progress
+                .send(MergeProgress::StepStarted {
+                    step: member.step,
+                    total,
+                    repository_full_name: member.repository_full_name.clone(),
+                    pr_number: member.pr_number,
+                })
+                .await;
+
+            // 1. Merge the PR (capture the post-merge merge-commit SHA).
+            let merge_report = match vcs
+                .merge_pr(
+                    &repo_id,
+                    &member.repository_full_name,
+                    member.pr_number,
+                    opts.method,
+                )
+                .await
+            {
+                Ok(r) if r.merged => r,
+                Ok(r) => {
+                    // The provider reported `merged: false` (e.g. not mergeable /
+                    // a 405 conflict the provider mapped to a non-merge). Pause.
+                    let reason = if r.message.is_empty() {
+                        "merge rejected by provider".to_string()
+                    } else {
+                        r.message
+                    };
+                    return self
+                        .pause_merge(
+                            workarea_id,
+                            &progress,
+                            member,
+                            total,
+                            merged_steps,
+                            reason,
+                            FailureKind::MergeRejected,
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    // A merge conflict / API error. Surface the message + stop
+                    // (the user resolves in the workarea, `design/13 §8`).
+                    let kind = if is_merge_conflict(&e) {
+                        FailureKind::MergeConflict
+                    } else {
+                        FailureKind::MergeRejected
+                    };
+                    return self
+                        .pause_merge(
+                            workarea_id,
+                            &progress,
+                            member,
+                            total,
+                            merged_steps,
+                            e.to_string(),
+                            kind,
+                        )
+                        .await;
+                }
+            };
+
+            // The post-merge merge-commit SHA (`design/13 §7.2`). When the
+            // provider returns none, fall back to the PR head SHA so the gate
+            // still has something to poll (degraded, but never panics).
+            let merge_sha = merge_report
+                .merge_commit_sha
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| member.head_sha.clone());
+
+            // 2. Wait for the merge commit's checks to resolve (Task 318).
+            let outcome = scheduler
+                .wait_for_check_runs(
+                    repo_id.clone(),
+                    &merge_sha,
+                    opts.timeout,
+                    RequiredChecks::AllTerminal,
+                )
+                .await?;
+
+            if !outcome.passed {
+                if opts.allow_failing_checks {
+                    // R-6: merge-anyway override is on + policy-permitted. Treat
+                    // the red/timeout outcome as a typed WARNING + audit entry
+                    // and continue rather than pause.
+                    tracing::warn!(
+                        audit.kind = "pr_set_merge_with_failing_checks",
+                        audit.scope = "workarea",
+                        audit.workarea_id = %workarea_id,
+                        audit.repository = %member.repository_full_name,
+                        audit.pr_number = member.pr_number,
+                        audit.merge_sha = %merge_sha,
+                        audit.timed_out = outcome.timed_out,
+                        "coordinated merge: checks not green but allowMergeWithFailingChecks override active; continuing"
+                    );
+                } else {
+                    // Pause-on-fail: stop the loop, surface "Step N of M failed".
+                    let (reason, kind) = if outcome.timed_out {
+                        (
+                            format!("checks timed out after {:?}", opts.timeout),
+                            FailureKind::ChecksTimeout,
+                        )
+                    } else {
+                        (
+                            "required checks failed".to_string(),
+                            FailureKind::ChecksFailed,
+                        )
+                    };
+                    return self
+                        .pause_merge(
+                            workarea_id,
+                            &progress,
+                            member,
+                            total,
+                            merged_steps,
+                            reason,
+                            kind,
+                        )
+                        .await;
+                }
+            }
+
+            // 3. Step passed (or was overridden). Mark the cache row merged so a
+            //    later coordinated revert knows this member is revertible.
+            self.mark_pr_merged(&repo_id, member.pr_number).await;
+            merged_steps += 1;
+
+            let _ = progress
+                .send(MergeProgress::StepCompleted {
+                    step: member.step,
+                    total,
+                    merge_sha: merge_sha.clone(),
+                })
+                .await;
+            let _ = self.events.send(WorkareaEvent::PrSetMergeStepCompleted {
+                id: workarea_id.clone(),
+                step: member.step,
+                total,
+                repository_full_name: member.repository_full_name.clone(),
+                pr_number: member.pr_number,
+                merge_sha,
+            });
+        }
+
+        // Every member merged.
+        let _ = progress.send(MergeProgress::SetMerged { total }).await;
+        let _ = self.events.send(WorkareaEvent::PrSetMerged {
+            id: workarea_id.clone(),
+            total,
+        });
+        tracing::info!(
+            audit.kind = "pr_set_merged",
+            audit.scope = "workarea",
+            audit.workarea_id = %workarea_id,
+            audit.total = total,
+            "coordinated PR-set merge complete"
+        );
+        Ok(MergeReport {
+            merged_steps,
+            total,
+            paused_at_step: None,
+        })
+    }
+
+    /// Non-unix stub for [`Self::merge_workarea_pr_set`]: the Scheduler's
+    /// `wait_for_check_runs` is unix-only, so the coordinated merge is
+    /// unsupported on Windows in V1.0 (Task 702/Phase 7). Returns a typed error
+    /// (NOT a panic / `unimplemented!()`).
+    #[cfg(not(unix))]
+    pub async fn merge_workarea_pr_set(
+        &self,
+        _workarea_id: &WorkareaId,
+        _opts: MergeOpts,
+        _progress: ProgressSink,
+    ) -> Result<MergeReport> {
+        Err(Error::Vcs(
+            "unimplemented: coordinated PR-set merge is unsupported on this platform (Windows scheduler is Task 702/Phase 7)"
+                .into(),
+        ))
+    }
+
+    /// Task 320: the coordinated revert (`design/13 §3.5`, R-5). Walk the workarea's
+    /// merged members in REVERSE `merge_order` and `revert_pr` each (revert-commit
+    /// by default; `opts.hard_reset` opt-in). Un-merged members record `Skipped`.
+    /// A per-member revert failure does NOT abort the rest — it records `Failed`
+    /// and continues. Emits `PrReverted` per reverted member. Cross-platform (no
+    /// Scheduler dependency — revert does not wait for checks).
+    pub async fn revert_workarea_pr_set(
+        &self,
+        workarea_id: &WorkareaId,
+        opts: RevertOpts,
+    ) -> Result<RevertReport> {
+        let vcs = self
+            .pr_set_vcs
+            .as_ref()
+            .ok_or_else(|| Error::Vcs("vcs.not_configured: VCS handle not wired".into()))?;
+
+        // `list_pr_set` does the existence check + the ordered load
+        // (`(merge_order, pr_number)`); reverse it for revert.
+        let mut rows = self.list_pr_set(workarea_id).await?;
+        rows.reverse();
+
+        let mut steps = Vec::with_capacity(rows.len());
+        for pr in rows {
+            let repo_id = pr.repository_id.clone();
+            // Only members that actually merged are revertible.
+            if pr.state != "merged" {
+                steps.push(RevertStep {
+                    repository_full_name: pr.repository_full_name.clone(),
+                    pr_number: pr.pr_number,
+                    outcome: RevertOutcome::Skipped,
+                    detail: format!("not merged (state={})", pr.state),
+                });
+                continue;
+            }
+            match vcs
+                .revert_pr(
+                    &repo_id,
+                    &pr.repository_full_name,
+                    pr.pr_number,
+                    opts.hard_reset,
+                )
+                .await
+            {
+                Ok(report) if report.reverted => {
+                    self.mark_pr_reverted(&repo_id, pr.pr_number).await;
+                    let _ = self.events.send(WorkareaEvent::PrReverted {
+                        id: workarea_id.clone(),
+                        repository_full_name: pr.repository_full_name.clone(),
+                        pr_number: pr.pr_number,
+                    });
+                    tracing::info!(
+                        audit.kind = "pr_reverted",
+                        audit.scope = "workarea",
+                        audit.workarea_id = %workarea_id,
+                        audit.repository = %pr.repository_full_name,
+                        audit.pr_number = pr.pr_number,
+                        audit.hard_reset = opts.hard_reset,
+                        "coordinated revert: member reverted"
+                    );
+                    steps.push(RevertStep {
+                        repository_full_name: pr.repository_full_name.clone(),
+                        pr_number: pr.pr_number,
+                        outcome: RevertOutcome::Reverted,
+                        detail: report.revert_pr_url.unwrap_or(report.message),
+                    });
+                }
+                Ok(report) => steps.push(RevertStep {
+                    repository_full_name: pr.repository_full_name.clone(),
+                    pr_number: pr.pr_number,
+                    outcome: RevertOutcome::Failed,
+                    detail: if report.message.is_empty() {
+                        "provider reported revert not applied".to_string()
+                    } else {
+                        report.message
+                    },
+                }),
+                Err(e) => steps.push(RevertStep {
+                    repository_full_name: pr.repository_full_name.clone(),
+                    pr_number: pr.pr_number,
+                    outcome: RevertOutcome::Failed,
+                    detail: e.to_string(),
+                }),
+            }
+        }
+
+        Ok(RevertReport {
+            workarea_id: workarea_id.0.clone(),
+            steps,
+        })
+    }
+
+    /// Emit the pause frames (`StepFailed` + `SetPaused`) + the
+    /// `PrSetMergeFailedStep` broadcast, then return the paused [`MergeReport`].
+    /// Shared exit for every pause-on-fail branch of the merge loop.
+    #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
+    async fn pause_merge(
+        &self,
+        workarea_id: &WorkareaId,
+        progress: &ProgressSink,
+        member: &MergeStep,
+        total: i32,
+        merged_steps: i32,
+        reason: String,
+        kind: FailureKind,
+    ) -> Result<MergeReport> {
+        let _ = progress
+            .send(MergeProgress::StepFailed {
+                step: member.step,
+                total,
+                reason: reason.clone(),
+                kind,
+            })
+            .await;
+        let _ = progress
+            .send(MergeProgress::SetPaused {
+                paused_at_step: member.step,
+                total,
+                reason: reason.clone(),
+            })
+            .await;
+        let _ = self.events.send(WorkareaEvent::PrSetMergeFailedStep {
+            id: workarea_id.clone(),
+            step: member.step,
+            total,
+            reason: reason.clone(),
+        });
+        tracing::warn!(
+            audit.kind = "pr_set_merge_paused",
+            audit.scope = "workarea",
+            audit.workarea_id = %workarea_id,
+            audit.paused_at_step = member.step,
+            audit.total = total,
+            audit.reason = %reason,
+            "coordinated PR-set merge paused at failed step"
+        );
+        Ok(MergeReport {
+            merged_steps,
+            total,
+            paused_at_step: Some(member.step),
+        })
+    }
+
+    /// R-6: reject `allow_failing_checks=true` when `managed.json` forbids it.
+    /// The key is `allowMergeWithFailingChecks` (camelCase, `D9`); it is a NEW
+    /// managed key beyond Task 211's frozen set, so it is read locally here (NOT
+    /// added to 211's parser — see the Handoff forward-note) and defaults to
+    /// `false` (security-conservative: the org must explicitly opt in). A locked
+    /// policy returns [`Error::PolicyLocked`] (`policy.locked` →
+    /// `PERMISSION_DENIED`), mirroring Task 32's bypass-guard rejection.
+    // Only the `#[cfg(unix)]` coordinated-merge loop calls this (the Scheduler /
+    // `wait_for_check_runs` is unix-only). Cross-platform body, so keep it compiled
+    // everywhere but silence dead_code on non-unix where the caller is absent.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    fn enforce_merge_anyway_allowed(&self) -> Result<()> {
+        if !read_allow_merge_with_failing_checks(&self.config_dir) {
+            return Err(Error::PolicyLocked(format!(
+                "{}: managed.json forbids merge-with-failing-checks (allowMergeWithFailingChecks)",
+                crate::security::POLICY_LOCKED_GENERIC
+            )));
+        }
+        Ok(())
+    }
+
+    /// Update one cached `pull_requests` row's `state` to `merged` (best-effort;
+    /// a failure is logged, not fatal — the GitHub merge already happened). Lets a
+    /// later coordinated revert find revertible members.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    async fn mark_pr_merged(&self, repo: &concerto_persist::RepositoryId, pr_number: i64) {
+        self.set_pr_state(repo, pr_number, "merged").await;
+    }
+
+    /// Update one cached `pull_requests` row's `state` to `reverted` (best-effort).
+    async fn mark_pr_reverted(&self, repo: &concerto_persist::RepositoryId, pr_number: i64) {
+        self.set_pr_state(repo, pr_number, "reverted").await;
+    }
+
+    async fn set_pr_state(
+        &self,
+        repo: &concerto_persist::RepositoryId,
+        pr_number: i64,
+        state: &str,
+    ) {
+        let now_ms = now_unix_ms();
+        let mut writer = self.persistence.writer().await;
+        if let Err(e) = sqlx::query(
+            "UPDATE pull_requests SET state = ?, updated_at = ? WHERE repository_id = ? AND pr_number = ?",
+        )
+        .bind(state)
+        .bind(now_ms)
+        .bind(&repo.0)
+        .bind(pr_number)
+        .execute(&mut *writer)
+        .await
+        {
+            tracing::warn!(
+                repo = %repo,
+                pr_number,
+                state,
+                error = %e,
+                "failed to update cached pull_requests.state after coordinated merge/revert"
+            );
+        }
     }
 
     /// List workareas in a workspace.
@@ -1352,6 +2080,102 @@ fn now_unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Task 320: heuristically classify a VCS merge error as a merge conflict
+/// (GitHub returns HTTP 405 "Pull Request is not mergeable" — `design/13 §8`).
+/// Used only to pick the [`FailureKind`] the UI shows; never affects control
+/// flow (a conflict and a generic rejection both pause the loop).
+#[cfg(unix)]
+fn is_merge_conflict(e: &Error) -> bool {
+    let m = e.to_string().to_lowercase();
+    m.contains("not mergeable")
+        || m.contains("merge conflict")
+        || m.contains("405")
+        || m.contains("conflict")
+}
+
+/// Task 320: read the NEW `allowMergeWithFailingChecks` key from
+/// `<config_dir>/managed.json` (camelCase per `D9`). This is a key BEYOND Task
+/// 211's frozen `ManagedPolicy` parser, so it is read locally here rather than
+/// added to that parser (Handoff forward-note). Defaults to `false`
+/// (security-conservative: the merge-anyway override is locked unless the org
+/// explicitly opts in). A missing file / unparseable JSON / missing key all
+/// yield `false` (locked) — an org artifact being broken must not unlock the
+/// override.
+// Only the `#[cfg(unix)]` coordinated-merge loop reads this (cross-platform body);
+// keep it compiled everywhere but silence dead_code on non-unix (caller absent).
+#[cfg_attr(not(unix), allow(dead_code))]
+fn read_allow_merge_with_failing_checks(config_dir: &Path) -> bool {
+    let path = config_dir.join(crate::security::managed::MANAGED_FILE_NAME);
+    let Ok(bytes) = std::fs::read(&path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    // Accept both the camelCase key (`D9`) and the snake_case alias, mirroring
+    // 211's dual-spelling tolerance.
+    json.get("allowMergeWithFailingChecks")
+        .or_else(|| json.get("allow_merge_with_failing_checks"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Production [`PrSetVcs`] impl over the [`concerto_vcs::VcsHandle`]: builds an
+/// octocrab provider from the keychain GitHub PAT (`SecretKind::GithubPat`) per
+/// call (mirroring the `Vcs` gRPC handler's `provider_for_repo`) and routes the
+/// single-PR merge/revert through the FROZEN `VcsProvider` trait so the loop gets
+/// a real `MergeReport` (with the post-merge SHA, `design/13 §7.2`) / `RevertReport`.
+struct VcsHandleMerger {
+    vcs: concerto_vcs::VcsHandle,
+}
+
+impl VcsHandleMerger {
+    /// Build the octocrab provider for a merge/revert call from the keychain PAT.
+    async fn provider(&self) -> Result<Arc<dyn concerto_vcs::provider::VcsProvider>> {
+        let secrets = concerto_keychain::Secrets::new();
+        let pat = secrets
+            .get(concerto_keychain::SecretKind::GithubPat)
+            .await
+            .map_err(|e| Error::Internal(format!("loading GitHub PAT: {e}")))?
+            .ok_or_else(|| {
+                Error::VcsNotAuthenticated(
+                    "no GitHub PAT configured (SecretKind::GithubPat); connect GitHub in Settings"
+                        .to_string(),
+                )
+            })?;
+        self.vcs.github_provider(pat.expose()).await
+    }
+}
+
+#[async_trait]
+impl PrSetVcs for VcsHandleMerger {
+    async fn merge_pr(
+        &self,
+        _repository_id: &concerto_persist::RepositoryId,
+        repository_full_name: &str,
+        pr_number: i64,
+        method: MergeMethod,
+    ) -> Result<ProviderMergeReport> {
+        let provider = self.provider().await?;
+        let id =
+            concerto_vcs::provider::ProviderPrId::new(repository_full_name.to_string(), pr_number);
+        provider.merge_pr(id, method).await
+    }
+
+    async fn revert_pr(
+        &self,
+        _repository_id: &concerto_persist::RepositoryId,
+        repository_full_name: &str,
+        pr_number: i64,
+        _hard_reset: bool,
+    ) -> Result<ProviderRevertReport> {
+        let provider = self.provider().await?;
+        let id =
+            concerto_vcs::provider::ProviderPrId::new(repository_full_name.to_string(), pr_number);
+        provider.revert_pr(id).await
+    }
 }
 
 /// Append `.context/` to the worktree's `.git/info/exclude`.

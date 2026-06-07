@@ -174,6 +174,16 @@ pub enum Subject {
         workarea_id: String,
         repository_id: String,
     },
+    /// Task 320 — `pr_set.events` (with an optional trailing `.<workarea_id>`
+    /// filter, mirroring `suggestion.events`). The coordinated-merge / revert
+    /// lifecycle (`pr_set.merge_step_completed` / `pr_set.merge_failed_step` /
+    /// `pr_set.merged` / `pr.reverted`, `design/13 §5.3`) carried as an opaque
+    /// JSON frame on the non-oneof `Event.checks_opaque = 17` field (NO new
+    /// `body` oneof arm — frozen through 16). Producer is the SAME
+    /// `WorkareaManager` broadcast that feeds `workarea.events`, filtered to the
+    /// PR-set variants. `None` ⇒ every workarea; `Some(wa)` ⇒ that workarea only.
+    /// Task 324 parses these frames.
+    PrSetEvents(Option<String>),
 }
 
 /// How a [`SubjectBuffer`] bounds its ring: by event count (most
@@ -593,6 +603,27 @@ impl StreamsHandler {
                     }
                 }
             }
+            Subject::PrSetEvents(filter_workarea) => {
+                // Task 320: filter the WorkareaManager's broadcast to the PR-set
+                // lifecycle variants (and, optionally, one workarea) + wrap each
+                // into a body-LESS Event carrying ONLY `checks_opaque` (the
+                // opaque-frame discipline; NO new oneof arm). The SAME broadcast
+                // also feeds `workarea.events` (with a `pr_set:<verb>` kind), so a
+                // subscriber to either subject sees the transition.
+                let rx = self.workareas.subscribe();
+                let filter = filter_workarea.clone();
+                let live = BroadcastStream::new(rx).filter_map(move |item| {
+                    item.ok().and_then(|ev: WorkareaEvent| {
+                        if let Some(ref expected) = filter {
+                            if pr_set_event_workarea_id(&ev).as_deref() != Some(expected.as_str()) {
+                                return None;
+                            }
+                        }
+                        map_pr_set_event(ev)
+                    })
+                });
+                Ok((Vec::new(), Box::pin(live)))
+            }
         }
     }
 
@@ -925,6 +956,21 @@ pub fn parse_subject(s: &str) -> Result<Subject, Status> {
         }
         return Err(invalid_subject(s));
     }
+    // Task 320: `pr_set.events` (with optional trailing `.<workarea_id>` filter,
+    // mirroring `suggestion.events`). Checked BEFORE the bare-string match so the
+    // trailing-filter form parses.
+    if let Some(rest) = s.strip_prefix("pr_set.events") {
+        if rest.is_empty() {
+            return Ok(Subject::PrSetEvents(None));
+        }
+        if let Some(wid) = rest.strip_prefix('.') {
+            if wid.is_empty() {
+                return Err(invalid_subject(s));
+            }
+            return Ok(Subject::PrSetEvents(Some(wid.to_string())));
+        }
+        return Err(invalid_subject(s));
+    }
     // Task 316: `checks.<workarea_id>.<repository_id>` (`design/13 §5.3`). Two
     // trailing segments (mirrors `suggestion.events.<workarea_id>` but with a
     // second segment); a missing repo segment is `INVALID_ARGUMENT`.
@@ -1210,6 +1256,17 @@ fn map_workarea_event(ev: WorkareaEvent) -> Event {
         // opaque `kind` string without a proto change.
         WorkareaEvent::StatusChanged { id, to, .. } => (id.to_string(), format!("status:{to}")),
         WorkareaEvent::PartialCreate { id, .. } => (id.to_string(), "partial".to_string()),
+        // Task 320: the PR-set lifecycle variants ride `workarea.events` with a
+        // `pr_set:<verb>` kind so existing clients keep parsing the opaque `kind`
+        // string without a proto change (the richer JSON rides `pr_set.events`).
+        WorkareaEvent::PrSetMergeStepCompleted { id, .. } => {
+            (id.to_string(), "pr_set:merge_step_completed".to_string())
+        }
+        WorkareaEvent::PrSetMergeFailedStep { id, .. } => {
+            (id.to_string(), "pr_set:merge_failed_step".to_string())
+        }
+        WorkareaEvent::PrSetMerged { id, .. } => (id.to_string(), "pr_set:merged".to_string()),
+        WorkareaEvent::PrReverted { id, .. } => (id.to_string(), "pr_set:reverted".to_string()),
     };
     Event {
         offset: 0,
@@ -1219,6 +1276,88 @@ fn map_workarea_event(ev: WorkareaEvent) -> Event {
             kind,
         })),
         checks_opaque: None,
+    }
+}
+
+/// Task 320: serialize a PR-set [`WorkareaEvent`] variant to the opaque JSON
+/// frame the `pr_set.events` subject carries (`design/13 §5.3`). Returns `None`
+/// for non-PR-set variants (they ride only `workarea.events`). Task 324 parses
+/// these frames. The schema is `{ "kind": <verb>, "workarea_id": ..., ... }` —
+/// stable field names, additive.
+fn pr_set_event_frame(ev: &WorkareaEvent) -> Option<Vec<u8>> {
+    let json = match ev {
+        WorkareaEvent::PrSetMergeStepCompleted {
+            id,
+            step,
+            total,
+            repository_full_name,
+            pr_number,
+            merge_sha,
+        } => serde_json::json!({
+            "kind": "merge_step_completed",
+            "workarea_id": id.to_string(),
+            "step": step,
+            "total": total,
+            "repository_full_name": repository_full_name,
+            "pr_number": pr_number,
+            "merge_sha": merge_sha,
+        }),
+        WorkareaEvent::PrSetMergeFailedStep {
+            id,
+            step,
+            total,
+            reason,
+        } => serde_json::json!({
+            "kind": "merge_failed_step",
+            "workarea_id": id.to_string(),
+            "step": step,
+            "total": total,
+            "reason": reason,
+        }),
+        WorkareaEvent::PrSetMerged { id, total } => serde_json::json!({
+            "kind": "merged",
+            "workarea_id": id.to_string(),
+            "total": total,
+        }),
+        WorkareaEvent::PrReverted {
+            id,
+            repository_full_name,
+            pr_number,
+        } => serde_json::json!({
+            "kind": "reverted",
+            "workarea_id": id.to_string(),
+            "repository_full_name": repository_full_name,
+            "pr_number": pr_number,
+        }),
+        _ => return None,
+    };
+    Some(json.to_string().into_bytes())
+}
+
+/// Map a PR-set [`WorkareaEvent`] to a body-LESS [`Event`] carrying ONLY the
+/// non-oneof `checks_opaque = 17` field — the SAME opaque-frame discipline Task
+/// 316 uses for `checks.*` (PHASE3_PLANNING §2: NO new `Event` body oneof arm).
+/// Returns `None` for non-PR-set variants so the `pr_set.events` filter drops
+/// them. `offset` is left 0; the per-subject pump stamps it.
+fn map_pr_set_event(ev: WorkareaEvent) -> Option<Event> {
+    let frame = pr_set_event_frame(&ev)?;
+    Some(Event {
+        offset: 0,
+        at: Some(now_ts()),
+        body: None,
+        checks_opaque: Some(frame),
+    })
+}
+
+/// The workarea id a PR-set [`WorkareaEvent`] variant targets, for the
+/// `pr_set.events.<workarea_id>` filter. `None` for non-PR-set variants.
+fn pr_set_event_workarea_id(ev: &WorkareaEvent) -> Option<String> {
+    match ev {
+        WorkareaEvent::PrSetMergeStepCompleted { id, .. }
+        | WorkareaEvent::PrSetMergeFailedStep { id, .. }
+        | WorkareaEvent::PrSetMerged { id, .. }
+        | WorkareaEvent::PrReverted { id, .. } => Some(id.to_string()),
+        _ => None,
     }
 }
 
