@@ -79,7 +79,7 @@ impl Actor for VcsProviderActor {
 //
 // The transport demuxes a `0x04` Webhook stream and invokes a [`WebhookSink`]
 // the Core supplies at `serve_iroh`. The Core's sink ([`CoreWebhookSink`])
-// resolves the targeted [`concerto_vcs::RepositoryId`] from the webhook body's
+// resolves the targeted [`concerto_persist::RepositoryId`] from the webhook body's
 // `repository.full_name`, builds the proto/transport-free `WebhookPayload`, and
 // drives `VcsHandle::ingest_webhook` (idempotency → constant-time HMAC →
 // parse → targeted-invalidate). The handle reads the per-repo HMAC secret +
@@ -240,4 +240,57 @@ pub fn build_webhook_sink(vcs_handle: VcsHandle) -> Arc<dyn WebhookSink> {
     });
     let handle = vcs_handle.with_webhook_sources(secret_source, provider_source);
     Arc::new(CoreWebhookSink { handle })
+}
+
+// ===========================================================================
+// Task 318 — `CheckRunsSource` for `VcsHandle` (the Scheduler's poll source)
+// ===========================================================================
+//
+// The Scheduler's `wait_for_check_runs` (Task 318) polls a `CheckRunsSource`
+// trait, not the concrete `VcsHandle`. The trait is defined in `concerto-core`
+// (it is the Scheduler's seam); `VcsHandle` lives in the `concerto-vcs` leaf
+// crate. Implementing a local trait for the foreign handle is allowed by the
+// orphan rule and keeps `concerto-vcs` free of any Scheduler dependency. The
+// production poll delegates to the Task-45 `get_check_runs` + maps each
+// `gh_cli::CheckRun` → the transport-free `CheckRunSnapshot`; the webhook
+// fast-path subscribes to the `ChecksAggregator` broadcast (Task 316's
+// `checks.<wa>.<repo>` emits, fed by Task 315's receiver), filtered to the
+// target `repository_id`.
+
+// The Scheduler module (and thus `wait_checks`) is `#![cfg(unix)]` — agent-host
+// PTY is unix-only in V1.0 (Windows ConPTY scheduler is Task 702 / Phase 7). So
+// this impl, which references `crate::scheduler::wait_checks`, is unix-gated to
+// match; on Windows the whole `wait_for_check_runs` path is absent.
+#[cfg(unix)]
+#[async_trait]
+impl crate::scheduler::wait_checks::CheckRunsSource for VcsHandle {
+    async fn check_runs(
+        &self,
+        repo: &concerto_persist::RepositoryId,
+        sha: &str,
+    ) -> Result<Vec<crate::scheduler::wait_checks::CheckRunSnapshot>> {
+        let runs = self.get_check_runs(repo, sha).await?;
+        Ok(runs
+            .into_iter()
+            .map(|r| crate::scheduler::wait_checks::CheckRunSnapshot {
+                name: r.name,
+                status: r.status,
+                conclusion: r.conclusion,
+            })
+            .collect())
+    }
+
+    fn webhook_wake(
+        &self,
+        repo: &concerto_persist::RepositoryId,
+    ) -> Option<crate::scheduler::wait_checks::WebhookWake> {
+        // Advisory only: a `checks.<wa>.<repo>` event for this repo cancels the
+        // current backoff sleep so the loop re-polls immediately. The
+        // authoritative state always comes from the re-poll (`check_runs`), so a
+        // missed/absent webhook only costs a backoff step — never correctness.
+        Some(crate::scheduler::wait_checks::WebhookWake::new(
+            self.checks().subscribe(),
+            repo.0.clone(),
+        ))
+    }
 }

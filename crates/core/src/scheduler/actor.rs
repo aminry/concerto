@@ -28,13 +28,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
 use concerto_persist::{
-    NewSchedule, NewScheduleRun, Persistence, Schedule, ScheduleId, ScheduleRun, ScheduleRunId,
-    SessionId, WorkareaId,
+    NewSchedule, NewScheduleRun, Persistence, RepositoryId, Schedule, ScheduleId, ScheduleRun,
+    ScheduleRunId, SessionId, WorkareaId,
 };
 use sqlx::Connection;
 use tokio::sync::{Mutex, Notify};
 
 use crate::agent_supervisor::{AgentEvent, AgentKind, AgentSupervisorHandle, StartSessionRequest};
+use crate::scheduler::wait_checks::{self, CheckRunsSource, ChecksOutcome, RequiredChecks};
 use crate::supervisor::{Actor, ActorContext};
 
 /// Minimum interval seconds. Frozen per Task 38 §"Public interface this
@@ -102,6 +103,16 @@ pub struct SchedulerHandle {
     /// Wakes the fire loop on add / update / delete. Capacity 1 — the
     /// loop just re-reads the wheel on every wake.
     notify: Arc<Notify>,
+    /// The check-runs source [`SchedulerHandle::wait_for_check_runs`] polls
+    /// (Task 318). Set post-construction by [`set_check_runs_source`] because
+    /// the VCS handle is built after the Scheduler in `boot.rs`; a
+    /// `std::sync::OnceLock` mirrors the `OnceCell` interior-mutability pattern
+    /// the rest of Core uses, keeping `SchedulerHandle::new`'s V0.1 signature
+    /// unchanged. `None` (unset) ⇒ `wait_for_check_runs` returns the typed
+    /// `scheduler.no_vcs_source` error. Independent of the fire wheel.
+    ///
+    /// [`set_check_runs_source`]: SchedulerHandle::set_check_runs_source
+    check_runs_source: Arc<std::sync::OnceLock<Arc<dyn CheckRunsSource>>>,
 }
 
 impl SchedulerHandle {
@@ -119,7 +130,65 @@ impl SchedulerHandle {
             wheel: Arc::new(Mutex::new(BTreeMap::new())),
             inflight: Arc::new(Mutex::new(HashMap::new())),
             notify: Arc::new(Notify::new()),
+            check_runs_source: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Wire the check-runs source for [`wait_for_check_runs`] (Task 318).
+    /// Called once, post-construction, from `boot.rs` after the VCS handle is
+    /// built (the handle does not exist when the Scheduler is constructed).
+    /// Idempotent-on-first-set: a second call is ignored (logged) so a
+    /// supervisor restart that re-wires cannot panic. Returns whether the source
+    /// was installed by this call.
+    ///
+    /// [`wait_for_check_runs`]: SchedulerHandle::wait_for_check_runs
+    pub fn set_check_runs_source(&self, source: Arc<dyn CheckRunsSource>) -> bool {
+        match self.check_runs_source.set(source) {
+            Ok(()) => true,
+            Err(_) => {
+                tracing::debug!(
+                    "scheduler.set_check_runs_source: source already set; ignoring re-wire"
+                );
+                false
+            }
+        }
+    }
+
+    /// Wait for the check runs on `repo`'s commit `sha` to resolve (Task 318,
+    /// `design/05 §3.9`/§5.1 — the FROZEN gate Task 320's coordinated PR-set
+    /// merge blocks on between members).
+    ///
+    /// Polls the wired [`CheckRunsSource`] with the FROZEN
+    /// `[1, 2, 4, 8, 16, 30]`-cap backoff (`design/13 §3.3` ==
+    /// `design/05 §3.9`, imported from `concerto_vcs::rate_limit`), resolving to
+    /// a [`ChecksOutcome`] when every run in the caller-supplied `required` set
+    /// reaches a terminal conclusion, **or** when the wall-clock `timeout`
+    /// elapses (a timeout resolves with `timed_out: true` — NOT an `Err`; the
+    /// caller decides what to do, `design/05 §8`). When the source exposes a
+    /// webhook wake (Task 315's `checks.<wa>.<repo>` emits via Task 316's
+    /// `ChecksAggregator`), a `check_run` event short-circuits the current
+    /// backoff sleep and triggers an immediate re-poll; absent it, the loop
+    /// degrades to pure polling.
+    ///
+    /// `required` defaults to [`RequiredChecks::AllTerminal`] (the set 320 uses
+    /// — "all check-runs for the SHA reach a terminal conclusion"); no
+    /// branch-protection API is read (`PHASE3_PLANNING §2`).
+    ///
+    /// Errors only when no source is wired (`scheduler.no_vcs_source`) or the
+    /// source itself errors on a poll. Independent of the `/loop` fire wheel —
+    /// safe to await on 320's own task.
+    pub async fn wait_for_check_runs(
+        &self,
+        repo: RepositoryId,
+        sha: &str,
+        timeout: Duration,
+        required: RequiredChecks,
+    ) -> Result<ChecksOutcome> {
+        let source = self
+            .check_runs_source
+            .get()
+            .ok_or_else(wait_checks::no_vcs_source)?;
+        wait_checks::run_wait_loop(source, &repo, sha, timeout, required).await
     }
 
     /// Borrow the shared persistence handle. Used by the gRPC
