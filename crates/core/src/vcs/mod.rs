@@ -140,6 +140,60 @@ impl WebhookProviderSource for KeychainWebhookProviderSource {
     }
 }
 
+/// Keychain-backed [`concerto_vcs::WriteBackTokens`] (Task 320.5): resolves the
+/// Linear/Jira access token for the post-coordinated-merge issue write-back,
+/// keyed by the most-recently-connected `vcs_credentials` account for the
+/// provider (the same single-account resolution the `FetchIssueByUrl` handler
+/// uses). Tokens live ONLY in the keychain; this seam exposes one to the
+/// write-back call and nowhere else. `Ok(None)` ⇒ no credential connected for
+/// the provider (the write-back records a `skipped`/`failed` outcome — it never
+/// fails the merge).
+struct KeychainWriteBackTokens {
+    secrets: Secrets,
+    persistence: Arc<Persistence>,
+}
+
+#[async_trait]
+impl concerto_vcs::WriteBackTokens for KeychainWriteBackTokens {
+    async fn token(
+        &self,
+        provider: concerto_vcs::IssueProvider,
+    ) -> Result<Option<concerto_keychain::SecretValue>> {
+        let (provider_str, slot) = match provider {
+            concerto_vcs::IssueProvider::Linear => ("linear", VcsSecretSlot::LinearAccessToken),
+            concerto_vcs::IssueProvider::Jira => ("jira", VcsSecretSlot::JiraAccessToken),
+        };
+        let creds = concerto_persist::vcs_credentials::list_by_provider(
+            self.persistence.readers(),
+            provider_str,
+        )
+        .await?;
+        // Most-recently-updated row = the connected account (single-account V1.0).
+        let scope = creds
+            .into_iter()
+            .max_by_key(|c| c.updated_at)
+            .map(|c| c.scope_id);
+        match scope {
+            Some(scope_id) => Ok(self.secrets.get_vcs_secret(&scope_id, slot).await?),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Build the LIVE Linear/Jira issue write-back (Task 320.5) the Workarea
+/// Manager calls at the end of a coordinated-merge success path. Reads tokens
+/// through the keychain ([`KeychainWriteBackTokens`]); mints nothing. Wired at
+/// boot via `WorkareaManager::with_issue_write_back`.
+pub fn build_issue_write_back(
+    persistence: Arc<Persistence>,
+) -> Result<Arc<dyn concerto_vcs::IssueWriteBack>> {
+    let tokens = Arc::new(KeychainWriteBackTokens {
+        secrets: Secrets::new(),
+        persistence,
+    });
+    Ok(Arc::new(concerto_vcs::LinearJiraWriteBack::new(tokens)?))
+}
+
 /// The Core's [`WebhookSink`] (Task 315): the seam the transport invokes for every
 /// demuxed `0x04` Webhook stream. Maps the on-wire [`WebhookEnvelope`] onto a
 /// repo + [`WebhookPayload`] and drives `VcsHandle::ingest_webhook`, then maps the

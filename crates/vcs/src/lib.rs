@@ -23,8 +23,9 @@
 //!   host router behind a 1 h in-memory [`IssueCache`]; issue bodies are never
 //!   persisted (`design/13 §3.7` privacy floor).
 //! - **[`write_back`]** — the FROZEN [`IssueWriteBack`] trait + LIVE no-op
-//!   [`NoopWriteBack`] (Task 317, D5); the real status-transition-on-merge lands
-//!   in Task 320.5 behind the same trait.
+//!   [`NoopWriteBack`] (Task 317, D5) PLUS the real Linear (`issueUpdate`) / Jira
+//!   (`POST transitions`) [`LinearJiraWriteBack`] (Task 320.5) behind the same
+//!   trait, reading tokens through the [`WriteBackTokens`] keychain seam.
 //! - **[`testkit`]** (behind `--features testkit`) — the shared wiremock-backed
 //!   `FakeGitHub`/`FakeLinear`/`FakeJira` harness 314/315/316/317/320/320.5
 //!   reuse (D2).
@@ -79,4 +80,7 @@ pub use webhook::{
     parse_event, verify_signature, IngestOutcome, ParsedEvent, WebhookPayload,
     WebhookProviderSource, WebhookSecretSource,
 };
-pub use write_back::{IssueProvider, IssueRef, IssueTransition, IssueWriteBack, NoopWriteBack};
+pub use write_back::{
+    IssueProvider, IssueRef, IssueTransition, IssueWriteBack, LinearJiraWriteBack, NoopWriteBack,
+    WriteBackTokens,
+};

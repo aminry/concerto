@@ -812,6 +812,22 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     #[cfg(unix)]
     let workarea_handle = workarea_handle.with_scheduler(scheduler_handle.clone());
 
+    // Task 320.5: wire the LIVE Linear/Jira issue write-back the coordinated-merge
+    // success path calls (per-project opt-in via `projects.settings_json`).
+    // Keychain-backed tokens (317's `VcsSecretSlot` accessors); mints nothing.
+    // Cross-platform (the write-back is pure `reqwest`/rustls); the call site is
+    // `#[cfg(unix)]` (the merge loop), so on Windows it is wired but unused until
+    // the Windows scheduler (Task 702).
+    let workarea_handle = match crate::vcs::build_issue_write_back(Arc::clone(&persistence)) {
+        Ok(write_back) => workarea_handle.with_issue_write_back(write_back),
+        Err(e) => {
+            // A build failure (http client) is non-fatal: keep the no-op default
+            // so the merge path still completes (write-back is best-effort).
+            tracing::warn!(error = %e, "issue write-back build failed; using no-op default");
+            workarea_handle
+        }
+    };
+
     // Task 310: resolve every project's three-layer settings
     // (managed > checked-in > local DB > defaults) and emit one
     // `ProjectSettingsResolved{project_id, field, value_source}` audit per

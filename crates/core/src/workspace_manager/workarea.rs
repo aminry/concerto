@@ -55,6 +55,9 @@ use concerto_persist::{
 use concerto_vcs::provider::{
     MergeMethod, MergeReport as ProviderMergeReport, RevertReport as ProviderRevertReport,
 };
+#[cfg(unix)]
+use concerto_vcs::{IssueProvider, IssueRef, IssueTransition};
+use concerto_vcs::{IssueWriteBack, NoopWriteBack};
 use sqlx::Connection;
 use tokio::sync::{broadcast, mpsc};
 
@@ -147,6 +150,19 @@ pub enum WorkareaEvent {
     },
     /// Task 320: every member of the PR set merged + passed checks.
     PrSetMerged { id: WorkareaId, total: i32 },
+    /// Task 320.5: the post-merge Linear/Jira issue write-back ran (or was
+    /// skipped). Informational + best-effort — it NEVER alters the
+    /// `MergeReport`. Carries the workarea id, the issue ref (provider + native
+    /// id, e.g. `linear`/`ENG-123`), the `outcome` (`written`/`skipped`/
+    /// `failed`), and a human `detail`. Rides the `pr_set.events` opaque-payload
+    /// channel (NO new proto `Event` oneof arm — `design/13 §12 R-9`).
+    PrSetIssueWriteBack {
+        id: WorkareaId,
+        provider: String,
+        external_id: String,
+        outcome: String,
+        detail: String,
+    },
     /// Task 320: one member of the set was reverted by a coordinated revert.
     PrReverted {
         id: WorkareaId,
@@ -458,6 +474,16 @@ pub struct WorkareaManager {
     /// path runs first, falling back to the deterministic composer on
     /// error/timeout. The real provider is wired in P4 (Task 412).
     has_llm_provider: bool,
+    /// Task 320.5: the issue write-back seam (317's FROZEN [`IssueWriteBack`]
+    /// trait). Defaults to the LIVE no-op [`NoopWriteBack`]; boot swaps in the
+    /// real [`concerto_vcs::LinearJiraWriteBack`] via [`Self::with_issue_write_back`].
+    /// Called inline at the end of the coordinated-merge success path when the
+    /// project opted in — best-effort + non-blocking (never fails the merge).
+    /// The coordinated-merge loop is `#[cfg(unix)]` (it blocks on the unix-only
+    /// Scheduler), so the field is only read on unix; on Windows it is wired
+    /// (cross-platform builder) but unused until the Windows scheduler (Task 702).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    issue_write_back: Arc<dyn IssueWriteBack>,
 }
 
 impl WorkareaManager {
@@ -487,7 +513,19 @@ impl WorkareaManager {
             one_shot: Arc::new(DeterministicOneShot),
             vcs: None,
             has_llm_provider: false,
+            // Task 320.5: the no-op is the LIVE default (a non-opted-in project
+            // sees no tracker mutation); boot swaps in the real Linear/Jira impl.
+            issue_write_back: Arc::new(NoopWriteBack),
         }
+    }
+
+    /// Task 320.5: swap the issue write-back seam (317's FROZEN
+    /// [`IssueWriteBack`] trait). The default is the LIVE [`NoopWriteBack`];
+    /// boot wires the real [`concerto_vcs::LinearJiraWriteBack`] (keychain-backed
+    /// tokens) here. Mirrors [`Self::with_one_shot`].
+    pub fn with_issue_write_back(mut self, write_back: Arc<dyn IssueWriteBack>) -> Self {
+        self.issue_write_back = write_back;
+        self
     }
 
     /// Task 312: swap the one-shot LLM seam (`PHASE3_PLANNING §4.4`). The
@@ -1810,11 +1848,182 @@ impl WorkareaManager {
             audit.total = total,
             "coordinated PR-set merge complete"
         );
+
+        // Task 320.5: post-merge Linear/Jira issue write-back (per-project
+        // opt-in). Best-effort + non-blocking — it runs AFTER the merge is
+        // reported complete and NEVER alters/fails the `MergeReport`
+        // (`design/13 §12 R-9`). Any failure (auth lapsed, ref unresolvable,
+        // tracker outage) is logged + audit-logged + surfaced as a `failed`
+        // informational event, exactly as the smoke-critical paths swallow
+        // best-effort failures.
+        self.run_issue_write_back(workarea_id).await;
+
         Ok(MergeReport {
             merged_steps,
             total,
             paused_at_step: None,
         })
+    }
+
+    /// Task 320.5: the post-merge issue write-back step. Reads the project's
+    /// opt-in (`projects.settings_json.issue_write_back`, default off); if on,
+    /// resolves the workarea's source issue ref
+    /// (`workareas.settings_json.source_issue_ref`) and calls
+    /// [`IssueWriteBack::transition_on_merge`] with [`IssueTransition::MergedDone`].
+    /// Total + best-effort: every branch emits a `pr_set.issue_write_back` event
+    /// (`written`/`skipped`/`failed`) and returns `()` — it never propagates an
+    /// error to the merge loop. A coordinated *revert* does NOT reverse the
+    /// transition in V1.0 (out of scope).
+    #[cfg(unix)]
+    async fn run_issue_write_back(&self, workarea_id: &WorkareaId) {
+        // 1. Opt-in gate (default off).
+        match self.issue_write_back_opt_in(workarea_id).await {
+            Ok(true) => {}
+            Ok(false) => return, // not opted in → no tracker mutation, silent.
+            Err(e) => {
+                // A read failure is best-effort: log + skip, never fail merge.
+                tracing::warn!(error = %e, workarea_id = %workarea_id, "issue write-back: opt-in read failed; skipping");
+                return;
+            }
+        }
+
+        // 2. Resolve the originating issue ref. Absent/unresolvable/GitHub →
+        //    a `skipped` outcome (no error).
+        let issue_ref = match self.resolve_source_issue_ref(workarea_id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                self.emit_write_back(
+                    workarea_id,
+                    "",
+                    "",
+                    "skipped",
+                    "no resolvable tracker issue ref for this workarea",
+                );
+                return;
+            }
+            Err(detail) => {
+                self.emit_write_back(workarea_id, "", "", "skipped", &detail);
+                return;
+            }
+        };
+
+        let provider = issue_ref.provider.as_str().to_string();
+        let external_id = issue_ref.external_id.clone();
+
+        // 3. The transition itself — any error is `failed`, never propagated.
+        match self
+            .issue_write_back
+            .transition_on_merge(&issue_ref, IssueTransition::MergedDone)
+            .await
+        {
+            Ok(()) => {
+                self.emit_write_back(
+                    workarea_id,
+                    &provider,
+                    &external_id,
+                    "written",
+                    "transitioned to done on merge",
+                );
+            }
+            Err(e) => {
+                // Never log the issue body / token; the error string is the
+                // typed transport/tracker message only.
+                self.emit_write_back(
+                    workarea_id,
+                    &provider,
+                    &external_id,
+                    "failed",
+                    &e.to_string(),
+                );
+            }
+        }
+    }
+
+    /// Read `projects.settings_json.issue_write_back` (a JSON `bool`, default
+    /// `false`) for the project owning `workarea_id`. The workarea → workspace →
+    /// project walk resolves the owning project; an absent key / missing row ⇒
+    /// `false` (off). No migration — a `settings_json` key (FROZEN).
+    #[cfg(unix)]
+    async fn issue_write_back_opt_in(&self, workarea_id: &WorkareaId) -> Result<bool> {
+        let workarea = concerto_persist::workareas::get(self.persistence.readers(), workarea_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {workarea_id} not found")))?;
+        let workspace =
+            concerto_persist::workspaces::get(self.persistence.readers(), &workarea.workspace_id)
+                .await?
+                .ok_or_else(|| {
+                    Error::NotFound(format!("workspace {} not found", workarea.workspace_id))
+                })?;
+        let project_id = concerto_persist::ProjectId(workspace.project_id);
+        let raw =
+            concerto_persist::projects::get_settings_json(self.persistence.readers(), &project_id)
+                .await?;
+        let Some(raw) = raw else { return Ok(false) };
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+        Ok(json
+            .get("issue_write_back")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false))
+    }
+
+    /// Resolve the workarea's source tracker issue ref from
+    /// `workareas.settings_json.source_issue_ref` (FROZEN key; Task 411 writes
+    /// it at workarea-creation-from-issue time in P4). The value is the issue
+    /// URL/id captured at creation. Maps the URL host → [`IssueProvider`]: a
+    /// `linear.app` / `*.atlassian.net` ref resolves; a **GitHub** issue ref
+    /// (or any other host) is `Ok(None)` (GitHub auto-closes via PR keywords,
+    /// not a tracker transition — `skipped`). A malformed/un-hostable value is
+    /// `Err(detail)` → `skipped`. Absent key ⇒ `Ok(None)`.
+    #[cfg(unix)]
+    async fn resolve_source_issue_ref(
+        &self,
+        workarea_id: &WorkareaId,
+    ) -> std::result::Result<Option<IssueRef>, String> {
+        let workarea =
+            match concerto_persist::workareas::get(self.persistence.readers(), workarea_id).await {
+                Ok(Some(w)) => w,
+                Ok(None) => return Err(format!("workarea {workarea_id} not found")),
+                Err(e) => return Err(format!("workarea read failed: {e}")),
+            };
+        let json: serde_json::Value =
+            serde_json::from_str(&workarea.settings_json).unwrap_or(serde_json::Value::Null);
+        let Some(raw) = json.get("source_issue_ref").and_then(|v| v.as_str()) else {
+            return Ok(None);
+        };
+        if raw.trim().is_empty() {
+            return Ok(None);
+        }
+        issue_ref_from_url(raw)
+    }
+
+    /// Emit + audit-log a `pr_set.issue_write_back` informational event. Total —
+    /// a closed broadcast channel just drops the frame (`let _`).
+    #[cfg(unix)]
+    fn emit_write_back(
+        &self,
+        workarea_id: &WorkareaId,
+        provider: &str,
+        external_id: &str,
+        outcome: &str,
+        detail: &str,
+    ) {
+        tracing::info!(
+            audit.kind = "pr_set_issue_write_back",
+            audit.scope = "workarea",
+            audit.workarea_id = %workarea_id,
+            audit.provider = provider,
+            audit.external_id = external_id,
+            audit.outcome = outcome,
+            audit.detail = detail,
+            "coordinated-merge issue write-back"
+        );
+        let _ = self.events.send(WorkareaEvent::PrSetIssueWriteBack {
+            id: workarea_id.clone(),
+            provider: provider.to_string(),
+            external_id: external_id.to_string(),
+            outcome: outcome.to_string(),
+            detail: detail.to_string(),
+        });
     }
 
     /// Non-unix stub for [`Self::merge_workarea_pr_set`]: the Scheduler's
@@ -2689,6 +2898,59 @@ fn allocate_composer(used: &std::collections::HashSet<String>) -> Option<String>
         }
     }
     None
+}
+
+/// Task 320.5: classify a source-issue URL/ref into an [`IssueRef`] for the
+/// post-merge write-back. `linear.app` → [`IssueProvider::Linear`];
+/// `*.atlassian.net` → [`IssueProvider::Jira`]. A **GitHub** issue (or any other
+/// host) returns `Ok(None)` — GitHub auto-closes via PR keywords, not a tracker
+/// transition (`skipped`). A non-URL / hostless value is `Err(detail)`. The
+/// `external_id` is the provider-native id parsed from the URL (`ENG-123` /
+/// `PROJ-45`); the `project_url` is the issue URL itself (the write-back derives
+/// the credential scope + API base from it).
+#[cfg(unix)]
+fn issue_ref_from_url(raw: &str) -> std::result::Result<Option<IssueRef>, String> {
+    // The captured ref is always a full issue URL (`design/03 §7.1`); a bare id
+    // has no host to dispatch on, so it is unresolvable here (`skipped`).
+    let scheme_end = raw
+        .find("://")
+        .ok_or_else(|| format!("source_issue_ref `{raw}` is not a URL"))?
+        + 3;
+    let after_scheme = &raw[scheme_end..];
+    let host = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .split('@')
+        .next_back()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return Err(format!("source_issue_ref `{raw}` has no host"));
+    }
+    if host == "linear.app" {
+        let external_id = concerto_vcs::parse_linear_id(raw)
+            .map_err(|e| format!("source_issue_ref `{raw}` is not a Linear issue: {e}"))?;
+        Ok(Some(IssueRef {
+            provider: IssueProvider::Linear,
+            external_id,
+            project_url: raw.to_string(),
+        }))
+    } else if host.ends_with(".atlassian.net") {
+        let external_id = concerto_vcs::parse_jira_key(raw)
+            .map_err(|e| format!("source_issue_ref `{raw}` is not a Jira issue: {e}"))?;
+        Ok(Some(IssueRef {
+            provider: IssueProvider::Jira,
+            external_id,
+            project_url: raw.to_string(),
+        }))
+    } else {
+        // GitHub / unknown host → no tracker transition (GitHub PR keywords).
+        Ok(None)
+    }
 }
 
 /// Every live session as `(workarea_id, session_id)` (`ended_at IS NULL`).
