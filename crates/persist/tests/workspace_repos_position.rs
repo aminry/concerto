@@ -174,19 +174,6 @@ async fn update_repos_seeds_per_repo_cone_snapshot() {
         .expect("get_repo_cones")
         .expect("row exists");
     assert_eq!(c1, "[]");
-
-    // `set_repo_cones` overwrites the snapshot without touching position.
-    {
-        let mut w = persist.writer().await;
-        workspaces::set_repo_cones(&mut w, &ws, &repos[1], "[\"docs\"]")
-            .await
-            .expect("set_repo_cones");
-    }
-    let c1b = workspaces::get_repo_cones(pool, &ws, &repos[1])
-        .await
-        .expect("get_repo_cones")
-        .expect("row exists");
-    assert_eq!(c1b, "[\"docs\"]", "set_repo_cones must overwrite snapshot");
 }
 
 #[tokio::test]

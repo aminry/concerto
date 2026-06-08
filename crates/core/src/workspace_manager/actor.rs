@@ -426,48 +426,6 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Set the per-(workspace, repo) sparse-cone snapshot to `cones`
-    /// (D4/D6). Overwrites `workspace_repos.sparse_cones_json` for the pair.
-    pub async fn set_repo_cones(
-        &self,
-        ws: &WorkspaceId,
-        repo: &RepositoryId,
-        cones: &[String],
-    ) -> Result<()> {
-        let json = serde_json::to_string(cones)
-            .map_err(|e| Error::Internal(format!("serialize cones: {e}")))?;
-        let mut writer = self.persistence.writer().await;
-        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
-        concerto_persist::workspaces::set_repo_cones(&mut tx, ws, repo, &json).await?;
-        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
-        Ok(())
-    }
-
-    /// Reset the per-(workspace, repo) sparse-cone snapshot to the repo's
-    /// CURRENT `cone_defaults_json` (the D4 "reset to repo defaults"
-    /// affordance). Writes the repo's live defaults into the workspace
-    /// snapshot.
-    pub async fn reset_repo_cones_to_defaults(
-        &self,
-        ws: &WorkspaceId,
-        repo: &RepositoryId,
-    ) -> Result<()> {
-        let repo_row = concerto_persist::repositories::get(self.persistence.readers(), repo)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("repository {repo} not found")))?;
-        let mut writer = self.persistence.writer().await;
-        let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
-        concerto_persist::workspaces::set_repo_cones(
-            &mut tx,
-            ws,
-            repo,
-            &repo_row.cone_defaults_json,
-        )
-        .await?;
-        tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
-        Ok(())
-    }
-
     /// Look up a workspace by id.
     pub async fn get(&self, id: &WorkspaceId) -> Result<Option<Workspace>> {
         concerto_persist::workspaces::get(self.persistence.readers(), id).await

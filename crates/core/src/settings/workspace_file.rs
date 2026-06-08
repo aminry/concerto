@@ -30,8 +30,8 @@ use tokio::sync::watch;
 
 use crate::security::managed::HOT_RELOAD_DEBOUNCE;
 
-/// Locked filename of the checked-in project settings file (jsonc) inside
-/// `<project_root>/.concerto/`.
+/// Locked filename of the checked-in workspace settings file (jsonc) inside
+/// `<workspace_root>/.concerto/`.
 pub const WORKSPACE_SETTINGS_FILE_NAME: &str = "workspace_settings.json";
 
 /// Locked filename of the per-repo checked-in action-prefs file inside

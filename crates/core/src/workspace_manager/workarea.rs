@@ -1080,7 +1080,7 @@ impl WorkareaManager {
     ///    that wins over the local DB (`design/03 §3.13`).
     /// 2. Otherwise the Task-310 [`WorkspaceSettingsResolver::files_to_copy_rules`]
     ///    — which itself layers the checked-in `workspace_settings.json` >
-    ///    local-DB `projects.settings_json` > empty default. We consume the
+    ///    local-DB `workspaces.settings_json` > empty default. We consume the
     ///    resolver (per 310's handoff) rather than reading `settings_json` raw,
     ///    so 310 owns the layering + provenance and 309 owns the apply.
     ///
@@ -1123,7 +1123,7 @@ impl WorkareaManager {
             repo = %reference_repo.id,
             source = ?resolved.source,
             rules = resolved.value.len(),
-            "files_to_copy: resolved rule set from project settings"
+            "files_to_copy: resolved rule set from workspace settings"
         );
         Ok(resolved
             .value
@@ -1204,7 +1204,7 @@ impl WorkareaManager {
     /// (`design/03 §3.6`/§7.2).
     ///
     /// Resolves the workarea's reference repo (the first `workarea_repos` row),
-    /// builds the per-project settings resolver (Task 310), reads the resolved
+    /// builds the per-workspace settings resolver (Task 310), reads the resolved
     /// `action_prefs.branch_rename` pref, composes the action prompt via
     /// [`compose_action_prompt`], and asks the [`OneShotLlm`] seam for a
     /// suggestion. Per **D1** the LIVE Phase-3 path is the deterministic
@@ -1991,8 +1991,8 @@ impl WorkareaManager {
         })
     }
 
-    /// Task 320.5: the post-merge issue write-back step. Reads the project's
-    /// opt-in (`projects.settings_json.issue_write_back`, default off); if on,
+    /// Task 320.5: the post-merge issue write-back step. Reads the workspace's
+    /// opt-in (`workspaces.settings_json.issue_write_back`, default off); if on,
     /// resolves the workarea's source issue ref
     /// (`workareas.settings_json.source_issue_ref`) and calls
     /// [`IssueWriteBack::transition_on_merge`] with [`IssueTransition::MergedDone`].

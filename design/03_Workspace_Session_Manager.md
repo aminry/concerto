@@ -672,7 +672,7 @@ Consumers:
 | # | Question | Decision | Where in doc |
 |---|---|---|---|
 | R-1 | Per-repo branch override | **V2.0.** Schema field `workarea_repos.branch_override` already exists; UI hidden in V1.0. Every repo in a workarea uses the same `branch_name`. | §3 (4.1 schema); UI gated |
-| R-2 | Sparse cones inheritance chain | **Three-layer, snapshot semantics:** `repositories.cone_defaults_json` → (snapshot at attach) `workspace_repos.sparse_cones_json` → (snapshot at workarea create) `workarea_repos.sparse_cones_json`. Editing repo defaults does not retroactively change existing workspaces. | §3.3, §4 |
+| R-2 | Sparse cones inheritance chain | **Three-layer, snapshot semantics:** `repositories.cone_defaults_json` → (snapshot at attach) `workspace_repos.sparse_cones_json` → (snapshot at workarea create) `workarea_repos.sparse_cones_json`. Editing repo defaults does not retroactively change existing workspaces. The `workspace_repos.sparse_cones_json` snapshot is written at workspace/workarea create time (shipped); editing or resetting a workspace's per-repo cone snapshot after creation is a planned follow-up UI, not yet wired. | §3.3, §4 |
 | R-3 | Workspace export/import | **V2.0.** Tarball + manifest format TBD. `concerto backup` is the V1.0 substitute for personal-machine migration. | (deferred) |
 | R-4 | Keep `.context/` after workarea archive | **Keep.** Disk is cheap; restore is lossless. Hard-delete only via V1.5+ explicit "delete" action. | §3.7 |
 | R-5 | "Branch already merged remotely" on workarea archive | **V1.0 nothing automatic; V1.5 prompt** to delete remote merged branches. | §3.7 |

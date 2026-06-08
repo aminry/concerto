@@ -2,7 +2,7 @@
 //! fallbacks in Task 309).
 //!
 //! At workarea creation time, the resolved rule set (a checked-in
-//! `.worktreeinclude` at the **reference repo** root, or the project's
+//! `.worktreeinclude` at the **reference repo** root, or the workspace's
 //! local-DB `files_to_copy_rules`) is applied into **each** repo's new
 //! worktree: each matching file is **copied**, **symlinked**, or
 //! **excluded** from the workarea's copy of the worktree.

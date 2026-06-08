@@ -36,8 +36,7 @@
 //! The per-`(workspace, repo)` sparse cones live in the
 //! `workspace_repos.sparse_cones_json` COLUMN (D6); they are seeded
 //! (snapshot) from the repository's `cone_defaults_json` when a repo is
-//! attached (D3/D4). See [`get_repo_cones`] / [`set_repo_cones`] /
-//! [`update_repos`].
+//! attached (D3/D4). See [`get_repo_cones`] / [`update_repos`].
 //!
 //! ## Repo-ordering contract (FROZEN by Task 306)
 //!
@@ -158,29 +157,6 @@ pub async fn get_repo_cones(
     Ok(row.map(|r| r.get::<String, _>("sparse_cones_json")))
 }
 
-/// Overwrite the per-`(workspace, repo)` `sparse_cones_json` snapshot (D6).
-/// `cones_json` is a JSON `["<cone_path>", …]` array the caller has already
-/// serialized. Editing the repository's `cone_defaults_json` later does NOT
-/// mutate this snapshot (D3/D4).
-pub async fn set_repo_cones(
-    conn: &mut SqliteConnection,
-    workspace_id: &WorkspaceId,
-    repo_id: &RepositoryId,
-    cones_json: &str,
-) -> Result<()> {
-    sqlx::query(
-        "UPDATE workspace_repos SET sparse_cones_json = ? \
-         WHERE workspace_id = ? AND repository_id = ?",
-    )
-    .bind(cones_json)
-    .bind(&workspace_id.0)
-    .bind(&repo_id.0)
-    .execute(conn)
-    .await
-    .map_err(|e| Error::Sqlx(Box::new(e)))?;
-    Ok(())
-}
-
 /// Replace the set of `workspace_repos` rows for a workspace, stamping a
 /// deterministic [`position`](self#repo-ordering-contract-frozen-by-task-306)
 /// and seeding each row's per-`(workspace, repo)` sparse-cone snapshot (D6).
@@ -254,8 +230,7 @@ pub async fn list_repos(
 ///
 /// Per-`(workspace, repo)` sparse cones do NOT live in this JSON: after the
 /// Project→Workspace collapse (D6) they live in the
-/// `workspace_repos.sparse_cones_json` COLUMN (see [`get_repo_cones`] /
-/// [`set_repo_cones`]). This `settings_json` blob carries other
+/// `workspace_repos.sparse_cones_json` COLUMN (see [`get_repo_cones`]). This `settings_json` blob carries other
 /// workspace-level settings (e.g. `permission_mode` defaults). This layer
 /// stays dumb storage; callers serialize/deserialize the JSON themselves.
 pub async fn get_settings_json(pool: &SqlitePool, id: &WorkspaceId) -> Result<Option<String>> {

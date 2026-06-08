@@ -97,7 +97,7 @@ async fn ref_exists(repo_dir: &Path, ref_name: &str) -> bool {
     out.status.success()
 }
 
-/// Seed projects/repositories/workspaces/workspace_repos/workareas/workarea_repos
+/// Seed repositories/workspaces/workspace_repos/workareas/workarea_repos
 /// for a workarea pointing at `worktree_path`. Returns the workarea id.
 async fn seed_workarea(persistence: &Persistence, worktree_path: &Path) -> WorkareaId {
     let mut writer = persistence.writer().await;

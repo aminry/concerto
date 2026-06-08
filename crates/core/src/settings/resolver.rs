@@ -168,7 +168,7 @@ impl LocalDbWorkspaceSettings {
     /// Parse `workspaces.settings_json`. Malformed JSON → all-absent (every
     /// field falls through to default), matching
     /// [`crate::security::permission::resolve_effective_mode`]'s forgiving
-    /// posture for project settings.
+    /// posture for workspace settings.
     fn from_json(raw: &str) -> Self {
         let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(raw)
         else {
@@ -351,13 +351,13 @@ impl WorkspaceSettingsResolver {
         Resolved::new("concurrent".to_string(), SettingsSource::Default)
     }
 
-    /// The **project-default-layer** `default_permission_mode` value + source.
+    /// The **workspace-default-layer** `default_permission_mode` value + source.
     ///
     /// **Boundary (`design/03 §3.13` ⟷ `design/04 §3.10`):** this reports the
-    /// project-default layer only, for the Settings UI + provenance consumers.
+    /// workspace-default layer only, for the Settings UI + provenance consumers.
     /// The LIVE permission decision still flows through
     /// [`crate::security::resolve_effective_mode`], which walks
-    /// session→workarea→workspace→project then caps on
+    /// session→workarea→workspace then caps on
     /// `managed.json.max_permission_mode` (a ceiling). Here, the *managed*
     /// layer is `managed.json.defaultPermissionMode` (a default, Task 310),
     /// NOT the cap — keep the two distinct.
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn default_permission_mode_reports_project_layer_not_cap() {
-        // Managed `defaultPermissionMode` is the project-default layer, NOT
+        // Managed `defaultPermissionMode` is the workspace-default layer, NOT
         // the `max_permission_mode` cap — assert it surfaces from Managed.
         let managed = ManagedPolicy {
             default_permission_mode: Some(PermissionMode::Strict),

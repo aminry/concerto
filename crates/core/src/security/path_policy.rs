@@ -5,8 +5,8 @@
 //!
 //! - **Allow-list** = the workarea's `worktree_root` + its `.context/`
 //!   subdirectory + each attached repo's `worktree_path` + any
-//!   per-project `writable_paths` declared in
-//!   `projects.settings_json` + the global `~/concerto/` root.
+//!   per-workspace `writable_paths` declared in
+//!   `workspaces.settings_json` + the global `~/concerto/` root.
 //! - **Deny-list** = a hard floor of paths that are NEVER auto-approved
 //!   regardless of `permission_mode` (`design/12 §3.7`): `~/.ssh`,
 //!   `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.netrc`, `~/.docker/config.json`.
@@ -301,10 +301,10 @@ fn starts_with_path(candidate: &Path, prefix: &Path) -> bool {
     candidate.starts_with(prefix)
 }
 
-/// Pull the `writable_paths` string array out of a project's
+/// Pull the `writable_paths` string array out of a workspace's
 /// `settings_json` blob. Returns an empty vec on malformed JSON or
-/// absent key — V0.1 treats project settings as advisory; never crash
-/// the resolver because a project's settings JSON has a typo.
+/// absent key — V0.1 treats workspace settings as advisory; never crash
+/// the resolver because a workspace's settings JSON has a typo.
 fn extract_writable_paths(settings_json: &str) -> Vec<PathBuf> {
     let parsed: serde_json::Value = match serde_json::from_str(settings_json) {
         Ok(v) => v,

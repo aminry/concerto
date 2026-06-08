@@ -26,8 +26,8 @@ use concerto_proto::v1::{
     ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListTreeRequest,
     ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest, PermissionMode,
     ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest,
-    SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest, WorkareaId as ProtoWorkareaId,
-    WorkspaceId as ProtoWorkspaceId, WorkspaceRepoSpec,
+    SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest,
+    WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId, WorkspaceRepoSpec,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};

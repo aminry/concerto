@@ -813,7 +813,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let workarea_handle = workarea_handle.with_scheduler(scheduler_handle.clone());
 
     // Task 320.5: wire the LIVE Linear/Jira issue write-back the coordinated-merge
-    // success path calls (per-project opt-in via `projects.settings_json`).
+    // success path calls (per-workspace opt-in via `workspaces.settings_json`).
     // Keychain-backed tokens (317's `VcsSecretSlot` accessors); mints nothing.
     // Cross-platform (the write-back is pure `reqwest`/rustls); the call site is
     // `#[cfg(unix)]` (the merge loop), so on Windows it is wired but unused until
