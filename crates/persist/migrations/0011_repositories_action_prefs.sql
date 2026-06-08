@@ -1,4 +1,4 @@
--- Task 310: the local-DB layer of the three-layer project/repository
+-- Task 310: the local-DB layer of the three-layer workspace/repository
 -- settings precedence chain (managed > checked-in > local DB > defaults).
 --
 -- Per-repo action preferences (`design/04 §3.13`): the seven action keys
