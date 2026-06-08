@@ -217,8 +217,8 @@ flowchart TB
 | 03 | **Workspace, Workarea & Session Manager** | The 3-level hierarchy: workspaces (logical, 1..N repos) → workareas (worktrees + branch + composer name) → sessions (agent runs). `.context/`, files-to-copy, archive lifecycle, per-workarea PR sets, permission-mode inheritance | `03_Workspace_Session_Manager.md` |
 | 04 | **Agent Supervisor** | Spawn Claude/Codex/Gemini in PTY, stream I/O, capture checkpoints, tool-approval flow, MCP config surfacing | `04_Agent_Supervisor.md` |
 | 05 | **Scheduler** | `/loop` (session-scoped), persistent scheduled tasks, cron parsing, jitter, fan-out, cloud-task sync | `05_Scheduler.md` |
-| 06 | **Skills Registry** | Discovery across personal/project/plugin/enterprise scopes, marketplace install, override flags, slash commands | `06_Skills_Registry.md` |
-| 07 | **Suggestion Engine** | Rule engine over agent events, learned per-(project × trigger) chips, org-shared rules, push-action chips | `07_Suggestion_Engine.md` |
+| 06 | **Skills Registry** | Discovery across personal/workspace/plugin/enterprise scopes, marketplace install, override flags, slash commands | `06_Skills_Registry.md` |
+| 07 | **Suggestion Engine** | Rule engine over agent events, learned per-(workspace × trigger) chips, org-shared rules, push-action chips | `07_Suggestion_Engine.md` |
 | 08 | **Maestro Agent** | Concerto chat LLM session, `@workspace` routing, digest generation, read-only workspace tools | `08_Maestro_Agent.md` |
 | 09 | **Persistence** | SQLite schema, migrations, WAL config, on-disk worktrees, keychain integration, log/audit storage | `09_Persistence.md` |
 | 10 | **Client API Protocol** | gRPC (Tonic) — transport-agnostic schema carried over UDS (co-located) or Iroh (split-host Desktop, Mobile, Web bridge); streaming subscriptions, schema versioning, code generation pipeline. Doc filename retains historical `Local_API_Protocol` name. | `10_Local_API_Protocol.md` |
@@ -364,7 +364,7 @@ These are the choices that propagate into every sub-system doc. Sub-system docs 
 |---|---|---|
 | DB | **SQLite via `sqlx`** | Compile-time-checked queries; async; single file. |
 | WAL | **WAL mode, single writer, multiple readers** | Standard SQLite-as-app-db playbook. |
-| Worktrees | **`~/concerto/workspaces/<project>/<workspace>/`** (configurable) | Single root keeps all Concerto-managed worktrees grouped and easy to back up. |
+| Worktrees | **`~/concerto/workspaces/<workspace>/<workarea>/`** (configurable); repo clones at `~/concerto/repos/<id>/.git` (global registry) | Single root keeps all Concerto-managed worktrees grouped and easy to back up. |
 | Secrets | **`keyring-rs` v4** | Keychain (macOS) / Credential Manager (Windows) / Secret Service (Linux). API tokens, pairing keys, push tokens. |
 | Audit log | **JSON Lines on disk**, optional syslog forward | Append-only, human-readable, exportable. |
 
@@ -374,8 +374,8 @@ These are the choices that propagate into every sub-system doc. Sub-system docs 
 |---|---|---|
 | Strategy | **Hybrid: `gix` hot path, `git2` gap-filler, shell-out for clone/sparse/blobless** | Each tool used where it's best; no single tool covers our needs cleanly. |
 | Sparse | **Cone mode mandatory** (`core.sparseCheckoutCone=true`) + sparse index | The non-cone path has subtle correctness bugs; we don't expose it. |
-| Performance | **fsmonitor + untracked cache + commit-graph + manyFiles** | Auto-applied per project; user doesn't see these knobs. |
-| Maintenance | **`git maintenance start` per project** | Background pack health; weekly schedule. |
+| Performance | **fsmonitor + untracked cache + commit-graph + manyFiles** | Auto-applied per repository; user doesn't see these knobs. |
+| Maintenance | **`git maintenance start` per repository** | Background pack health; weekly schedule. |
 
 ### 6.4 Agent integration
 
@@ -501,12 +501,12 @@ These concerns touch every sub-system and are owned at the architecture level, n
 
 ### 7.2 Security and sandboxing
 
-- Agent processes run under the user's UID, in the workspace's worktree, with environment limited to what the project declares.
-- **Filesystem allow-list:** worktree root + `.context/` + project-declared additional paths. Writes outside trigger a tool-approval prompt.
+- Agent processes run under the user's UID, in the workarea's worktree, with environment limited to what the workspace declares.
+- **Filesystem allow-list:** worktree root + `.context/` + workspace-declared additional paths (`settings_json.writable_paths_outside_worktree`). Writes outside trigger a tool-approval prompt.
 - **Filesystem deny-list (hard floor):** `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.netrc`, `~/.docker/config.json` always require explicit approval regardless of permission mode.
 - **Permission modes** (`04 §3.10`): four-level taxonomy `strict` → `normal` → `auto` → `yolo`, set per-workspace and per-schedule, capped by `managed.json.maxPermissionMode`. The default is `normal` (reads auto, writes/shell confirm). `yolo` auto-approves everything but **still confirms destructive commands** unless the orthogonal `bypass_destructive_guard` flag is also set (requires `"I understand the risks"` typed confirmation; org-blockable). Every mode change and every yolo action is audited.
 - **Destructive command intercept** (`12 §3.6`): a pattern set (`rm -rf`, `force push`, `DROP TABLE`, `kubectl delete`, etc.) gated by an explicit approval with red urgent styling. Independent of permission mode. Only bypassed via `bypass_destructive_guard`.
-- **Optional Docker isolation** (V1.0, opt-in per project): agent runs in a container mounting only the worktree. Heavier, but recoverable; pairs naturally with `yolo + bypass_destructive_guard` for "let it rip in a sandbox" workflows.
+- **Optional Docker isolation** (V1.0, opt-in per workspace): agent runs in a container mounting only the worktree. Heavier, but recoverable; pairs naturally with `yolo + bypass_destructive_guard` for "let it rip in a sandbox" workflows.
 - **No third party in the data path.** The relay sees ciphertext only; Apple/Google see wakeup metadata only.
 - **Secrets never leave the Core machine.** Provider API tokens are injected into agent process env; the Core mediates all provider calls indirectly via the agent.
 - **Audit log** (`09_Persistence`) captures every state-changing event with a device-cert attribution, including all permission-mode changes and yolo-mode actions.
@@ -534,7 +534,7 @@ Full threat model in `12_Security_Identity.md`.
 
 | State | Storage | Backed up? | Encrypted at rest? |
 |---|---|---|---|
-| Projects, workspaces, sessions, chat history, checkpoints, todos, schedules, settings, learning counters | **SQLite** (`~/concerto/concerto.db`) | Manual export; included in `concerto backup` CLI | No (filesystem ACL only) |
+| Repositories (global registry), workspaces, sessions, chat history, checkpoints, todos, schedules, settings, learning counters | **SQLite** (`~/concerto/concerto.db`) | Manual export; included in `concerto backup` CLI | No (filesystem ACL only) |
 | Worktrees | **On-disk** under workspace root | No (it's git; remote is the backup) | No |
 | API tokens, GitHub PATs, push credentials, pairing keys | **OS keychain** | No (re-pair on machine swap) | Yes (OS-managed) |
 | Live agent stdout/stderr | **Per-session log file** + ring buffer in RAM | Last N days retained on disk; older pruned | No |
@@ -799,7 +799,7 @@ A compact map of which sub-systems exist (and at what fidelity) in each release.
 | 03 Workspace, Workarea & Session Manager | Single-repo workspaces, single workarea, single session | + multi-repo workspaces + parallel workareas + multi-session per workarea + per-workarea PR sets | + workspace export/import + per-repo branch override |
 | 04 Agent Supervisor | Claude + Codex subprocess | + Gemini + MCP surfacing + multi-agent tabs | + Claude Agent SDK opt-in mode |
 | 05 Scheduler | /loop only | + persistent scheduled tasks + cloud-task sync | + cron schedules for non-AI jobs (optional) |
-| 06 Skills Registry | Discovery + per-project toggle | + marketplace install + sandbox test | + enterprise-managed allow/deny lists |
+| 06 Skills Registry | Discovery + per-workspace toggle | + marketplace install + sandbox test | + enterprise-managed allow/deny lists |
 | 07 Suggestion Engine | Rule engine only | + per-user learning + push-action chips | + org-shared rules + ranked-by-LLM mode |
 | 08 Maestro Agent | (not in V0.1) | Full Concerto chat with 15-tool set | + MCP-augmented context (Slack, Linear, etc.) + Apple Watch voice |
 | 09 Persistence | SQLite + worktrees + keychain | + audit log + multi-device key store | + SIEM forwarding + at-rest encryption for audit |

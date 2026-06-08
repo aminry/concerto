@@ -82,7 +82,7 @@ The cadence is tuned to GitHub's rate limits (5000/hr for authenticated PAT, 150
 **Choice:** When `CreatePullRequest` is called for a (workarea, repo) pair, the VCS Provider:
 
 1. Reads context: workarea composer + branch name; the specific repo's recent commits; last user message + summary of changes.
-2. Calls 08 to compose a title and body (delegated; **on by default**, opt-out per project in Repository Settings → PR Defaults). Falls back to a deterministic title (composer + branch) and body (last user message) if no LLM provider is configured or the call fails/times out (2s).
+2. Calls 08 to compose a title and body (delegated; **on by default**, opt-out per workspace in Repository Settings → PR Defaults). Falls back to a deterministic title (composer + branch) and body (last user message) if no LLM provider is configured or the call fails/times out (2s).
 3. Reads the repo's PR template (`.github/pull_request_template.md` if present).
 4. Pushes the branch on that repo (delegated to 02 via git shell-out).
 5. Calls GitHub's create-PR API.
@@ -434,12 +434,12 @@ sequenceDiagram
 | R-1 | Provider auto-detect from repo URL | **V2.0** — tied to GitLab/Bitbucket support. | (V2.0) |
 | R-2 | GitLab + Bitbucket adapters | **V2.0** — same `VcsProvider` trait, different impls. | §3.8, (V2.0) |
 | R-3 | Cache PR diffs locally? | **No.** Cheap to re-fetch; clients restyle per viewer. Avoids stale-cache hazards. | §6.3 |
-| R-4 | LLM-composed PR titles/bodies | **Default ON; opt-out per project** in Repository Settings → PR Defaults. Falls back to deterministic title (composer + branch) and body (last user message) if no LLM provider or the call fails/times out (2s). | §3.4 |
+| R-4 | LLM-composed PR titles/bodies | **Default ON; opt-out per workspace** in Repository Settings → PR Defaults. Falls back to deterministic title (composer + branch) and body (last user message) if no LLM provider or the call fails/times out (2s). | §3.4 |
 | R-5 | Coordinated revert algorithm | **Revert-commit by default** (always safe); hard-reset only on explicit opt-in (rare; main branch usually protected). | §3.5 |
 | R-6 | Cross-repo coherence checks | **V2.0.** Non-trivial. The Concerto preamble's multi-repo awareness (`04 §3.11`) reduces need; revisit whether explicit checks are even required in V2. | (V2.0) |
 | R-7 | GitHub App option | **V1.0 yes (alongside PAT).** Higher rate limit, finer scope, easier rotation. | §3.1 |
 | R-8 | Reviewer suggestion via git blame | **V2.0** for UI surfacing. The agent can do this via shell today. | (V2.0) |
-| R-9 | Linear/Jira write-back on PR merge | **V1.0 yes; configurable per project.** | §3.7 |
+| R-9 | Linear/Jira write-back on PR merge | **V1.0 yes; configurable per workspace.** | §3.7 |
 | R-10 | Self-hosted GitHub Enterprise | **Configurable base URL; same octocrab works.** Documented. | §3.1 |
 
 ---
