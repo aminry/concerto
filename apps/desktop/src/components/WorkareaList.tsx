@@ -19,12 +19,21 @@ import { workareaStatusToDot } from "../lib/workareaStatus";
 
 export type WorkareaListProps = {
   workspaceId: string;
+  /// Parent project of this workspace. Selecting a workarea pins it so the
+  /// repo-scoped surfaces (`CodePrRegion`, `WorkspaceDetail`, …) that read
+  /// `selectedProjectId` resolve against the right project, even when the
+  /// user reaches the workarea inside a non-active project's subtree.
+  projectId?: string;
 };
 
-export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
+export function WorkareaList({
+  workspaceId,
+  projectId,
+}: WorkareaListProps): JSX.Element {
   const query = useWorkareas(workspaceId);
   const selectedWorkareaId = useUiStore((s) => s.selectedWorkareaId);
   const setSelectedWorkarea = useUiStore((s) => s.setSelectedWorkarea);
+  const setSelectedProject = useUiStore((s) => s.setSelectedProject);
 
   if (query.isLoading) {
     return <p className="text-xs text-faint">Loading workareas…</p>;
@@ -52,7 +61,10 @@ export function WorkareaList({ workspaceId }: WorkareaListProps): JSX.Element {
             <button
               type="button"
               className={buttonClass}
-              onClick={() => setSelectedWorkarea(wa.id)}
+              onClick={() => {
+                if (projectId) setSelectedProject(projectId);
+                setSelectedWorkarea(wa.id);
+              }}
             >
               <span className="flex items-center gap-2">
                 <StatusDot status={workareaStatusToDot(wa.status)} />

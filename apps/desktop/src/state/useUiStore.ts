@@ -79,6 +79,12 @@ export type UiStore = {
   /// (not in component-local state) so the choice survives a sidebar
   /// re-mount and so Task 26 can drive it from the session terminal.
   expandedWorkspaces: Set<string>;
+  /// Per-project COLLAPSE state for the sidebar tree. The sidebar now
+  /// renders every project as a top-level tree node; projects are
+  /// expanded by default (so all workspaces are visible at a glance),
+  /// so we track the inverse — only the ids the user has explicitly
+  /// collapsed. Absence from the set means "expanded".
+  collapsedProjects: Set<string>;
   /// True while the New Workspace modal is open. The renderer-only
   /// flag keeps the modal state inspectable in dev tools.
   newWorkspaceModalOpen: boolean;
@@ -114,6 +120,7 @@ export type UiStore = {
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleWorkspaceExpanded: (workspaceId: string) => void;
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void;
+  toggleProjectExpanded: (projectId: string) => void;
   setNewWorkspaceModalOpen: (open: boolean) => void;
   setNewProjectModalOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -196,6 +203,7 @@ export const useUiStore = create<UiStore>((set) => ({
   selectedRepoId: null,
   sidebarCollapsed: false,
   expandedWorkspaces: new Set<string>(),
+  collapsedProjects: new Set<string>(),
   newWorkspaceModalOpen: false,
   newProjectModalOpen: false,
   settingsOpen: false,
@@ -243,6 +251,16 @@ export const useUiStore = create<UiStore>((set) => ({
         next.delete(workspaceId);
       }
       return { expandedWorkspaces: next };
+    }),
+  toggleProjectExpanded: (projectId) =>
+    set((state) => {
+      const next = new Set(state.collapsedProjects);
+      if (next.has(projectId)) {
+        next.delete(projectId);
+      } else {
+        next.add(projectId);
+      }
+      return { collapsedProjects: next };
     }),
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
   setNewProjectModalOpen: (open) => set({ newProjectModalOpen: open }),
