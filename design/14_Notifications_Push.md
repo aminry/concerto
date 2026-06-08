@@ -17,7 +17,7 @@ It owns:
 - **Multi-device fan-out** — push to every paired device that's eligible per its preferences.
 - **Tool-approval fan-out** — first-device-wins approval resolution (PRD §16.8). Other devices get a cancel event.
 - **Lock-screen action chips** — top suggestion chips surface as APNs/FCM action buttons (PRD §13.7).
-- **Per-project / per-event-type opt-outs.**
+- **Per-workspace / per-event-type opt-outs.**
 - **Expo Push integration** — V1.0 implementation; abstracted behind a `PushBackend` trait so V1.5 can swap to direct APNs/FCM.
 
 It does **not** own: the suggestion chips themselves (07 generates them); the agent-event source (04 publishes events that trigger notifications).
@@ -29,7 +29,7 @@ It does **not** own: the suggestion chips themselves (07 generates them); the ag
 | Phase | What ships |
 |---|---|
 | **V0.1** | (no mobile in V0.1) |
-| **V1.0** | Inbox + chronological feed. Push wakeups via Expo. Multi-device fan-out. Post-wakeup payload fetch over Iroh. Tool-approval fan-out with first-device-wins. Lock-screen action chips. Per-project opt-out + notification preferences. |
+| **V1.0** | Inbox + chronological feed. Push wakeups via Expo. Multi-device fan-out. Post-wakeup payload fetch over Iroh. Tool-approval fan-out with first-device-wins. Lock-screen action chips. Per-workspace opt-out + notification preferences. |
 | **V1.5** | + direct APNs/FCM (skip Expo Push) for orgs that want zero third-party in the wakeup metadata path. + Apple Watch routing. |
 | **V2.0** | + spectator notifications (read-only roles see "X happened in bach" but can't act). + smart-quieting (Maestro suggests "you've been interrupted 5 times — switch to action-only mode"). + notification scheduling (DND windows). |
 
@@ -154,7 +154,7 @@ This prevents notification spam during noisy CI failures.
 **Choice:** A hierarchy:
 
 1. **Per-event-kind global default** (in user settings).
-2. **Per-project override** — a project can opt out of all push entirely (PRD §16.6 enterprise-private projects).
+2. **Per-workspace override** — a workspace can opt out of all push entirely (PRD §16.6 enterprise-private workspaces).
 3. **Per-device override** — a phone can be in DND mode; the inbox still receives.
 4. **Per-schedule override** (05) — schedules have their own notify preferences.
 
@@ -179,7 +179,6 @@ CREATE TABLE notifications (
     workspace_id    TEXT REFERENCES workspaces(id) ON DELETE CASCADE,    -- optional
     workarea_id     TEXT REFERENCES workareas(id) ON DELETE CASCADE,     -- optional; most notifications are workarea-scoped
     session_id      TEXT REFERENCES sessions(id) ON DELETE CASCADE,      -- optional; for tool-approval / agent-crash notifications
-    project_id      TEXT REFERENCES projects(id),
     title           TEXT NOT NULL,
     body            TEXT NOT NULL,                     -- short — full content is fetched on tap if needed
     chips_json      TEXT,                              -- top 3 suggestion chips
@@ -224,7 +223,7 @@ impl NotificationHandle {
     pub async fn mark_read(&self, id: NotificationId) -> Result<()>;
     pub async fn act_on_chip(&self, id: NotificationId, chip_id: ChipId, by: DeviceId) -> Result<ActOutcome>;
 
-    pub async fn update_project_settings(&self, p: ProjectId, prefs: NotifPrefs) -> Result<()>;
+    pub async fn update_workspace_settings(&self, id: WorkspaceId, prefs: NotifPrefs) -> Result<()>;
     pub async fn register_device_push_token(&self, d: DeviceId, token: &str, platform: PushPlatform) -> Result<()>;
 }
 ```
@@ -278,7 +277,7 @@ flowchart TB
 
 ```
 notify(req)
-  → resolve effective preferences (per-event, per-project, per-device)
+  → resolve effective preferences (per-event, per-workspace, per-device)
   → check dedup window for (workspace, kind, subject)
   → either insert new notifications row OR update existing
   → if inserted AND eligible-devices set non-empty AND severity warrants push:
@@ -389,7 +388,7 @@ sequenceDiagram
 | Phone rejects post-wakeup fetch (Iroh unreachable) | Retry on next reconnect | Notification stays unread; the OS shows generic "Concerto has 3 updates" if iOS suppresses repeated empty notifications |
 | Two devices race ActOnChip | Atomic check on `action_taken` | Loser gets `AlreadyResolved`; UI dismisses |
 | User in DND on all devices | Per-device prefs | Skip push; inbox still populated |
-| Project marked enterprise-private | Per-project pref | Suppress push entirely; surface only "you have unread updates" generic if at all |
+| Workspace marked enterprise-private | Per-workspace pref | Suppress push entirely; surface only "you have unread updates" generic if at all |
 | Notification body grows large (> 4KB) | Validation on create | Truncate body + add "open to see more"; full content via `GetNotification` |
 | Stale dedup key (old notification was marked read) | dedup considers only unread | Create fresh row |
 | Push payload exceeds APNs/FCM size limit | Wakeup-only design ensures we're well under | N/A |
@@ -420,7 +419,7 @@ sequenceDiagram
 | Integration | Real Expo Push to a sandboxed device | Opt-in CI |
 | Integration | First-wins approval with two clients | E2E |
 | Failure | Expo Push down | Mock + assert retry + inbox-only fallback |
-| Privacy | Enterprise-private project → no push, no body in wakeup | Property-based: assert no PII in `WakeupPayload` |
+| Privacy | Enterprise-private workspace → no push, no body in wakeup | Property-based: assert no PII in `WakeupPayload` |
 | Performance | 100 notifications/min creation rate sustained | Latency + memory bench |
 
 ---
@@ -434,7 +433,7 @@ sequenceDiagram
 | # | Question | Decision | Where in doc |
 |---|---|---|---|
 | R-1 | Push relay: own vs Expo Push | **V1.0 Expo Push; V1.5 direct APNs/FCM swap** via the `PushBackend` trait. Saves weeks of credential ops; Expo sees wakeup metadata only. | §3.6 |
-| R-2 | Dedup window | **5 min default, configurable per project.** TBD-tuned via beta data. | §3.7 |
+| R-2 | Dedup window | **5 min default, configurable per workspace.** TBD-tuned via beta data. | §3.7 |
 | R-3 | Apple Watch support | **V1.5+** — Watch sees iPhone-derived notifications; chip actions route through iPhone's existing pairing. | (V1.5) |
 | R-4 | Lock-screen typed-response actions (iOS Notification Content Extension) | **V1.5.** V1.0 ships chip actions only (Approve / Deny / Open / pre-composed prompts). Typed-reply needs iOS native work that isn't load-bearing for V1.0. | (V1.5) |
 | R-5 | Quiet hours / DND windows | **V2.0** — iOS/Android Focus modes are the V1.0 fallback. | (V2.0) |

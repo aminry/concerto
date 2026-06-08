@@ -14,12 +14,12 @@
 //!
 //! - **Managed** — `~/.concerto/managed.json` (the org override layer, read
 //!   through [`crate::security::managed::ManagedPolicy`]; Task 211 + the
-//!   Task 310 project-layer fields).
+//!   Task 310 workspace-layer fields).
 //! - **Checked-in** — `<project_root>/.concerto/workspace_settings.json`
 //!   (jsonc) for project fields, plus per-repo
 //!   `<repo_root>/.concerto/action_prefs.toml` for the per-repo
 //!   `action_prefs.<action>` fields. Travels with the git history.
-//! - **Local DB** — `projects.settings_json` (project fields) and
+//! - **Local DB** — `workspaces.settings_json` (workspace fields) and
 //!   `repositories.action_prefs_json` (per-repo action prefs, migration
 //!   0011). The user's machine only.
 //! - **Default** — the global fallback baked into the resolver.
@@ -42,8 +42,8 @@
 //!   from this resolver.
 //! - The live permission *decision* path stays in
 //!   [`crate::security::resolve_effective_mode`] (which walks
-//!   session→workarea→workspace→project→managed-cap, *below* and around the
-//!   project layer). This resolver reports only the **project-default layer**
+//!   session→workarea→workspace→managed-cap, *below* and around the
+//!   workspace layer). This resolver reports only the **workspace-default layer**
 //!   value + source of `default_permission_mode` for the Settings UI. See the
 //!   doc note on [`resolver::WorkspaceSettingsResolver::default_permission_mode`].
 //!
@@ -54,15 +54,15 @@
 //! the `<project_root>/.concerto/` dir (+ each repo's `.concerto/` dir),
 //! debounced at [`crate::security::managed::HOT_RELOAD_DEBOUNCE`] (500 ms),
 //! re-resolving on save and publishing via `tokio::sync::watch`. A field
-//! listed in the per-machine `~/.concerto/concerto.json[project_id]
-//! .opt_out_of_checked_in_fields` skips the checked-in layer for that project
+//! listed in the per-machine `~/.concerto/concerto.json[workspace_id]
+//! .opt_out_of_checked_in_fields` skips the checked-in layer for that workspace
 //! on this machine (the personal-script escape hatch).
 //!
 //! ## Boot audit
 //!
 //! [`resolver::WorkspaceSettingsResolver::audit_resolved_at_boot`] emits one
 //! [`crate::audit::AuditKind::WorkspaceSettingsResolved`]
-//! `{project_id, field, value_source}` per resolved field at Core start,
+//! `{workspace_id, field, value_source}` per resolved field at Core start,
 //! mirroring how `load_managed_policy_audited` is called once.
 
 pub mod boot;
