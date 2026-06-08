@@ -87,7 +87,7 @@
 //! the camelCase `disableRemote`.
 //!
 //! Task 310 also adds the project-layer managed fields the three-layer
-//! [`crate::settings::ProjectSettingsResolver`] caps on top of:
+//! [`crate::settings::WorkspaceSettingsResolver`] caps on top of:
 //! `defaultPermissionMode`, `enterpriseDataPrivacy`, `defaultModel`, and the
 //! three agent-executable paths (`claudeExecutablePath` /
 //! `codexExecutablePath` / `geminiExecutablePath`). They are parsed + exposed
@@ -323,7 +323,7 @@ impl ManagedPolicy {
     /// §3.8` `defaultPermissionMode`, Task 310).
     ///
     /// **Boundary note:** this is the *project-default* managed-layer value
-    /// the [`crate::settings::ProjectSettingsResolver`] reports for the
+    /// the [`crate::settings::WorkspaceSettingsResolver`] reports for the
     /// `default_permission_mode` field + its source. The live permission
     /// *decision* still flows through
     /// [`crate::security::resolve_effective_mode`], which caps on

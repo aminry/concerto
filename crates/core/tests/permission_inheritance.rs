@@ -214,8 +214,10 @@ async fn resolver_reads_workspace_default_when_others_null() {
     // the session value wins as the source here; the resolved mode still
     // matches the session row. The real workspace-default terminal
     // fallback (when session/workarea/workspace columns are all NULL) is
-    // asserted in [`resolver_workspace_settings_default_is_terminal_fallback`]
-    // via the supervisor-style resolver that permits a NULL session.
+    // asserted by the unit test
+    // `agent_supervisor::actor::tests::resolve_for_new_session_uses_workspace_settings_default_terminal_fallback`,
+    // which exercises the supervisor-style resolver that runs before any
+    // session row exists.
     let (tmp, p) = make_persistence().await;
     let sid = seed_chain(&p, Some("auto"), None, None, "normal").await;
     let r = resolve_effective_mode(&p, tmp.path(), &sid).await.unwrap();
@@ -229,10 +231,11 @@ async fn resolver_reads_workspace_default_when_others_null() {
 // `resolve_effective_mode`: `sessions.permission_mode` is NOT NULL in the
 // schema, so a live session always supplies a value and the walk terminates at
 // the session. That fallback rung lives in the Agent Supervisor's
-// `resolve_for_new_session` (no session row yet) and is covered by the
-// workarea-create / ceremony gRPC tests below. The key collapse invariant —
-// there is no `ModeSource::Project` — is a compile-time guarantee (the variant
-// was removed).
+// `resolve_for_new_session` (no session row yet); it is covered directly by the
+// unit test
+// `agent_supervisor::actor::tests::resolve_for_new_session_uses_workspace_settings_default_terminal_fallback`.
+// The key collapse invariant — there is no `ModeSource::Project` — is a
+// compile-time guarantee (the variant was removed).
 
 // ---------- gRPC ceremony + managed-cap tests --------------------------
 

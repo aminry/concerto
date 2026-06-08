@@ -43,9 +43,7 @@ impl SkillsService for SkillsHandler {
                 ))
             })?),
         };
-        // The wire field is still named `project_id` (skills proto unchanged
-        // by the collapse); it carries a workspace id now.
-        let workspace_id = match req.project_id.as_deref() {
+        let workspace_id = match req.workspace_id.as_deref() {
             None | Some("") => None,
             Some(w) => Some(WorkspaceId(w.to_string())),
         };
@@ -87,9 +85,7 @@ impl SkillsService for SkillsHandler {
         request: Request<RefreshMarketplacesRequest>,
     ) -> Result<Response<RefreshMarketplacesResponse>, Status> {
         let req = request.into_inner();
-        // The wire field is still named `project_id`; it carries a workspace
-        // id now (skills proto unchanged by the collapse).
-        let workspace_filter = match req.project_id.as_deref() {
+        let workspace_filter = match req.workspace_id.as_deref() {
             None | Some("") => None,
             Some(w) => Some(WorkspaceId(w.to_string())),
         };
@@ -110,8 +106,7 @@ fn skill_to_proto(row: SkillRow) -> ProtoSkill {
     ProtoSkill {
         id: row.id.0,
         scope: row.scope.as_sql_str().to_string(),
-        // Wire field still named `project_id`; carries the workspace id.
-        project_id: row.workspace_id.map(|w| w.0).unwrap_or_default(),
+        workspace_id: row.workspace_id.map(|w| w.0).unwrap_or_default(),
         name: row.name,
         slash_command: row.slash_command.unwrap_or_default(),
         description: row.description.unwrap_or_default(),

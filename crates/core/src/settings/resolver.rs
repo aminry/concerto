@@ -36,9 +36,9 @@ pub const ACTION_KEYS: [&str; 7] = [
 pub enum SettingsSource {
     /// `~/.concerto/managed.json` (org policy). Tooltip: "Locked by org policy".
     Managed,
-    /// A checked-in file (`.concerto/project_settings.json` or
+    /// A checked-in file (`.concerto/workspace_settings.json` or
     /// `.concerto/action_prefs.toml`). Tooltip: "Locked by
-    /// `.concerto/project_settings.json`".
+    /// `.concerto/workspace_settings.json`".
     CheckedIn,
     /// A local-DB row (`workspaces.settings_json` /
     /// `repositories.action_prefs_json`). Editable in the UI.
@@ -94,7 +94,7 @@ pub struct FilesToCopyRule {
     pub mode: FilesToCopyMode,
 }
 
-/// Every resolvable settings field. The §3.13 `project_settings.json`
+/// Every resolvable settings field. The §3.13 `workspace_settings.json`
 /// superset **plus** the per-repo `action_prefs.<action>` keys
 /// (`design/04 §3.13`). **FROZEN** — new fields append-only.
 #[derive(Debug, Clone, PartialEq, Eq)]

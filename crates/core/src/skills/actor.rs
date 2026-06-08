@@ -7,11 +7,11 @@
 //! ## V0.1 surface
 //!
 //! - [`SkillsRegistryHandle::list`] reads the persisted
-//!   `skills_index` rows filtered on `(scope, project_id, enabled_only)`.
+//!   `skills_index` rows filtered on `(scope, workspace_id, enabled_only)`.
 //! - [`SkillsRegistryHandle::toggle`] flips a row's `enabled` column
 //!   and returns the updated row.
 //! - [`SkillsRegistryHandle::refresh`] walks `~/.claude/skills/` and the
-//!   per-project `<repo.local_path>/.claude/skills/` directories,
+//!   per-workspace `<repo.local_path>/.claude/skills/` directories,
 //!   upserting every well-formed SKILL.md into `skills_index`.
 
 use std::path::PathBuf;
@@ -65,7 +65,7 @@ impl SkillsRegistryHandle {
         Arc::clone(&self.persistence)
     }
 
-    /// List skills, optionally filtered on `(scope, project_id,
+    /// List skills, optionally filtered on `(scope, workspace_id,
     /// enabled_only)`. Pure read.
     pub async fn list(&self, filter: SkillFilter) -> Result<Vec<SkillRow>> {
         concerto_persist::skills::list(self.persistence.readers(), &filter).await

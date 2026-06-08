@@ -194,12 +194,12 @@ enum Command {
     /// Call `Skills.RefreshMarketplaces` then `Skills.ListSkills`.
     /// Prints one skill name per line.
     ListSkills {
-        /// Optional scope filter: `personal | project | plugin | enterprise`.
+        /// Optional scope filter: `personal | workspace | plugin | enterprise`.
         #[arg(long)]
         scope: Option<String>,
-        /// Optional project id filter (only meaningful for project scope).
+        /// Optional workspace id filter (only meaningful for workspace scope).
         #[arg(long)]
-        project_id: Option<String>,
+        workspace_id: Option<String>,
     },
     /// Call `Sessions.ListMcpServers`. Prints one server name per line.
     ListMcp {
@@ -340,9 +340,12 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
             let socket = require_socket(cli.socket)?;
             cmd::list_loops::run(&socket, &workarea).await
         }
-        Command::ListSkills { scope, project_id } => {
+        Command::ListSkills {
+            scope,
+            workspace_id,
+        } => {
             let socket = require_socket(cli.socket)?;
-            cmd::list_skills::run(&socket, scope.as_deref(), project_id.as_deref()).await
+            cmd::list_skills::run(&socket, scope.as_deref(), workspace_id.as_deref()).await
         }
         Command::ListMcp {
             scope,

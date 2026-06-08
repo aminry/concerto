@@ -113,7 +113,7 @@ pub struct OptOutConfig {
 
 impl OptOutConfig {
     /// Whether `field` (its wire name, see
-    /// [`super::resolver::ProjectSettingsField::wire_name`]) is opted out of
+    /// [`super::resolver::WorkspaceSettingsField::wire_name`]) is opted out of
     /// the checked-in layer for `project_id` on this machine.
     pub fn is_opted_out(&self, project_id: &str, field: &str) -> bool {
         self.per_project
@@ -634,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn project_settings_jsonc_parses_full_set() {
+    fn workspace_settings_jsonc_parses_full_set() {
         let raw = r#"{
             "$schema": "https://concerto.build/schemas/workspace_settings.json",
             "scripts": { "setup": "make setup", "run": "make run" },

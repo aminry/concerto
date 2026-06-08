@@ -981,15 +981,15 @@ service Sessions {
 ```proto
 message Skill {
   // UUIDv7 string. Stable across re-discovery — keyed off
-  // `(scope, project_id, name)` in the index.
+  // `(scope, workspace_id, name)` in the index.
   string id = 1;
-  // One of `personal | project | plugin | enterprise`. V0.1 actively
-  // discovers `personal` and `project`; `plugin` / `enterprise` are
+  // One of `personal | workspace | plugin | enterprise`. V0.1 actively
+  // discovers `personal` and `workspace`; `plugin` / `enterprise` are
   // stubs but reserved on the wire so V1.0 can land them without a
   // field-number bump.
   string scope = 2;
-  // Empty when `scope != "project"`.
-  string project_id = 3;
+  // Empty when `scope != "workspace"`.
+  string workspace_id = 3;
   // Skill name — frontmatter `name`, or the skill directory name when
   // the frontmatter omits it.
   string name = 4;
@@ -1016,7 +1016,7 @@ message ListSkillsRequest {
   // Empty string means "no filter".
   optional string scope = 1;
   // Empty string means "no filter".
-  optional string project_id = 2;
+  optional string workspace_id = 2;
   // When `true`, return only rows with `enabled = true`.
   optional bool enabled_only = 3;
 }
@@ -1043,7 +1043,7 @@ message ToggleSkillRequest {
 
 ```proto
 message RefreshMarketplacesRequest {
-  optional string project_id = 1;
+  optional string workspace_id = 1;
 }
 ```
 
@@ -1070,7 +1070,7 @@ service Skills {
   // UI can rerender without an extra fetch.
   rpc ToggleSkill(ToggleSkillRequest) returns (Skill);
   // V0.1: re-run the discovery walk. V1.0 will add real marketplace
-  // refresh behind the same RPC. `project_id` scopes the per-project
+  // refresh behind the same RPC. `workspace_id` scopes the per-workspace
   // half of the walk; when empty only the personal scope is rescanned.
   rpc RefreshMarketplaces(RefreshMarketplacesRequest) returns (RefreshMarketplacesResponse);
 }

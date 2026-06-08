@@ -2721,3 +2721,95 @@ pub async fn adopt_resume_session(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_for_new_session;
+    use crate::security::{ModeSource, PermissionMode};
+    use concerto_persist::{Persistence, PersistenceConfig, WorkareaId};
+    use sqlx::Connection;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn make_persistence() -> (TempDir, Arc<Persistence>) {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("concerto.db");
+        let p = Arc::new(
+            Persistence::open(PersistenceConfig {
+                db_path,
+                max_readers: 2,
+            })
+            .await
+            .expect("open persistence"),
+        );
+        (tmp, p)
+    }
+
+    /// Seed a (workspace, workarea) chain where both `permission_mode`
+    /// columns are NULL and the workspace `settings_json` carries
+    /// `default_permission_mode`. No session row is created — the new-session
+    /// resolver must run before one exists.
+    async fn seed_workarea_no_modes(
+        persistence: &Persistence,
+        workspace_settings_json: &str,
+    ) -> WorkareaId {
+        let mut writer = persistence.writer().await;
+        let mut tx = writer.begin().await.expect("tx");
+        sqlx::query("PRAGMA defer_foreign_keys = ON")
+            .execute(&mut *tx)
+            .await
+            .expect("defer FKs");
+        sqlx::query(
+            "INSERT INTO workspaces (id, name, slug, permission_mode, settings_json, created_at)
+             VALUES (?, 'w', 'w', NULL, ?, 0)",
+        )
+        .bind("ws")
+        .bind(workspace_settings_json)
+        .execute(&mut *tx)
+        .await
+        .expect("insert workspace");
+        sqlx::query(
+            "INSERT INTO workareas (id, workspace_id, composer_name, branch_name, worktree_root,
+                                    status, permission_mode, created_at)
+             VALUES (?, ?, 'alpha', 'concerto/alpha', '/tmp/fake', 'active', NULL, 0)",
+        )
+        .bind("wa")
+        .bind("ws")
+        .execute(&mut *tx)
+        .await
+        .expect("insert workarea");
+        tx.commit().await.expect("commit");
+        drop(writer);
+        WorkareaId("wa".to_string())
+    }
+
+    /// The new-session resolver's terminal fallback: when both
+    /// `workareas.permission_mode` and `workspaces.permission_mode` are NULL,
+    /// it reads `workspaces.settings_json.default_permission_mode`. This rung
+    /// is unreachable through `resolve_effective_mode` (a live session row
+    /// always supplies a non-NULL mode), so it must be tested here against
+    /// `resolve_for_new_session`, which runs before any session row exists.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolve_for_new_session_uses_workspace_settings_default_terminal_fallback() {
+        let (tmp, p) = make_persistence().await;
+        let wa = seed_workarea_no_modes(&p, r#"{"default_permission_mode":"strict"}"#).await;
+        let resolved = resolve_for_new_session(&p, tmp.path(), &wa)
+            .await
+            .expect("resolve_for_new_session");
+        assert_eq!(resolved.mode, PermissionMode::Strict);
+        assert_eq!(resolved.source, ModeSource::Workspace);
+    }
+
+    /// With no workarea/workspace mode and no `default_permission_mode` in
+    /// settings, the resolver lands on the hard-coded default.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolve_for_new_session_defaults_when_nothing_set() {
+        let (tmp, p) = make_persistence().await;
+        let wa = seed_workarea_no_modes(&p, "{}").await;
+        let resolved = resolve_for_new_session(&p, tmp.path(), &wa)
+            .await
+            .expect("resolve_for_new_session");
+        assert_eq!(resolved.mode, PermissionMode::Normal);
+        assert_eq!(resolved.source, ModeSource::Default);
+    }
+}
