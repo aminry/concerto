@@ -33,8 +33,9 @@ async fn fresh_db() -> (tempfile::TempDir, Persistence) {
 }
 
 /// Every table the design doc names in §4.1, §4.2, §4.4.
+/// NOTE: `projects` is intentionally absent — it was removed in the
+/// Project→Workspace collapse (2026-06-08).
 const EXPECTED_TABLES: &[&str] = &[
-    "projects",
     "repositories",
     "workspaces",
     "workspace_repos",
@@ -115,30 +116,14 @@ async fn insert_and_read_back_every_table() {
     let (_dir, persist) = fresh_db().await;
     let mut w = persist.writer().await;
 
-    // ----- projects ---------------------------------------------------------
-    sqlx::query(
-        "INSERT INTO projects (id, name, icon, created_at, archived_at, settings_json) \
-         VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .bind("proj-1")
-    .bind("Test Project")
-    .bind(Option::<String>::None)
-    .bind(1_700_000_000_000_i64)
-    .bind(Option::<i64>::None)
-    .bind("{}")
-    .execute(&mut *w)
-    .await
-    .expect("insert projects");
-
     // ----- repositories -----------------------------------------------------
     sqlx::query(
         "INSERT INTO repositories \
-         (id, project_id, name, url, local_path, clone_strategy, default_branch, \
+         (id, name, url, local_path, clone_strategy, default_branch, \
           cone_defaults_json, fs_monitor_pid, last_fetch_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind("repo-1")
-    .bind("proj-1")
     .bind("marketplace-api")
     .bind("git@github.com:example/marketplace.git")
     .bind("/tmp/concerto/repos/repo-1")
@@ -154,16 +139,16 @@ async fn insert_and_read_back_every_table() {
     // ----- workspaces -------------------------------------------------------
     sqlx::query(
         "INSERT INTO workspaces \
-         (id, project_id, name, slug, description, permission_mode, \
+         (id, name, slug, icon, description, permission_mode, \
           bypass_destructive_guard, settings_json, created_at, archived_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind("ws-1")
-    .bind("proj-1")
     .bind("Idempotency keys for payments")
     .bind("idempotency-keys")
     .bind(Option::<String>::None)
-    .bind(Option::<String>::None) // NULL = inherit from project per design/03 §3.2
+    .bind(Option::<String>::None)
+    .bind(Option::<String>::None) // NULL = inherit from workspace per design/03 §3.2
     .bind(Option::<i64>::None)
     .bind("{}")
     .bind(1_700_000_001_000_i64)
@@ -348,7 +333,6 @@ async fn insert_and_read_back_every_table() {
     // ----- read back each ---------------------------------------------------
     // One representative `SELECT` per table catches column-name drift.
     let counts: Vec<(&str, &str)> = vec![
-        ("projects", "proj-1"),
         ("repositories", "repo-1"),
         ("workspaces", "ws-1"),
         ("workareas", "wa-1"),
@@ -441,19 +425,11 @@ async fn invalid_workarea_status_is_rejected() {
     let (_dir, persist) = fresh_db().await;
     let mut w = persist.writer().await;
 
-    // Set up parent rows first.
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-        .bind("p")
-        .bind("p")
-        .bind(0_i64)
-        .execute(&mut *w)
-        .await
-        .expect("project");
+    // Set up parent workspace row first (no project needed after the collapse).
     sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
     )
     .bind("w")
-    .bind("p")
     .bind("w")
     .bind("w")
     .bind(0_i64)
@@ -512,12 +488,42 @@ async fn migrations_are_idempotent_across_reopens() {
     let mut w = p2.writer().await;
     let n_tables: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?")
-            .bind("projects")
+            .bind("workspaces")
             .fetch_one(&mut *w)
             .await
-            .expect("count projects table");
+            .expect("count workspaces table");
     assert_eq!(n_tables, 1);
     drop(w);
 
     p2.shutdown().await.expect("shutdown");
+}
+
+/// After the Project→Workspace collapse (2026-06-08), the `projects` table
+/// must not exist. Any code that still creates it is a regression.
+#[tokio::test]
+async fn schema_has_no_projects_table() {
+    let (_dir, persist) = fresh_db().await;
+    let mut w = persist.writer().await;
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='projects'",
+    )
+    .fetch_one(&mut *w)
+    .await
+    .unwrap();
+    assert_eq!(n, 0, "projects table must be gone after the collapse");
+}
+
+/// `workspace_repos` must carry `sparse_cones_json` (folded in from Task 0.1
+/// of the Project→Workspace collapse, 2026-06-08).
+#[tokio::test]
+async fn workspace_repos_has_sparse_cones_json() {
+    let (_dir, persist) = fresh_db().await;
+    let mut w = persist.writer().await;
+    let cols: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_table_info('workspace_repos')",
+    )
+    .fetch_all(&mut *w)
+    .await
+    .unwrap();
+    assert!(cols.iter().any(|c| c == "sparse_cones_json"));
 }
