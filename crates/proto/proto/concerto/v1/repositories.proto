@@ -16,6 +16,7 @@ import "google/protobuf/timestamp.proto";
 // `clone_strategy` accepts `full | blobless | treeless`.
 message Repository {
   string id = 1;
+  // (field 2 was project_id, removed in the Project→Workspace collapse)
   string name = 3;
   string url = 4;
   string local_path = 5;
@@ -79,12 +80,10 @@ message CloneProgress {
   bool done = 5;
 }
 
-// Inputs for `Repositories.ListByProject` (Task 25). The Desktop "Add
-// Repository" form uses this to render the list of repos already attached
-// to the active project so the New Workspace modal's repo picker has data.
-message ListRepositoriesRequest {
-  string project_id = 1;
-}
+// Inputs for Repositories.ListRepositories. Repositories are a global
+// registry (Project→Workspace collapse), so listing is unscoped — the
+// New Workspace repo picker shows every registered repo.
+message ListRepositoriesRequest {}
 
 message ListRepositoriesResponse {
   repeated Repository repositories = 1;
@@ -228,7 +227,7 @@ message SetRepoConeDefaultsRequest {
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
-  rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListRepositoriesResponse);
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);

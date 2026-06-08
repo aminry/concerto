@@ -328,6 +328,7 @@ message FileEntry {
 ```proto
 message Repository {
   string id = 1;
+  // (field 2 was project_id, removed in the Project→Workspace collapse)
   string name = 3;
   string url = 4;
   string local_path = 5;
@@ -391,9 +392,7 @@ message CloneProgress {
 ### message `ListRepositoriesRequest`
 
 ```proto
-message ListRepositoriesRequest {
-  string project_id = 1;
-}
+message ListRepositoriesRequest {}
 ```
 
 ### message `ListRepositoriesResponse`
@@ -521,7 +520,7 @@ message SetRepoConeDefaultsRequest {
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
-  rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListRepositoriesResponse);
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);

@@ -70,10 +70,10 @@ message ListWorkspacesResponse {
 // higher numbers without inventing a new RPC every time. Field numbers
 // here are FROZEN as of Task 32.
 //
-// `permission_mode` is optional: omitted means "no change"; setting it
-// to `PERMISSION_MODE_UNSPECIFIED` is rejected as `INVALID_ARGUMENT`
-// (callers wanting "inherit from project" should omit the field, not
-// send `UNSPECIFIED`).
+// `permission_mode` is optional: omitted means no change; to clear an
+// override and fall back to the workspace default, send the field absent.
+// Setting it to `PERMISSION_MODE_UNSPECIFIED` is rejected as
+// `INVALID_ARGUMENT`.
 message WorkspaceSettings {
   optional PermissionMode permission_mode = 1;
 }
