@@ -73,7 +73,7 @@ pub mod status;
 
 pub use api::{
     apply_perf_config, clone_full, clone_with_strategy, commit_index, cone_index_stats,
-    estimate_repo_size, fetch, hard_reset, is_fsmonitor_alive, list_branches,
+    estimate_repo_size, fetch, hard_reset, is_fsmonitor_alive, list_branches, list_tree,
     prewarm_blobs_in_cone, ref_exists, register_maintenance, rename_branch, rev_parse_head,
     start_fsmonitor, stop_fsmonitor, update_ref, worktree_add, BranchRef, CloneProgressEvent,
     CloneStrategy, ConeStats, FetchReport, PrewarmProgressEvent, ProgressSink, SizeReport,
@@ -81,7 +81,7 @@ pub use api::{
 // Task 302 sparse lifecycle surface.
 pub use sparse::{
     force_cone_mode, is_cone_mode, sparse_add, sparse_disable, sparse_init_cone, sparse_list,
-    sparse_reapply_index, sparse_set, ConePath,
+    sparse_reapply_index, sparse_set, validate_cone_paths, ConePath,
 };
 // Task 29 hot-path surface — status + diff against HEAD / a branch.
 pub use diff::{diff_head, diff_to_main, DiffHunk, DiffKind, DiffPayload, FileDiff};

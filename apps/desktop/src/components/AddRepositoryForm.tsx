@@ -26,6 +26,7 @@ import {
 } from "../api/client";
 import { formatError } from "../api/errors";
 import { CloneStrategyPicker, useCloneStrategy } from "./cloneStrategy";
+import { SparseConeDialog } from "./SparseConeDialog";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Progress } from "./ui/progress";
@@ -36,6 +37,9 @@ type CloneState = {
   progress: CloneProgressEvent | null;
   done: boolean;
   error: string | null;
+  /// True when this clone was Blobless + Sparse — the post-clone "Choose
+  /// directories for the sparse checkout" step applies only to these.
+  withSparse: boolean;
 };
 
 export function AddRepositoryForm(): JSX.Element {
@@ -47,6 +51,10 @@ export function AddRepositoryForm(): JSX.Element {
   const [defaultBranch, setDefaultBranch] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [clones, setClones] = useState<CloneState[]>([]);
+  // The repo id whose "Choose directories for the sparse checkout" dialog is
+  // open (auto-opened after a Blobless+Sparse clone, or via the per-row
+  // "Sparse directories" button).
+  const [coneDialogRepoId, setConeDialogRepoId] = useState<string | null>(null);
 
   // Clone-strategy picker + size probe (design/02 §3.5; shared with the
   // New-Project modal's first-repo step).
@@ -94,9 +102,9 @@ export function AddRepositoryForm(): JSX.Element {
         cloneStrategy: wire.cloneStrategy,
         withSparse: wire.withSparse,
       });
-      return repo;
+      return { repo, withSparse: wire.withSparse };
     },
-    onSuccess: async (repo) => {
+    onSuccess: async ({ repo, withSparse }) => {
       setUrl("");
       setName("");
       setDefaultBranch("");
@@ -114,6 +122,7 @@ export function AddRepositoryForm(): JSX.Element {
           progress: null,
           done: false,
           error: null,
+          withSparse,
         },
       ]);
 
@@ -139,6 +148,11 @@ export function AddRepositoryForm(): JSX.Element {
           void queryClient.invalidateQueries({
             queryKey: ["repositories", projectId],
           });
+          // A Blobless+Sparse clone lands with an empty worktree — surface
+          // the "Choose directories for the sparse checkout" step right away.
+          if (withSparse) {
+            setConeDialogRepoId(repo.id);
+          }
         })
         .catch((e: unknown) => {
           setClonesRef.current((prev) =>
@@ -235,8 +249,25 @@ export function AddRepositoryForm(): JSX.Element {
                 key={r.id}
                 className="rounded border border-border px-3 py-2 text-xs"
               >
-                <p className="text-foreground">{r.name}</p>
-                <p className="font-mono text-faint truncate">{r.url}</p>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-foreground">{r.name}</p>
+                    <p className="font-mono text-faint truncate">{r.url}</p>
+                  </div>
+                  {/* The add/remove-anytime entry point: every Blobless repo
+                      row gets a "Sparse directories" button opening the same
+                      per-repo default-cone editor. */}
+                  {r.clone_strategy === "blobless" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setConeDialogRepoId(r.id)}
+                    >
+                      Sparse directories
+                    </Button>
+                  )}
+                </div>
                 {clone && !clone.done && !clone.error && (
                   <div className="mt-2 space-y-1">
                     <Progress value={percentFromProgress(clone.progress)} />
@@ -256,6 +287,21 @@ export function AddRepositoryForm(): JSX.Element {
           })}
         </ul>
       </div>
+
+      {(() => {
+        const dialogRepo = reposQuery.data?.repositories.find(
+          (r) => r.id === coneDialogRepoId,
+        );
+        if (!dialogRepo) return null;
+        return (
+          <SparseConeDialog
+            open
+            onClose={() => setConeDialogRepoId(null)}
+            repository={dialogRepo}
+            invalidateKey={["repositories", projectId]}
+          />
+        );
+      })()}
     </section>
   );
 }

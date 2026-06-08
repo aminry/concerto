@@ -30,6 +30,12 @@ export type RpcMethod =
   // the Rust shell dispatch table (`<Service>.<Rpc>`) exactly.
   | "Repositories.EstimateConeSize"
   | "Repositories.SetCones"
+  // Browsable repo-tree → per-repo default cone (design/02 §3.2). ListTree
+  // lazily lists a directory's immediate children; SetRepoConeDefaults
+  // persists the repo default + propagates it to existing workareas. The
+  // strings match the Rust shell dispatch table exactly.
+  | "Repositories.ListTree"
+  | "Repositories.SetRepoConeDefaults"
   | "Sessions.ListSessions"
   | "Sessions.GetSession"
   | "Sessions.CreateSession"

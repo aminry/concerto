@@ -383,6 +383,12 @@ message Repository {
   string clone_strategy = 6;
   string default_branch = 7;
   optional google.protobuf.Timestamp last_fetch_at = 8;
+  // The repository's default sparse cone (design/02 §3.2). A flat list of
+  // forward-slash, repo-root-relative directory paths persisted to
+  // `repositories.cone_defaults_json`; inherited by every new workarea via
+  // the three-layer cone resolver (least-specific layer). Decoded from the
+  // row's `cone_defaults_json` everywhere a `Repository` is built.
+  repeated string cone_defaults = 9;
 }
 ```
 
@@ -521,6 +527,50 @@ message ConeStats {
 }
 ```
 
+### message `ListTreeRequest`
+
+```proto
+message ListTreeRequest {
+  string repository_id = 1;
+  string path = 2;
+  string git_ref = 3;
+}
+```
+
+### message `TreeEntry`
+
+```proto
+message TreeEntry {
+  string name = 1;
+  bool is_dir = 2;
+  string path = 3;
+}
+```
+
+### message `ListTreeResponse`
+
+```proto
+message ListTreeResponse { repeated TreeEntry entries = 1; }
+```
+
+### message `SetRepoConeDefaultsRequest`
+
+```proto
+message SetRepoConeDefaultsRequest {
+  string repository_id = 1;
+  repeated string cone_paths = 2;
+}
+```
+
+### message `SetRepoConeDefaultsResponse`
+
+```proto
+message SetRepoConeDefaultsResponse {
+  repeated string cone_paths = 1;
+  uint32 workareas_updated = 2;
+}
+```
+
 ### service `Repositories`
 
 ```proto
@@ -532,6 +582,8 @@ service Repositories {
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
   rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
+  rpc ListTree(ListTreeRequest) returns (ListTreeResponse);
+  rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (SetRepoConeDefaultsResponse);
 }
 ```
 

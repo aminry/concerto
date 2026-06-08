@@ -177,6 +177,20 @@ pub async fn sparse_list(worktree: &Path) -> Result<Vec<ConePath>> {
     }
 }
 
+/// Validate that every path in `cones` names a directory present in the
+/// repo's `HEAD` tree at `repo_dir`, WITHOUT touching the sparse config
+/// (design/02 §3.2/§8). A bad path returns [`Error::Validation`] (mapped to
+/// `INVALID_ARGUMENT` at the handler); an empty `cones` slice is OK.
+///
+/// This is the up-front, non-mutating validation the Core's
+/// `set_repo_cone_defaults` runs against a repo clone before persisting the
+/// repo-level default + propagating to workareas — so a truly invalid path
+/// is rejected before anything is written, mirroring [`sparse_set`]'s
+/// pre-apply probe (which the repo clone is not a sparse worktree for).
+pub async fn validate_cone_paths(repo_dir: &Path, cones: &[ConePath]) -> Result<()> {
+    probe_cone_paths_exist(repo_dir, cones).await
+}
+
 /// Reject any cone path in `cones` that does not name a directory present
 /// in the repo's `HEAD` tree (`design/02 §8`).
 ///

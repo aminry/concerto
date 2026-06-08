@@ -16,8 +16,10 @@ use concerto_persist::{RepositoryId, WorkareaId};
 use concerto_proto::v1::repositories_server::Repositories as RepositoriesService;
 use concerto_proto::v1::{
     AddRepoRequest, CloneProgress, CloneRequest, ConeStats, EstimateConeSizeRequest,
-    EstimateRepoSizeRequest, ListRepositoriesRequest, ListRepositoriesResponse, PrewarmProgress,
-    PrewarmRequest, Repository, SetConesRequest, SetConesResponse, SizeReport,
+    EstimateRepoSizeRequest, ListRepositoriesRequest, ListRepositoriesResponse, ListTreeRequest,
+    ListTreeResponse, PrewarmProgress, PrewarmRequest, Repository, SetConesRequest,
+    SetConesResponse, SetRepoConeDefaultsRequest, SetRepoConeDefaultsResponse, SizeReport,
+    TreeEntry,
 };
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -282,6 +284,60 @@ impl RepositoriesService for RepositoriesHandler {
         Ok(Response::new(stream))
     }
 
+    #[tracing::instrument(skip_all, name = "Repositories::ListTree")]
+    async fn list_tree(
+        &self,
+        request: Request<ListTreeRequest>,
+    ) -> Result<Response<ListTreeResponse>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        let repo = RepositoryId(req.repository_id);
+        // Empty `path` is valid (root); empty `git_ref` → the repo's default
+        // branch / HEAD (resolved in the manager).
+        let entries = self
+            .repo_manager
+            .list_tree(&repo, &req.git_ref, &req.path)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ListTreeResponse {
+            entries: entries
+                .into_iter()
+                .map(|e| TreeEntry {
+                    name: e.name,
+                    is_dir: e.is_dir,
+                    path: e.path,
+                })
+                .collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Repositories::SetRepoConeDefaults")]
+    async fn set_repo_cone_defaults(
+        &self,
+        request: Request<SetRepoConeDefaultsRequest>,
+    ) -> Result<Response<SetRepoConeDefaultsResponse>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        let repo = RepositoryId(req.repository_id);
+        // The manager validates the cone against the repo index up front
+        // (a bad path → INVALID_ARGUMENT via `error_to_status`, before
+        // anything is persisted), persists the repo-level default, then
+        // propagates to every existing workarea (best-effort per workarea).
+        let workareas_updated = self
+            .repo_manager
+            .set_repo_cone_defaults(&repo, &req.cone_paths)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(SetRepoConeDefaultsResponse {
+            cone_paths: req.cone_paths,
+            workareas_updated,
+        }))
+    }
+
     #[tracing::instrument(skip_all, name = "Repositories::ListByProject")]
     async fn list_by_project(
         &self,
@@ -337,5 +393,10 @@ fn repository_to_proto(row: concerto_persist::Repository) -> Repository {
             seconds: ms / 1000,
             nanos: ((ms % 1000) * 1_000_000) as i32,
         }),
+        // Decode the repo-level default sparse cone from `cone_defaults_json`
+        // (the FROZEN flat `["<cone_path>", …]` array). A malformed / non-array
+        // blob degrades to an empty cone rather than failing the read.
+        cone_defaults: serde_json::from_str::<Vec<String>>(&row.cone_defaults_json)
+            .unwrap_or_default(),
     }
 }
