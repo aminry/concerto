@@ -210,6 +210,88 @@ describe("NewWorkspaceModal — add by URL", () => {
       await screen.findByRole("radio", { name: /Full working tree/i }),
     ).toBeInTheDocument();
   });
+
+  it("seeds cone_defaults from the returned Repository, not the stale repoById memo", async () => {
+    // Override AddRepository to return a repo that carries cone_defaults.
+    // This simulates the stale-memo scenario: the invalidated refetch hasn't
+    // re-rendered yet when selectRepo is called, but the just-returned object
+    // already carries the correct cone_defaults.
+    invoke.mockImplementation((cmd: string, args: { method?: string }) => {
+      if (cmd === "concerto_rpc" && args.method === "Repositories.ListRepositories")
+        return Promise.resolve({ repositories: [...repos, ...addedRepos] });
+      if (cmd === "concerto_rpc" && args.method === "Repositories.AddRepository") {
+        const added = {
+          id: "repo-new-cones",
+          name: "new-with-cones",
+          url: "",
+          local_path: "",
+          clone_strategy: "full",
+          default_branch: "main",
+          cone_defaults: ["pkg"],
+        };
+        addedRepos.push(added);
+        return Promise.resolve(added);
+      }
+      if (cmd === "concerto_rpc" && args.method === "Repositories.ListTree")
+        return Promise.resolve({
+          entries: [{ name: "pkg", is_dir: true, path: "pkg" }],
+        });
+      if (cmd === "concerto_rpc" && args.method === "Repositories.EstimateConeSize")
+        return Promise.resolve({ file_count: 1, disk_size_bytes: 10 });
+      if (cmd === "concerto_rpc" && args.method === "Repositories.EstimateRepoSize")
+        return Promise.reject({ kind: "Rpc", message: "no probe" });
+      if (cmd === "concerto_rpc" && args.method === "Workspaces.CreateWorkspace")
+        return Promise.resolve({ id: "ws-new", name: "x", slug: "x" });
+      return Promise.resolve(undefined);
+    });
+
+    renderWithClient(<NewWorkspaceModal />);
+    await waitFor(() => expect(repoCheckboxes()).toHaveLength(3));
+
+    // Add a repo via URL — the returned repo carries cone_defaults: ["pkg"].
+    await userEvent.click(screen.getByRole("button", { name: /add by url/i }));
+    await userEvent.type(
+      screen.getByPlaceholderText(/git URL/i),
+      "https://example.com/pkg-repo.git",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /add repository/i }),
+    );
+
+    // Wait for the checkout row to appear (repo auto-selected).
+    expect(
+      await screen.findByRole("radio", { name: /Full working tree/i }),
+    ).toBeInTheDocument();
+
+    // Flip the new repo to Sparse — the RepoTreeBrowser should be pre-seeded
+    // with "pkg" from the returned Repository's cone_defaults.
+    const sparseRadios = screen.getAllByRole("radio", { name: /Sparse/i });
+    await userEvent.click(sparseRadios[sparseRadios.length - 1]);
+
+    expect(
+      await screen.findByRole("button", { name: "Remove pkg" }),
+    ).toBeInTheDocument();
+
+    // Submit and verify sparse_cones includes "pkg".
+    await userEvent.type(
+      screen.getByPlaceholderText(/Payments revamp/i),
+      "Cone seed WS",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /create workspace/i }),
+    );
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
+        method: "Workspaces.CreateWorkspace",
+        payload: expect.objectContaining({
+          repos: expect.arrayContaining([
+            { repository_id: "repo-new-cones", sparse_cones: ["pkg"] },
+          ]),
+        }),
+      }),
+    );
+  });
 });
 
 describe("NewWorkspaceModal — add local folder", () => {

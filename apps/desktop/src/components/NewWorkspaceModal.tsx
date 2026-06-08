@@ -111,15 +111,15 @@ export function NewWorkspaceModal(): JSX.Element {
     return repos.filter((r) => r.name.toLowerCase().includes(q));
   }, [repos, repoSearch]);
 
-  function selectRepo(id: string): void {
+  function selectRepo(id: string, repo?: Repository): void {
     setSelected((prev) => {
       if (prev[id]) return prev;
-      const repo = repoById.get(id);
+      const resolved = repo ?? repoById.get(id);
       return {
         ...prev,
         [id]: {
           mode: "full",
-          cones: normalizeConeSelection(repo?.cone_defaults ?? []),
+          cones: normalizeConeSelection(resolved?.cone_defaults ?? []),
         },
       };
     });
@@ -152,7 +152,10 @@ export function NewWorkspaceModal(): JSX.Element {
   // auto-select it (so the URL / local flows feel continuous).
   async function afterRepoAdded(repo: Repository): Promise<void> {
     await queryClient.invalidateQueries({ queryKey: ["repositories"] });
-    selectRepo(repo.id);
+    // Pass the just-returned Repository directly so cone_defaults are seeded
+    // from it rather than from the repoById memo (which hasn't re-rendered
+    // yet after the invalidation).
+    selectRepo(repo.id, repo);
     setAddSource(null);
   }
 
@@ -315,7 +318,6 @@ export function NewWorkspaceModal(): JSX.Element {
             <AddByUrlPanel
               onAdded={afterRepoAdded}
               onError={setErrorMsg}
-              queryClient={queryClient}
             />
           )}
           {addSource === "local" && (
@@ -370,12 +372,11 @@ export function NewWorkspaceModal(): JSX.Element {
 function AddByUrlPanel({
   onAdded,
   onError,
-  queryClient,
 }: {
   onAdded: (repo: Repository) => Promise<void> | void;
   onError: (msg: string | null) => void;
-  queryClient: ReturnType<typeof useQueryClient>;
 }): JSX.Element {
+  const queryClient = useQueryClient();
   const [url, setUrl] = useState("");
   const [repoName, setRepoName] = useState("");
   const [branch, setBranch] = useState("");
