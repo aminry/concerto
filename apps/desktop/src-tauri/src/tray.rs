@@ -322,9 +322,8 @@ fn apply_snapshot(app: &AppHandle, snapshot: &TraySnapshot) {
 /// liveness, then `Workareas.ListWorkareas` across each workspace the
 /// user has open. V0.1 keeps the snapshot intentionally shallow — the
 /// per-workspace list call is omitted because there's no
-/// `ListAllWorkareas` RPC; instead we list the first project's
-/// workspaces and union their non-archived workareas, capped at
-/// [`MAX_WORKAREA_ITEMS`].
+/// `ListAllWorkareas` RPC; instead we list every workspace and union
+/// their non-archived workareas, capped at [`MAX_WORKAREA_ITEMS`].
 async fn fetch_snapshot() -> Result<TraySnapshot, FetchError> {
     let socket = default_socket_path().ok_or(FetchError::NoSocketPath)?;
     let channel = match get_or_connect(&socket).await {
@@ -346,63 +345,47 @@ async fn fetch_snapshot() -> Result<TraySnapshot, FetchError> {
         )));
     }
 
-    // Workarea list. The V0.1 proto only exposes per-workspace
-    // listing; iterating every workspace would mean fanning out an
-    // unbounded list of RPCs from a tray timer. Instead we walk
-    // projects → workspaces and ask each workspace for its workareas
-    // until we've filled [`MAX_WORKAREA_ITEMS`]. The shape is small in
-    // V0.1 (one project, a handful of workspaces) so the cost is
-    // bounded.
+    // Workarea list. Workspaces are now a global, flat registry (the
+    // Project layer was collapsed away), so we list every workspace once
+    // and ask each for its workareas until we've filled
+    // [`MAX_WORKAREA_ITEMS`]. The shape is small in V0.1 (a handful of
+    // workspaces) so the cost is bounded.
     let mut workareas: Vec<TrayWorkarea> = Vec::new();
-    let mut projects = concerto_proto::v1::projects_client::ProjectsClient::new(channel.clone());
-    let project_list = projects
-        .list_projects(concerto_proto::v1::ListProjectsRequest {})
+    let mut workspaces_client =
+        concerto_proto::v1::workspaces_client::WorkspacesClient::new(channel.clone());
+    let ws_list = workspaces_client
+        .list_workspaces(concerto_proto::v1::ListWorkspacesRequest {
+            include_archived: false,
+        })
         .await
         .map_err(|s| {
             reset_channel();
-            FetchError::Rpc(format!("ListProjects: {}: {}", s.code(), s.message()))
+            FetchError::Rpc(format!("ListWorkspaces: {}: {}", s.code(), s.message()))
         })?
         .into_inner();
 
-    let mut workspaces_client =
-        concerto_proto::v1::workspaces_client::WorkspacesClient::new(channel.clone());
-    for project in &project_list.projects {
+    let mut workareas_client = WorkareasClient::new(channel.clone());
+    for ws in &ws_list.workspaces {
         if workareas.len() >= MAX_WORKAREA_ITEMS {
             break;
         }
-        let ws_list = workspaces_client
-            .list_workspaces(concerto_proto::v1::ListWorkspacesRequest {
-                project_id: project.id.clone(),
+        let wa_list = workareas_client
+            .list_workareas(ListWorkareasRequest {
+                workspace_id: ws.id.clone(),
+                include_archived: false,
             })
             .await
             .map_err(|s| {
                 reset_channel();
-                FetchError::Rpc(format!("ListWorkspaces: {}: {}", s.code(), s.message()))
+                FetchError::Rpc(format!("ListWorkareas: {}: {}", s.code(), s.message()))
             })?
             .into_inner();
-        let mut workareas_client = WorkareasClient::new(channel.clone());
-        for ws in &ws_list.workspaces {
+        for wa in wa_list.workareas {
             if workareas.len() >= MAX_WORKAREA_ITEMS {
                 break;
             }
-            let wa_list = workareas_client
-                .list_workareas(ListWorkareasRequest {
-                    workspace_id: ws.id.clone(),
-                    include_archived: false,
-                })
-                .await
-                .map_err(|s| {
-                    reset_channel();
-                    FetchError::Rpc(format!("ListWorkareas: {}: {}", s.code(), s.message()))
-                })?
-                .into_inner();
-            for wa in wa_list.workareas {
-                if workareas.len() >= MAX_WORKAREA_ITEMS {
-                    break;
-                }
-                let label = workarea_label(&ws.name, &wa);
-                workareas.push(TrayWorkarea { id: wa.id, label });
-            }
+            let label = workarea_label(&ws.name, &wa);
+            workareas.push(TrayWorkarea { id: wa.id, label });
         }
     }
 

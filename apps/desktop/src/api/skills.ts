@@ -8,7 +8,7 @@ import { callRpc } from "./client";
 export type Skill = {
   id: string;
   scope: string;
-  project_id: string;
+  workspace_id: string;
   name: string;
   slash_command: string;
   description: string;
@@ -23,15 +23,15 @@ export type ListSkillsResponse = {
 
 export async function listSkills(input?: {
   scope?: string;
-  projectId?: string;
+  workspaceId?: string;
   enabledOnly?: boolean;
 }): Promise<ListSkillsResponse> {
   return callRpc<
-    { scope?: string; project_id?: string; enabled_only?: boolean },
+    { scope?: string; workspace_id?: string; enabled_only?: boolean },
     ListSkillsResponse
   >("Skills.ListSkills", {
     scope: input?.scope,
-    project_id: input?.projectId,
+    workspace_id: input?.workspaceId,
     enabled_only: input?.enabledOnly,
   });
 }

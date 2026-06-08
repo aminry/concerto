@@ -13,7 +13,7 @@
 // replaces that with a real Level-1 repo selector: one entry per repo in
 // the workarea, each with a per-repo status dot, and selecting a repo
 // drives which repo `DiffViewer` renders. The repo list is the workarea's
-// repos (= the workspace's declared repos; see `useWorkareaRepos` for why
+// repos (= the global repository registry; see `useWorkareaRepos` for why
 // that's the FROZEN-respecting source). The active-repo selection lives in
 // `useUiStore` (UI-only, reset on workarea switch).
 //
@@ -52,14 +52,13 @@ export type CodePrRegionProps = {
 
 export function CodePrRegion({ subTab }: CodePrRegionProps): JSX.Element {
   const workareaId = useUiStore((s) => s.selectedWorkareaId);
-  const projectId = useUiStore((s) => s.selectedProjectId);
   const selectedRepoId = useUiStore((s) => s.selectedRepoId);
   const setSelectedRepo = useUiStore((s) => s.setSelectedRepo);
 
   const workareaQuery = useWorkarea(workareaId);
   const workarea = workareaQuery.data ?? null;
 
-  const reposQuery = useWorkareaRepos(workareaId, projectId);
+  const reposQuery = useWorkareaRepos(workareaId);
   const repos = reposQuery.data ?? [];
 
   // Auto-select the workarea's first repo when none is selected — mirrors

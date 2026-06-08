@@ -8,14 +8,14 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getWorkspace, listWorkspaces, type Workspace } from "../api/workspaces";
 
-export function useWorkspaces(projectId: string | null | undefined) {
+/// Lists ALL workspaces (the global registry — the Project layer was
+/// collapsed away, so there is no per-project scoping anymore).
+export function useWorkspaces() {
   return useQuery({
-    queryKey: ["workspaces", projectId] as const,
+    queryKey: ["workspaces"] as const,
     queryFn: async () => {
-      if (!projectId) return { workspaces: [] };
-      return listWorkspaces(projectId);
+      return listWorkspaces({ includeArchived: false });
     },
-    enabled: !!projectId,
   });
 }
 

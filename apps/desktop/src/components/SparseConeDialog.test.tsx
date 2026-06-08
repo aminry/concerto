@@ -2,7 +2,8 @@
 //
 // Tests for the "Choose directories for the sparse checkout" dialog (design/02
 // §3.2). Saving calls `Repositories.SetRepoConeDefaults` with the selected
-// paths and surfaces the "Updated N workareas" note. `invoke` is mocked.
+// paths (sent as `cone_defaults`); the RPC returns the updated `Repository`
+// and the dialog surfaces a "Saved N directories" note. `invoke` is mocked.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
@@ -24,7 +25,6 @@ const ROOT: TreeEntry[] = [
 
 const REPO: Repository = {
   id: "r1",
-  project_id: "p1",
   name: "api",
   url: "u",
   local_path: "",
@@ -34,7 +34,7 @@ const REPO: Repository = {
   cone_defaults: ["src"],
 };
 
-function mockInvoke(updated = 3): void {
+function mockInvoke(savedCones: string[] = ["src"]): void {
   invoke.mockImplementation((cmd: string, args: { method?: string }) => {
     if (cmd !== "concerto_rpc") return Promise.resolve(undefined);
     if (args.method === "Repositories.ListTree")
@@ -42,7 +42,7 @@ function mockInvoke(updated = 3): void {
     if (args.method === "Repositories.EstimateConeSize")
       return Promise.resolve({ file_count: 5, disk_size_bytes: 100 });
     if (args.method === "Repositories.SetRepoConeDefaults")
-      return Promise.resolve({ cone_paths: ["src"], workareas_updated: updated });
+      return Promise.resolve({ ...REPO, cone_defaults: savedCones });
     return Promise.resolve(undefined);
   });
 }
@@ -63,8 +63,8 @@ describe("SparseConeDialog", () => {
     ).toBeInTheDocument();
   });
 
-  it("saving calls SetRepoConeDefaults and shows the Updated N note", async () => {
-    mockInvoke(3);
+  it("saving sends cone_defaults to SetRepoConeDefaults and shows the saved note", async () => {
+    mockInvoke(["src"]);
     renderWithClient(
       <SparseConeDialog open onClose={() => {}} repository={REPO} />,
     );
@@ -75,19 +75,25 @@ describe("SparseConeDialog", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
         method: "Repositories.SetRepoConeDefaults",
-        payload: { repository_id: "r1", cone_paths: ["src"] },
+        payload: { repository_id: "r1", cone_defaults: ["src"] },
       }),
     );
-    expect(await screen.findByText(/Updated 3 workareas/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Saved 1 directory as the default/i),
+    ).toBeInTheDocument();
   });
 
-  it("singularizes the workarea count", async () => {
-    mockInvoke(1);
+  it("notes when the default cone is cleared", async () => {
+    mockInvoke([]);
     renderWithClient(
       <SparseConeDialog open onClose={() => {}} repository={REPO} />,
     );
     await screen.findByRole("button", { name: "Remove src" });
+    // Drop the only selected directory, then save → cleared.
+    await userEvent.click(screen.getByRole("button", { name: "Remove src" }));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByText(/Updated 1 workarea\./i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Cleared the default cone/i),
+    ).toBeInTheDocument();
   });
 });

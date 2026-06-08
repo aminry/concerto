@@ -3,46 +3,37 @@
 // ── Where the repo list comes from (the FROZEN-respecting binding) ───
 // Tasks 306/307 did NOT freeze a `Workarea.repository_ids` field or a
 // `Workareas.ListWorkareaRepos` RPC (see `api/workareas.ts` for the full
-// reasoning), and 322 may not add Rust/proto. But a V1.0 workspace
-// declares its repos (306) and every workarea materializes one worktree
-// per declared repo (306 §6.2), so the workspace's declared repos ARE the
-// workarea's repos. They are fetched via `Repositories.ListByProject`
-// (the existing read RPC) scoped to the workarea's project.
+// reasoning). A V1.0 workspace declares its repos and every workarea
+// materializes one worktree per declared repo, so the workspace's declared
+// repos ARE the workarea's repos. Since the Project→Workspace collapse,
+// repositories live in a single GLOBAL registry, so they are fetched via
+// `Repositories.ListRepositories` (the existing read RPC, now unscoped).
 //
-// This hook takes the `projectId` directly (the caller already has it via
-// `useUiStore.selectedProjectId`); it is keyed by `["workareaRepos",
-// workareaId]` so the cache is scoped per workarea (the value is identical
-// across workareas of one project, but keying by workarea matches the
-// design/15 §3.3 cache-key intent and means the Level-1 selector's data
-// invalidates cleanly when the workarea changes). Server-canonical data
-// stays in React Query; only the active-repo *selection* lands in Zustand.
+// Keyed by `["workareaRepos", workareaId]` so the cache is scoped per
+// workarea and the Level-1 selector's data invalidates cleanly when the
+// workarea changes. Server-canonical data stays in React Query; only the
+// active-repo *selection* lands in Zustand.
 
 import { useQuery } from "@tanstack/react-query";
 
 import { listRepositories, type Repository } from "../api/repositories";
 
-export function workareaReposQueryKey(
-  workareaId: string | null | undefined,
-  projectId: string | null | undefined,
-) {
-  return ["workareaRepos", workareaId, projectId] as const;
+export function workareaReposQueryKey(workareaId: string | null | undefined) {
+  return ["workareaRepos", workareaId] as const;
 }
 
-/// Returns the repositories materialized in the given workarea (= the
-/// workarea's parent project's declared repos). Short-circuits to an empty
-/// list when either id is null so a caller can render before a selection
-/// is made without firing a request.
-export function useWorkareaRepos(
-  workareaId: string | null | undefined,
-  projectId: string | null | undefined,
-) {
+/// Returns the repositories materialized in the given workarea (= the global
+/// registry's repos). Short-circuits to an empty list when `workareaId` is
+/// null so a caller can render before a selection is made without firing a
+/// request.
+export function useWorkareaRepos(workareaId: string | null | undefined) {
   return useQuery<Repository[]>({
-    queryKey: workareaReposQueryKey(workareaId, projectId),
+    queryKey: workareaReposQueryKey(workareaId),
     queryFn: async () => {
-      if (!workareaId || !projectId) return [];
-      const res = await listRepositories(projectId);
+      if (!workareaId) return [];
+      const res = await listRepositories();
       return res.repositories;
     },
-    enabled: !!workareaId && !!projectId,
+    enabled: !!workareaId,
   });
 }
