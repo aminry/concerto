@@ -24,6 +24,7 @@ import { IconButton } from "./ui/icon-button";
 import { Button } from "./ui/button";
 import { WorkareaList } from "./WorkareaList";
 import type { Workspace } from "../api/workspaces";
+import { formatError } from "../api/errors";
 
 export function Sidebar(): JSX.Element {
   const queryClient = useQueryClient();
@@ -87,7 +88,7 @@ export function Sidebar(): JSX.Element {
         )}
         {workspacesQuery.isError && (
           <p className="px-2 text-xs text-err">
-            Failed to load workspaces: {String(workspacesQuery.error)}
+            Failed to load workspaces: {formatError(workspacesQuery.error)}
           </p>
         )}
         {workspacesQuery.data && workspaces.length === 0 && (

@@ -2,6 +2,7 @@
 // (Task 39 surface). V0.1 is read-only; enable/disable + refresh controls
 // land in the settings polish task.
 
+import { formatError } from "../../api/errors";
 import { useUiStore } from "../../state/useUiStore";
 import { useSkills } from "../../hooks/useSkills";
 
@@ -22,7 +23,7 @@ export function SkillsTab(): JSX.Element {
   if (query.isError) {
     return (
       <p className="text-xs text-err p-3">
-        Failed to load skills: {String(query.error)}
+        Failed to load skills: {formatError(query.error)}
       </p>
     );
   }

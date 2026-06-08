@@ -12,6 +12,7 @@
 //   - crashed  → red
 //   - created | paused | archived → grey
 
+import { formatError } from "../api/errors";
 import { useWorkareas } from "../hooks/useWorkareas";
 import { useUiStore } from "../state/useUiStore";
 import { StatusDot } from "./ui/status-dot";
@@ -34,7 +35,7 @@ export function WorkareaList({
   if (query.isError) {
     return (
       <p className="text-xs text-err">
-        Failed: {String(query.error)}
+        Failed: {formatError(query.error)}
       </p>
     );
   }
