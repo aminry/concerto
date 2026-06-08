@@ -91,13 +91,18 @@ CREATE TABLE workspace_repos (
     PRIMARY KEY (workspace_id, repository_id)
 );
 
+-- Ordered-read index for `list_repos` (and Task 309's first-by-position
+-- reference-repo lookup). Originally from migration 0009; folded here by
+-- the Project→Workspace collapse (2026-06-08).
+CREATE INDEX idx_workspace_repos_position ON workspace_repos(workspace_id, position);
+
 -- ---------------------------------------------------------------------------
 -- Workareas: a specific attempt at a workspace's task. Worktrees on disk.
 -- One workspace → 1..N workareas. design/09 §4.1.
 --
 -- `status` values match the value list in
 -- crates/proto/proto/concerto/v1/workareas.proto. `permission_mode` and
--- `bypass_destructive_guard` are nullable for the same inherit-from-parent
+-- `bypass_destructive_guard` are nullable for the same inherit-from-workspace
 -- reason as workspaces.
 -- ---------------------------------------------------------------------------
 CREATE TABLE workareas (

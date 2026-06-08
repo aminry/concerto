@@ -51,6 +51,7 @@ const EXPECTED_TABLES: &[&str] = &[
 
 /// Every index the design doc names.
 const EXPECTED_INDEXES: &[&str] = &[
+    "idx_workspace_repos_position",
     "idx_workareas_status",
     "idx_workareas_workspace",
     "idx_chat_messages_chat",
@@ -513,10 +514,14 @@ async fn schema_has_no_projects_table() {
     assert_eq!(n, 0, "projects table must be gone after the collapse");
 }
 
-/// `workspace_repos` must carry `sparse_cones_json` (folded in from Task 0.1
-/// of the Project→Workspace collapse, 2026-06-08).
+/// `workspace_repos` must carry both folded-in columns: `sparse_cones_json`
+/// (from the Project→Workspace collapse, 2026-06-08) and `position` (folded
+/// in from migration 0009 by the same collapse). Both columns are
+/// load-bearing: `position` backs the `list_repos` ordering query and Task
+/// 309's reference-repo lookup; `sparse_cones_json` backs per-(workspace, repo)
+/// sparse cone configuration.
 #[tokio::test]
-async fn workspace_repos_has_sparse_cones_json() {
+async fn workspace_repos_has_folded_columns() {
     let (_dir, persist) = fresh_db().await;
     let mut w = persist.writer().await;
     let cols: Vec<String> = sqlx::query_scalar(
@@ -526,4 +531,5 @@ async fn workspace_repos_has_sparse_cones_json() {
     .await
     .unwrap();
     assert!(cols.iter().any(|c| c == "sparse_cones_json"));
+    assert!(cols.iter().any(|c| c == "position"));
 }
