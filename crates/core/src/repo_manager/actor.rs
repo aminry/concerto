@@ -14,7 +14,7 @@
 //! the same repo serialize on the per-repo mutex.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -195,9 +195,12 @@ impl RepoManager {
     /// reads cones from `workarea_repos.sparse_cones_json`). 301 accepts +
     /// validates the flag for the locked `AddRepository` signature but does
     /// not persist it; see this task's Handoff *Deliberate debt*.
+    ///
+    /// **Registry de-dup (D9):** repositories are a global registry. If a
+    /// row with the same `url` already exists, that existing row is returned
+    /// rather than registering a duplicate.
     pub async fn add_repository(
         &self,
-        project_id: &str,
         name: &str,
         url: &str,
         default_branch: &str,
@@ -208,6 +211,15 @@ impl RepoManager {
         // real per-workarea sparse setup. Bind it so the parameter is not a
         // dead arg and the intent is greppable for 302.
         let _ = with_sparse;
+
+        // D9: de-dup against the global registry by URL. An already-present
+        // URL reuses the existing row.
+        if let Some(existing) =
+            concerto_persist::repositories::get_by_url(self.persistence.readers(), url).await?
+        {
+            return Ok(existing);
+        }
+
         let id = RepositoryId(uuid::Uuid::now_v7().to_string());
         let local_path = self.repos_root.join(id.as_str());
         let default_branch = if default_branch.is_empty() {
@@ -218,7 +230,6 @@ impl RepoManager {
         let strategy_str = strategy.as_str().to_string();
         let row = NewRepository {
             id: id.clone(),
-            project_id: project_id.to_string(),
             name: name.to_string(),
             url: url.to_string(),
             local_path: local_path.to_string_lossy().into_owned(),
@@ -230,7 +241,6 @@ impl RepoManager {
         concerto_persist::repositories::insert(&mut writer, row).await?;
         Ok(Repository {
             id,
-            project_id: project_id.to_string(),
             name: name.to_string(),
             url: url.to_string(),
             local_path: local_path.to_string_lossy().into_owned(),
@@ -252,6 +262,98 @@ impl RepoManager {
         })
     }
 
+    /// Adopt an existing on-disk git repository **in place** (D9,
+    /// NON-DESTRUCTIVE).
+    ///
+    /// Validates `local_path` is a git repository (`git -C <path> rev-parse
+    /// --git-dir`), derives `default_branch` from the checked-out HEAD
+    /// (falling back to `"main"`), and registers a `repositories` row whose
+    /// `local_path` is the original path adopted as-is (NOT under
+    /// `<repos_root>/<id>/`). The repo's `url` is the `origin` remote URL
+    /// when one exists, else the `local_path` itself.
+    ///
+    /// The adopt is **non-destructive**: the existing `.git` is never
+    /// re-initialised. Only additive performance config (`core.fsmonitor`,
+    /// `core.untrackedCache`) is applied and the fsmonitor daemon is started
+    /// (best-effort). A URL already present in the registry de-dups (D9).
+    pub async fn import_local(&self, name: &str, local_path: &Path) -> Result<Repository> {
+        // Validate it is a git repo (never re-init).
+        let git_dir = gixw::cmd::run(&["rev-parse", "--git-dir"], local_path)
+            .await
+            .map_err(|e| {
+                Error::Validation(format!(
+                    "repo.not_a_git_repo: {} is not a git repository: {e}",
+                    local_path.display()
+                ))
+            })?;
+        let _ = git_dir;
+
+        // Derive the default branch from HEAD (symbolic-ref). A detached HEAD
+        // or read failure falls back to "main".
+        let default_branch =
+            match gixw::cmd::run(&["symbolic-ref", "--short", "HEAD"], local_path).await {
+                Ok(out) if !out.stdout.trim().is_empty() => out.stdout.trim().to_string(),
+                _ => "main".to_string(),
+            };
+
+        // The origin remote URL, if any, becomes the registry `url`; else the
+        // local path itself (so `get_by_url` de-dup still works).
+        let url = match gixw::cmd::run(&["remote", "get-url", "origin"], local_path).await {
+            Ok(out) if !out.stdout.trim().is_empty() => out.stdout.trim().to_string(),
+            _ => local_path.to_string_lossy().into_owned(),
+        };
+
+        // D9: de-dup against the global registry by URL.
+        if let Some(existing) =
+            concerto_persist::repositories::get_by_url(self.persistence.readers(), &url).await?
+        {
+            return Ok(existing);
+        }
+
+        let id = RepositoryId(uuid::Uuid::now_v7().to_string());
+        let local_path_str = local_path.to_string_lossy().into_owned();
+        let row = NewRepository {
+            id: id.clone(),
+            name: name.to_string(),
+            url: url.clone(),
+            // Adopted in place — NOT under `<repos_root>/<id>/`.
+            local_path: local_path_str.clone(),
+            clone_strategy: "full".to_string(),
+            default_branch: default_branch.clone(),
+        };
+        {
+            let mut writer = self.persistence.writer().await;
+            concerto_persist::repositories::insert(&mut writer, row).await?;
+        }
+
+        // Apply only ADDITIVE performance config (`core.fsmonitor`,
+        // `core.untrackedCache`) + start fsmonitor — never re-init. The PID
+        // (when the daemon came up) is recorded so the supervisor adopts it.
+        let fs_monitor_pid = fsmonitor::bring_up_after_clone(local_path).await;
+        {
+            let mut writer = self.persistence.writer().await;
+            concerto_persist::repositories::update_fs_monitor_pid(
+                &mut writer,
+                &id,
+                fs_monitor_pid.map(|p| p as i64),
+            )
+            .await?;
+        }
+
+        Ok(Repository {
+            id,
+            name: name.to_string(),
+            url,
+            local_path: local_path_str,
+            clone_strategy: "full".to_string(),
+            default_branch,
+            cone_defaults_json: "[]".to_string(),
+            action_prefs_json: "{}".to_string(),
+            last_fetch_at: None,
+            fs_monitor_pid: fs_monitor_pid.map(|p| p as i64),
+        })
+    }
+
     /// Probe a git `url`'s size and recommend a [`CloneStrategy`] BEFORE
     /// adding the repo (Task 301, `design/02 §3.5`/`§7.1`).
     ///
@@ -268,12 +370,11 @@ impl RepoManager {
         concerto_persist::repositories::get(self.persistence.readers(), id).await
     }
 
-    /// List every repository attached to `project_id`. Read-only. The
-    /// Desktop "Add Repository" form (Task 25) renders this list so the
-    /// New Workspace modal's repo picker has something to show.
-    pub async fn list_by_project(&self, project_id: &str) -> Result<Vec<Repository>> {
-        concerto_persist::repositories::list_by_project(self.persistence.readers(), project_id)
-            .await
+    /// List every repository in the global registry. Read-only. The Desktop
+    /// New Workspace modal's repo picker renders this list (repos are a
+    /// global registry after the Project→Workspace collapse, D9).
+    pub async fn list_all(&self) -> Result<Vec<Repository>> {
+        concerto_persist::repositories::list_all(self.persistence.readers()).await
     }
 
     /// Acquire (creating on first use) the per-repo write mutex.
@@ -718,8 +819,9 @@ impl RepoManager {
 
     /// Resolve the effective cone set for a `(workarea, repo)` from the three
     /// inheritance layers (Task 302, `design/02 §3.2`) — repository
-    /// `cone_defaults_json` → workspace `settings_json.cone_defaults[repo]`
-    /// → workarea `sparse_cones_json`, most-specific wins.
+    /// `cone_defaults_json` → workspace per-(workspace, repo) snapshot
+    /// (`workspace_repos.sparse_cones_json`, D6) → workarea `sparse_cones_json`,
+    /// most-specific wins.
     ///
     /// Reads the three raw JSON strings from persistence and delegates the
     /// precedence logic to the pure [`cones::resolve_cones`]. The
@@ -741,11 +843,29 @@ impl RepoManager {
             .await?
             .ok_or_else(|| Error::Internal(format!("repository {repo} not found")))?;
 
-        let ws_settings = concerto_persist::workspaces::get_settings_json(readers, workspace_id)
-            .await?
-            // A missing workspace settings row → an empty object so the
-            // resolver simply skips the workspace layer.
-            .unwrap_or_else(|| "{}".to_string());
+        // D6: the workspace cone layer is the per-(workspace, repo) snapshot
+        // (`workspace_repos.sparse_cones_json`), NOT
+        // `workspaces.settings_json["cone_defaults"]`. Synthesize the shape
+        // `resolve_cones` expects (`{"cone_defaults": {"<repo>": <snapshot>}}`)
+        // from the snapshot so the precedence logic stays in one place. A
+        // missing/empty (`"[]"`) snapshot → an empty object so the resolver
+        // simply skips the workspace layer.
+        let ws_settings = match concerto_persist::workspaces::get_repo_cones(
+            readers,
+            workspace_id,
+            repo,
+        )
+        .await?
+        {
+            Some(snapshot) if snapshot.trim() != "[]" && !snapshot.trim().is_empty() => {
+                format!(
+                    r#"{{"cone_defaults":{{{}:{}}}}}"#,
+                    serde_json::Value::String(repo.0.clone()),
+                    snapshot
+                )
+            }
+            _ => "{}".to_string(),
+        };
 
         let wa_cones =
             concerto_persist::workareas::get_workarea_repo_cones(readers, workarea, repo)

@@ -21,8 +21,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use concerto_error::Result;
 use concerto_persist::{
-    NewProject, NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
-    PersistenceConfig, ProjectId, RepositoryId, WorkareaId, WorkspaceId,
+    NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence, PersistenceConfig,
+    RepositoryId, WorkareaId, WorkspaceId, WorkspaceRepoCones,
 };
 use concerto_vcs::provider::VcsProvider;
 use concerto_vcs::testkit::{fixture, FakeGitHub};
@@ -49,27 +49,14 @@ async fn make_persistence(tmp: &TempDir) -> Arc<Persistence> {
 /// Seed the FK chain a `pull_requests` cache row needs + one PR row at `HEAD_SHA`
 /// so the `check_run` targeted-invalidation has a row to locate.
 async fn seed(persist: &Persistence) -> (WorkareaId, RepositoryId) {
-    let project_id = ProjectId(format!("proj-{}", uuid::Uuid::now_v7()));
     let repo_id = RepositoryId(format!("repo-{}", uuid::Uuid::now_v7()));
     let workspace_id = WorkspaceId(format!("ws-{}", uuid::Uuid::now_v7()));
     let workarea_id = WorkareaId(format!("wa-{}", uuid::Uuid::now_v7()));
     let mut w = persist.writer().await;
-    concerto_persist::projects::insert(
-        &mut w,
-        NewProject {
-            id: project_id.clone(),
-            name: "wh-test".into(),
-            icon: None,
-            created_at: 1,
-        },
-    )
-    .await
-    .unwrap();
     concerto_persist::repositories::insert(
         &mut w,
         NewRepository {
             id: repo_id.clone(),
-            project_id: project_id.0.clone(),
             name: "repo".into(),
             url: format!("https://github.com/{REPO_FULL}"),
             local_path: "/tmp/repo".into(),
@@ -83,9 +70,9 @@ async fn seed(persist: &Persistence) -> (WorkareaId, RepositoryId) {
         &mut w,
         NewWorkspace {
             id: workspace_id.clone(),
-            project_id: project_id.0.clone(),
             name: "wh-ws".into(),
             slug: "wh-ws".into(),
+            icon: None,
             description: None,
             permission_mode: None,
             created_at: 1,
@@ -96,7 +83,7 @@ async fn seed(persist: &Persistence) -> (WorkareaId, RepositoryId) {
     concerto_persist::workspaces::update_repos(
         &mut w,
         &workspace_id,
-        std::slice::from_ref(&repo_id),
+        &[WorkspaceRepoCones::empty_cones(repo_id.clone())],
     )
     .await
     .unwrap();

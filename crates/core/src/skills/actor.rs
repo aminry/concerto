@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
-use concerto_persist::{Persistence, ProjectId, SkillFilter, SkillId, SkillRow};
+use concerto_persist::{Persistence, SkillFilter, SkillId, SkillRow, WorkspaceId};
 
 use super::discovery::{discover, SkillsRefreshReport};
 use crate::supervisor::{Actor, ActorContext};
@@ -86,11 +86,14 @@ impl SkillsRegistryHandle {
             .ok_or_else(|| Error::Internal(format!("skill {skill_id} missing after toggle")))
     }
 
-    /// Re-run the discovery walk. V0.1 walks personal + per-project
+    /// Re-run the discovery walk. V0.1 walks personal + per-workspace
     /// scopes; V1.0 will add real marketplace fetch behind the same
     /// entry point.
-    pub async fn refresh(&self, project_filter: Option<&ProjectId>) -> Result<SkillsRefreshReport> {
-        discover(&self.persistence, &self.home_dir, project_filter).await
+    pub async fn refresh(
+        &self,
+        workspace_filter: Option<&WorkspaceId>,
+    ) -> Result<SkillsRefreshReport> {
+        discover(&self.persistence, &self.home_dir, workspace_filter).await
     }
 }
 

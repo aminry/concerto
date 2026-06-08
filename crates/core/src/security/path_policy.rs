@@ -88,7 +88,7 @@ impl AllowList {
     /// 2. `<worktree_root>/.context/` (the per-workarea scratchpad
     ///    locked by `design/03 §3.10`).
     /// 3. Each `repo.worktree_path`.
-    /// 4. Any `writable_paths` array values from `project_settings_json`
+    /// 4. Any `writable_paths` array values from `workspace_settings_json`
     ///    (see [`extract_writable_paths`]).
     /// 5. `<home>/concerto/` — the global Concerto data root; every
     ///    workarea, log, and checkpoint lives under it, so an agent
@@ -99,7 +99,7 @@ impl AllowList {
     pub fn for_workarea(
         workarea: &Workarea,
         repos: &[Repository],
-        project_settings_json: Option<&str>,
+        workspace_settings_json: Option<&str>,
         home: &Path,
     ) -> Self {
         let mut roots: Vec<AllowRoot> = Vec::new();
@@ -109,7 +109,7 @@ impl AllowList {
         for r in repos {
             roots.push(canonicalize_or_clean(Path::new(&r.local_path)));
         }
-        if let Some(settings) = project_settings_json {
+        if let Some(settings) = workspace_settings_json {
             for p in extract_writable_paths(settings) {
                 roots.push(canonicalize_or_clean(&p));
             }
@@ -256,17 +256,13 @@ pub async fn for_workarea_from_db(
             repos.push(r);
         }
     }
-    // Find the owning workspace to look up the project's settings_json.
-    let workspace = concerto_persist::workspaces::get(pool, &workarea.workspace_id)
-        .await?
-        .ok_or_else(|| Error::NotFound(format!("workspace {} not found", workarea.workspace_id)))?;
-    let project_settings_json = concerto_persist::projects::get_settings_json(
-        pool,
-        &concerto_persist::ProjectId(workspace.project_id.clone()),
-    )
-    .await?;
+    // Look up the owning workspace's settings_json (the writable-paths
+    // layer; there is no Project layer after the collapse).
+    let workspace_settings_json =
+        concerto_persist::workspaces::get_settings_json(pool, &workarea.workspace_id).await?;
 
-    let allow = AllowList::for_workarea(&workarea, &repos, project_settings_json.as_deref(), home);
+    let allow =
+        AllowList::for_workarea(&workarea, &repos, workspace_settings_json.as_deref(), home);
     let deny = DenyList::v0_1_default(home);
     Ok((allow, deny))
 }

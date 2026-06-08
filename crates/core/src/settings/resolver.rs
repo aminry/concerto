@@ -1,4 +1,4 @@
-//! The per-field [`ProjectSettingsResolver`] + its FROZEN public surface
+//! The per-field [`WorkspaceSettingsResolver`] + its FROZEN public surface
 //! (Task 310, `design/03 §3.13` / `design/04 §3.13`).
 //!
 //! The resolver is a deterministic, synchronous snapshot built from the four
@@ -6,7 +6,7 @@
 //! per-repo action-prefs files, local-DB JSON blobs, the per-machine opt-out
 //! config). Resolution is pure — every test is table-driven and CI-provable.
 //! The live-reload path rebuilds the snapshot when
-//! [`super::project_file::ProjectSettingsSource`] republishes.
+//! [`super::workspace_file::WorkspaceSettingsSource`] republishes.
 
 use std::collections::BTreeMap;
 
@@ -40,7 +40,7 @@ pub enum SettingsSource {
     /// `.concerto/action_prefs.toml`). Tooltip: "Locked by
     /// `.concerto/project_settings.json`".
     CheckedIn,
-    /// A local-DB row (`projects.settings_json` /
+    /// A local-DB row (`workspaces.settings_json` /
     /// `repositories.action_prefs_json`). Editable in the UI.
     LocalDb,
     /// The global default baked into the resolver. Editable in the UI.
@@ -98,7 +98,7 @@ pub struct FilesToCopyRule {
 /// superset **plus** the per-repo `action_prefs.<action>` keys
 /// (`design/04 §3.13`). **FROZEN** — new fields append-only.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectSettingsField {
+pub enum WorkspaceSettingsField {
     /// `scripts.<key>` (setup / setup_workarea / run / archive).
     Script(String),
     RunScriptMode,
@@ -115,45 +115,45 @@ pub enum ProjectSettingsField {
     },
 }
 
-impl ProjectSettingsField {
+impl WorkspaceSettingsField {
     /// The stable wire/opt-out name for this field. `scripts` and
     /// `action_prefs.<action>` collapse to their family name for the opt-out
     /// (the escape hatch is per-family, `design/03 §3.13`), while the audit
     /// detail uses [`Self::audit_name`] for the fully-qualified form.
     pub fn opt_out_name(&self) -> String {
         match self {
-            ProjectSettingsField::Script(_) => "scripts".to_string(),
-            ProjectSettingsField::RunScriptMode => "run_script_mode".to_string(),
-            ProjectSettingsField::EnterpriseDataPrivacy => "enterprise_data_privacy".to_string(),
-            ProjectSettingsField::DefaultPermissionMode => "default_permission_mode".to_string(),
-            ProjectSettingsField::DefaultDeliberationMode => {
+            WorkspaceSettingsField::Script(_) => "scripts".to_string(),
+            WorkspaceSettingsField::RunScriptMode => "run_script_mode".to_string(),
+            WorkspaceSettingsField::EnterpriseDataPrivacy => "enterprise_data_privacy".to_string(),
+            WorkspaceSettingsField::DefaultPermissionMode => "default_permission_mode".to_string(),
+            WorkspaceSettingsField::DefaultDeliberationMode => {
                 "default_deliberation_mode".to_string()
             }
-            ProjectSettingsField::DefaultReasoningLevel => "default_reasoning_level".to_string(),
-            ProjectSettingsField::FilesToCopyRules => "files_to_copy_rules".to_string(),
-            ProjectSettingsField::WritablePathsOutsideWorktree => {
+            WorkspaceSettingsField::DefaultReasoningLevel => "default_reasoning_level".to_string(),
+            WorkspaceSettingsField::FilesToCopyRules => "files_to_copy_rules".to_string(),
+            WorkspaceSettingsField::WritablePathsOutsideWorktree => {
                 "writable_paths_outside_worktree".to_string()
             }
-            ProjectSettingsField::ActionPref { action, .. } => format!("action_prefs.{action}"),
+            WorkspaceSettingsField::ActionPref { action, .. } => format!("action_prefs.{action}"),
         }
     }
 
-    /// The fully-qualified name used in the `ProjectSettingsResolved` audit
+    /// The fully-qualified name used in the `WorkspaceSettingsResolved` audit
     /// detail (`scripts.<key>`, `action_prefs.<action>`, or the bare field).
     pub fn audit_name(&self) -> String {
         match self {
-            ProjectSettingsField::Script(k) => format!("scripts.{k}"),
-            ProjectSettingsField::ActionPref { action, .. } => format!("action_prefs.{action}"),
+            WorkspaceSettingsField::Script(k) => format!("scripts.{k}"),
+            WorkspaceSettingsField::ActionPref { action, .. } => format!("action_prefs.{action}"),
             other => other.opt_out_name(),
         }
     }
 }
 
-/// The local-DB project layer, parsed from `projects.settings_json`. Mirrors
+/// The local-DB workspace layer, parsed from `workspaces.settings_json`. Mirrors
 /// the checked-in field set; an absent/malformed field falls through to the
 /// default. Built once from the raw JSON string.
 #[derive(Debug, Clone, Default)]
-struct LocalDbProjectSettings {
+struct LocalDbWorkspaceSettings {
     scripts: BTreeMap<String, String>,
     run_script_mode: Option<String>,
     enterprise_data_privacy: Option<bool>,
@@ -164,8 +164,8 @@ struct LocalDbProjectSettings {
     writable_paths_outside_worktree: Option<Vec<String>>,
 }
 
-impl LocalDbProjectSettings {
-    /// Parse `projects.settings_json`. Malformed JSON → all-absent (every
+impl LocalDbWorkspaceSettings {
+    /// Parse `workspaces.settings_json`. Malformed JSON → all-absent (every
     /// field falls through to default), matching
     /// [`crate::security::permission::resolve_effective_mode`]'s forgiving
     /// posture for project settings.
@@ -231,13 +231,13 @@ pub(crate) fn parse_files_to_copy_rules(
 /// default** and returns the value AND its [`SettingsSource`]. The checked-in
 /// layer is skipped for any field the per-machine opt-out lists for this
 /// project.
-pub struct ProjectSettingsResolver {
-    project_id: String,
+pub struct WorkspaceSettingsResolver {
+    workspace_id: String,
     managed: ManagedPolicy,
-    checked_in: super::project_file::CheckedInProjectSettings,
-    local_db: LocalDbProjectSettings,
+    checked_in: super::workspace_file::CheckedInWorkspaceSettings,
+    local_db: LocalDbWorkspaceSettings,
     /// Per-repo checked-in `action_prefs.toml` (repo_id → prefs).
-    repo_checked_in_action_prefs: BTreeMap<String, super::project_file::ActionPrefsFile>,
+    repo_checked_in_action_prefs: BTreeMap<String, super::workspace_file::ActionPrefsFile>,
     /// Per-repo local-DB `repositories.action_prefs_json` (repo_id → prefs).
     repo_local_db_action_prefs: BTreeMap<String, BTreeMap<String, String>>,
     /// Opt-out field family names for this project (the checked-in layer is
@@ -245,17 +245,17 @@ pub struct ProjectSettingsResolver {
     opted_out_fields: Vec<String>,
 }
 
-impl ProjectSettingsResolver {
-    /// Build a resolver snapshot for `project_id` from the four layers'
+impl WorkspaceSettingsResolver {
+    /// Build a resolver snapshot for `workspace_id` from the four layers'
     /// loaded inputs. The boot path supplies the DB blobs + file loads; tests
-    /// build the snapshot directly via [`ProjectSettingsResolverBuilder`].
+    /// build the snapshot directly via [`WorkspaceSettingsResolverBuilder`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        project_id: impl Into<String>,
+        workspace_id: impl Into<String>,
         managed: ManagedPolicy,
-        checked_in: super::project_file::CheckedInProjectSettings,
+        checked_in: super::workspace_file::CheckedInWorkspaceSettings,
         local_db_settings_json: &str,
-        repo_checked_in_action_prefs: BTreeMap<String, super::project_file::ActionPrefsFile>,
+        repo_checked_in_action_prefs: BTreeMap<String, super::workspace_file::ActionPrefsFile>,
         repo_local_db_action_prefs_json: BTreeMap<String, String>,
         opted_out_fields: Vec<String>,
     ) -> Self {
@@ -264,22 +264,22 @@ impl ProjectSettingsResolver {
             .map(|(repo, raw)| (repo, parse_action_prefs_json(&raw)))
             .collect();
         Self {
-            project_id: project_id.into(),
+            workspace_id: workspace_id.into(),
             managed,
             checked_in,
-            local_db: LocalDbProjectSettings::from_json(local_db_settings_json),
+            local_db: LocalDbWorkspaceSettings::from_json(local_db_settings_json),
             repo_checked_in_action_prefs,
             repo_local_db_action_prefs,
             opted_out_fields,
         }
     }
 
-    /// The project id this resolver was built for.
-    pub fn project_id(&self) -> &str {
-        &self.project_id
+    /// The workspace id this resolver was built for.
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
     }
 
-    fn checked_in_allowed(&self, field: &ProjectSettingsField) -> bool {
+    fn checked_in_allowed(&self, field: &WorkspaceSettingsField) -> bool {
         !self.opted_out_fields.contains(&field.opt_out_name())
     }
 
@@ -291,7 +291,7 @@ impl ProjectSettingsResolver {
         if let Some(b) = self.managed.enterprise_data_privacy() {
             return Resolved::new(b, SettingsSource::Managed);
         }
-        if self.checked_in_allowed(&ProjectSettingsField::EnterpriseDataPrivacy) {
+        if self.checked_in_allowed(&WorkspaceSettingsField::EnterpriseDataPrivacy) {
             if let Some(b) = self.checked_in.enterprise_data_privacy {
                 return Resolved::new(b, SettingsSource::CheckedIn);
             }
@@ -305,7 +305,7 @@ impl ProjectSettingsResolver {
     /// The effective `files_to_copy_rules` (Task 309). No managed layer for
     /// this field; checked-in > local DB > empty default.
     pub fn files_to_copy_rules(&self) -> Resolved<Vec<FilesToCopyRule>> {
-        if self.checked_in_allowed(&ProjectSettingsField::FilesToCopyRules) {
+        if self.checked_in_allowed(&WorkspaceSettingsField::FilesToCopyRules) {
             if let Some(rules) = &self.checked_in.files_to_copy_rules {
                 return Resolved::new(rules.clone(), SettingsSource::CheckedIn);
             }
@@ -326,7 +326,7 @@ impl ProjectSettingsResolver {
         for (k, v) in &self.local_db.scripts {
             out.insert(k.clone(), Resolved::new(v.clone(), SettingsSource::LocalDb));
         }
-        if self.checked_in_allowed(&ProjectSettingsField::Script(String::new())) {
+        if self.checked_in_allowed(&WorkspaceSettingsField::Script(String::new())) {
             for (k, v) in &self.checked_in.scripts {
                 out.insert(
                     k.clone(),
@@ -340,7 +340,7 @@ impl ProjectSettingsResolver {
     /// The effective `run_script_mode`. No managed layer; checked-in > local
     /// DB > default `"concurrent"`.
     pub fn run_script_mode(&self) -> Resolved<String> {
-        if self.checked_in_allowed(&ProjectSettingsField::RunScriptMode) {
+        if self.checked_in_allowed(&WorkspaceSettingsField::RunScriptMode) {
             if let Some(m) = &self.checked_in.run_script_mode {
                 return Resolved::new(m.clone(), SettingsSource::CheckedIn);
             }
@@ -365,7 +365,7 @@ impl ProjectSettingsResolver {
         if let Some(m) = self.managed.default_permission_mode() {
             return Resolved::new(Some(m), SettingsSource::Managed);
         }
-        if self.checked_in_allowed(&ProjectSettingsField::DefaultPermissionMode) {
+        if self.checked_in_allowed(&WorkspaceSettingsField::DefaultPermissionMode) {
             if let Some(s) = &self.checked_in.default_permission_mode {
                 if let Ok(m) = parse_permission_mode(s) {
                     return Resolved::new(Some(m), SettingsSource::CheckedIn);
@@ -388,7 +388,7 @@ impl ProjectSettingsResolver {
     /// `.concerto/action_prefs.toml` > local-DB `repositories.action_prefs_json`
     /// > empty default.
     pub fn action_pref(&self, repo_id: &str, action: &str) -> Resolved<Option<String>> {
-        let field = ProjectSettingsField::ActionPref {
+        let field = WorkspaceSettingsField::ActionPref {
             repo_id: repo_id.to_string(),
             action: action.to_string(),
         };
@@ -412,17 +412,17 @@ impl ProjectSettingsResolver {
     /// resolves independently (the per-FIELD invariant). Returns the effective
     /// value as `serde_json::Value` so heterogeneous field types share one
     /// signature.
-    pub fn resolve_field(&self, field: &ProjectSettingsField) -> Resolved<serde_json::Value> {
+    pub fn resolve_field(&self, field: &WorkspaceSettingsField) -> Resolved<serde_json::Value> {
         match field {
-            ProjectSettingsField::EnterpriseDataPrivacy => {
+            WorkspaceSettingsField::EnterpriseDataPrivacy => {
                 let r = self.enterprise_data_privacy();
                 Resolved::new(serde_json::Value::Bool(r.value), r.source)
             }
-            ProjectSettingsField::RunScriptMode => {
+            WorkspaceSettingsField::RunScriptMode => {
                 let r = self.run_script_mode();
                 Resolved::new(serde_json::Value::String(r.value), r.source)
             }
-            ProjectSettingsField::DefaultPermissionMode => {
+            WorkspaceSettingsField::DefaultPermissionMode => {
                 let r = self.default_permission_mode();
                 let v = r
                     .value
@@ -430,24 +430,24 @@ impl ProjectSettingsResolver {
                     .unwrap_or(serde_json::Value::Null);
                 Resolved::new(v, r.source)
             }
-            ProjectSettingsField::DefaultDeliberationMode => self.resolve_simple_string(
+            WorkspaceSettingsField::DefaultDeliberationMode => self.resolve_simple_string(
                 field,
                 |s| s.default_deliberation_mode.clone(),
                 |l| l.default_deliberation_mode.clone(),
             ),
-            ProjectSettingsField::DefaultReasoningLevel => self.resolve_simple_string(
+            WorkspaceSettingsField::DefaultReasoningLevel => self.resolve_simple_string(
                 field,
                 |s| s.default_reasoning_level.clone(),
                 |l| l.default_reasoning_level.clone(),
             ),
-            ProjectSettingsField::FilesToCopyRules => {
+            WorkspaceSettingsField::FilesToCopyRules => {
                 let r = self.files_to_copy_rules();
                 Resolved::new(
                     serde_json::to_value(&r.value).unwrap_or(serde_json::Value::Null),
                     r.source,
                 )
             }
-            ProjectSettingsField::WritablePathsOutsideWorktree => {
+            WorkspaceSettingsField::WritablePathsOutsideWorktree => {
                 let resolved = self.resolve_string_list(
                     field,
                     self.checked_in.writable_paths_outside_worktree.as_ref(),
@@ -458,14 +458,14 @@ impl ProjectSettingsResolver {
                     resolved.source,
                 )
             }
-            ProjectSettingsField::Script(key) => {
+            WorkspaceSettingsField::Script(key) => {
                 let scripts = self.scripts();
                 match scripts.get(key) {
                     Some(r) => Resolved::new(serde_json::Value::String(r.value.clone()), r.source),
                     None => Resolved::new(serde_json::Value::Null, SettingsSource::Default),
                 }
             }
-            ProjectSettingsField::ActionPref { repo_id, action } => {
+            WorkspaceSettingsField::ActionPref { repo_id, action } => {
                 let r = self.action_pref(repo_id, action);
                 let v = r
                     .value
@@ -478,9 +478,9 @@ impl ProjectSettingsResolver {
 
     fn resolve_simple_string(
         &self,
-        field: &ProjectSettingsField,
-        from_checked_in: impl Fn(&super::project_file::CheckedInProjectSettings) -> Option<String>,
-        from_local: impl Fn(&LocalDbProjectSettings) -> Option<String>,
+        field: &WorkspaceSettingsField,
+        from_checked_in: impl Fn(&super::workspace_file::CheckedInWorkspaceSettings) -> Option<String>,
+        from_local: impl Fn(&LocalDbWorkspaceSettings) -> Option<String>,
     ) -> Resolved<serde_json::Value> {
         if self.checked_in_allowed(field) {
             if let Some(s) = from_checked_in(&self.checked_in) {
@@ -495,7 +495,7 @@ impl ProjectSettingsResolver {
 
     fn resolve_string_list(
         &self,
-        field: &ProjectSettingsField,
+        field: &WorkspaceSettingsField,
         checked_in: Option<&Vec<String>>,
         local: Option<&Vec<String>>,
     ) -> Resolved<Vec<String>> {
@@ -513,15 +513,15 @@ impl ProjectSettingsResolver {
     /// The full set of fields this resolver resolves at boot (the §3.13
     /// superset + every present `action_prefs.<action>` across the project's
     /// repos). Used by [`Self::audit_resolved_at_boot`].
-    pub fn boot_fields(&self) -> Vec<ProjectSettingsField> {
+    pub fn boot_fields(&self) -> Vec<WorkspaceSettingsField> {
         let mut fields = vec![
-            ProjectSettingsField::RunScriptMode,
-            ProjectSettingsField::EnterpriseDataPrivacy,
-            ProjectSettingsField::DefaultPermissionMode,
-            ProjectSettingsField::DefaultDeliberationMode,
-            ProjectSettingsField::DefaultReasoningLevel,
-            ProjectSettingsField::FilesToCopyRules,
-            ProjectSettingsField::WritablePathsOutsideWorktree,
+            WorkspaceSettingsField::RunScriptMode,
+            WorkspaceSettingsField::EnterpriseDataPrivacy,
+            WorkspaceSettingsField::DefaultPermissionMode,
+            WorkspaceSettingsField::DefaultDeliberationMode,
+            WorkspaceSettingsField::DefaultReasoningLevel,
+            WorkspaceSettingsField::FilesToCopyRules,
+            WorkspaceSettingsField::WritablePathsOutsideWorktree,
         ];
         // Scripts: the union of keys present in either layer.
         let mut script_keys: Vec<String> = self
@@ -534,7 +534,7 @@ impl ProjectSettingsResolver {
         script_keys.sort();
         script_keys.dedup();
         for k in script_keys {
-            fields.push(ProjectSettingsField::Script(k));
+            fields.push(WorkspaceSettingsField::Script(k));
         }
         // Action prefs: every (repo, action) present in either per-repo layer.
         let mut repos: Vec<String> = self
@@ -556,7 +556,7 @@ impl ProjectSettingsResolver {
                     .get(&repo)
                     .is_some_and(|p| p.contains_key(action));
                 if in_checked || in_local {
-                    fields.push(ProjectSettingsField::ActionPref {
+                    fields.push(WorkspaceSettingsField::ActionPref {
                         repo_id: repo.clone(),
                         action: action.to_string(),
                     });
@@ -566,8 +566,8 @@ impl ProjectSettingsResolver {
         fields
     }
 
-    /// Emit one [`AuditKind::ProjectSettingsResolved`]
-    /// `{project_id, field, value_source}` per resolved field at Core boot
+    /// Emit one [`AuditKind::WorkspaceSettingsResolved`]
+    /// `{workspace_id, field, value_source}` per resolved field at Core boot
     /// (`design/03 §3.13`). Mirrors `load_managed_policy_audited`'s
     /// once-at-boot call. Returns the number of events emitted (for the boot
     /// log + tests).
@@ -577,12 +577,12 @@ impl ProjectSettingsResolver {
             let resolved = self.resolve_field(field);
             audit.append(
                 AuditEvent::new(
-                    AuditKind::ProjectSettingsResolved,
+                    AuditKind::WorkspaceSettingsResolved,
                     crate::audit::AuditActor::System,
                 )
-                .with_subject(EntityKind::Project, self.project_id.clone())
+                .with_subject(EntityKind::Workspace, self.workspace_id.clone())
                 .with_details(serde_json::json!({
-                    "project_id": self.project_id,
+                    "workspace_id": self.workspace_id,
                     "field": field.audit_name(),
                     "value_source": resolved.source.as_str(),
                 })),
@@ -608,10 +608,10 @@ fn parse_action_prefs_json(raw: &str) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::project_file::{ActionPrefsFile, CheckedInProjectSettings};
+    use crate::settings::workspace_file::{ActionPrefsFile, CheckedInWorkspaceSettings};
 
-    fn checked_in_with_run_mode(mode: &str) -> CheckedInProjectSettings {
-        CheckedInProjectSettings {
+    fn checked_in_with_run_mode(mode: &str) -> CheckedInWorkspaceSettings {
+        CheckedInWorkspaceSettings {
             run_script_mode: Some(mode.to_string()),
             ..Default::default()
         }
@@ -623,11 +623,11 @@ mod tests {
             enterprise_data_privacy: Some(true),
             ..ManagedPolicy::default()
         };
-        let checked_in = CheckedInProjectSettings {
+        let checked_in = CheckedInWorkspaceSettings {
             enterprise_data_privacy: Some(false),
             ..Default::default()
         };
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             managed,
             checked_in,
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn precedence_checked_in_wins_over_local_db() {
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             ManagedPolicy::default(),
             checked_in_with_run_mode("sequential"),
@@ -659,10 +659,10 @@ mod tests {
 
     #[test]
     fn precedence_local_db_wins_when_no_higher_layer() {
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             ManagedPolicy::default(),
-            CheckedInProjectSettings::default(),
+            CheckedInWorkspaceSettings::default(),
             r#"{"run_script_mode": "concurrent"}"#,
             BTreeMap::new(),
             BTreeMap::new(),
@@ -675,10 +675,10 @@ mod tests {
 
     #[test]
     fn precedence_default_when_no_layer_sets_it() {
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             ManagedPolicy::default(),
-            CheckedInProjectSettings::default(),
+            CheckedInWorkspaceSettings::default(),
             "{}",
             BTreeMap::new(),
             BTreeMap::new(),
@@ -693,11 +693,11 @@ mod tests {
     fn per_field_independence() {
         // `run_script_mode` locked checked-in, `enterprise_data_privacy` only
         // in local DB → each resolves to its own layer.
-        let checked_in = CheckedInProjectSettings {
+        let checked_in = CheckedInWorkspaceSettings {
             run_script_mode: Some("sequential".to_string()),
             ..Default::default()
         };
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             ManagedPolicy::default(),
             checked_in,
@@ -716,7 +716,7 @@ mod tests {
     fn opt_out_skips_checked_in_layer() {
         // `run_script_mode` is opted out → the checked-in value is ignored,
         // resolution falls through to local DB.
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             ManagedPolicy::default(),
             checked_in_with_run_mode("sequential"),
@@ -744,10 +744,10 @@ mod tests {
             "repo-a".to_string(),
             r#"{"pr_create": "db pref", "branch_rename": "db rename"}"#.to_string(),
         );
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             ManagedPolicy::default(),
-            CheckedInProjectSettings::default(),
+            CheckedInWorkspaceSettings::default(),
             "{}",
             checked,
             local,
@@ -776,10 +776,10 @@ mod tests {
             max_permission_mode: Some(PermissionMode::Auto),
             ..ManagedPolicy::default()
         };
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             managed,
-            CheckedInProjectSettings::default(),
+            CheckedInWorkspaceSettings::default(),
             "{}",
             BTreeMap::new(),
             BTreeMap::new(),
@@ -792,7 +792,7 @@ mod tests {
 
     #[test]
     fn boot_fields_includes_present_scripts_and_action_prefs() {
-        let checked_in = CheckedInProjectSettings {
+        let checked_in = CheckedInWorkspaceSettings {
             scripts: BTreeMap::from([("setup".to_string(), "make".to_string())]),
             ..Default::default()
         };
@@ -803,7 +803,7 @@ mod tests {
                 prefs: BTreeMap::from([("code_review".to_string(), "x".to_string())]),
             },
         );
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             ManagedPolicy::default(),
             checked_in,
@@ -813,13 +813,13 @@ mod tests {
             Vec::new(),
         );
         let fields = r.boot_fields();
-        assert!(fields.contains(&ProjectSettingsField::Script("setup".to_string())));
-        assert!(fields.contains(&ProjectSettingsField::ActionPref {
+        assert!(fields.contains(&WorkspaceSettingsField::Script("setup".to_string())));
+        assert!(fields.contains(&WorkspaceSettingsField::ActionPref {
             repo_id: "repo-a".to_string(),
             action: "code_review".to_string(),
         }));
         // A non-present action is NOT enumerated.
-        assert!(!fields.contains(&ProjectSettingsField::ActionPref {
+        assert!(!fields.contains(&WorkspaceSettingsField::ActionPref {
             repo_id: "repo-a".to_string(),
             action: "digest_summary".to_string(),
         }));
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn resolve_field_carries_source() {
-        let r = ProjectSettingsResolver::new(
+        let r = WorkspaceSettingsResolver::new(
             "p1",
             ManagedPolicy::default(),
             checked_in_with_run_mode("sequential"),
@@ -836,7 +836,7 @@ mod tests {
             BTreeMap::new(),
             Vec::new(),
         );
-        let res = r.resolve_field(&ProjectSettingsField::RunScriptMode);
+        let res = r.resolve_field(&WorkspaceSettingsField::RunScriptMode);
         assert_eq!(res.value, serde_json::Value::String("sequential".into()));
         assert_eq!(res.source, SettingsSource::CheckedIn);
     }

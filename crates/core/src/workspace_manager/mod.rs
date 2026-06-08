@@ -20,7 +20,7 @@ pub mod workarea;
 
 pub use actor::{
     WorkspaceEvent, WorkspaceManager, WorkspaceManagerActor, WorkspaceManagerConfig,
-    DUPLICATE_REPO_WIRE_CODE, NO_REPOS_WIRE_CODE,
+    WorkspaceRepoSpec, DUPLICATE_REPO_WIRE_CODE, NO_REPOS_WIRE_CODE,
 };
 // Task 306 retired `SINGLE_REPO_WIRE_CODE` as an active rejection but
 // keeps it defined for one release of client back-compat; re-export it

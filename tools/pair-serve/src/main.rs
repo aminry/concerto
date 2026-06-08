@@ -31,7 +31,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::Engine as _;
 use concerto_core::boot::{self, BootOutcome};
@@ -41,7 +41,7 @@ use concerto_proto::v1::runtime_client::RuntimeClient;
 use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
-    AddRepoRequest, CloneRequest, CreateWorkareaRequest, CreateWorkspaceRequest,
+    AddRepoRequest, CloneRequest, CreateWorkareaRequest, CreateWorkspaceRequest, WorkspaceRepoSpec,
 };
 use futures::StreamExt;
 use hyper_util::rt::TokioIo;
@@ -75,8 +75,6 @@ struct ConnectBlob {
     core_noise_pub: String,
     /// The seeded workarea the dial side Files into.
     workarea_id: String,
-    /// The seeded project id.
-    project_id: String,
     /// The seeded repo id.
     repo_id: String,
 }
@@ -188,7 +186,7 @@ async fn run() -> Result<(), String> {
 
     // --- Seed the chain over the co-located UDS server (implicit admin) -----
     let socket_path = core.socket_path().to_path_buf();
-    let chain = seed_chain(&socket_path, &args.data_dir, &args.bare_repo)
+    let chain = seed_chain(&socket_path, &args.bare_repo)
         .await
         .map_err(|e| format!("seed chain: {e}"))?;
 
@@ -232,7 +230,6 @@ async fn run() -> Result<(), String> {
         pairing_token: hex::encode(token),
         core_noise_pub: hex::encode(core_noise_pub),
         workarea_id: chain.workarea_id,
-        project_id: chain.project_id,
         repo_id: chain.repo_id,
     };
     let json = serde_json::to_vec(&blob).map_err(|e| format!("encode blob json: {e}"))?;
@@ -265,7 +262,6 @@ async fn run() -> Result<(), String> {
 
 /// The seeded chain ids the dial side needs.
 struct Chain {
-    project_id: String,
     repo_id: String,
     workarea_id: String,
 }
@@ -273,7 +269,7 @@ struct Chain {
 /// Seed project -> repo -> (clone) -> workspace -> workarea over the Core's
 /// co-located UDS server. The UDS path is kernel-attested implicit admin, so no
 /// device cert is needed here.
-async fn seed_chain(socket_path: &Path, data_dir: &Path, bare_repo: &str) -> Result<Chain, String> {
+async fn seed_chain(socket_path: &Path, bare_repo: &str) -> Result<Chain, String> {
     let channel = connect_uds(socket_path).await?;
 
     // A liveness probe so we fail fast if the Core's gRPC server never bound.
@@ -282,13 +278,10 @@ async fn seed_chain(socket_path: &Path, data_dir: &Path, bare_repo: &str) -> Res
 
     // No Projects.CreateProject RPC in V1.0 — insert the row directly (same as
     // the split-host-loopback driver).
-    let project_id = insert_project(data_dir).await?;
-
     let mut repos = RepositoriesClient::new(channel.clone());
     let repo_id = timeout_rpc(
         "AddRepository",
         repos.add_repository(AddRepoRequest {
-            project_id: project_id.clone(),
             name: "pair-serve-repo".to_string(),
             url: format!("file://{bare_repo}"),
             default_branch: "main".to_string(),
@@ -326,11 +319,14 @@ async fn seed_chain(socket_path: &Path, data_dir: &Path, bare_repo: &str) -> Res
     let workspace_id = timeout_rpc(
         "CreateWorkspace",
         ws.create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.clone(),
             name: "pair-serve-ws".to_string(),
-            repository_ids: vec![repo_id.clone()],
+            repos: vec![WorkspaceRepoSpec {
+                repository_id: repo_id.clone(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         }),
     )
     .await?
@@ -350,7 +346,6 @@ async fn seed_chain(socket_path: &Path, data_dir: &Path, bare_repo: &str) -> Res
     .id;
 
     Ok(Chain {
-        project_id,
         repo_id,
         workarea_id,
     })
@@ -431,38 +426,6 @@ async fn resolve_server_addr(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-}
-
-/// Insert a `projects` row directly (no `Projects.CreateProject` RPC in V1.0;
-/// mirrors the split-host-loopback driver). The Core's migrations already ran at
-/// boot, so the DB exists; we open it `create_if_missing(false)`.
-async fn insert_project(data_dir: &Path) -> Result<String, String> {
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{ConnectOptions, Connection};
-
-    let db_path = data_dir.join("concerto.db");
-    let id = uuid::Uuid::now_v7().to_string();
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("clock before epoch: {e}"))?
-        .as_millis() as i64;
-
-    let opts = SqliteConnectOptions::new()
-        .filename(&db_path)
-        .create_if_missing(false);
-    let mut conn = opts
-        .connect()
-        .await
-        .map_err(|e| format!("open {}: {e}", db_path.display()))?;
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-        .bind(&id)
-        .bind("pair-serve")
-        .bind(created_at)
-        .execute(&mut conn)
-        .await
-        .map_err(|e| format!("insert project: {e}"))?;
-    conn.close().await.map_err(|e| format!("close db: {e}"))?;
-    Ok(id)
 }
 
 /// Trigger an orderly shutdown and wait for the runtime to stop (no leaked

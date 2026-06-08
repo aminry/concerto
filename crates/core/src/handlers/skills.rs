@@ -5,7 +5,7 @@
 //! result back into proto messages.
 
 use async_trait::async_trait;
-use concerto_persist::{ProjectId, SkillFilter, SkillId, SkillRow, SkillScope};
+use concerto_persist::{SkillFilter, SkillId, SkillRow, SkillScope, WorkspaceId};
 use concerto_proto::v1::skills_server::Skills as SkillsService;
 use concerto_proto::v1::{
     ListSkillsRequest, ListSkillsResponse, RefreshMarketplacesRequest, RefreshMarketplacesResponse,
@@ -39,20 +39,22 @@ impl SkillsService for SkillsHandler {
             None | Some("") => None,
             Some(s) => Some(SkillScope::from_sql_str(s).ok_or_else(|| {
                 Status::invalid_argument(format!(
-                    "unknown scope {s:?} — expected personal|project|plugin|enterprise"
+                    "unknown scope {s:?} — expected personal|workspace|plugin|enterprise"
                 ))
             })?),
         };
-        let project_id = match req.project_id.as_deref() {
+        // The wire field is still named `project_id` (skills proto unchanged
+        // by the collapse); it carries a workspace id now.
+        let workspace_id = match req.project_id.as_deref() {
             None | Some("") => None,
-            Some(p) => Some(ProjectId(p.to_string())),
+            Some(w) => Some(WorkspaceId(w.to_string())),
         };
         let enabled_only = req.enabled_only.unwrap_or(false);
         let rows = self
             .registry
             .list(SkillFilter {
                 scope,
-                project_id,
+                workspace_id,
                 enabled_only,
             })
             .await
@@ -85,13 +87,15 @@ impl SkillsService for SkillsHandler {
         request: Request<RefreshMarketplacesRequest>,
     ) -> Result<Response<RefreshMarketplacesResponse>, Status> {
         let req = request.into_inner();
-        let project_filter = match req.project_id.as_deref() {
+        // The wire field is still named `project_id`; it carries a workspace
+        // id now (skills proto unchanged by the collapse).
+        let workspace_filter = match req.project_id.as_deref() {
             None | Some("") => None,
-            Some(p) => Some(ProjectId(p.to_string())),
+            Some(w) => Some(WorkspaceId(w.to_string())),
         };
         let report = self
             .registry
-            .refresh(project_filter.as_ref())
+            .refresh(workspace_filter.as_ref())
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(RefreshMarketplacesResponse {
@@ -106,7 +110,8 @@ fn skill_to_proto(row: SkillRow) -> ProtoSkill {
     ProtoSkill {
         id: row.id.0,
         scope: row.scope.as_sql_str().to_string(),
-        project_id: row.project_id.map(|p| p.0).unwrap_or_default(),
+        // Wire field still named `project_id`; carries the workspace id.
+        project_id: row.workspace_id.map(|w| w.0).unwrap_or_default(),
         name: row.name,
         slash_command: row.slash_command.unwrap_or_default(),
         description: row.description.unwrap_or_default(),

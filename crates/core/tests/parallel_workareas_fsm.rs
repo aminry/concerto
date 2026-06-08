@@ -54,23 +54,17 @@ async fn make_manager() -> (TempDir, Arc<Persistence>, WorkareaManager) {
 /// Seed a project + repo + workspace once.
 async fn seed_parents(persistence: &Persistence) {
     let mut w = persistence.writer().await;
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES ('p', 'p', 0)")
-        .execute(&mut *w)
-        .await
-        .expect("project");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES ('r', 'p', 'r', 'file:///tmp/r', '/tmp/r', 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES ('r', 'r', 'file:///tmp/r', '/tmp/r', 'full', 'main')",
     )
     .execute(&mut *w)
     .await
     .expect("repo");
-    sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES ('ws', 'p', 'ws', 'ws', 0)",
-    )
-    .execute(&mut *w)
-    .await
-    .expect("workspace");
+    sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES ('ws', 'ws', 'ws', 0)")
+        .execute(&mut *w)
+        .await
+        .expect("workspace");
 }
 
 /// Seed one `workareas` row (status `active`) with a distinct composer.

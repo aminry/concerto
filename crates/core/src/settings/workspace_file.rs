@@ -3,7 +3,7 @@
 //! Two checked-in artifacts sit on the same precedence stack as the local-DB
 //! layer (`design/03 §3.13` / `design/04 §3.13`):
 //!
-//! - `<project_root>/.concerto/project_settings.json` — **jsonc** (allows
+//! - `<project_root>/.concerto/workspace_settings.json` — **jsonc** (allows
 //!   `//` line comments). The superset of the local-DB project row.
 //! - `<repo_root>/.concerto/action_prefs.toml` — per-repo `action_prefs`
 //!   overrides (the seven action keys).
@@ -14,7 +14,7 @@
 //! resolve normally. The reader NEVER refuses to resolve because one field is
 //! bad — a broken team artifact must not lock a developer out.
 //!
-//! [`ProjectSettingsSource`] is the `notify`-rs hot-reload watcher; it lifts
+//! [`WorkspaceSettingsSource`] is the `notify`-rs hot-reload watcher; it lifts
 //! the [`crate::security::managed::ManagedPolicySource`] shape verbatim (watch
 //! the parent `.concerto/` dir non-recursively, `std::sync::mpsc` →
 //! `spawn_blocking` recv → 500 ms debounce → re-read → `watch::Sender::send`;
@@ -32,7 +32,7 @@ use crate::security::managed::HOT_RELOAD_DEBOUNCE;
 
 /// Locked filename of the checked-in project settings file (jsonc) inside
 /// `<project_root>/.concerto/`.
-pub const PROJECT_SETTINGS_FILE_NAME: &str = "project_settings.json";
+pub const WORKSPACE_SETTINGS_FILE_NAME: &str = "workspace_settings.json";
 
 /// Locked filename of the per-repo checked-in action-prefs file inside
 /// `<repo_root>/.concerto/`.
@@ -42,15 +42,15 @@ pub const ACTION_PREFS_FILE_NAME: &str = "action_prefs.toml";
 /// user's `~/.concerto/`.
 pub const PER_MACHINE_CONFIG_FILE_NAME: &str = "concerto.json";
 
-/// The parsed checked-in `project_settings.json` payload (the fields the
+/// The parsed checked-in `workspace_settings.json` payload (the fields the
 /// resolver consults as its checked-in layer). All fields are optional — an
 /// absent field falls through to the lower layer. The `scripts` map keeps the
 /// raw `{ setup, setup_workarea, run, archive }` sub-keys.
 ///
 /// Stored as the already-validated effective shape; the raw-vs-validated
-/// distinction is carried in [`ProjectSettingsLoad::violations`].
+/// distinction is carried in [`WorkspaceSettingsLoad::violations`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CheckedInProjectSettings {
+pub struct CheckedInWorkspaceSettings {
     /// `scripts.{setup,setup_workarea,run,archive}` — the sub-keys that were
     /// present and valid (a string value). Missing sub-keys are simply absent.
     pub scripts: BTreeMap<String, String>,
@@ -72,14 +72,14 @@ pub struct CheckedInProjectSettings {
     pub writable_paths_outside_worktree: Option<Vec<String>>,
 }
 
-/// The result of parsing a checked-in `project_settings.json`: the effective
-/// [`CheckedInProjectSettings`] plus the per-field validation violations
+/// The result of parsing a checked-in `workspace_settings.json`: the effective
+/// [`CheckedInWorkspaceSettings`] plus the per-field validation violations
 /// collected while reverting bad fields to the lower layer. Mirrors
 /// [`crate::security::managed::ManagedPolicyLoad`].
 #[derive(Debug, Clone, Default)]
-pub struct ProjectSettingsLoad {
+pub struct WorkspaceSettingsLoad {
     /// Effective settings after invalid fields reverted (dropped).
-    pub settings: CheckedInProjectSettings,
+    pub settings: CheckedInWorkspaceSettings,
     /// Human-readable per-field violation messages (empty on a clean load).
     pub violations: Vec<String>,
 }
@@ -216,12 +216,12 @@ pub fn strip_jsonc_line_comments(input: &str) -> String {
     out
 }
 
-/// Parse a checked-in `project_settings.json` (jsonc) from a raw string,
+/// Parse a checked-in `workspace_settings.json` (jsonc) from a raw string,
 /// collecting per-field violations. Field-by-field validate-and-revert: a bad
 /// field is dropped (so the resolver falls through to the lower layer) +
 /// records a violation; siblings still parse. A whole-file parse failure
 /// returns empty settings + one violation (never an `Err`).
-pub fn parse_project_settings_jsonc(raw: &str, path: &Path) -> ProjectSettingsLoad {
+pub fn parse_workspace_settings_jsonc(raw: &str, path: &Path) -> WorkspaceSettingsLoad {
     let stripped = strip_jsonc_line_comments(raw);
     let value: serde_json::Value = match serde_json::from_str(&stripped) {
         Ok(v) => v,
@@ -229,23 +229,23 @@ pub fn parse_project_settings_jsonc(raw: &str, path: &Path) -> ProjectSettingsLo
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "project_settings.json is not valid jsonc; reverting whole file to lower layer"
+                "workspace_settings.json is not valid jsonc; reverting whole file to lower layer"
             );
-            return ProjectSettingsLoad {
-                settings: CheckedInProjectSettings::default(),
-                violations: vec![format!("project_settings.json is not valid jsonc: {e}")],
+            return WorkspaceSettingsLoad {
+                settings: CheckedInWorkspaceSettings::default(),
+                violations: vec![format!("workspace_settings.json is not valid jsonc: {e}")],
             };
         }
     };
     let Some(obj) = value.as_object() else {
-        return ProjectSettingsLoad {
-            settings: CheckedInProjectSettings::default(),
-            violations: vec!["project_settings.json top level must be an object".to_string()],
+        return WorkspaceSettingsLoad {
+            settings: CheckedInWorkspaceSettings::default(),
+            violations: vec!["workspace_settings.json top level must be an object".to_string()],
         };
     };
 
     let mut violations = Vec::new();
-    let mut settings = CheckedInProjectSettings::default();
+    let mut settings = CheckedInWorkspaceSettings::default();
 
     // scripts: an object of string sub-keys (setup / setup_workarea / run /
     // archive). A non-object reverts the whole field; a non-string sub-value
@@ -287,7 +287,7 @@ pub fn parse_project_settings_jsonc(raw: &str, path: &Path) -> ProjectSettingsLo
             super::resolver::parse_files_to_copy_rules(v, &mut violations);
     }
 
-    ProjectSettingsLoad {
+    WorkspaceSettingsLoad {
         settings,
         violations,
     }
@@ -340,22 +340,22 @@ pub fn parse_action_prefs_toml(raw: &str, path: &Path) -> ActionPrefsLoad {
     ActionPrefsLoad { prefs, violations }
 }
 
-/// Read + parse `<project_root>/.concerto/project_settings.json` if present.
+/// Read + parse `<project_root>/.concerto/workspace_settings.json` if present.
 /// A missing file → empty settings, no violations.
-pub fn load_project_settings_file(project_concerto_dir: &Path) -> ProjectSettingsLoad {
-    let path = project_concerto_dir.join(PROJECT_SETTINGS_FILE_NAME);
+pub fn load_workspace_settings_file(project_concerto_dir: &Path) -> WorkspaceSettingsLoad {
+    let path = project_concerto_dir.join(WORKSPACE_SETTINGS_FILE_NAME);
     match std::fs::read_to_string(&path) {
-        Ok(raw) => parse_project_settings_jsonc(&raw, &path),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ProjectSettingsLoad::default(),
+        Ok(raw) => parse_workspace_settings_jsonc(&raw, &path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => WorkspaceSettingsLoad::default(),
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "project_settings.json read failed; reverting to lower layer"
+                "workspace_settings.json read failed; reverting to lower layer"
             );
-            ProjectSettingsLoad {
-                settings: CheckedInProjectSettings::default(),
-                violations: vec![format!("project_settings.json read failed: {e}")],
+            WorkspaceSettingsLoad {
+                settings: CheckedInWorkspaceSettings::default(),
+                violations: vec![format!("workspace_settings.json read failed: {e}")],
             }
         }
     }
@@ -448,48 +448,48 @@ fn opt_string_array_field(
 /// Hot-reload broadcaster for one project's checked-in settings, mirroring
 /// [`crate::security::managed::ManagedPolicySource`].
 ///
-/// Owns a `watch::Sender<ProjectSettingsLoad>` and the background `notify`-rs
+/// Owns a `watch::Sender<WorkspaceSettingsLoad>` and the background `notify`-rs
 /// watcher. It watches the project's `.concerto/` dir (non-recursive, so
-/// create/replace of a not-yet-existing `project_settings.json` still fires)
-/// and republishes the re-parsed [`ProjectSettingsLoad`] whenever the file
+/// create/replace of a not-yet-existing `workspace_settings.json` still fires)
+/// and republishes the re-parsed [`WorkspaceSettingsLoad`] whenever the file
 /// mutates, debounced at [`HOT_RELOAD_DEBOUNCE`].
 ///
 /// Per-repo `action_prefs.toml` watchers follow the identical shape; a
 /// resolver that needs live action-prefs reload builds one
-/// [`ProjectSettingsSource`] per watched `.concerto/` dir.
-pub struct ProjectSettingsSource {
-    sender: watch::Sender<ProjectSettingsLoad>,
+/// [`WorkspaceSettingsSource`] per watched `.concerto/` dir.
+pub struct WorkspaceSettingsSource {
+    sender: watch::Sender<WorkspaceSettingsLoad>,
     concerto_dir: PathBuf,
     settings_path: PathBuf,
     _watcher: Option<notify::RecommendedWatcher>,
     _debounce_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl std::fmt::Debug for ProjectSettingsSource {
+impl std::fmt::Debug for WorkspaceSettingsSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProjectSettingsSource")
+        f.debug_struct("WorkspaceSettingsSource")
             .field("concerto_dir", &self.concerto_dir)
             .finish()
     }
 }
 
-impl ProjectSettingsSource {
+impl WorkspaceSettingsSource {
     /// Build a source rooted at `<project_root>/.concerto/`. Performs an
-    /// initial synchronous parse of `project_settings.json`, seeds the watch
+    /// initial synchronous parse of `workspace_settings.json`, seeds the watch
     /// channel, then spawns the `notify`-rs watcher on the `.concerto/` dir.
     /// Watcher init failures are logged + swallowed (the seed value still
     /// serves; hot reload is simply disabled).
     pub fn new(project_concerto_dir: &Path) -> Self {
         let concerto_dir = project_concerto_dir.to_path_buf();
-        let settings_path = concerto_dir.join(PROJECT_SETTINGS_FILE_NAME);
-        let initial = load_project_settings_file(&concerto_dir);
+        let settings_path = concerto_dir.join(WORKSPACE_SETTINGS_FILE_NAME);
+        let initial = load_workspace_settings_file(&concerto_dir);
         let (sender, _) = watch::channel(initial);
 
         if let Err(e) = std::fs::create_dir_all(&concerto_dir) {
             tracing::warn!(
                 dir = %concerto_dir.display(),
                 error = %e,
-                "project_settings.json: failed to ensure .concerto dir; hot reload disabled"
+                "workspace_settings.json: failed to ensure .concerto dir; hot reload disabled"
             );
             return Self::without_watcher(sender, concerto_dir, settings_path);
         }
@@ -505,12 +505,12 @@ impl ProjectSettingsSource {
                         let _ = tx.send(());
                     }
                 }
-                Err(e) => tracing::warn!(error = %e, "project_settings.json watcher error"),
+                Err(e) => tracing::warn!(error = %e, "workspace_settings.json watcher error"),
             },
         ) {
             Ok(w) => w,
             Err(e) => {
-                tracing::warn!(error = %e, "project_settings.json: notify init failed; hot reload disabled");
+                tracing::warn!(error = %e, "workspace_settings.json: notify init failed; hot reload disabled");
                 return Self::without_watcher(sender, concerto_dir, settings_path);
             }
         };
@@ -518,7 +518,7 @@ impl ProjectSettingsSource {
             tracing::warn!(
                 dir = %concerto_dir.display(),
                 error = %e,
-                "project_settings.json: notify watch() failed; hot reload disabled"
+                "workspace_settings.json: notify watch() failed; hot reload disabled"
             );
             return Self::without_watcher(sender, concerto_dir, settings_path);
         }
@@ -539,7 +539,7 @@ impl ProjectSettingsSource {
     }
 
     fn without_watcher(
-        sender: watch::Sender<ProjectSettingsLoad>,
+        sender: watch::Sender<WorkspaceSettingsLoad>,
         concerto_dir: PathBuf,
         settings_path: PathBuf,
     ) -> Self {
@@ -555,17 +555,17 @@ impl ProjectSettingsSource {
     /// Subscribe to checked-in settings changes. The receiver immediately
     /// yields the current value via `borrow()`; `changed().await` completes
     /// the next time the watcher republishes.
-    pub fn subscribe(&self) -> watch::Receiver<ProjectSettingsLoad> {
+    pub fn subscribe(&self) -> watch::Receiver<WorkspaceSettingsLoad> {
         self.sender.subscribe()
     }
 
     /// Current parsed checked-in settings (mainly for tests + the resolver
     /// build path).
-    pub fn current(&self) -> ProjectSettingsLoad {
+    pub fn current(&self) -> WorkspaceSettingsLoad {
         self.sender.borrow().clone()
     }
 
-    /// The `project_settings.json` path the watcher observes.
+    /// The `workspace_settings.json` path the watcher observes.
     pub fn path(&self) -> &Path {
         &self.settings_path
     }
@@ -580,7 +580,7 @@ impl ProjectSettingsSource {
 async fn debounce_loop(
     mut rx: mpsc::Receiver<()>,
     concerto_dir: PathBuf,
-    sender: watch::Sender<ProjectSettingsLoad>,
+    sender: watch::Sender<WorkspaceSettingsLoad>,
 ) {
     loop {
         let (handed_back, ok) = match tokio::task::spawn_blocking(move || match rx.recv() {
@@ -608,7 +608,7 @@ async fn debounce_loop(
             Err(_) => return,
         };
 
-        let load = load_project_settings_file(&concerto_dir);
+        let load = load_workspace_settings_file(&concerto_dir);
         let _ = sender.send(load);
     }
 }
@@ -621,7 +621,7 @@ mod tests {
     fn strip_jsonc_drops_line_comments_keeps_string_slashes() {
         let input = r#"{
             // a comment
-            "$schema": "https://concerto.build/schemas/project_settings.json",
+            "$schema": "https://concerto.build/schemas/workspace_settings.json",
             "run_script_mode": "concurrent" // trailing comment
         }"#;
         let stripped = strip_jsonc_line_comments(input);
@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn project_settings_jsonc_parses_full_set() {
         let raw = r#"{
-            "$schema": "https://concerto.build/schemas/project_settings.json",
+            "$schema": "https://concerto.build/schemas/workspace_settings.json",
             "scripts": { "setup": "make setup", "run": "make run" },
             "run_script_mode": "concurrent",
             "enterprise_data_privacy": true,
@@ -644,7 +644,7 @@ mod tests {
             "files_to_copy_rules": [ { "pattern": ".env*", "mode": "copy" } ],
             "writable_paths_outside_worktree": ["/tmp/shared"]
         }"#;
-        let load = parse_project_settings_jsonc(raw, Path::new("test"));
+        let load = parse_workspace_settings_jsonc(raw, Path::new("test"));
         assert!(load.violations.is_empty(), "{:?}", load.violations);
         let s = load.settings;
         assert_eq!(
@@ -669,7 +669,7 @@ mod tests {
             "enterprise_data_privacy": "yes",
             "run_script_mode": "sequential"
         }"#;
-        let load = parse_project_settings_jsonc(raw, Path::new("test"));
+        let load = parse_workspace_settings_jsonc(raw, Path::new("test"));
         assert_eq!(load.settings.enterprise_data_privacy, None);
         assert_eq!(load.settings.run_script_mode.as_deref(), Some("sequential"));
         assert_eq!(load.violations.len(), 1);
@@ -678,8 +678,8 @@ mod tests {
 
     #[test]
     fn whole_file_garbage_reverts_to_lower_layer() {
-        let load = parse_project_settings_jsonc("not json", Path::new("test"));
-        assert_eq!(load.settings, CheckedInProjectSettings::default());
+        let load = parse_workspace_settings_jsonc("not json", Path::new("test"));
+        assert_eq!(load.settings, CheckedInWorkspaceSettings::default());
         assert_eq!(load.violations.len(), 1);
     }
 
@@ -734,12 +734,12 @@ mod tests {
         let concerto = tmp.path().join(".concerto");
         std::fs::create_dir_all(&concerto).unwrap();
         std::fs::write(
-            concerto.join(PROJECT_SETTINGS_FILE_NAME),
+            concerto.join(WORKSPACE_SETTINGS_FILE_NAME),
             r#"{ "run_script_mode": "concurrent" }"#,
         )
         .unwrap();
 
-        let source = ProjectSettingsSource::new(&concerto);
+        let source = WorkspaceSettingsSource::new(&concerto);
         let mut rx = source.subscribe();
         assert_eq!(
             source.current().settings.run_script_mode.as_deref(),
@@ -748,7 +748,7 @@ mod tests {
 
         // Mutate the file; the watcher should publish the new value.
         std::fs::write(
-            concerto.join(PROJECT_SETTINGS_FILE_NAME),
+            concerto.join(WORKSPACE_SETTINGS_FILE_NAME),
             r#"{ "run_script_mode": "sequential" }"#,
         )
         .unwrap();

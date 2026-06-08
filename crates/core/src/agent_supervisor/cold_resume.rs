@@ -147,7 +147,7 @@ pub async fn maybe_auto_resume(
     }
 }
 
-/// Read `projects.settings_json.auto_resume_agents` for the project
+/// Read `workspaces.settings_json.auto_resume_agents` for the workspace
 /// that owns `session_id`. Returns `false` on any error or missing
 /// key — the cold path falls back to "leave crashed" on doubt.
 async fn read_auto_resume_for_session(
@@ -157,11 +157,10 @@ async fn read_auto_resume_for_session(
     let persistence = handle.persistence();
     let pool = persistence.readers();
     let row = match sqlx::query_as::<_, (String,)>(
-        "SELECT p.settings_json
+        "SELECT ws.settings_json
          FROM sessions s
          JOIN workareas wa  ON wa.id = s.workarea_id
          JOIN workspaces ws ON ws.id = wa.workspace_id
-         JOIN projects p    ON p.id  = ws.project_id
          WHERE s.id = ?",
     )
     .bind(&session_id.0)

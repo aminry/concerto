@@ -22,7 +22,7 @@ use concerto_proto::v1::{
 use tonic::{Request, Response, Status};
 
 use crate::error_map::error_to_status;
-use crate::workspace_manager::WorkspaceManager;
+use crate::workspace_manager::{WorkspaceManager, WorkspaceRepoSpec};
 
 /// Implements the generated `Workspaces` service trait.
 #[derive(Clone)]
@@ -48,14 +48,22 @@ impl WorkspacesService for WorkspacesHandler {
             .permission_mode
             .map(permission_mode_from_i32)
             .transpose()?;
+        let repos: Vec<WorkspaceRepoSpec> = req
+            .repos
+            .into_iter()
+            .map(|r| WorkspaceRepoSpec {
+                repository_id: concerto_persist::RepositoryId(r.repository_id),
+                sparse_cones: r.sparse_cones,
+            })
+            .collect();
         let row = self
             .workspace_manager
             .create_workspace(
-                &req.project_id,
                 &req.name,
-                &req.repository_ids,
+                &repos,
                 permission_mode,
                 req.description,
+                req.icon,
             )
             .await
             .map_err(error_to_status)?;
@@ -89,14 +97,15 @@ impl WorkspacesService for WorkspacesHandler {
         request: Request<ListWorkspacesRequest>,
     ) -> Result<Response<ListWorkspacesResponse>, Status> {
         let req = request.into_inner();
-        if req.project_id.is_empty() {
-            return Err(Status::invalid_argument("project_id is required"));
-        }
-        let rows = self
+        let mut rows = self
             .workspace_manager
-            .list_by_project(&req.project_id)
+            .list_all()
             .await
             .map_err(error_to_status)?;
+        // `include_archived = false` (default) hides archived workspaces.
+        if !req.include_archived {
+            rows.retain(|w| w.archived_at.is_none());
+        }
         Ok(Response::new(ListWorkspacesResponse {
             workspaces: rows.into_iter().map(workspace_to_proto).collect(),
         }))
@@ -169,9 +178,9 @@ impl WorkspacesService for WorkspacesHandler {
 fn workspace_to_proto(row: concerto_persist::Workspace) -> ProtoWorkspace {
     ProtoWorkspace {
         id: row.id.to_string(),
-        project_id: row.project_id,
         name: row.name,
         slug: row.slug,
+        icon: row.icon,
         description: row.description,
         permission_mode: row.permission_mode.as_deref().map(permission_mode_to_i32),
         created_at: Some(epoch_ms_to_ts(row.created_at)),

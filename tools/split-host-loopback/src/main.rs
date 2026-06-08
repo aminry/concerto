@@ -45,7 +45,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
@@ -63,7 +63,7 @@ use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
     AddRepoRequest, CloneRequest, CreateWorkareaRequest, CreateWorkspaceRequest, DownloadRequest,
-    SubscribeRequest, TransportKind, UploadChunk, UploadFinalize, UploadHeader,
+    SubscribeRequest, TransportKind, UploadChunk, UploadFinalize, UploadHeader, WorkspaceRepoSpec,
 };
 use concerto_transport::api::write_channel_tag;
 use concerto_transport::{
@@ -302,13 +302,11 @@ async fn run() -> Result<(), String> {
     println!("split-host-loopback: unary GetServerCapabilities == IROH");
 
     // --- Set up the chain over the Iroh channel ---------------------------
-    let project_id = insert_project(&args.data_dir).await?;
     let mut repos_client =
         RepositoriesClient::with_interceptor(channel.clone(), attach_cert.call());
     let repo_id = timeout_rpc(
         "AddRepository",
         repos_client.add_repository(AddRepoRequest {
-            project_id: project_id.clone(),
             name: "split-host-repo".to_string(),
             url: format!("file://{}", args.bare_repo),
             default_branch: "main".to_string(),
@@ -346,11 +344,14 @@ async fn run() -> Result<(), String> {
     let workspace_id = timeout_rpc(
         "CreateWorkspace",
         ws_client.create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.clone(),
             name: "split-host-ws".to_string(),
-            repository_ids: vec![repo_id.clone()],
+            repos: vec![WorkspaceRepoSpec {
+                repository_id: repo_id.clone(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         }),
     )
     .await?
@@ -370,7 +371,7 @@ async fn run() -> Result<(), String> {
     .id;
 
     // (b) stream — Subscribe(workspace.events) then trigger an event --------
-    stream_step(channel.clone(), &attach_cert, &project_id, &repo_id).await?;
+    stream_step(channel.clone(), &attach_cert, &repo_id).await?;
     println!("split-host-loopback: stream Streams.Subscribe(workspace.events) captured an event");
 
     // (c) Files — Upload then Download into the workarea's .context/ --------
@@ -446,7 +447,6 @@ async fn pair_over_iroh(
 async fn stream_step(
     channel: Channel,
     attach_cert: &CertInterceptorFactory,
-    project_id: &str,
     repo_id: &str,
 ) -> Result<(), String> {
     let mut streams_client = StreamsClient::with_interceptor(channel.clone(), attach_cert.call());
@@ -466,11 +466,14 @@ async fn stream_step(
     let _ = timeout_rpc(
         "CreateWorkspace(stream-trigger)",
         ws_client.create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.to_string(),
             name: "split-host-stream-trigger".to_string(),
-            repository_ids: vec![repo_id.to_string()],
+            repos: vec![WorkspaceRepoSpec {
+                repository_id: repo_id.to_string(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         }),
     )
     .await?;
@@ -571,38 +574,6 @@ async fn files_step(
         return Err("Files round-trip BLAKE2b-256 mismatch".to_string());
     }
     Ok(())
-}
-
-/// Insert a `projects` row directly (no `Projects.CreateProject` RPC in V1.0;
-/// mirrors `smoke-client add-project`). The Core's migrations already ran at
-/// boot, so the DB exists; we open it `create_if_missing(false)`.
-async fn insert_project(data_dir: &std::path::Path) -> Result<String, String> {
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{ConnectOptions, Connection};
-
-    let db_path = data_dir.join("concerto.db");
-    let id = uuid::Uuid::now_v7().to_string();
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("clock before epoch: {e}"))?
-        .as_millis() as i64;
-
-    let opts = SqliteConnectOptions::new()
-        .filename(&db_path)
-        .create_if_missing(false);
-    let mut conn = opts
-        .connect()
-        .await
-        .map_err(|e| format!("open {}: {e}", db_path.display()))?;
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-        .bind(&id)
-        .bind("split-host")
-        .bind(created_at)
-        .execute(&mut conn)
-        .await
-        .map_err(|e| format!("insert project: {e}"))?;
-    conn.close().await.map_err(|e| format!("close db: {e}"))?;
-    Ok(id)
 }
 
 /// Trigger an orderly shutdown and wait for the runtime to stop (no leaked

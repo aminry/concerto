@@ -78,8 +78,8 @@ check_core_boot() {
     echo "Smoke gate v3: Core ready (socket: $SOCKET)"
 
     # Convenience: every subsequent smoke-client invocation passes
-    # `--socket "$SOCKET"`. The data-dir is also exported so the
-    # `add-project` subcommand resolves the same SQLite path the Core uses.
+    # `--socket "$SOCKET"`. The data-dir is also exported so any subcommand
+    # that resolves the SQLite path agrees with the Core.
     export CONCERTO_DATA_DIR="$CORE_DATA_DIR"
     SMOKE_CLIENT=(cargo run --quiet -p concerto-smoke-client --bin smoke-client --)
 

@@ -44,19 +44,11 @@ async fn make_persistence() -> (TempDir, Arc<Persistence>) {
 /// so `McpScopeFilter::Project(repo_id)` can resolve the worktree.
 async fn seed_repo(persistence: &Persistence, repo_id: &str, local_path: &std::path::Path) {
     let mut writer = persistence.writer().await;
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-        .bind("proj-1")
-        .bind("test-project")
-        .bind(0_i64)
-        .execute(&mut *writer)
-        .await
-        .expect("insert project");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind(repo_id)
-    .bind("proj-1")
     .bind("repo-name")
     .bind("file:///tmp/fake")
     .bind(local_path.to_string_lossy().as_ref())

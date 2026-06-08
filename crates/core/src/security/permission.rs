@@ -6,10 +6,14 @@
 //! sessions.permission_mode
 //!   → workareas.permission_mode
 //!     → workspaces.permission_mode
-//!       → projects.settings_json.default_permission_mode
+//!       → workspaces.settings_json.default_permission_mode
 //!         → managed.json.max_permission_mode (cap, not floor)
 //!           → global default ("normal")
 //! ```
+//!
+//! There is no Project layer after the Project→Workspace collapse: the
+//! walk terminates at the workspace (its `permission_mode` column, then
+//! its `settings_json.default_permission_mode`).
 //!
 //! [`resolve_effective_mode`] returns the first non-NULL value walking
 //! the DB chain, then caps the result against `managed.json` in Rust.
@@ -91,7 +95,6 @@ pub enum ModeSource {
     Session,
     Workarea,
     Workspace,
-    Project,
     Managed,
     Default,
 }
@@ -102,7 +105,6 @@ impl ModeSource {
             ModeSource::Session => "session",
             ModeSource::Workarea => "workarea",
             ModeSource::Workspace => "workspace",
-            ModeSource::Project => "project",
             ModeSource::Managed => "managed",
             ModeSource::Default => "default",
         }
@@ -140,14 +142,13 @@ pub fn ack_for_bypass_destructive_guard(ack: &str) -> bool {
 /// Walk the inheritance chain for `session_id` and return the
 /// effective mode + source.
 ///
-/// Single SQL `SELECT` joins sessions → workareas → workspaces →
-/// projects, then walks `COALESCE(session.permission_mode,
-/// workarea.permission_mode, workspace.permission_mode, NULL)`. The
-/// project default is pulled from `projects.settings_json` (a JSON
-/// string) and resolved in Rust because SQLite's JSON1 may or may not
-/// be compiled in. After the walk, [`load_managed_policy`] is consulted
-/// and the result is capped (and the source switched to `Managed`) when
-/// the cap is binding.
+/// Single SQL `SELECT` joins sessions → workareas → workspaces, then
+/// walks `COALESCE(session.permission_mode, workarea.permission_mode,
+/// workspace.permission_mode, NULL)`. The workspace default is pulled
+/// from `workspaces.settings_json` (a JSON string) and resolved in Rust
+/// because SQLite's JSON1 may or may not be compiled in. After the walk,
+/// [`load_managed_policy`] is consulted and the result is capped (and the
+/// source switched to `Managed`) when the cap is binding.
 pub async fn resolve_effective_mode(
     persistence: &Persistence,
     config_dir: &Path,
@@ -156,17 +157,16 @@ pub async fn resolve_effective_mode(
     let pool = persistence.readers();
     let row = sqlx::query(
         "SELECT
-            s.permission_mode          AS session_mode,
-            s.bypass_destructive_guard AS session_bypass,
-            wa.permission_mode         AS workarea_mode,
+            s.permission_mode           AS session_mode,
+            s.bypass_destructive_guard  AS session_bypass,
+            wa.permission_mode          AS workarea_mode,
             wa.bypass_destructive_guard AS workarea_bypass,
-            ws.permission_mode         AS workspace_mode,
+            ws.permission_mode          AS workspace_mode,
             ws.bypass_destructive_guard AS workspace_bypass,
-            p.settings_json            AS project_settings_json
+            ws.settings_json            AS workspace_settings_json
          FROM sessions s
          JOIN workareas wa  ON wa.id = s.workarea_id
          JOIN workspaces ws ON ws.id = wa.workspace_id
-         JOIN projects p    ON p.id  = ws.project_id
          WHERE s.id = ?",
     )
     .bind(&session_id.0)
@@ -180,7 +180,7 @@ pub async fn resolve_effective_mode(
     let session_mode: Option<String> = row.get("session_mode");
     let workarea_mode: Option<String> = row.get("workarea_mode");
     let workspace_mode: Option<String> = row.get("workspace_mode");
-    let project_settings_json: String = row.get("project_settings_json");
+    let workspace_settings_json: String = row.get("workspace_settings_json");
 
     let (mut mode, mut source) = if let Some(m) = session_mode.as_deref() {
         (parse_permission_mode(m)?, ModeSource::Session)
@@ -188,8 +188,8 @@ pub async fn resolve_effective_mode(
         (parse_permission_mode(m)?, ModeSource::Workarea)
     } else if let Some(m) = workspace_mode.as_deref() {
         (parse_permission_mode(m)?, ModeSource::Workspace)
-    } else if let Some(m) = project_default_from_settings(&project_settings_json)? {
-        (m, ModeSource::Project)
+    } else if let Some(m) = workspace_default_from_settings(&workspace_settings_json)? {
+        (m, ModeSource::Workspace)
     } else {
         (PermissionMode::Normal, ModeSource::Default)
     };
@@ -241,11 +241,11 @@ pub async fn resolve_effective_mode(
     })
 }
 
-/// Try to read `default_permission_mode` from a project's
+/// Try to read `default_permission_mode` from a workspace's
 /// `settings_json` blob. Returns `Ok(None)` if the key is absent or the
-/// JSON cannot be parsed (treating malformed project settings as
+/// JSON cannot be parsed (treating malformed workspace settings as
 /// "inherit from below" is more forgiving than refusing to spawn).
-fn project_default_from_settings(settings_json: &str) -> Result<Option<PermissionMode>> {
+fn workspace_default_from_settings(settings_json: &str) -> Result<Option<PermissionMode>> {
     let parsed: serde_json::Value = match serde_json::from_str(settings_json) {
         Ok(v) => v,
         Err(_) => return Ok(None),
@@ -631,16 +631,16 @@ mod tests {
     }
 
     #[test]
-    fn project_settings_parses_default_mode() {
+    fn workspace_settings_parses_default_mode() {
         let s = r#"{"default_permission_mode": "auto"}"#;
         assert_eq!(
-            project_default_from_settings(s).unwrap(),
+            workspace_default_from_settings(s).unwrap(),
             Some(PermissionMode::Auto)
         );
         let s = r#"{}"#;
-        assert_eq!(project_default_from_settings(s).unwrap(), None);
+        assert_eq!(workspace_default_from_settings(s).unwrap(), None);
         // Malformed → None, not error.
         let s = "not json";
-        assert_eq!(project_default_from_settings(s).unwrap(), None);
+        assert_eq!(workspace_default_from_settings(s).unwrap(), None);
     }
 }

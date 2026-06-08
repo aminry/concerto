@@ -1,75 +1,85 @@
 //! Boot-time settings resolution + audit (Task 310, `design/03 §3.13`).
 //!
 //! At Core start — after the audit writer is live and persistence is up — the
-//! Core builds a [`ProjectSettingsResolver`] per project and emits one
-//! [`crate::audit::AuditKind::ProjectSettingsResolved`]
-//! `{project_id, field, value_source}` per resolved field. This mirrors how
+//! Core builds a [`WorkspaceSettingsResolver`] per workspace and emits one
+//! [`crate::audit::AuditKind::WorkspaceSettingsResolved`]
+//! `{workspace_id, field, value_source}` per resolved field. This mirrors how
 //! `load_managed_policy_audited` is called exactly once at boot, and provides
 //! the provenance trail `design/03 §3.13` calls for ("why does this work on my
 //! machine but not yours").
 //!
 //! ## Where the checked-in files live at boot
 //!
-//! A project has no filesystem root column in the V0.1 schema; the checked-in
-//! `project_settings.json` conceptually lives at the project's *reference
+//! A workspace has no filesystem root column; the checked-in
+//! `workspace_settings.json` conceptually lives at the workspace's *reference
 //! repo* root (`design/03 §3.10`: the first-listed repo's worktree). At boot
-//! we use the project's repositories ordered as `repositories::list_by_project`
-//! returns them (by name — deterministic) and read
-//! `<first_repo.local_path>/.concerto/project_settings.json` as the project's
-//! checked-in layer, plus `<repo.local_path>/.concerto/action_prefs.toml` per
-//! repo. Every read is best-effort: a missing repo/dir/file simply yields an
-//! empty layer (resolution falls through to local DB / default). The boot step
-//! never gates startup.
+//! we use the workspace's repositories ordered as `workspaces::list_repos`
+//! returns them (by `workspace_repos.position` — deterministic) and read
+//! `<first_repo.local_path>/.concerto/workspace_settings.json` as the
+//! workspace's checked-in layer, plus
+//! `<repo.local_path>/.concerto/action_prefs.toml` per repo. Every read is
+//! best-effort: a missing repo/dir/file simply yields an empty layer
+//! (resolution falls through to local DB / default). The boot step never gates
+//! startup.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use concerto_error::Result;
-use concerto_persist::{Persistence, ProjectId};
+use concerto_persist::{Persistence, WorkspaceId};
 
 use crate::audit::AuditWriter;
 use crate::security::managed::ManagedPolicy;
-use crate::settings::project_file::{
-    load_action_prefs_file, load_project_settings_file, OptOutConfig,
+use crate::settings::resolver::WorkspaceSettingsResolver;
+use crate::settings::workspace_file::{
+    load_action_prefs_file, load_workspace_settings_file, OptOutConfig,
 };
-use crate::settings::resolver::ProjectSettingsResolver;
 
 /// The `.concerto/` subdir name a repo worktree carries the checked-in
 /// settings files in.
 const CONCERTO_DIR_NAME: &str = ".concerto";
 
-/// Build a [`ProjectSettingsResolver`] for one project from all four layers.
+/// Build a [`WorkspaceSettingsResolver`] for one workspace from all four
+/// layers.
 ///
 /// - **Managed:** the supplied [`ManagedPolicy`] (loaded once by the caller).
-/// - **Checked-in:** `<reference_repo>/.concerto/project_settings.json` +
+/// - **Checked-in:** `<reference_repo>/.concerto/workspace_settings.json` +
 ///   per-repo `.concerto/action_prefs.toml`.
-/// - **Local DB:** `projects.settings_json` + each repo's
+/// - **Local DB:** `workspaces.settings_json` + each repo's
 ///   `repositories.action_prefs_json`.
 /// - **Opt-out:** the per-machine `~/.concerto/concerto.json` field list for
-///   this project.
+///   this workspace.
 ///
 /// Best-effort throughout: a DB read error propagates (the caller decides
-/// whether to skip the project), but missing files/dirs are empty layers.
-pub async fn build_resolver_for_project(
+/// whether to skip the workspace), but missing files/dirs are empty layers.
+pub async fn build_resolver_for_workspace(
     persistence: &Persistence,
-    project_id: &ProjectId,
+    workspace_id: &WorkspaceId,
     managed: ManagedPolicy,
     opt_out: &OptOutConfig,
-) -> Result<ProjectSettingsResolver> {
+) -> Result<WorkspaceSettingsResolver> {
     let pool = persistence.readers();
 
-    let local_db_settings_json = concerto_persist::projects::get_settings_json(pool, project_id)
-        .await?
-        .unwrap_or_else(|| "{}".to_string());
+    let local_db_settings_json =
+        concerto_persist::workspaces::get_settings_json(pool, workspace_id)
+            .await?
+            .unwrap_or_else(|| "{}".to_string());
 
-    let repos = concerto_persist::repositories::list_by_project(pool, project_id.as_str()).await?;
+    // The workspace's repos, in `workspace_repos.position` order.
+    let repo_ids = concerto_persist::workspaces::list_repos(pool, workspace_id).await?;
+    let mut repos = Vec::with_capacity(repo_ids.len());
+    for repo_id in &repo_ids {
+        if let Some(repo) = concerto_persist::repositories::get(pool, repo_id).await? {
+            repos.push(repo);
+        }
+    }
 
-    // Checked-in project file: the first-listed repo's `.concerto/` is the
-    // project root (`design/03 §3.10` reference-repo rule). No repos → empty.
+    // Checked-in workspace file: the first-listed repo's `.concerto/` is the
+    // reference root (`design/03 §3.10` reference-repo rule). No repos → empty.
     let checked_in = match repos.first() {
         Some(repo) => {
             let dir = PathBuf::from(&repo.local_path).join(CONCERTO_DIR_NAME);
-            load_project_settings_file(&dir).settings
+            load_workspace_settings_file(&dir).settings
         }
         None => Default::default(),
     };
@@ -88,12 +98,12 @@ pub async fn build_resolver_for_project(
 
     let opted_out = opt_out
         .per_project
-        .get(project_id.as_str())
+        .get(workspace_id.as_str())
         .cloned()
         .unwrap_or_default();
 
-    Ok(ProjectSettingsResolver::new(
-        project_id.to_string(),
+    Ok(WorkspaceSettingsResolver::new(
+        workspace_id.to_string(),
         managed,
         checked_in,
         &local_db_settings_json,
@@ -103,15 +113,16 @@ pub async fn build_resolver_for_project(
     ))
 }
 
-/// Resolve + audit every project's settings at Core boot. Loads the managed
+/// Resolve + audit every workspace's settings at Core boot. Loads the managed
 /// policy + the per-machine opt-out config once, then builds a resolver per
-/// project and calls
-/// [`ProjectSettingsResolver::audit_resolved_at_boot`].
+/// workspace and calls
+/// [`WorkspaceSettingsResolver::audit_resolved_at_boot`].
 ///
-/// Returns the total number of `ProjectSettingsResolved` events emitted across
-/// all projects (for the boot log + tests). A per-project build error is
-/// logged + skipped — one broken project must not block the rest of boot.
-pub async fn resolve_and_audit_all_projects(
+/// Returns the total number of `WorkspaceSettingsResolved` events emitted
+/// across all workspaces (for the boot log + tests). A per-workspace build
+/// error is logged + skipped — one broken workspace must not block the rest of
+/// boot.
+pub async fn resolve_and_audit_all_workspaces(
     persistence: &Persistence,
     config_dir: &Path,
     user_home_concerto_dir: &Path,
@@ -120,26 +131,27 @@ pub async fn resolve_and_audit_all_projects(
     let managed = crate::security::managed::load_managed_policy(config_dir).unwrap_or_default();
     let opt_out = OptOutConfig::load(user_home_concerto_dir);
 
-    let projects = concerto_persist::projects::list_all(persistence.readers()).await?;
+    let workspaces = concerto_persist::workspaces::list_all(persistence.readers()).await?;
     let mut total = 0usize;
-    for project in projects {
-        match build_resolver_for_project(persistence, &project.id, managed.clone(), &opt_out).await
+    for workspace in workspaces {
+        match build_resolver_for_workspace(persistence, &workspace.id, managed.clone(), &opt_out)
+            .await
         {
             Ok(resolver) => {
                 total += resolver.audit_resolved_at_boot(audit);
             }
             Err(e) => {
                 tracing::warn!(
-                    project_id = %project.id,
+                    workspace_id = %workspace.id,
                     error = %e,
-                    "project-settings boot resolution failed; skipping this project"
+                    "workspace-settings boot resolution failed; skipping this workspace"
                 );
             }
         }
     }
     tracing::info!(
         events = total,
-        "project settings resolved + audited at boot"
+        "workspace settings resolved + audited at boot"
     );
     Ok(total)
 }
@@ -151,7 +163,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     // A tiny in-memory audit subscriber so the boot-audit test can count the
-    // ProjectSettingsResolved events without touching disk.
+    // WorkspaceSettingsResolved events without touching disk.
     struct CapturingSubscriber {
         events: Arc<Mutex<Vec<AuditEvent>>>,
     }
@@ -167,33 +179,41 @@ mod tests {
         async fn flush(&self) {}
     }
 
-    async fn seed_project_with_repo(
+    async fn seed_workspace_with_repo(
         persist: &Persistence,
-        project_id: &str,
+        workspace_id: &str,
         repo_root: &Path,
         action_prefs_json: &str,
     ) {
-        use concerto_persist::{NewProject, NewRepository, ProjectId, RepositoryId};
+        use concerto_persist::{NewRepository, NewWorkspace, RepositoryId, WorkspaceId};
+        use sqlx::Connection;
         let mut w = persist.writer().await;
-        concerto_persist::projects::insert(
-            &mut w,
-            NewProject {
-                id: ProjectId(project_id.to_string()),
-                name: format!("proj-{project_id}"),
+        let mut tx = w.begin().await.unwrap();
+        sqlx::query("PRAGMA defer_foreign_keys = ON")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        concerto_persist::workspaces::insert(
+            &mut tx,
+            NewWorkspace {
+                id: WorkspaceId(workspace_id.to_string()),
+                name: format!("ws-{workspace_id}"),
+                slug: workspace_id.to_string(),
                 icon: None,
+                description: None,
+                permission_mode: None,
                 created_at: 0,
             },
         )
         .await
         .unwrap();
-        let repo_id = RepositoryId(format!("repo-{project_id}"));
+        let repo_id = RepositoryId(format!("repo-{workspace_id}"));
         concerto_persist::repositories::insert(
-            &mut w,
+            &mut tx,
             NewRepository {
                 id: repo_id.clone(),
-                project_id: project_id.to_string(),
-                name: "r".to_string(),
-                url: "https://example/r".to_string(),
+                name: format!("r-{workspace_id}"),
+                url: format!("https://example/r-{workspace_id}"),
                 local_path: repo_root.to_string_lossy().into_owned(),
                 clone_strategy: "full".to_string(),
                 default_branch: "main".to_string(),
@@ -201,14 +221,24 @@ mod tests {
         )
         .await
         .unwrap();
+        concerto_persist::workspaces::update_repos(
+            &mut tx,
+            &WorkspaceId(workspace_id.to_string()),
+            &[concerto_persist::WorkspaceRepoCones::empty_cones(
+                repo_id.clone(),
+            )],
+        )
+        .await
+        .unwrap();
         if action_prefs_json != "{}" {
             sqlx::query("UPDATE repositories SET action_prefs_json = ? WHERE id = ?")
                 .bind(action_prefs_json)
                 .bind(&repo_id.0)
-                .execute(&mut *w)
+                .execute(&mut *tx)
                 .await
                 .unwrap();
         }
+        tx.commit().await.unwrap();
     }
 
     #[tokio::test]
@@ -222,12 +252,12 @@ mod tests {
         .await
         .unwrap();
 
-        // A repo worktree with a checked-in project_settings.json + action_prefs.
+        // A repo worktree with a checked-in workspace_settings.json + action_prefs.
         let repo_root = tmp.path().join("repo");
         let concerto = repo_root.join(".concerto");
         std::fs::create_dir_all(&concerto).unwrap();
         std::fs::write(
-            concerto.join("project_settings.json"),
+            concerto.join("workspace_settings.json"),
             r#"{ "run_script_mode": "sequential" }"#,
         )
         .unwrap();
@@ -237,7 +267,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_project_with_repo(&persist, "p1", &repo_root, r#"{"pr_create": "db pref"}"#).await;
+        seed_workspace_with_repo(&persist, "w1", &repo_root, r#"{"pr_create": "db pref"}"#).await;
 
         // Capture audit events.
         let captured = Arc::new(Mutex::new(Vec::new()));
@@ -253,9 +283,10 @@ mod tests {
         let home_concerto = tmp.path().join("home_concerto");
         std::fs::create_dir_all(&home_concerto).unwrap();
 
-        let total = resolve_and_audit_all_projects(&persist, &config_dir, &home_concerto, &writer)
-            .await
-            .unwrap();
+        let total =
+            resolve_and_audit_all_workspaces(&persist, &config_dir, &home_concerto, &writer)
+                .await
+                .unwrap();
 
         // Flush the writer so every appended event reaches the subscriber:
         // drop our writer handle so the channel closes, cancel the token, then
@@ -268,10 +299,10 @@ mod tests {
         let events = captured.lock().unwrap();
         let resolved: Vec<_> = events
             .iter()
-            .filter(|e| e.kind == AuditKind::ProjectSettingsResolved)
+            .filter(|e| e.kind == AuditKind::WorkspaceSettingsResolved)
             .collect();
         assert_eq!(resolved.len(), total, "one event per resolved field");
-        assert!(total >= 7, "at least the project field set");
+        assert!(total >= 7, "at least the workspace field set");
 
         // The checked-in run_script_mode shows the right source; the DB-only
         // action pref shows local_db.

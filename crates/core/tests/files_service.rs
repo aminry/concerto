@@ -30,8 +30,8 @@ use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use concerto_core::handlers::files::FilesHandler;
 use concerto_persist::{
-    NewProject, NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
-    PersistenceConfig, ProjectId, RepositoryId, WorkareaId, WorkspaceId,
+    NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence, PersistenceConfig,
+    RepositoryId, WorkareaId, WorkspaceId, WorkspaceRepoCones,
 };
 use concerto_proto::v1::files_client::FilesClient;
 use concerto_proto::v1::files_server::FilesServer;
@@ -95,29 +95,16 @@ async fn setup() -> Fixture {
         .expect("open persistence"),
     );
 
-    let project_id = ProjectId(format!("proj-{}", uuid::Uuid::now_v7()));
     let repo_id = RepositoryId(format!("repo-{}", uuid::Uuid::now_v7()));
     let workspace_id = WorkspaceId(format!("ws-{}", uuid::Uuid::now_v7()));
     let workarea_id = WorkareaId(format!("wa-{}", uuid::Uuid::now_v7()));
 
     {
         let mut writer = persist.writer().await;
-        concerto_persist::projects::insert(
-            &mut writer,
-            NewProject {
-                id: project_id.clone(),
-                name: "files-test".into(),
-                icon: None,
-                created_at: 1,
-            },
-        )
-        .await
-        .unwrap();
         concerto_persist::repositories::insert(
             &mut writer,
             NewRepository {
                 id: repo_id.clone(),
-                project_id: project_id.0.clone(),
                 name: "repo".into(),
                 url: "https://github.com/owner/repo".into(),
                 local_path: repo_local_path.to_string_lossy().into_owned(),
@@ -131,9 +118,9 @@ async fn setup() -> Fixture {
             &mut writer,
             NewWorkspace {
                 id: workspace_id.clone(),
-                project_id: project_id.0.clone(),
                 name: "ws".into(),
                 slug: "ws".into(),
+                icon: None,
                 description: None,
                 permission_mode: None,
                 created_at: 1,
@@ -144,7 +131,7 @@ async fn setup() -> Fixture {
         concerto_persist::workspaces::update_repos(
             &mut writer,
             &workspace_id,
-            std::slice::from_ref(&repo_id),
+            &[WorkspaceRepoCones::empty_cones(repo_id.clone())],
         )
         .await
         .unwrap();

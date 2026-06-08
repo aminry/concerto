@@ -1945,9 +1945,9 @@ fn shell_escape_single_quoted(s: &str) -> String {
 
 /// Resolve the effective permission mode for a session about to be
 /// inserted on `workarea_id` (no `sessions` row exists yet). Walks
-/// workarea → workspace → project → managed → default, identical to
-/// [`crate::security::resolve_effective_mode`] but starting one level
-/// up the chain.
+/// workarea → workspace → workspace-settings-default → managed → default,
+/// identical to [`crate::security::resolve_effective_mode`] but starting
+/// one level up the chain. There is no Project layer after the collapse.
 async fn resolve_for_new_session(
     persistence: &Persistence,
     config_dir: &std::path::Path,
@@ -1959,14 +1959,13 @@ async fn resolve_for_new_session(
     let pool = persistence.readers();
     let row = sqlx::query(
         "SELECT
-            wa.permission_mode         AS workarea_mode,
+            wa.permission_mode          AS workarea_mode,
             wa.bypass_destructive_guard AS workarea_bypass,
-            ws.permission_mode         AS workspace_mode,
+            ws.permission_mode          AS workspace_mode,
             ws.bypass_destructive_guard AS workspace_bypass,
-            p.settings_json            AS project_settings_json
+            ws.settings_json            AS workspace_settings_json
          FROM workareas wa
          JOIN workspaces ws ON ws.id = wa.workspace_id
-         JOIN projects p    ON p.id  = ws.project_id
          WHERE wa.id = ?",
     )
     .bind(&workarea_id.0)
@@ -1978,18 +1977,18 @@ async fn resolve_for_new_session(
     use sqlx::Row;
     let workarea_mode: Option<String> = row.get("workarea_mode");
     let workspace_mode: Option<String> = row.get("workspace_mode");
-    let project_settings_json: String = row.get("project_settings_json");
+    let workspace_settings_json: String = row.get("workspace_settings_json");
 
     let (mut mode, mut source) = if let Some(m) = workarea_mode.as_deref() {
         (parse_permission_mode(m)?, ModeSource::Workarea)
     } else if let Some(m) = workspace_mode.as_deref() {
         (parse_permission_mode(m)?, ModeSource::Workspace)
     } else {
-        // Inline of `project_default_from_settings` (private to
+        // Inline of `workspace_default_from_settings` (private to
         // security::permission). Forgive malformed JSON by falling
         // through to default.
-        let project_default: Option<PermissionMode> =
-            match serde_json::from_str::<serde_json::Value>(&project_settings_json) {
+        let workspace_default: Option<PermissionMode> =
+            match serde_json::from_str::<serde_json::Value>(&workspace_settings_json) {
                 Ok(v) => v
                     .as_object()
                     .and_then(|m| m.get("default_permission_mode"))
@@ -1998,8 +1997,8 @@ async fn resolve_for_new_session(
                     .transpose()?,
                 Err(_) => None,
             };
-        match project_default {
-            Some(m) => (m, ModeSource::Project),
+        match workspace_default {
+            Some(m) => (m, ModeSource::Workspace),
             None => (PermissionMode::Normal, ModeSource::Default),
         }
     };
