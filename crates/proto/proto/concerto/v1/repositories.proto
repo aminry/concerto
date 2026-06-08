@@ -53,6 +53,12 @@ message Repository {
   string clone_strategy = 6;
   string default_branch = 7;
   optional google.protobuf.Timestamp last_fetch_at = 8;
+  // The repository's default sparse cone (design/02 §3.2). A flat list of
+  // forward-slash, repo-root-relative directory paths persisted to
+  // `repositories.cone_defaults_json`; inherited by every new workarea via
+  // the three-layer cone resolver (least-specific layer). Decoded from the
+  // row's `cone_defaults_json` everywhere a `Repository` is built.
+  repeated string cone_defaults = 9;
 }
 
 // Inputs for `Repositories.AddRepository`. The Repo Manager picks the
@@ -210,6 +216,52 @@ message ConeStats {
   uint64 disk_size_bytes = 2;
 }
 
+// Inputs for `Repositories.ListTree` (design/02 §3.2). The browsable
+// repo-tree probe: lists the IMMEDIATE (non-recursive) children of `path`
+// at `git_ref`, so the desktop "Choose directories for the sparse
+// checkout" picker can lazily expand the repo's directory tree without
+// fetching the whole tree. `path` is repo-root-relative (`""` = root);
+// `git_ref` empty ⇒ the repository's default branch / HEAD.
+message ListTreeRequest {
+  string repository_id = 1;
+  string path = 2;
+  string git_ref = 3;
+}
+
+// One entry in a `ListTree` listing. `name` is the basename; `path` is the
+// full repo-root-relative path (the cone-path the picker checks);
+// `is_dir` distinguishes a directory (a checkable cone unit) from a file
+// (shown for context, not checkable — cone mode selects directories).
+// A submodule (`commit` objecttype) is reported as a leaf (`is_dir=false`).
+message TreeEntry {
+  string name = 1;
+  bool is_dir = 2;
+  string path = 3;
+}
+
+message ListTreeResponse { repeated TreeEntry entries = 1; }
+
+// Inputs for `Repositories.SetRepoConeDefaults` (design/02 §3.2). Sets the
+// repository's default sparse cone (`repositories.cone_defaults_json`) AND
+// propagates it to every existing workarea of the repo (re-applying the
+// cone to each workarea worktree). `cone_paths` are forward-slash,
+// repo-root-relative directory paths; `[]` clears the default. An invalid
+// path (absent from the repo index) is rejected with INVALID_ARGUMENT
+// before anything is persisted.
+message SetRepoConeDefaultsRequest {
+  string repository_id = 1;
+  repeated string cone_paths = 2;
+}
+
+// Result of `Repositories.SetRepoConeDefaults`. Echoes the applied cone
+// set and reports how many existing workareas were successfully
+// re-applied (propagation is best-effort per workarea — a workarea with
+// conflicting local changes is skipped with a warning and not counted).
+message SetRepoConeDefaultsResponse {
+  repeated string cone_paths = 1;
+  uint32 workareas_updated = 2;
+}
+
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
@@ -218,4 +270,6 @@ service Repositories {
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
   rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
+  rpc ListTree(ListTreeRequest) returns (ListTreeResponse);
+  rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (SetRepoConeDefaultsResponse);
 }

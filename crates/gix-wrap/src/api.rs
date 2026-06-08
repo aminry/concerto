@@ -540,6 +540,76 @@ fn path_under_any_prefix(path: &str, prefixes: &[&str]) -> bool {
     })
 }
 
+/// List the IMMEDIATE (non-recursive) children of `path` at `git_ref` in
+/// the repository at `repo_dir` (design/02 §3.2). Backs the browsable
+/// repo-tree picker: the desktop "Choose directories for the sparse
+/// checkout" step lazily expands one directory at a time, so this lists
+/// only direct children rather than recursing the whole tree.
+///
+/// Returns `(full_path, is_dir)` pairs where `full_path` is the
+/// repo-root-relative path (`git ls-tree`'s `%(path)` is already the full
+/// path) and `is_dir` is true for a `tree` objecttype. A `blob` (file) and
+/// a `commit` (submodule gitlink) are both reported as leaves
+/// (`is_dir=false`) — cone mode selects directories, so files/submodules
+/// are shown for context only.
+///
+/// `path` is repo-root-relative; `""` lists the root entries (the pathspec
+/// is omitted so `git ls-tree` returns the top-level tree). For a non-empty
+/// `path` a trailing `/` is appended to the pathspec so `git ls-tree`
+/// descends into that directory and lists its children (rather than echoing
+/// the directory entry itself). An empty `git_ref` falls back to `"HEAD"`.
+///
+/// Entries are returned trees-first, then blobs/submodules, each
+/// alphabetical by full path — a stable order the renderer can show without
+/// re-sorting.
+///
+/// A repo that is not a git repository, an unknown ref, or an unreadable
+/// tree surfaces as [`Error::Git`].
+pub async fn list_tree(repo_dir: &Path, git_ref: &str, path: &str) -> Result<Vec<(String, bool)>> {
+    let r#ref = if git_ref.is_empty() { "HEAD" } else { git_ref };
+    // Normalize the directory prefix: strip surrounding slashes so we build
+    // a clean `<dir>/` pathspec. An empty/`.`/`/` path lists the root.
+    let dir = path.trim_start_matches('/').trim_end_matches('/');
+
+    // `--format=%(objecttype)<TAB>%(path)` keeps only the type + the full
+    // repo-root-relative path. `git ls-tree` without `-r` lists only the
+    // immediate children of the addressed tree.
+    let mut args: Vec<String> = vec![
+        "ls-tree".to_string(),
+        "--format=%(objecttype)%x09%(path)".to_string(),
+        r#ref.to_string(),
+    ];
+    if !dir.is_empty() && dir != "." {
+        // A trailing-slash pathspec descends into the directory so we get
+        // its children (`git ls-tree <ref> -- <dir>/`), not the dir entry.
+        args.push("--".to_string());
+        args.push(format!("{dir}/"));
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let listing = cmd::run(&arg_refs, repo_dir).await?;
+
+    let mut entries: Vec<(String, bool)> = Vec::new();
+    for line in listing.stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        // `<objecttype>\t<path>`.
+        let Some((objtype, full_path)) = line.split_once('\t') else {
+            continue;
+        };
+        let is_dir = objtype == "tree";
+        entries.push((full_path.to_string(), is_dir));
+    }
+
+    // Trees first, then leaves; each alphabetical by full path.
+    entries.sort_by(|a, b| match (a.1, b.1) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.0.cmp(&b.0),
+    });
+    Ok(entries)
+}
+
 /// Materialize the blobs reachable in `cone_paths` at `commit` for a
 /// blobless clone at `repo_dir` (Task 304, `design/02 §3.3`/`§5.1`).
 ///

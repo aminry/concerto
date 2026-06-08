@@ -139,6 +139,31 @@ pub async fn update_fs_monitor_pid(
     Ok(())
 }
 
+/// Overwrite the `cone_defaults_json` column on a `repositories` row with
+/// `cones` (the repository's default sparse cone, design/02 §3.2).
+///
+/// `cones` is serialized to the FROZEN flat JSON `["<cone_path>", …]` shape
+/// — the exact encoding [`get`]/[`row_to_repository`] reads back and the
+/// three-layer cone resolver decodes as the least-specific layer. An empty
+/// slice persists `"[]"` (clears the default). The Core's
+/// `RepoManager::set_repo_cone_defaults` calls this before propagating the
+/// new cone to every existing workarea of the repo.
+pub async fn set_cone_defaults(
+    conn: &mut SqliteConnection,
+    id: &RepositoryId,
+    cones: &[String],
+) -> Result<()> {
+    let json = serde_json::to_string(cones)
+        .map_err(|e| Error::Internal(format!("serialize cone_defaults_json: {e}")))?;
+    sqlx::query("UPDATE repositories SET cone_defaults_json = ? WHERE id = ?")
+        .bind(&json)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
 fn row_to_repository(row: sqlx::sqlite::SqliteRow) -> Repository {
     Repository {
         id: RepositoryId(row.get::<String, _>("id")),

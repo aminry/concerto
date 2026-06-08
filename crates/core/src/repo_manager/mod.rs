@@ -25,7 +25,7 @@ pub mod fsmonitor;
 pub mod prefetch;
 mod repo_state;
 
-pub use actor::{RepoManager, RepoManagerActor, RepoManagerConfig};
+pub use actor::{RepoManager, RepoManagerActor, RepoManagerConfig, TreeEntryDomain};
 pub use cone_stats::{ConeStats, ConeSuggestError, ConeSuggester};
 pub use prefetch::{
     spawn_prefetch_scheduler, IdleState, NetState, PowerState, PrewarmHandle, PrewarmSignals,

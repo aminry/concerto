@@ -25,10 +25,10 @@ use concerto_proto::v1::{
     AddRepoRequest, CreateProjectRequest, CreateSessionRequest, CreateWorkareaRequest,
     CreateWorkspaceRequest, EstimateConeSizeRequest, EstimateRepoSizeRequest, GetDiffRequest,
     ListProjectsRequest, ListRepositoriesRequest, ListSchedulesRequest, ListSessionsRequest,
-    ListSkillsRequest, ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest,
-    PermissionMode, ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId,
-    SetConesRequest, StopSessionRequest, SubscribeRequest, WorkareaId as ProtoWorkareaId,
-    WorkspaceId as ProtoWorkspaceId,
+    ListSkillsRequest, ListTreeRequest, ListWorkareasRequest, ListWorkspacesRequest,
+    McpScopeRequest, PermissionMode, ResizeSessionRequest, SendMessageRequest,
+    SessionId as ProtoSessionId, SetConesRequest, SetRepoConeDefaultsRequest, StopSessionRequest,
+    SubscribeRequest, WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -174,6 +174,25 @@ struct EstimateConeSizePayload {
 struct SetConesPayload {
     workarea_id: String,
     repository_id: String,
+    #[serde(default)]
+    cone_paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListTreePayload {
+    repository_id: String,
+    // `path` (repo-root-relative, "" = root) + `git_ref` (empty = default
+    // branch / HEAD) are optional; the lazy tree picker omits them at root.
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    git_ref: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetRepoConeDefaultsPayload {
+    repository_id: String,
+    // `[]` clears the repo default.
     #[serde(default)]
     cone_paths: Vec<String>,
 }
@@ -395,6 +414,32 @@ where
             client
                 .set_cones(SetConesRequest {
                     workarea_id: req.workarea_id,
+                    repository_id: req.repository_id,
+                    cone_paths: req.cone_paths,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Repositories.ListTree" => {
+            let req: ListTreePayload = serde_json::from_value(payload)
+                .map_err(|e| CoreClientError::Rpc(format!("invalid payload for ListTree: {e}")))?;
+            let mut client = RepositoriesClient::new(channel);
+            client
+                .list_tree(ListTreeRequest {
+                    repository_id: req.repository_id,
+                    path: req.path,
+                    git_ref: req.git_ref,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Repositories.SetRepoConeDefaults" => {
+            let req: SetRepoConeDefaultsPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for SetRepoConeDefaults: {e}"))
+            })?;
+            let mut client = RepositoriesClient::new(channel);
+            client
+                .set_repo_cone_defaults(SetRepoConeDefaultsRequest {
                     repository_id: req.repository_id,
                     cone_paths: req.cone_paths,
                 })

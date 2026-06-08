@@ -15,6 +15,28 @@ export type Repository = {
   clone_strategy: string;
   default_branch: string;
   last_fetch_at?: [number, number] | null;
+  /// The repository's default sparse cone (design/02 §3.2), decoded from
+  /// `repositories.cone_defaults_json`. A flat list of forward-slash,
+  /// repo-root-relative directory paths inherited by every new workarea.
+  /// Always present on the wire (prost serializes `repeated` as `[]`);
+  /// optional here so existing `Repository` fixtures stay valid. Readers
+  /// treat a missing value as `[]`. The `SparseConeDialog` pre-loads this as
+  /// the initial selection. snake_case on the wire (prost-serde).
+  cone_defaults?: string[];
+};
+
+/// Mirrors `concerto.v1.TreeEntry` (design/02 §3.2) — one entry in a
+/// `ListTree` listing. `path` is the full repo-root-relative path (the
+/// cone-path a directory row checks); `is_dir` distinguishes a directory (a
+/// checkable cone unit) from a file (shown for context, not checkable).
+export type TreeEntry = {
+  name: string;
+  is_dir: boolean;
+  path: string;
+};
+
+export type ListTreeResponse = {
+  entries: TreeEntry[];
 };
 
 export type ListRepositoriesResponse = {
@@ -56,6 +78,46 @@ export async function listRepositories(
     "Repositories.ListByProject",
     { project_id: projectId },
   );
+}
+
+/// `Repositories.ListTree` (design/02 §3.2) — list the IMMEDIATE
+/// (non-recursive) children of `path` at `gitRef`. Backs the lazy repo-tree
+/// picker: each directory's children are fetched only when it is expanded.
+/// `path` is repo-root-relative (`""` = root); `gitRef` empty ⇒ the repo's
+/// default branch / HEAD. Entries are returned trees-first.
+export async function listTree(
+  repositoryId: string,
+  path = "",
+  gitRef = "",
+): Promise<ListTreeResponse> {
+  return callRpc<
+    { repository_id: string; path: string; git_ref: string },
+    ListTreeResponse
+  >("Repositories.ListTree", {
+    repository_id: repositoryId,
+    path,
+    git_ref: gitRef,
+  });
+}
+
+/// `Repositories.SetRepoConeDefaults` (design/02 §3.2) — set the
+/// repository's default sparse cone AND propagate it to every existing
+/// workarea of the repo. `conePaths` are forward-slash, repo-root-relative
+/// directory paths; `[]` clears the default. Returns the applied cone set +
+/// the count of workareas successfully re-applied (propagation is
+/// best-effort per workarea). A bad path → INVALID_ARGUMENT surfaced as a
+/// `CoreClientError`, before anything is persisted.
+export async function setRepoConeDefaults(
+  repositoryId: string,
+  conePaths: string[],
+): Promise<{ cone_paths: string[]; workareas_updated: number }> {
+  return callRpc<
+    { repository_id: string; cone_paths: string[] },
+    { cone_paths: string[]; workareas_updated: number }
+  >("Repositories.SetRepoConeDefaults", {
+    repository_id: repositoryId,
+    cone_paths: conePaths,
+  });
 }
 
 /// The user-selectable clone strategies (Task 301). Treeless is omitted by

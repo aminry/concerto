@@ -46,6 +46,19 @@ pub struct RepoManagerConfig {
     pub repos_root: PathBuf,
 }
 
+/// One entry in a [`RepoManager::list_tree`] listing — the Core-side mirror
+/// of the wire `concerto.v1.TreeEntry` (design/02 §3.2). Backs the browsable
+/// repo-tree picker: `name` is the basename, `path` the full
+/// repo-root-relative path (the cone-path a directory row checks), and
+/// `is_dir` distinguishes a directory (a checkable cone unit) from a file /
+/// submodule (shown for context, not checkable).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntryDomain {
+    pub name: String,
+    pub is_dir: bool,
+    pub path: String,
+}
+
 /// Cloneable handle to the Repository Manager's shared state.
 ///
 /// All real work happens through this struct: the actor's `run` only
@@ -798,6 +811,138 @@ impl RepoManager {
 
         let stats = gixw::cone_index_stats(&repo_dir, &effective).await?;
         Ok(stats.into())
+    }
+
+    /// List the IMMEDIATE (non-recursive) children of `path` in `repo`'s tree
+    /// at `git_ref` (design/02 §3.2). Backs the browsable repo-tree picker:
+    /// the desktop "Choose directories for the sparse checkout" step lazily
+    /// expands one directory at a time.
+    ///
+    /// Looks up the repo row, uses its `local_path` as the repo dir, and —
+    /// when `git_ref` is empty — its `default_branch` (falling back to
+    /// `"HEAD"` when that is also empty). `path` is repo-root-relative
+    /// (`""` = root). Delegates to [`gixw::list_tree`], mapping each
+    /// `(full_path, is_dir)` pair to a [`TreeEntryDomain`].
+    ///
+    /// An unknown `repo` → [`Error::NotFound`]; a repo dir that is not a git
+    /// repository / an unknown ref → [`Error::Git`] (from `list_tree`).
+    pub async fn list_tree(
+        &self,
+        repo: &RepositoryId,
+        git_ref: &str,
+        path: &str,
+    ) -> Result<Vec<TreeEntryDomain>> {
+        let row = self
+            .get(repo)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("repository {repo} not found")))?;
+        let repo_dir = PathBuf::from(&row.local_path);
+        // Empty wire ref → the repo's default branch, then "HEAD" if even
+        // that is blank. `gixw::list_tree` also defaults an empty ref to
+        // "HEAD", but resolving the row's default branch here is more precise
+        // for a repo whose HEAD has drifted.
+        let effective_ref = if git_ref.is_empty() {
+            if row.default_branch.is_empty() {
+                "HEAD"
+            } else {
+                row.default_branch.as_str()
+            }
+        } else {
+            git_ref
+        };
+        let pairs = gixw::list_tree(&repo_dir, effective_ref, path).await?;
+        Ok(pairs
+            .into_iter()
+            .map(|(full_path, is_dir)| {
+                let name = full_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&full_path)
+                    .to_string();
+                TreeEntryDomain {
+                    name,
+                    is_dir,
+                    path: full_path,
+                }
+            })
+            .collect())
+    }
+
+    /// Set `repo`'s default sparse cone (`repositories.cone_defaults_json`)
+    /// AND propagate it to every existing workarea of the repo (design/02
+    /// §3.2). Returns the count of workareas that were successfully
+    /// re-applied.
+    ///
+    /// Sequence:
+    /// 1. Validate the repo exists.
+    /// 2. **Validate the cone up front** against the repo clone's `HEAD` tree
+    ///    ([`gixw::validate_cone_paths`], the same non-mutating directory
+    ///    probe `sparse_set` runs) so a path that does not name a directory in
+    ///    the repository is rejected with `Error::Validation` →
+    ///    INVALID_ARGUMENT *before* anything is persisted — nothing is
+    ///    half-applied. (`list_paths_in_cone` only *counts* index entries and
+    ///    would silently accept a bad path as "0 files", so the directory
+    ///    existence probe is the correct up-front guard.)
+    /// 3. Persist `cone_defaults_json` via
+    ///    [`concerto_persist::repositories::set_cone_defaults`] — done
+    ///    OUTSIDE any per-repo write lock (the propagation primitive
+    ///    `set_workarea_repo_cones` takes `write_lock_for(repo)` internally,
+    ///    and the per-repo `tokio::sync::Mutex` is NOT re-entrant, so holding
+    ///    it here would deadlock the first propagation call).
+    /// 4. Propagate: enumerate every non-archived workarea of the repo and
+    ///    call [`Self::set_workarea_repo_cones`] for each. **Best-effort per
+    ///    workarea** — a per-workarea `Err` (e.g. a worktree with conflicting
+    ///    local changes) is `tracing::warn!`-logged and skipped so it does
+    ///    not block the others (mirrors the "single repo's failure is
+    ///    non-fatal" convention). Returns the count that succeeded.
+    pub async fn set_repo_cone_defaults(
+        &self,
+        repo: &RepositoryId,
+        cones: &[ConePath],
+    ) -> Result<u32> {
+        // 1. Validate the repo exists.
+        let row = self
+            .get(repo)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("repository {repo} not found")))?;
+
+        // 2. Validate the cone up front against the repo clone's HEAD tree.
+        // A path that does not name a directory in the repo → Err here,
+        // before any persist — INVALID_ARGUMENT at the handler. An empty cone
+        // (clear-the-default) is a no-op probe.
+        if !cones.is_empty() {
+            let repo_dir = PathBuf::from(&row.local_path);
+            gixw::validate_cone_paths(&repo_dir, cones).await?;
+        }
+
+        // 3. Persist the repo-level default OUTSIDE any per-repo lock (the
+        // propagation primitive locks internally; the mutex is not
+        // re-entrant).
+        {
+            let mut writer = self.persistence.writer().await;
+            concerto_persist::repositories::set_cone_defaults(&mut writer, repo, cones).await?;
+        }
+
+        // 4. Propagate to every existing (non-archived) workarea of the repo,
+        // best-effort per workarea.
+        let workareas =
+            concerto_persist::workareas::list_workareas_for_repo(self.persistence.readers(), repo)
+                .await?;
+        let mut updated: u32 = 0;
+        for workarea in &workareas {
+            match self.set_workarea_repo_cones(workarea, repo, cones).await {
+                Ok(()) => updated += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        workarea = %workarea,
+                        repo = %repo,
+                        error = %e,
+                        "set_repo_cone_defaults: skipping workarea whose cone re-apply failed (best-effort propagation)"
+                    );
+                }
+            }
+        }
+        Ok(updated)
     }
 
     /// Plan-mode cone suggestion delegate (Task 305, `design/02 §3.2`/`§9`,

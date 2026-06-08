@@ -374,6 +374,39 @@ pub async fn list_workarea_repos(
         .collect())
 }
 
+/// List the non-archived workareas that have a `workarea_repos` junction
+/// row for `repository_id` (design/02 §3.2). Used by the Core's
+/// `RepoManager::set_repo_cone_defaults` to enumerate every workarea whose
+/// worktree must have the repo's new default cone re-applied.
+///
+/// Returns each workarea's id; the propagation primitive
+/// (`set_workarea_repo_cones`) re-resolves the per-(workarea, repo)
+/// worktree path itself, so the worktree path is not projected here.
+/// Archived workareas are excluded (joining `workareas` on
+/// `archived_at IS NULL`) — a re-applied cone on an archived worktree is
+/// wasted work and its on-disk state may be gone. Sorted by id for a
+/// deterministic propagation order.
+pub async fn list_workareas_for_repo(
+    pool: &SqlitePool,
+    repository_id: &crate::api::RepositoryId,
+) -> Result<Vec<WorkareaId>> {
+    let rows = sqlx::query(
+        "SELECT wr.workarea_id AS workarea_id
+         FROM workarea_repos wr
+         JOIN workareas w ON w.id = wr.workarea_id
+         WHERE wr.repository_id = ? AND w.archived_at IS NULL
+         ORDER BY wr.workarea_id ASC",
+    )
+    .bind(&repository_id.0)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| WorkareaId(r.get::<String, _>("workarea_id")))
+        .collect())
+}
+
 /// Look up the `worktree_path` column on the `workarea_repos` junction
 /// row for a given (workarea, repository) pair. Used by Task 29's
 /// `Workareas.GetWorkareaRepoDiff` handler to resolve the per-repo
