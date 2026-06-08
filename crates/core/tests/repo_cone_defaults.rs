@@ -57,10 +57,17 @@ async fn git(args: &[&str], cwd: &Path) {
 ///   b/g1.txt
 /// Returns its `file://` URL.
 async fn make_bare_with_tree() -> (String, TempDir, TempDir) {
+    make_bare_with_tree_on("main").await
+}
+
+/// Same fixture as [`make_bare_with_tree`] but on an explicit branch name, so
+/// a test can clone a repo whose real branch differs from the `"main"`
+/// fallback `default_branch` stored at add-time (the `list_tree` HEAD case).
+async fn make_bare_with_tree_on(branch: &str) -> (String, TempDir, TempDir) {
     let bare = TempDir::new().unwrap();
     let work = TempDir::new().unwrap();
-    git(&["init", "--bare", "-b", "main", "."], bare.path()).await;
-    git(&["init", "-b", "main", "."], work.path()).await;
+    git(&["init", "--bare", "-b", branch, "."], bare.path()).await;
+    git(&["init", "-b", branch, "."], work.path()).await;
 
     let w = work.path();
     tokio::fs::write(w.join("README.md"), "top\n")
@@ -87,7 +94,7 @@ async fn make_bare_with_tree() -> (String, TempDir, TempDir) {
         w,
     )
     .await;
-    git(&["push", "-u", "origin", "main"], w).await;
+    git(&["push", "-u", "origin", branch], w).await;
     (format!("file://{}", bare.path().display()), bare, work)
 }
 
@@ -223,7 +230,7 @@ async fn list_tree_lists_immediate_children_trees_first() {
     let (url, _bare, _work) = make_bare_with_tree().await;
     let (repo_id, _local) = clone_fixture(&manager, "p-tree", &url).await;
 
-    // Root listing (empty path + empty ref → repo default branch).
+    // Root listing (empty path + empty ref → HEAD).
     let root = manager
         .list_tree(&repo_id, "", "")
         .await
@@ -250,6 +257,44 @@ async fn list_tree_lists_immediate_children_trees_first() {
         "nested listing is non-recursive with full paths"
     );
     assert_eq!(a[0].name, "sub", "basename of a/sub is `sub`");
+}
+
+/// Regression: an empty wire ref must resolve to `HEAD`, NOT the stored
+/// `default_branch`. `AddRepository` stores the literal `"main"` fallback when
+/// the caller leaves the branch blank, but the real branch here is `master`,
+/// so `git ls-tree main` would fail ("Not a valid object name main"). `HEAD`
+/// is a symref to the actually-cloned branch and resolves regardless.
+#[tokio::test(flavor = "multi_thread")]
+async fn list_tree_uses_head_not_stored_default_branch() {
+    let (_p, manager, _tmp) = make_repo_manager("p-head").await;
+    // Real branch is `master`, but we add the repo with the `"main"` fallback.
+    let (url, _bare, _work) = make_bare_with_tree_on("master").await;
+    let repo = manager
+        .add_repository(
+            "p-head",
+            "fixture",
+            &url,
+            "main",
+            CloneStrategy::Full,
+            false,
+        )
+        .await
+        .expect("add_repository");
+    manager
+        .clone_repo(&repo.id, None)
+        .await
+        .expect("clone_repo");
+    assert_eq!(
+        repo.default_branch, "main",
+        "stored fallback is the wrong ref"
+    );
+
+    let root = manager
+        .list_tree(&repo.id, "", "")
+        .await
+        .expect("list_tree must resolve HEAD, not the stored `main`");
+    let names: Vec<&str> = root.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(names, vec!["a", "b", "README.md"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

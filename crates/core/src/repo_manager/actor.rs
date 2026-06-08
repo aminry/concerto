@@ -837,20 +837,15 @@ impl RepoManager {
             .await?
             .ok_or_else(|| Error::NotFound(format!("repository {repo} not found")))?;
         let repo_dir = PathBuf::from(&row.local_path);
-        // Empty wire ref → the repo's default branch, then "HEAD" if even
-        // that is blank. `gixw::list_tree` also defaults an empty ref to
-        // "HEAD", but resolving the row's default branch here is more precise
-        // for a repo whose HEAD has drifted.
-        let effective_ref = if git_ref.is_empty() {
-            if row.default_branch.is_empty() {
-                "HEAD"
-            } else {
-                row.default_branch.as_str()
-            }
-        } else {
-            git_ref
-        };
-        let pairs = gixw::list_tree(&repo_dir, effective_ref, path).await?;
+        // Empty wire ref → `HEAD` (resolved by `gixw::list_tree`). We do NOT
+        // substitute `row.default_branch`: that column is often the literal
+        // "main" fallback `AddRepository` stores when the caller leaves the
+        // branch blank, so it does not necessarily name a ref that exists in
+        // the clone (e.g. a repo whose real branch is `master` → `git ls-tree
+        // main` fails with "Not a valid object name"). `HEAD` is a symref to
+        // whatever branch was actually cloned — even on a `--sparse
+        // --no-checkout` blobless clone — so it is the robust default.
+        let pairs = gixw::list_tree(&repo_dir, git_ref, path).await?;
         Ok(pairs
             .into_iter()
             .map(|(full_path, is_dir)| {
