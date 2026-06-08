@@ -76,10 +76,8 @@ pub struct ApiServerActor {
     /// `workspace.events` / `workarea.events`.
     #[cfg(unix)]
     agent_supervisor: Option<AgentSupervisorHandle>,
-    /// Optional `Persistence` handle. When `Some`, the gRPC `Projects`
-    /// service is registered (Task 24) so the Desktop sidebar can list
-    /// projects without hardcoding a project id. V0.1 ships read-only;
-    /// creation is still seeded via direct SQL.
+    /// Optional `Persistence` handle. When `Some`, the gRPC `Files`
+    /// service is registered.
     persistence: Option<Arc<Persistence>>,
     /// Optional Scheduler handle. When `Some`, the gRPC `Schedules`
     /// service is registered (Task 38). Wired in `main.rs` once the
@@ -573,7 +571,6 @@ where
 {
     use concerto_proto::v1::devices_server::DevicesServer;
     use concerto_proto::v1::files_server::FilesServer;
-    use concerto_proto::v1::projects_server::ProjectsServer;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
     use concerto_proto::v1::skills_server::SkillsServer;
@@ -583,7 +580,6 @@ where
 
     use crate::handlers::devices::DevicesHandler;
     use crate::handlers::files::FilesHandler;
-    use crate::handlers::projects::ProjectsHandler;
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
     use crate::handlers::skills::SkillsHandler;
@@ -628,10 +624,8 @@ where
         let home = home::home_dir().ok_or_else(|| {
             Error::Internal("home::home_dir() returned None; cannot scope Files allow-list".into())
         })?;
-        let files_service = FilesServer::new(FilesHandler::new(persistence.clone(), home));
+        let files_service = FilesServer::new(FilesHandler::new(persistence, home));
         builder = builder.add_service(files_service);
-        let projects_service = ProjectsServer::new(ProjectsHandler::new(persistence));
-        builder = builder.add_service(projects_service);
     }
     if let Some(repo_manager) = repo_manager {
         let repositories_service = RepositoriesServer::new(RepositoriesHandler::new(repo_manager));

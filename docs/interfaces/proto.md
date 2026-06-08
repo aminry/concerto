@@ -319,54 +319,6 @@ message FileEntry {
 }
 ```
 
-## `crates/proto/proto/concerto/v1/projects.proto`
-
-- package: `concerto.v1`
-
-### message `Project`
-
-```proto
-message Project {
-  string id = 1;
-  string name = 2;
-  optional string icon = 3;
-  google.protobuf.Timestamp created_at = 4;
-  optional google.protobuf.Timestamp archived_at = 5;
-}
-```
-
-### message `ListProjectsRequest`
-
-```proto
-message ListProjectsRequest {}
-```
-
-### message `ListProjectsResponse`
-
-```proto
-message ListProjectsResponse {
-  repeated Project projects = 1;
-}
-```
-
-### message `CreateProjectRequest`
-
-```proto
-message CreateProjectRequest {
-  string name = 1;
-  optional string icon = 2;
-}
-```
-
-### service `Projects`
-
-```proto
-service Projects {
-  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
-  rpc CreateProject(CreateProjectRequest) returns (Project);
-}
-```
-
 ## `crates/proto/proto/concerto/v1/repositories.proto`
 
 - package: `concerto.v1`
@@ -376,7 +328,6 @@ service Projects {
 ```proto
 message Repository {
   string id = 1;
-  string project_id = 2;
   string name = 3;
   string url = 4;
   string local_path = 5;
@@ -396,8 +347,9 @@ message Repository {
 
 ```proto
 message AddRepoRequest {
-  string project_id = 1;
   string name = 2;
+  // Exactly one of url / local_path is set. `url` -> clone into the shared
+  // pool; `local_path` -> adopt an existing on-disk git repo in place.
   string url = 3;
   // Optional explicit default branch. V0.1 accepts `"main"` as a fallback
   // when empty; later tasks may probe the remote.
@@ -412,6 +364,7 @@ message AddRepoRequest {
   // The size→strategy recommendation's "Blobless + Sparse" is
   // `clone_strategy = "blobless"` + `with_sparse = true`.
   bool with_sparse = 6;
+  string local_path = 7;
 }
 ```
 
@@ -558,16 +511,7 @@ message ListTreeResponse { repeated TreeEntry entries = 1; }
 ```proto
 message SetRepoConeDefaultsRequest {
   string repository_id = 1;
-  repeated string cone_paths = 2;
-}
-```
-
-### message `SetRepoConeDefaultsResponse`
-
-```proto
-message SetRepoConeDefaultsResponse {
-  repeated string cone_paths = 1;
-  uint32 workareas_updated = 2;
+  repeated string cone_defaults = 2;
 }
 ```
 
@@ -583,7 +527,7 @@ service Repositories {
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
   rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
   rpc ListTree(ListTreeRequest) returns (ListTreeResponse);
-  rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (SetRepoConeDefaultsResponse);
+  rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (Repository);
 }
 ```
 
@@ -2259,9 +2203,9 @@ service Workareas {
 ```proto
 message Workspace {
   string id = 1;
-  string project_id = 2;
-  string name = 3;
-  string slug = 4;
+  string name = 2;
+  string slug = 3;
+  optional string icon = 4;
   optional string description = 5;
   optional PermissionMode permission_mode = 6;
   google.protobuf.Timestamp created_at = 7;
@@ -2277,15 +2221,24 @@ message WorkspaceId {
 }
 ```
 
+### message `WorkspaceRepoSpec`
+
+```proto
+message WorkspaceRepoSpec {
+  string repository_id = 1;
+  repeated string sparse_cones = 2;
+}
+```
+
 ### message `CreateWorkspaceRequest`
 
 ```proto
 message CreateWorkspaceRequest {
-  string project_id = 1;
-  string name = 2;
-  repeated string repository_ids = 3;
-  optional PermissionMode permission_mode = 4;
-  optional string description = 5;
+  string name = 1;
+  repeated WorkspaceRepoSpec repos = 2;
+  optional PermissionMode permission_mode = 3;
+  optional string description = 4;
+  optional string icon = 5;
 }
 ```
 
@@ -2293,7 +2246,7 @@ message CreateWorkspaceRequest {
 
 ```proto
 message ListWorkspacesRequest {
-  string project_id = 1;
+  bool include_archived = 1;
 }
 ```
 
