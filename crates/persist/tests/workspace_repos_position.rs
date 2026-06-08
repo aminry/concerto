@@ -14,7 +14,7 @@
 
 use concerto_persist::{
     workspaces, NewRepository, NewWorkspace, Persistence, PersistenceConfig, RepositoryId,
-    WorkspaceId,
+    WorkspaceId, WorkspaceRepoCones,
 };
 use sqlx::Row;
 
@@ -78,15 +78,6 @@ async fn seed(persist: &Persistence) -> (WorkspaceId, [RepositoryId; 3]) {
     (ws_id, repos)
 }
 
-/// Build the `update_repos` pair-slice from repo ids, seeding each with the
-/// empty-cone snapshot (`"[]"`).
-fn with_empty_cones(repos: &[RepositoryId]) -> Vec<(RepositoryId, String)> {
-    repos
-        .iter()
-        .map(|r| (r.clone(), "[]".to_string()))
-        .collect()
-}
-
 #[tokio::test]
 async fn update_repos_writes_positions_and_list_repos_orders_by_position() {
     let (_dir, persist) = fresh_db().await;
@@ -96,7 +87,11 @@ async fn update_repos_writes_positions_and_list_repos_orders_by_position() {
 
     {
         let mut w = persist.writer().await;
-        workspaces::update_repos(&mut w, &ws, &with_empty_cones(&declared))
+        let entries: Vec<WorkspaceRepoCones> = declared
+            .iter()
+            .map(|r| WorkspaceRepoCones::empty_cones(r.clone()))
+            .collect();
+        workspaces::update_repos(&mut w, &ws, &entries)
             .await
             .expect("update_repos");
     }
@@ -154,13 +149,16 @@ async fn update_repos_seeds_per_repo_cone_snapshot() {
     let (ws, repos) = seed(&persist).await;
 
     // Attach two repos, seeding distinct cone snapshots per repo (D3/D4).
-    let pairs = vec![
-        (repos[0].clone(), "[\"crates/core\"]".to_string()),
-        (repos[1].clone(), "[]".to_string()),
+    let entries = vec![
+        WorkspaceRepoCones {
+            repository_id: repos[0].clone(),
+            sparse_cones_json: "[\"crates/core\"]".to_string(),
+        },
+        WorkspaceRepoCones::empty_cones(repos[1].clone()),
     ];
     {
         let mut w = persist.writer().await;
-        workspaces::update_repos(&mut w, &ws, &pairs)
+        workspaces::update_repos(&mut w, &ws, &entries)
             .await
             .expect("update_repos");
     }
@@ -196,32 +194,66 @@ async fn update_repos_reorders_on_recall() {
     let (_dir, persist) = fresh_db().await;
     let (ws, repos) = seed(&persist).await;
 
+    // Seed repos[0] ("api") with a distinct non-empty cone snapshot so we can
+    // verify the snapshot follows its repo across the reorder.
+    let initial = vec![
+        WorkspaceRepoCones {
+            repository_id: repos[0].clone(),
+            sparse_cones_json: "[\"crates/core\"]".to_string(),
+        },
+        WorkspaceRepoCones::empty_cones(repos[1].clone()),
+        WorkspaceRepoCones::empty_cones(repos[2].clone()),
+    ];
     {
         let mut w = persist.writer().await;
-        workspaces::update_repos(
-            &mut w,
-            &ws,
-            &with_empty_cones(&[repos[0].clone(), repos[1].clone(), repos[2].clone()]),
-        )
-        .await
-        .expect("initial update_repos");
+        workspaces::update_repos(&mut w, &ws, &initial)
+            .await
+            .expect("initial update_repos");
     }
 
     // Re-call with a reordered + reduced slice: ios(0), api(1).
+    // "api" (repos[0]) moves from position 0 to position 1.
     let reordered = vec![repos[2].clone(), repos[0].clone()];
+    let reordered_entries = vec![
+        WorkspaceRepoCones::empty_cones(repos[2].clone()),
+        WorkspaceRepoCones {
+            repository_id: repos[0].clone(),
+            sparse_cones_json: "[\"crates/core\"]".to_string(),
+        },
+    ];
     {
         let mut w = persist.writer().await;
-        workspaces::update_repos(&mut w, &ws, &with_empty_cones(&reordered))
+        workspaces::update_repos(&mut w, &ws, &reordered_entries)
             .await
             .expect("reorder update_repos");
     }
 
-    let listed = workspaces::list_repos(persist.readers(), &ws)
-        .await
-        .expect("list_repos");
+    let pool = persist.readers();
+
+    let listed = workspaces::list_repos(pool, &ws).await.expect("list_repos");
     assert_eq!(
         listed, reordered,
         "re-calling update_repos must re-position the set"
+    );
+
+    // The non-empty cone snapshot must still be associated with "api" (repos[0])
+    // after the reorder, not lost or swapped onto "ios" (repos[2]).
+    let api_cones = workspaces::get_repo_cones(pool, &ws, &repos[0])
+        .await
+        .expect("get_repo_cones api")
+        .expect("junction row for api must exist");
+    assert_eq!(
+        api_cones, "[\"crates/core\"]",
+        "non-empty cone snapshot must follow its repo across a reorder"
+    );
+
+    let ios_cones = workspaces::get_repo_cones(pool, &ws, &repos[2])
+        .await
+        .expect("get_repo_cones ios")
+        .expect("junction row for ios must exist");
+    assert_eq!(
+        ios_cones, "[]",
+        "ios cone snapshot must remain empty after reorder"
     );
 }
 

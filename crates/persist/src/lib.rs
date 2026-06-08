@@ -38,5 +38,5 @@ pub use api::{
     PersistenceConfig, PullRequest, PullRequestId, Repository, RepositoryId, Schedule, ScheduleId,
     ScheduleRun, ScheduleRunId, Session, SessionId, SkillFilter, SkillId, SkillRow, SkillScope,
     SuggestionLearn, SuggestionLearnId, VcsCredential, VcsCredentialId, Workarea, WorkareaId,
-    Workspace, WorkspaceId, WriterGuard,
+    Workspace, WorkspaceId, WorkspaceRepoCones, WriterGuard,
 };

@@ -53,7 +53,7 @@
 use concerto_error::{Error, Result};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
-use crate::api::{NewWorkspace, RepositoryId, Workspace, WorkspaceId};
+use crate::api::{NewWorkspace, RepositoryId, Workspace, WorkspaceId, WorkspaceRepoCones};
 
 /// SQLite extended result code surfaced when a UNIQUE constraint
 /// (here `(slug)`) is violated. Used by the workspace manager's slug
@@ -185,13 +185,13 @@ pub async fn set_repo_cones(
 /// deterministic [`position`](self#repo-ordering-contract-frozen-by-task-306)
 /// and seeding each row's per-`(workspace, repo)` sparse-cone snapshot (D6).
 ///
-/// `repos` carries `(RepositoryId, sparse_cones_json)` pairs: the cone JSON
-/// is the snapshot seeded (per D3/D4) from the repository's
-/// `cone_defaults_json` at attach time (or `"[]"`). Editing repo defaults
+/// Each [`WorkspaceRepoCones`] entry carries the cone JSON snapshot seeded
+/// (per D3/D4) from the repository's `cone_defaults_json` at attach time (or
+/// `"[]"` via [`WorkspaceRepoCones::empty_cones`]). Editing repo defaults
 /// later does NOT mutate these snapshots.
 ///
 /// **Ordering contract (FROZEN by Task 306):** each row's `position` is
-/// set to the 0-based index of its pair in `repos`, so the caller's slice
+/// set to the 0-based index of its entry in `repos`, so the caller's slice
 /// order is the canonical repo order (insertion order = declaration order =
 /// merge/UI order). [`list_repos`] reads it back in `(position,
 /// repository_id)` order. Clears existing junction rows before inserting,
@@ -200,22 +200,22 @@ pub async fn set_repo_cones(
 pub async fn update_repos(
     conn: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
-    repos: &[(RepositoryId, String)],
+    repos: &[WorkspaceRepoCones],
 ) -> Result<()> {
     sqlx::query("DELETE FROM workspace_repos WHERE workspace_id = ?")
         .bind(&workspace_id.0)
         .execute(&mut *conn)
         .await
         .map_err(|e| Error::Sqlx(Box::new(e)))?;
-    for (position, (repo_id, cones_json)) in repos.iter().enumerate() {
+    for (position, r) in repos.iter().enumerate() {
         sqlx::query(
             "INSERT INTO workspace_repos (workspace_id, repository_id, position, sparse_cones_json) \
              VALUES (?, ?, ?, ?)",
         )
         .bind(&workspace_id.0)
-        .bind(&repo_id.0)
+        .bind(&r.repository_id.0)
         .bind(position as i64)
-        .bind(cones_json)
+        .bind(&r.sparse_cones_json)
         .execute(&mut *conn)
         .await
         .map_err(|e| Error::Sqlx(Box::new(e)))?;

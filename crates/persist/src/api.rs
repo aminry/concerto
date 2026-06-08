@@ -353,6 +353,26 @@ pub struct Repository {
 // Task 19; the schema is locked by migration 0001 (Task 09).
 // ---------------------------------------------------------------------------
 
+/// One repository's attachment to a workspace: its id plus the
+/// per-(workspace, repo) sparse-cone snapshot (`workspace_repos.sparse_cones_json`).
+#[derive(Debug, Clone)]
+pub struct WorkspaceRepoCones {
+    pub repository_id: RepositoryId,
+    /// Per-`(workspace, repo)` sparse-cone snapshot as a JSON
+    /// `["<cone_path>", …]` array string (Task 302, D6).
+    pub sparse_cones_json: String,
+}
+
+impl WorkspaceRepoCones {
+    /// Attach a repo with an empty (`"[]"`) cone snapshot.
+    pub fn empty_cones(repository_id: RepositoryId) -> Self {
+        Self {
+            repository_id,
+            sparse_cones_json: "[]".to_string(),
+        }
+    }
+}
+
 /// Newtype around a `workspaces.id` (UUIDv7 string per migration 0001).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorkspaceId(pub String);

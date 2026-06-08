@@ -604,6 +604,17 @@ pub struct Repository {
 }
 ```
 
+### struct `WorkspaceRepoCones`
+
+```rust
+pub struct WorkspaceRepoCones {
+    pub repository_id: RepositoryId,
+    /// Per-`(workspace, repo)` sparse-cone snapshot as a JSON
+    /// `["<cone_path>", …]` array string (Task 302, D6).
+    pub sparse_cones_json: String,
+}
+```
+
 ### struct `WorkspaceId`
 
 ```rust
