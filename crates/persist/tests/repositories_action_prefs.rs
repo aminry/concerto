@@ -5,13 +5,10 @@
 //! Migration 0011 adds `action_prefs_json TEXT NOT NULL DEFAULT '{}'` via a
 //! plain `ADD COLUMN` (no CHECK, no table recreate). This proves:
 //! - a freshly-inserted repo reads back the SQL default `"{}"` on every SELECT
-//!   path (`get` / `list_by_project` / `list_all`),
+//!   path (`get` / `list_all`),
 //! - an explicit `action_prefs_json` value round-trips through the column.
 
-use concerto_persist::{
-    repositories, NewProject, NewRepository, Persistence, PersistenceConfig, ProjectId,
-    RepositoryId,
-};
+use concerto_persist::{repositories, NewRepository, Persistence, PersistenceConfig, RepositoryId};
 
 async fn fresh_db() -> (tempfile::TempDir, Persistence) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -26,24 +23,11 @@ async fn fresh_db() -> (tempfile::TempDir, Persistence) {
 }
 
 async fn seed_repo(persist: &Persistence, repo_id: &str) {
-    let project_id = ProjectId("proj-1".to_string());
     let mut w = persist.writer().await;
-    concerto_persist::projects::insert(
-        &mut w,
-        NewProject {
-            id: project_id.clone(),
-            name: "Test".to_string(),
-            icon: None,
-            created_at: 1_700_000_000_000,
-        },
-    )
-    .await
-    .expect("insert project");
     repositories::insert(
         &mut w,
         NewRepository {
             id: RepositoryId(repo_id.to_string()),
-            project_id: project_id.0.clone(),
             name: repo_id.to_string(),
             url: format!("file:///tmp/{repo_id}.git"),
             local_path: format!("/tmp/repos/{repo_id}"),
@@ -66,12 +50,6 @@ async fn action_prefs_json_defaults_to_empty_object_on_every_select() {
         .expect("get")
         .expect("present");
     assert_eq!(got.action_prefs_json, "{}");
-
-    let by_project = repositories::list_by_project(persist.readers(), "proj-1")
-        .await
-        .expect("list_by_project");
-    assert_eq!(by_project.len(), 1);
-    assert_eq!(by_project[0].action_prefs_json, "{}");
 
     let all = repositories::list_all(persist.readers())
         .await

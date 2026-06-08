@@ -13,8 +13,8 @@
 //!   to `position = 0` via the `DEFAULT 0`.
 
 use concerto_persist::{
-    workspaces, NewProject, NewRepository, NewWorkspace, Persistence, PersistenceConfig, ProjectId,
-    RepositoryId, WorkspaceId,
+    workspaces, NewRepository, NewWorkspace, Persistence, PersistenceConfig, RepositoryId,
+    WorkspaceId,
 };
 use sqlx::Row;
 
@@ -30,9 +30,8 @@ async fn fresh_db() -> (tempfile::TempDir, Persistence) {
     (dir, persist)
 }
 
-/// Seed a project + three repos + one workspace (no junction rows yet).
+/// Seed three repos + one workspace (no junction rows yet).
 async fn seed(persist: &Persistence) -> (WorkspaceId, [RepositoryId; 3]) {
-    let project_id = ProjectId("proj-1".to_string());
     let ws_id = WorkspaceId("ws-1".to_string());
     // Names chosen so id-sort order (api < android < ios is false:
     // "android" < "api" < "ios") differs from declaration order, making
@@ -44,24 +43,11 @@ async fn seed(persist: &Persistence) -> (WorkspaceId, [RepositoryId; 3]) {
     ];
 
     let mut w = persist.writer().await;
-    concerto_persist::projects::insert(
-        &mut w,
-        NewProject {
-            id: project_id.clone(),
-            name: "Test".to_string(),
-            icon: None,
-            created_at: 1_700_000_000_000,
-        },
-    )
-    .await
-    .expect("insert project");
-
     for r in &repos {
         concerto_persist::repositories::insert(
             &mut w,
             NewRepository {
                 id: r.clone(),
-                project_id: project_id.0.clone(),
                 name: r.0.clone(),
                 url: format!("file:///tmp/{}.git", r.0),
                 local_path: format!("/tmp/repos/{}", r.0),
@@ -77,9 +63,9 @@ async fn seed(persist: &Persistence) -> (WorkspaceId, [RepositoryId; 3]) {
         &mut w,
         NewWorkspace {
             id: ws_id.clone(),
-            project_id: project_id.0.clone(),
             name: "WS".to_string(),
             slug: "ws".to_string(),
+            icon: None,
             description: None,
             permission_mode: None,
             created_at: 1_700_000_001_000,
@@ -92,6 +78,15 @@ async fn seed(persist: &Persistence) -> (WorkspaceId, [RepositoryId; 3]) {
     (ws_id, repos)
 }
 
+/// Build the `update_repos` pair-slice from repo ids, seeding each with the
+/// empty-cone snapshot (`"[]"`).
+fn with_empty_cones(repos: &[RepositoryId]) -> Vec<(RepositoryId, String)> {
+    repos
+        .iter()
+        .map(|r| (r.clone(), "[]".to_string()))
+        .collect()
+}
+
 #[tokio::test]
 async fn update_repos_writes_positions_and_list_repos_orders_by_position() {
     let (_dir, persist) = fresh_db().await;
@@ -101,7 +96,7 @@ async fn update_repos_writes_positions_and_list_repos_orders_by_position() {
 
     {
         let mut w = persist.writer().await;
-        workspaces::update_repos(&mut w, &ws, &declared)
+        workspaces::update_repos(&mut w, &ws, &with_empty_cones(&declared))
             .await
             .expect("update_repos");
     }
@@ -141,6 +136,59 @@ async fn update_repos_writes_positions_and_list_repos_orders_by_position() {
         listed, declared,
         "list_repos must return repos in declaration (position) order"
     );
+
+    // Each junction row carries the seeded per-(workspace, repo) cone
+    // snapshot (D6): update_repos wrote `"[]"` for every repo here.
+    for r in &declared {
+        let cones = workspaces::get_repo_cones(pool, &ws, r)
+            .await
+            .expect("get_repo_cones")
+            .expect("junction row exists");
+        assert_eq!(cones, "[]", "seeded cone snapshot must round-trip");
+    }
+}
+
+#[tokio::test]
+async fn update_repos_seeds_per_repo_cone_snapshot() {
+    let (_dir, persist) = fresh_db().await;
+    let (ws, repos) = seed(&persist).await;
+
+    // Attach two repos, seeding distinct cone snapshots per repo (D3/D4).
+    let pairs = vec![
+        (repos[0].clone(), "[\"crates/core\"]".to_string()),
+        (repos[1].clone(), "[]".to_string()),
+    ];
+    {
+        let mut w = persist.writer().await;
+        workspaces::update_repos(&mut w, &ws, &pairs)
+            .await
+            .expect("update_repos");
+    }
+
+    let pool = persist.readers();
+    let c0 = workspaces::get_repo_cones(pool, &ws, &repos[0])
+        .await
+        .expect("get_repo_cones")
+        .expect("row exists");
+    assert_eq!(c0, "[\"crates/core\"]", "seeded snapshot must persist");
+    let c1 = workspaces::get_repo_cones(pool, &ws, &repos[1])
+        .await
+        .expect("get_repo_cones")
+        .expect("row exists");
+    assert_eq!(c1, "[]");
+
+    // `set_repo_cones` overwrites the snapshot without touching position.
+    {
+        let mut w = persist.writer().await;
+        workspaces::set_repo_cones(&mut w, &ws, &repos[1], "[\"docs\"]")
+            .await
+            .expect("set_repo_cones");
+    }
+    let c1b = workspaces::get_repo_cones(pool, &ws, &repos[1])
+        .await
+        .expect("get_repo_cones")
+        .expect("row exists");
+    assert_eq!(c1b, "[\"docs\"]", "set_repo_cones must overwrite snapshot");
 }
 
 #[tokio::test]
@@ -153,7 +201,7 @@ async fn update_repos_reorders_on_recall() {
         workspaces::update_repos(
             &mut w,
             &ws,
-            &[repos[0].clone(), repos[1].clone(), repos[2].clone()],
+            &with_empty_cones(&[repos[0].clone(), repos[1].clone(), repos[2].clone()]),
         )
         .await
         .expect("initial update_repos");
@@ -163,7 +211,7 @@ async fn update_repos_reorders_on_recall() {
     let reordered = vec![repos[2].clone(), repos[0].clone()];
     {
         let mut w = persist.writer().await;
-        workspaces::update_repos(&mut w, &ws, &reordered)
+        workspaces::update_repos(&mut w, &ws, &with_empty_cones(&reordered))
             .await
             .expect("reorder update_repos");
     }

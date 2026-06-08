@@ -42,10 +42,10 @@ async fn fresh_db_boots_and_migrates() {
     let mut w = persist.writer().await;
     let n: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?")
-            .bind("projects")
+            .bind("workspaces")
             .fetch_one(&mut *w)
             .await
-            .expect("count projects table");
+            .expect("count workspaces table");
     assert_eq!(n, 1, "migrations applied on a fresh DB");
     drop(w);
 

@@ -5,55 +5,49 @@
 ## `crates/persist/migrations/0001_initial_schema.sql`
 
 ```sql
-CREATE TABLE projects (
-    id              TEXT PRIMARY KEY,                  -- UUIDv7
-    name            TEXT NOT NULL,
-    icon            TEXT,
-    created_at      INTEGER NOT NULL,                  -- unix epoch ms
-    archived_at     INTEGER,
-    settings_json   TEXT NOT NULL DEFAULT '{}'         -- schema in design/09 §4.1
-);
-```
-
-```sql
 CREATE TABLE repositories (
     id                  TEXT PRIMARY KEY,
-    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name                TEXT NOT NULL,                 -- short name used in folder paths
     url                 TEXT NOT NULL,
     local_path          TEXT NOT NULL,                 -- ~/concerto/repos/<id>/
     clone_strategy      TEXT NOT NULL,                 -- full | blobless | treeless
-    default_branch     TEXT NOT NULL,
+    default_branch      TEXT NOT NULL,
     cone_defaults_json  TEXT NOT NULL DEFAULT '[]',
     fs_monitor_pid      INTEGER,
     last_fetch_at       INTEGER,
-    UNIQUE(project_id, url),
-    UNIQUE(project_id, name)
+    UNIQUE(url),
+    UNIQUE(name)
 );
 ```
 
 ```sql
 CREATE TABLE workspaces (
     id                          TEXT PRIMARY KEY,
-    project_id                  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name                        TEXT NOT NULL,
     slug                        TEXT NOT NULL,
+    icon                        TEXT,
     description                 TEXT,
     permission_mode             TEXT CHECK (permission_mode IS NULL OR permission_mode IN ('strict','normal','auto','yolo')),
     bypass_destructive_guard    INTEGER CHECK (bypass_destructive_guard IS NULL OR bypass_destructive_guard IN (0,1)),
     settings_json               TEXT NOT NULL DEFAULT '{}',
     created_at                  INTEGER NOT NULL,
     archived_at                 INTEGER,
-    UNIQUE(project_id, slug)
+    UNIQUE(slug)
 );
 ```
 
 ```sql
 CREATE TABLE workspace_repos (
-    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    repository_id   TEXT NOT NULL REFERENCES repositories(id),
+    workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    repository_id     TEXT NOT NULL REFERENCES repositories(id),
+    position          INTEGER NOT NULL DEFAULT 0,
+    sparse_cones_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (workspace_id, repository_id)
 );
+```
+
+```sql
+CREATE INDEX idx_workspace_repos_position ON workspace_repos(workspace_id, position);
 ```
 
 ```sql
@@ -268,8 +262,8 @@ CREATE INDEX idx_schedule_runs_inflight
 CREATE TABLE skills_index (
     id              TEXT PRIMARY KEY,
     scope           TEXT NOT NULL
-        CHECK (scope IN ('personal','project','plugin','enterprise')),
-    project_id      TEXT REFERENCES projects(id) ON DELETE CASCADE,
+        CHECK (scope IN ('personal','workspace','plugin','enterprise')),
+    workspace_id    TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     slash_command   TEXT,
     description     TEXT,
@@ -277,7 +271,7 @@ CREATE TABLE skills_index (
     source_path     TEXT NOT NULL,
     enabled         INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
     discovered_at   INTEGER NOT NULL,
-    UNIQUE(scope, project_id, name)
+    UNIQUE(scope, workspace_id, name)
 );
 ```
 
@@ -286,7 +280,7 @@ CREATE INDEX idx_skills_index_scope ON skills_index(scope);
 ```
 
 ```sql
-CREATE INDEX idx_skills_index_project ON skills_index(project_id);
+CREATE INDEX idx_skills_index_workspace ON skills_index(workspace_id);
 ```
 
 ## `crates/persist/migrations/0006_suggestion_learn.sql`
@@ -345,9 +339,6 @@ CREATE INDEX idx_pull_requests_repo ON pull_requests(repository_id);
 
 ## `crates/persist/migrations/0009_workspace_repos_position.sql`
 
-```sql
-CREATE INDEX idx_workspace_repos_position ON workspace_repos(workspace_id, position);
-```
 
 ## `crates/persist/migrations/0010_workareas_status_finished_partial.sql`
 

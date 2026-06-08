@@ -15,8 +15,8 @@
 //!    runs in production).
 
 use concerto_persist::{
-    workareas, NewProject, NewRepository, NewWorkarea, NewWorkspace, Persistence,
-    PersistenceConfig, ProjectId, RepositoryId, WorkareaId, WorkspaceId,
+    workareas, NewRepository, NewWorkarea, NewWorkspace, Persistence, PersistenceConfig,
+    RepositoryId, WorkareaId, WorkspaceId,
 };
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions, Connection, Row};
@@ -33,32 +33,19 @@ async fn fresh_db() -> (tempfile::TempDir, Persistence) {
     (dir, persist)
 }
 
-/// Seed project + repo + workspace, then a workarea, returning its id.
+/// Seed repo + workspace, then a workarea, returning its id.
 async fn seed_workarea(persist: &Persistence, status: &str) -> (WorkspaceId, WorkareaId) {
-    let project_id = ProjectId("p1".to_string());
     let ws_id = WorkspaceId("ws1".to_string());
     let repo_id = RepositoryId("r1".to_string());
     let wa_id = WorkareaId(format!("wa-{status}"));
 
     let mut w = persist.writer().await;
-    concerto_persist::projects::insert(
-        &mut w,
-        NewProject {
-            id: project_id.clone(),
-            name: "T".to_string(),
-            icon: None,
-            created_at: 1,
-        },
-    )
-    .await
-    .expect("project");
     // Idempotent-ish: ignore if the workspace/repo already exist (seed is
     // called once per test, but keep it robust).
     let _ = concerto_persist::repositories::insert(
         &mut w,
         NewRepository {
             id: repo_id.clone(),
-            project_id: project_id.0.clone(),
             name: "r".to_string(),
             url: "file:///tmp/r.git".to_string(),
             local_path: "/tmp/r".to_string(),
@@ -71,9 +58,9 @@ async fn seed_workarea(persist: &Persistence, status: &str) -> (WorkspaceId, Wor
         &mut w,
         NewWorkspace {
             id: ws_id.clone(),
-            project_id: project_id.0.clone(),
             name: "W".to_string(),
             slug: "w".to_string(),
+            icon: None,
             description: None,
             permission_mode: None,
             created_at: 2,

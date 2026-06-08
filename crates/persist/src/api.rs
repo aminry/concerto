@@ -305,7 +305,6 @@ impl std::fmt::Display for RepositoryId {
 #[derive(Debug, Clone)]
 pub struct NewRepository {
     pub id: RepositoryId,
-    pub project_id: String,
     pub name: String,
     pub url: String,
     pub local_path: String,
@@ -324,7 +323,6 @@ pub struct NewRepository {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
     pub id: RepositoryId,
-    pub project_id: String,
     pub name: String,
     pub url: String,
     pub local_path: String,
@@ -348,53 +346,12 @@ pub struct Repository {
 }
 
 // ---------------------------------------------------------------------------
-// Projects + Workspaces (Task 19).
+// Workspaces (Task 19).
 //
-// The `Projects` gRPC service does not exist in V0.1; the persistence
-// helpers in `crates/persist/src/projects.rs` are the only surface.
-// `Workspaces` ships its gRPC surface in Task 19; the schema is locked by
-// migration 0001 (Task 09).
+// Workspaces are a top-level entity after the Project→Workspace collapse
+// (D5): there is no parent project. The `Workspaces` gRPC surface ships in
+// Task 19; the schema is locked by migration 0001 (Task 09).
 // ---------------------------------------------------------------------------
-
-/// Newtype around a `projects.id` (UUIDv7 string per migration 0001).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ProjectId(pub String);
-
-impl ProjectId {
-    /// View as a borrowed string slice (`&str`).
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for ProjectId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// Insert-time shape for a `projects` row.
-#[derive(Debug, Clone)]
-pub struct NewProject {
-    pub id: ProjectId,
-    pub name: String,
-    pub icon: Option<String>,
-    /// Unix epoch milliseconds. Supplied by the caller to keep this
-    /// layer pure (no wall-clock reads).
-    pub created_at: i64,
-}
-
-/// Row-shaped projection of a `projects` row. `settings_json` is
-/// intentionally omitted — V0.1 has no callers that consume it; future
-/// tasks (per-project settings) will add it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Project {
-    pub id: ProjectId,
-    pub name: String,
-    pub icon: Option<String>,
-    pub created_at: i64,
-    pub archived_at: Option<i64>,
-}
 
 /// Newtype around a `workspaces.id` (UUIDv7 string per migration 0001).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -415,21 +372,21 @@ impl std::fmt::Display for WorkspaceId {
 
 /// Insert-time shape for a `workspaces` row. `slug` is derived by the
 /// workspace manager (Task 19); the persistence layer takes whatever
-/// the caller supplies and lets the UNIQUE(project_id, slug) constraint
-/// surface a collision via `is_unique_violation`.
+/// the caller supplies and lets the UNIQUE(slug) constraint surface a
+/// collision via `is_unique_violation`.
 ///
 /// `permission_mode` is the **lowercase** SQL form (`"strict" |
-/// "normal" | "auto" | "yolo"`) or `None` for "inherit from project"
-/// per `design/03 §3.2`. The CHECK constraint enforces the allowed set.
+/// "normal" | "auto" | "yolo"`) or `None` for "inherit from workspace
+/// defaults" per `design/03 §3.2`. The CHECK constraint enforces the
+/// allowed set.
 #[derive(Debug, Clone)]
 pub struct NewWorkspace {
     pub id: WorkspaceId,
-    pub project_id: String,
     pub name: String,
     pub slug: String,
+    pub icon: Option<String>,
     pub description: Option<String>,
-    pub permission_mode: Option<String>,
-    /// Unix epoch milliseconds.
+    pub permission_mode: Option<String>, // None = inherit from workspace defaults
     pub created_at: i64,
 }
 
@@ -439,12 +396,12 @@ pub struct NewWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     pub id: WorkspaceId,
-    pub project_id: String,
     pub name: String,
     pub slug: String,
+    pub icon: Option<String>,
     pub description: Option<String>,
     /// Lowercase SQL form (`"strict" | "normal" | "auto" | "yolo"`) or
-    /// `None` for "inherit from project".
+    /// `None` for "inherit from workspace defaults".
     pub permission_mode: Option<String>,
     pub created_at: i64,
     pub archived_at: Option<i64>,
@@ -772,8 +729,8 @@ pub struct ScheduleRun {
 // ---------------------------------------------------------------------------
 // Skills (Task 39).
 //
-// V0.1 surface: discovery (personal + project scopes) + per-(scope,
-// project, name) enable/disable. Marketplace install, sandbox try, and
+// V0.1 surface: discovery (personal + workspace scopes) + per-(scope,
+// workspace, name) enable/disable. Marketplace install, sandbox try, and
 // invocation tracking are V1.0 per `tasks/39 §"Scope — out"`. The schema
 // is locked by migration 0005; only the V0.1 columns are projected here.
 // ---------------------------------------------------------------------------
@@ -796,12 +753,12 @@ impl std::fmt::Display for SkillId {
 }
 
 /// Scope axis for a `skills_index` row. Mirrors the four-scope contract
-/// in `design/06 §1`. V0.1 actively discovers `Personal` and `Project`;
+/// in `design/06 §1`. V0.1 actively discovers `Personal` and `Workspace`;
 /// `Plugin` / `Enterprise` exist on the row but are not walked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SkillScope {
     Personal,
-    Project,
+    Workspace,
     Plugin,
     Enterprise,
 }
@@ -811,7 +768,7 @@ impl SkillScope {
     pub fn as_sql_str(self) -> &'static str {
         match self {
             SkillScope::Personal => "personal",
-            SkillScope::Project => "project",
+            SkillScope::Workspace => "workspace",
             SkillScope::Plugin => "plugin",
             SkillScope::Enterprise => "enterprise",
         }
@@ -823,7 +780,7 @@ impl SkillScope {
     pub fn from_sql_str(s: &str) -> Option<Self> {
         match s {
             "personal" => Some(SkillScope::Personal),
-            "project" => Some(SkillScope::Project),
+            "workspace" => Some(SkillScope::Workspace),
             "plugin" => Some(SkillScope::Plugin),
             "enterprise" => Some(SkillScope::Enterprise),
             _ => None,
@@ -838,9 +795,9 @@ impl SkillScope {
 pub struct NewSkill {
     pub id: SkillId,
     pub scope: SkillScope,
-    /// MUST be `Some` when `scope == SkillScope::Project`; MUST be
+    /// MUST be `Some` when `scope == SkillScope::Workspace`; MUST be
     /// `None` otherwise.
-    pub project_id: Option<ProjectId>,
+    pub workspace_id: Option<WorkspaceId>,
     pub name: String,
     pub slash_command: Option<String>,
     pub description: Option<String>,
@@ -857,7 +814,7 @@ pub struct NewSkill {
 pub struct SkillRow {
     pub id: SkillId,
     pub scope: SkillScope,
-    pub project_id: Option<ProjectId>,
+    pub workspace_id: Option<WorkspaceId>,
     pub name: String,
     pub slash_command: Option<String>,
     pub description: Option<String>,
@@ -872,7 +829,7 @@ pub struct SkillRow {
 #[derive(Debug, Clone, Default)]
 pub struct SkillFilter {
     pub scope: Option<SkillScope>,
-    pub project_id: Option<ProjectId>,
+    pub workspace_id: Option<WorkspaceId>,
     pub enabled_only: bool,
 }
 

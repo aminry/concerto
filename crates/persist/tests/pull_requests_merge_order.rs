@@ -6,9 +6,8 @@
 //! `UNIQUE(workarea_id, repository_id)` invariant.
 
 use concerto_persist::{
-    pull_requests, NewProject, NewPullRequest, NewRepository, NewWorkarea, NewWorkspace,
-    Persistence, PersistenceConfig, ProjectId, PullRequestId, RepositoryId, WorkareaId,
-    WorkspaceId,
+    pull_requests, NewPullRequest, NewRepository, NewWorkarea, NewWorkspace, Persistence,
+    PersistenceConfig, PullRequestId, RepositoryId, WorkareaId, WorkspaceId,
 };
 
 async fn fresh_db() -> (tempfile::TempDir, Persistence) {
@@ -22,10 +21,9 @@ async fn fresh_db() -> (tempfile::TempDir, Persistence) {
     (dir, persist)
 }
 
-/// Seed a project + N repos + one workspace + one workarea. Returns the
-/// workarea id and the seeded repo ids (in declaration order).
+/// Seed N repos + one workspace + one workarea. Returns the workarea id
+/// and the seeded repo ids (in declaration order).
 async fn seed(persist: &Persistence, repo_ids: &[&str]) -> (WorkareaId, Vec<RepositoryId>) {
-    let project_id = ProjectId("proj-1".to_string());
     let workspace_id = WorkspaceId("ws-1".to_string());
     let workarea_id = WorkareaId("wa-1".to_string());
     let repos: Vec<RepositoryId> = repo_ids
@@ -34,24 +32,11 @@ async fn seed(persist: &Persistence, repo_ids: &[&str]) -> (WorkareaId, Vec<Repo
         .collect();
 
     let mut w = persist.writer().await;
-    concerto_persist::projects::insert(
-        &mut w,
-        NewProject {
-            id: project_id.clone(),
-            name: "Test".to_string(),
-            icon: None,
-            created_at: 1,
-        },
-    )
-    .await
-    .expect("insert project");
-
     for r in &repos {
         concerto_persist::repositories::insert(
             &mut w,
             NewRepository {
                 id: r.clone(),
-                project_id: project_id.0.clone(),
                 name: r.0.clone(),
                 url: format!("https://github.com/acme/{}", r.0),
                 local_path: format!("/tmp/{}", r.0),
@@ -67,9 +52,9 @@ async fn seed(persist: &Persistence, repo_ids: &[&str]) -> (WorkareaId, Vec<Repo
         &mut w,
         NewWorkspace {
             id: workspace_id.clone(),
-            project_id: project_id.0.clone(),
             name: "WS".to_string(),
             slug: "ws".to_string(),
+            icon: None,
             description: None,
             permission_mode: None,
             created_at: 1,

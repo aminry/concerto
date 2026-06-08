@@ -427,16 +427,14 @@ async fn invalid_workarea_status_is_rejected() {
     let mut w = persist.writer().await;
 
     // Set up parent workspace row first (no project needed after the collapse).
-    sqlx::query(
-        "INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
-    )
-    .bind("w")
-    .bind("w")
-    .bind("w")
-    .bind(0_i64)
-    .execute(&mut *w)
-    .await
-    .expect("workspace");
+    sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, ?, ?, ?)")
+        .bind("w")
+        .bind("w")
+        .bind("w")
+        .bind(0_i64)
+        .execute(&mut *w)
+        .await
+        .expect("workspace");
 
     let result = sqlx::query(
         "INSERT INTO workareas \
@@ -524,12 +522,11 @@ async fn schema_has_no_projects_table() {
 async fn workspace_repos_has_folded_columns() {
     let (_dir, persist) = fresh_db().await;
     let mut w = persist.writer().await;
-    let cols: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM pragma_table_info('workspace_repos')",
-    )
-    .fetch_all(&mut *w)
-    .await
-    .unwrap();
+    let cols: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('workspace_repos')")
+            .fetch_all(&mut *w)
+            .await
+            .unwrap();
     assert!(cols.iter().any(|c| c == "sparse_cones_json"));
     assert!(cols.iter().any(|c| c == "position"));
 }
