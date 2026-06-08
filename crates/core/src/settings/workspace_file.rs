@@ -103,21 +103,21 @@ pub struct ActionPrefsLoad {
 
 /// The per-machine personal-override config
 /// (`~/.concerto/concerto.json`). Only the
-/// `[project_id].opt_out_of_checked_in_fields` array is consumed by Task 310;
+/// `[workspace_id].opt_out_of_checked_in_fields` array is consumed by Task 310;
 /// the rest of the file (if any) is ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OptOutConfig {
-    /// `project_id -> [field names to skip the checked-in layer for]`.
-    pub per_project: BTreeMap<String, Vec<String>>,
+    /// `workspace_id -> [field names to skip the checked-in layer for]`.
+    pub per_workspace: BTreeMap<String, Vec<String>>,
 }
 
 impl OptOutConfig {
     /// Whether `field` (its wire name, see
     /// [`super::resolver::WorkspaceSettingsField::wire_name`]) is opted out of
-    /// the checked-in layer for `project_id` on this machine.
-    pub fn is_opted_out(&self, project_id: &str, field: &str) -> bool {
-        self.per_project
-            .get(project_id)
+    /// the checked-in layer for `workspace_id` on this machine.
+    pub fn is_opted_out(&self, workspace_id: &str, field: &str) -> bool {
+        self.per_workspace
+            .get(workspace_id)
             .is_some_and(|fields| fields.iter().any(|f| f == field))
     }
 
@@ -149,8 +149,8 @@ impl OptOutConfig {
             #[serde(default)]
             opt_out_of_checked_in_fields: Vec<String>,
         }
-        // The top level is `{ "<project_id>": { opt_out_of_checked_in_fields:
-        // [...] }, ... }`. Other keys per project are tolerated + ignored.
+        // The top level is `{ "<workspace_id>": { opt_out_of_checked_in_fields:
+        // [...] }, ... }`. Other keys per workspace are tolerated + ignored.
         let parsed: BTreeMap<String, PerProjectEntry> = match serde_json::from_str(raw) {
             Ok(v) => v,
             Err(e) => {
@@ -162,12 +162,12 @@ impl OptOutConfig {
                 return Self::default();
             }
         };
-        let per_project = parsed
+        let per_workspace = parsed
             .into_iter()
             .filter(|(_, e)| !e.opt_out_of_checked_in_fields.is_empty())
             .map(|(k, e)| (k, e.opt_out_of_checked_in_fields))
             .collect();
-        Self { per_project }
+        Self { per_workspace }
     }
 }
 
@@ -705,24 +705,24 @@ mod tests {
     }
 
     #[test]
-    fn opt_out_config_parses_per_project_fields() {
+    fn opt_out_config_parses_per_workspace_fields() {
         let raw = r#"{
-            "proj-1": { "opt_out_of_checked_in_fields": ["scripts", "run_script_mode"] },
-            "proj-2": { "opt_out_of_checked_in_fields": [] }
+            "ws-1": { "opt_out_of_checked_in_fields": ["scripts", "run_script_mode"] },
+            "ws-2": { "opt_out_of_checked_in_fields": [] }
         }"#;
         let cfg = OptOutConfig::parse(raw, Path::new("test"));
-        assert!(cfg.is_opted_out("proj-1", "scripts"));
-        assert!(cfg.is_opted_out("proj-1", "run_script_mode"));
-        assert!(!cfg.is_opted_out("proj-1", "enterprise_data_privacy"));
+        assert!(cfg.is_opted_out("ws-1", "scripts"));
+        assert!(cfg.is_opted_out("ws-1", "run_script_mode"));
+        assert!(!cfg.is_opted_out("ws-1", "enterprise_data_privacy"));
         // Empty list → not stored → not opted out.
-        assert!(!cfg.is_opted_out("proj-2", "scripts"));
-        assert!(!cfg.is_opted_out("unknown-proj", "scripts"));
+        assert!(!cfg.is_opted_out("ws-2", "scripts"));
+        assert!(!cfg.is_opted_out("unknown-ws", "scripts"));
     }
 
     #[test]
     fn opt_out_config_malformed_is_empty() {
         let cfg = OptOutConfig::parse("garbage", Path::new("test"));
-        assert!(cfg.per_project.is_empty());
+        assert!(cfg.per_workspace.is_empty());
     }
 
     #[tokio::test]

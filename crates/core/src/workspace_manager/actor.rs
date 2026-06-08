@@ -16,9 +16,7 @@
 //!   registry (the Project→Workspace collapse dropped project scoping).
 //!   It rejects an empty set with [`NO_REPOS_WIRE_CODE`] and a repeated id
 //!   with [`DUPLICATE_REPO_WIRE_CODE`], both inside an [`Error::Validation`]
-//!   the gRPC handler maps to `INVALID_ARGUMENT`. [`SINGLE_REPO_WIRE_CODE`]
-//!   is retired as an active rejection (kept defined for one release for
-//!   client back-compat; no code path emits it).
+//!   the gRPC handler maps to `INVALID_ARGUMENT`.
 //! - `name` must derive to a non-empty slug.
 //! - Every `repository_id` must exist in the global `repositories`
 //!   registry (no project membership check — repos are global, D9).
@@ -57,17 +55,6 @@ pub struct WorkspaceRepoSpec {
     /// Empty → seed from repo `cone_defaults_json` (snapshot, D4).
     pub sparse_cones: Vec<String>,
 }
-
-/// Wire-code the V0.1 Core surfaced when a caller requested a multi-repo
-/// workspace. **Retired by Task 306** — multi-repo workspaces are now
-/// supported, so no code path emits this. Kept defined for one release so
-/// clients still switching on the string compile; remove once every
-/// client has migrated.
-#[deprecated(
-    since = "1.0.0",
-    note = "multi-repo workspaces are supported as of Task 306; this rejection no longer fires"
-)]
-pub const SINGLE_REPO_WIRE_CODE: &str = "workspace.v0_single_repo_only";
 
 /// Wire-code surfaced inside the [`Error::Validation`] payload when a
 /// caller requests a workspace with an **empty** repository set (Task
@@ -771,11 +758,6 @@ fn now_unix_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
-
-// Suppress an unused-import lint when no callers reach for PathBuf in
-// V0.1 (the type is referenced in design but not yet wired through).
-#[allow(dead_code)]
-fn _path_marker(_p: PathBuf) {}
 
 #[cfg(test)]
 mod tests {

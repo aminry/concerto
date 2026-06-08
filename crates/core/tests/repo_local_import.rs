@@ -107,11 +107,15 @@ async fn import_local_adopts_in_place_and_is_non_destructive() {
         .await
         .expect("import_local");
 
-    // Adopted in place: local_path is the ORIGINAL temp path, NOT under
-    // <repos_root>/<id>/.
+    // Adopted in place: local_path is the ORIGINAL repo location (canonicalized
+    // for stable de-dup — e.g. macOS resolves /tmp → /private/tmp), NOT relocated
+    // under <repos_root>/<id>/.
+    let orig_canonical = tokio::fs::canonicalize(&orig_path)
+        .await
+        .unwrap_or_else(|_| orig_path.clone());
     assert_eq!(
         Path::new(&repo.local_path),
-        orig_path.as_path(),
+        orig_canonical.as_path(),
         "import_local must adopt the repo in place (no relocation)"
     );
     assert_eq!(repo.name, "somename");
@@ -171,5 +175,50 @@ async fn import_local_dedups_same_path() {
         all.len(),
         1,
         "de-dup must not create a duplicate registry entry"
+    );
+}
+
+/// Importing the same repo via a non-canonical spelling (trailing `/` or a
+/// `./` component) must de-dup to one registry row because `import_local`
+/// canonicalizes the path before deriving the URL key.
+#[tokio::test(flavor = "multi_thread")]
+async fn import_local_dedups_non_canonical_path_spelling() {
+    let (persistence, manager, _tmp) = make_repo_manager().await;
+    let work = make_local_repo_with_commit().await;
+    let canonical_path = work.path().canonicalize().unwrap();
+
+    // First import via the canonical path.
+    let first = manager
+        .import_local("canonical", &canonical_path)
+        .await
+        .expect("first import_local");
+
+    // Second import via a path with a `./` component appended — different
+    // string but same filesystem location after canonicalization.
+    let dotslash_path = canonical_path.join(".").join("..");
+    // Use the parent so we stay inside the actual dir (join("..") of a dir
+    // yields the same dir after canonicalize).  Simpler: just re-use the
+    // canonical path but construct it via joining an extra intermediate "."
+    // component, which the OS collapses on canonicalize.
+    let via_dot = canonical_path.join(".");
+    let second = manager
+        .import_local("via-dot", &via_dot)
+        .await
+        .expect("second import_local via ./");
+
+    assert_eq!(
+        first.id, second.id,
+        "a path with a trailing '.' must de-dup to the same registry row after canonicalization"
+    );
+
+    let _ = dotslash_path; // keep the binding alive to silence the warning
+
+    let all = concerto_persist::repositories::list_all(persistence.readers())
+        .await
+        .expect("list_all");
+    assert_eq!(
+        all.len(),
+        1,
+        "non-canonical spelling must not create a second registry entry"
     );
 }

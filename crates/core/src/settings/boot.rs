@@ -97,7 +97,7 @@ pub async fn build_resolver_for_workspace(
     }
 
     let opted_out = opt_out
-        .per_project
+        .per_workspace
         .get(workspace_id.as_str())
         .cloned()
         .unwrap_or_default();

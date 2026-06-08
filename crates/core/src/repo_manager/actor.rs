@@ -268,9 +268,12 @@ impl RepoManager {
     /// Validates `local_path` is a git repository (`git -C <path> rev-parse
     /// --git-dir`), derives `default_branch` from the checked-out HEAD
     /// (falling back to `"main"`), and registers a `repositories` row whose
-    /// `local_path` is the original path adopted as-is (NOT under
-    /// `<repos_root>/<id>/`). The repo's `url` is the `origin` remote URL
-    /// when one exists, else the `local_path` itself.
+    /// `local_path` is the **canonicalized** absolute path (NOT under
+    /// `<repos_root>/<id>/`). Canonicalization removes trailing slashes,
+    /// `./` segments, and resolves symlinks, so `/repo`, `/repo/`, and a
+    /// symlink pointing at the same directory all de-dup to one registry
+    /// row. The repo's `url` is the `origin` remote URL when one exists,
+    /// else the canonicalized `local_path` itself.
     ///
     /// The adopt is **non-destructive**: the existing `.git` is never
     /// re-initialised. Only additive performance config (`core.fsmonitor`,
@@ -288,6 +291,15 @@ impl RepoManager {
             })?;
         let _ = git_dir;
 
+        // Canonicalize to remove trailing slashes, `./` segments, and resolve
+        // symlinks so that `/repo`, `/repo/`, and a symlink to the same dir all
+        // produce a single registry key. Falls back to the raw path if the OS
+        // call fails (e.g. the dir was just created and not yet flushed).
+        let local_path = tokio::fs::canonicalize(local_path)
+            .await
+            .unwrap_or_else(|_| local_path.to_path_buf());
+        let local_path = local_path.as_path();
+
         // Derive the default branch from HEAD (symbolic-ref). A detached HEAD
         // or read failure falls back to "main".
         let default_branch =
@@ -297,7 +309,7 @@ impl RepoManager {
             };
 
         // The origin remote URL, if any, becomes the registry `url`; else the
-        // local path itself (so `get_by_url` de-dup still works).
+        // canonicalized local path itself (so `get_by_url` de-dup still works).
         let url = match gixw::cmd::run(&["remote", "get-url", "origin"], local_path).await {
             Ok(out) if !out.stdout.trim().is_empty() => out.stdout.trim().to_string(),
             _ => local_path.to_string_lossy().into_owned(),
