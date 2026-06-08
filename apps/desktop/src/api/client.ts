@@ -22,6 +22,9 @@ export type RpcMethod =
   | "Workareas.GetWorkareaRepoDiff"
   | "Repositories.AddRepository"
   | "Repositories.ListByProject"
+  // DS-1 — pre-clone size probe (Task 301) backing the add-repo
+  // size→strategy recommendation. Matches the Rust shell dispatch arm.
+  | "Repositories.EstimateRepoSize"
   // Task 322 — sparse-cone picker (Task 305 EstimateConeSize telemetry +
   // Task 302 SetCones per-(workarea, repo) cone setter). The strings match
   // the Rust shell dispatch table (`<Service>.<Rpc>`) exactly.

@@ -23,11 +23,12 @@ use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
     AddRepoRequest, CreateProjectRequest, CreateSessionRequest, CreateWorkareaRequest,
-    CreateWorkspaceRequest, GetDiffRequest, ListProjectsRequest, ListRepositoriesRequest,
-    ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListWorkareasRequest,
-    ListWorkspacesRequest, McpScopeRequest, PermissionMode, ResizeSessionRequest,
-    SendMessageRequest, SessionId as ProtoSessionId, StopSessionRequest, SubscribeRequest,
-    WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
+    CreateWorkspaceRequest, EstimateConeSizeRequest, EstimateRepoSizeRequest, GetDiffRequest,
+    ListProjectsRequest, ListRepositoriesRequest, ListSchedulesRequest, ListSessionsRequest,
+    ListSkillsRequest, ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest,
+    PermissionMode, ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId,
+    SetConesRequest, StopSessionRequest, SubscribeRequest, WorkareaId as ProtoWorkareaId,
+    WorkspaceId as ProtoWorkspaceId,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -143,11 +144,38 @@ struct AddRepositoryPayload {
     url: String,
     #[serde(default)]
     default_branch: String,
+    // Task 301 clone-strategy knobs. Both default so V0.1 callers (and any
+    // payload that omits them) keep the original Full, non-sparse behavior:
+    // `clone_strategy = ""` parses as Full on the Core; `with_sparse = false`.
+    #[serde(default)]
+    clone_strategy: String,
+    #[serde(default)]
+    with_sparse: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct ListRepositoriesPayload {
     project_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EstimateRepoSizePayload {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EstimateConeSizePayload {
+    repository_id: String,
+    #[serde(default)]
+    cone_paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetConesPayload {
+    workarea_id: String,
+    repository_id: String,
+    #[serde(default)]
+    cone_paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -327,9 +355,48 @@ where
                     name: req.name,
                     url: req.url,
                     default_branch: req.default_branch,
-                    // Task 301 added clone_strategy/with_sparse; empty → Full.
-                    // The New-Project dialog wires these in Task 322.
-                    ..Default::default()
+                    // Task 301: empty `clone_strategy` → Full on the Core;
+                    // `with_sparse = false` ⇒ a normal checkout. The add-repo
+                    // strategy picker (DS-1) sends these; older callers omit
+                    // them and the serde defaults preserve V0.1 behavior.
+                    clone_strategy: req.clone_strategy,
+                    with_sparse: req.with_sparse,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Repositories.EstimateRepoSize" => {
+            let req: EstimateRepoSizePayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for EstimateRepoSize: {e}"))
+            })?;
+            let mut client = RepositoriesClient::new(channel);
+            client
+                .estimate_repo_size(EstimateRepoSizeRequest { url: req.url })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Repositories.EstimateConeSize" => {
+            let req: EstimateConeSizePayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for EstimateConeSize: {e}"))
+            })?;
+            let mut client = RepositoriesClient::new(channel);
+            client
+                .estimate_cone_size(EstimateConeSizeRequest {
+                    repository_id: req.repository_id,
+                    cone_paths: req.cone_paths,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Repositories.SetCones" => {
+            let req: SetConesPayload = serde_json::from_value(payload)
+                .map_err(|e| CoreClientError::Rpc(format!("invalid payload for SetCones: {e}")))?;
+            let mut client = RepositoriesClient::new(channel);
+            client
+                .set_cones(SetConesRequest {
+                    workarea_id: req.workarea_id,
+                    repository_id: req.repository_id,
+                    cone_paths: req.cone_paths,
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
