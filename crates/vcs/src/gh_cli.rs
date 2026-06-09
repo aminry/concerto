@@ -17,12 +17,14 @@
 //!   "gh CLI fallback" row). A future task can plug in a Concerto-
 //!   keychain-supplied token via the environment.
 //!
-//! ## Title / body via temp files
+//! ## Body via a temp file
 //!
-//! PR titles and bodies may contain newlines, backticks, and other
-//! shell-hostile characters. We materialize them to
-//! [`tempfile::NamedTempFile`] and pass `--title-file` / `--body-file`
-//! to dodge every escaping headache.
+//! PR bodies may contain newlines, backticks, and other shell-hostile
+//! characters. We materialize the body to a [`tempfile::NamedTempFile`] and
+//! pass `--body-file` to dodge every escaping headache. The title is passed
+//! inline via `--title` — `gh pr create` has no `--title-file` flag — and
+//! since `run_gh` spawns `gh` with an argv (never through a shell), the title
+//! needs no escaping.
 
 use std::ffi::OsStr;
 use std::io::Write as _;
@@ -193,12 +195,15 @@ pub async fn view_pr(gh: &std::path::Path, repo: &str, number: i64) -> Result<Pr
 }
 
 /// `gh pr create --repo <repo> --base <base> --head <head>
-/// --title-file <tmp> --body-file <tmp>`. Returns the assigned PR
+/// --title <title> --body-file <tmp>`. Returns the assigned PR
 /// number.
 ///
-/// Title and body are written to [`tempfile::NamedTempFile`]s to dodge
-/// shell-escaping issues; the files are dropped (and deleted) when
-/// this call returns.
+/// `gh pr create` has **no** `--title-file` flag (only `--body-file`), so the
+/// title is passed inline via `--title`. `run_gh` spawns `gh` with an argv
+/// (never through a shell), so a title containing spaces or special characters
+/// needs no escaping — it is a single argv element. The body is still written
+/// to a [`tempfile::NamedTempFile`] (dropped and deleted when this call
+/// returns) to dodge body-length / escaping issues, which `--body-file` solves.
 pub async fn create_pr(
     gh: &std::path::Path,
     repo: &str,
@@ -207,18 +212,12 @@ pub async fn create_pr(
     title: &str,
     body: &str,
 ) -> Result<i64> {
-    // tempfile keeps the file open until the variable is dropped;
-    // closing `_keep_alive` would unlink it. Bind to a local so the
-    // path stays valid through the `gh` call.
-    let mut title_file = tempfile::NamedTempFile::new()?;
-    title_file.write_all(title.as_bytes())?;
-    title_file.flush()?;
-
+    // tempfile keeps the file open until the variable is dropped; binding to a
+    // local keeps the path valid through the `gh` call.
     let mut body_file = tempfile::NamedTempFile::new()?;
     body_file.write_all(body.as_bytes())?;
     body_file.flush()?;
 
-    let title_path = title_file.path().to_string_lossy().into_owned();
     let body_path = body_file.path().to_string_lossy().into_owned();
 
     let output = run_gh(
@@ -232,8 +231,8 @@ pub async fn create_pr(
             base,
             "--head",
             head,
-            "--title-file",
-            &title_path,
+            "--title",
+            title,
             "--body-file",
             &body_path,
         ],
@@ -462,5 +461,67 @@ mod tests {
     #[test]
     fn parse_pr_number_rejects_non_numeric() {
         assert!(parse_pr_number_from_url("https://example.com/").is_err());
+    }
+
+    /// Regression: `gh pr create` has **no** `--title-file` flag (only
+    /// `--body-file`). The title must be passed inline via `--title`; the body
+    /// via `--body-file`. A fake `gh` records its argv so we can assert the
+    /// exact flags this would have caught the `unknown flag: --title-file`
+    /// failure. Unix-only: the fake is a `/bin/sh` script.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_pr_passes_title_inline_not_title_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let args_log = dir.path().join("argv.txt");
+        let gh_path = dir.path().join("gh");
+
+        // Fake `gh`: append each argv element (one per line) to the log, then
+        // print a PR URL so `create_pr` can parse the number back.
+        let script = format!(
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{log}'; done\n\
+             echo 'https://github.com/acme/widget/pull/42'\n",
+            log = args_log.display()
+        );
+        std::fs::write(&gh_path, script).unwrap();
+        std::fs::set_permissions(&gh_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let title = "feat: idempotency keys (spaces & specials!)";
+        let n = create_pr(
+            &gh_path,
+            "acme/widget",
+            "feat/x",
+            "main",
+            title,
+            "body\nwith\nlines",
+        )
+        .await
+        .expect("create_pr against the fake gh");
+        assert_eq!(n, 42);
+
+        let argv: Vec<String> = std::fs::read_to_string(&args_log)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+
+        // The bug: a `--title-file` flag `gh` does not have.
+        assert!(
+            !argv.iter().any(|a| a == "--title-file"),
+            "must NOT pass the non-existent --title-file flag; argv = {argv:?}"
+        );
+        // Title goes inline via `--title <title>` as a SINGLE argv element —
+        // proof that no shell escaping is needed (we spawn with an argv).
+        let ti = argv
+            .iter()
+            .position(|a| a == "--title")
+            .expect("--title flag present");
+        assert_eq!(argv.get(ti + 1).map(String::as_str), Some(title));
+        // Body still travels via `--body-file <tmp>`.
+        assert!(
+            argv.iter().any(|a| a == "--body-file"),
+            "body must use --body-file; argv = {argv:?}"
+        );
     }
 }
