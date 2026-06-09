@@ -292,6 +292,72 @@ pub async fn set_permission_mode(
     Ok(())
 }
 
+/// Patch the editable `workspaces.*` metadata columns. Only the columns
+/// whose patch is `Some` are written; `slug` is never touched (it is the
+/// stable handle minted at creation). `icon`/`description` use a nested
+/// `Option`: `Some(Some(v))` sets the value, `Some(None)` clears it to
+/// NULL, `None` leaves it unchanged. `name` has no NULL state, so a plain
+/// `Option<&str>` suffices.
+pub async fn set_metadata(
+    conn: &mut SqliteConnection,
+    id: &WorkspaceId,
+    name: Option<&str>,
+    icon: Option<Option<&str>>,
+    description: Option<Option<&str>>,
+) -> Result<()> {
+    if let Some(name) = name {
+        sqlx::query("UPDATE workspaces SET name = ? WHERE id = ?")
+            .bind(name)
+            .bind(&id.0)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    }
+    if let Some(icon) = icon {
+        sqlx::query("UPDATE workspaces SET icon = ? WHERE id = ?")
+            .bind(icon)
+            .bind(&id.0)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    }
+    if let Some(description) = description {
+        sqlx::query("UPDATE workspaces SET description = ? WHERE id = ?")
+            .bind(description)
+            .bind(&id.0)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    }
+    Ok(())
+}
+
+/// List a workspace's declared repos as `(repository_id, sparse_cones_json)`
+/// pairs, ordered by `(position, repository_id)` — the same canonical order
+/// as [`list_repos`]. Used to pre-fill the edit form.
+pub async fn list_repo_cones(
+    pool: &SqlitePool,
+    workspace_id: &WorkspaceId,
+) -> Result<Vec<(RepositoryId, String)>> {
+    let rows = sqlx::query(
+        "SELECT repository_id, sparse_cones_json FROM workspace_repos \
+         WHERE workspace_id = ? ORDER BY position, repository_id",
+    )
+    .bind(&workspace_id.0)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                RepositoryId(r.get::<String, _>("repository_id")),
+                r.get::<String, _>("sparse_cones_json"),
+            )
+        })
+        .collect())
+}
+
 fn row_to_workspace(row: sqlx::sqlite::SqliteRow) -> Workspace {
     Workspace {
         id: WorkspaceId(row.get::<String, _>("id")),
@@ -302,5 +368,137 @@ fn row_to_workspace(row: sqlx::sqlite::SqliteRow) -> Workspace {
         permission_mode: row.get::<Option<String>, _>("permission_mode"),
         created_at: row.get::<i64, _>("created_at"),
         archived_at: row.get::<Option<i64>, _>("archived_at"),
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use crate::api::{NewWorkspace, RepositoryId, WorkspaceId, WorkspaceRepoCones};
+    use sqlx::SqlitePool;
+
+    async fn pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn seed_ws(pool: &SqlitePool, id: &str, name: &str, slug: &str) {
+        let mut conn = pool.acquire().await.unwrap();
+        insert(
+            &mut conn,
+            NewWorkspace {
+                id: WorkspaceId(id.into()),
+                name: name.into(),
+                slug: slug.into(),
+                icon: None,
+                description: None,
+                permission_mode: None,
+                created_at: 0,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_metadata_updates_only_patched_columns_and_keeps_slug() {
+        let pool = pool().await;
+        seed_ws(&pool, "ws1", "Old Name", "old-slug").await;
+        let mut conn = pool.acquire().await.unwrap();
+        set_metadata(
+            &mut conn,
+            &WorkspaceId("ws1".into()),
+            Some("New Name"),
+            Some(Some("🚀")),
+            None,
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let ws = get(&pool, &WorkspaceId("ws1".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ws.name, "New Name");
+        assert_eq!(ws.icon.as_deref(), Some("🚀"));
+        assert_eq!(ws.slug, "old-slug");
+    }
+
+    #[tokio::test]
+    async fn set_metadata_can_clear_description_to_null() {
+        let pool = pool().await;
+        seed_ws(&pool, "ws2", "N", "s").await;
+        let mut conn = pool.acquire().await.unwrap();
+        set_metadata(
+            &mut conn,
+            &WorkspaceId("ws2".into()),
+            None,
+            None,
+            Some(Some("hi")),
+        )
+        .await
+        .unwrap();
+        set_metadata(
+            &mut conn,
+            &WorkspaceId("ws2".into()),
+            None,
+            None,
+            Some(None),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let ws = get(&pool, &WorkspaceId("ws2".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ws.description, None);
+    }
+
+    #[tokio::test]
+    async fn list_repo_cones_returns_position_ordered_pairs() {
+        let pool = pool().await;
+        seed_ws(&pool, "ws3", "N", "s3").await;
+        for r in ["repoA", "repoB"] {
+            // `repositories` schema from migration 0001: id, name, url,
+            // local_path, clone_strategy, default_branch are all NOT NULL.
+            // url and name must be UNIQUE, so derive them from the repo id.
+            sqlx::query(
+                "INSERT INTO repositories \
+                 (id, name, url, local_path, clone_strategy, default_branch) \
+                 VALUES (?, ?, ?, ?, 'full', 'main')",
+            )
+            .bind(r)
+            .bind(r)
+            .bind(format!("file:///tmp/{}.git", r))
+            .bind(format!("/tmp/repos/{}", r))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let mut conn = pool.acquire().await.unwrap();
+        update_repos(
+            &mut conn,
+            &WorkspaceId("ws3".into()),
+            &[
+                WorkspaceRepoCones {
+                    repository_id: RepositoryId("repoA".into()),
+                    sparse_cones_json: "[\"src\"]".into(),
+                },
+                WorkspaceRepoCones::empty_cones(RepositoryId("repoB".into())),
+            ],
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let got = list_repo_cones(&pool, &WorkspaceId("ws3".into()))
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0 .0, "repoA");
+        assert_eq!(got[0].1, "[\"src\"]");
+        assert_eq!(got[1].0 .0, "repoB");
+        assert_eq!(got[1].1, "[]");
     }
 }

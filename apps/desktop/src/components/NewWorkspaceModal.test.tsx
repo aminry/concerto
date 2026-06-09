@@ -22,6 +22,12 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openDialog(...args),
 }));
 
+// Auto-bootstrap (first workarea + session) runs after create succeeds.
+vi.mock("./bootstrapWorkspace", () => ({
+  bootstrapWorkspace: vi.fn().mockResolvedValue({ workareaId: "wa1", sessionId: "s1" }),
+  DEFAULT_FIRST_AGENT: "claude",
+}));
+
 // Stub the clone side-effect so the add-by-URL flow doesn't drive a stream.
 vi.mock("../api/client", async (importActual) => {
   const actual = await importActual<typeof import("../api/client")>();
@@ -35,6 +41,7 @@ vi.mock("../api/client", async (importActual) => {
 import { NewWorkspaceModal } from "./NewWorkspaceModal";
 import { renderWithClient } from "./test-utils";
 import { useUiStore } from "../state/useUiStore";
+import { bootstrapWorkspace } from "./bootstrapWorkspace";
 
 const repos = [
   { id: "repo-a", name: "api", url: "", local_path: "", clone_strategy: "full", default_branch: "main", cone_defaults: ["src"] },
@@ -79,6 +86,7 @@ function mockInvoke(): void {
 beforeEach(() => {
   invoke.mockReset();
   openDialog.mockReset();
+  vi.mocked(bootstrapWorkspace).mockClear();
   addedRepos = [];
   mockInvoke();
   useUiStore.setState({
@@ -329,6 +337,54 @@ describe("NewWorkspaceModal — add local folder", () => {
           local_path: "/Users/me/code/widget",
         },
       }),
+    );
+  });
+});
+
+describe("NewWorkspaceModal — auto-name + bootstrap", () => {
+  it("auto-fills the name from selected repos until edited", async () => {
+    renderWithClient(<NewWorkspaceModal />);
+    await waitFor(() => expect(repoCheckboxes()).toHaveLength(3));
+
+    const nameInput = screen.getByPlaceholderText(
+      /Payments revamp/i,
+    ) as HTMLInputElement;
+
+    // Select api (repo-a) -> name auto-fills to "api".
+    await userEvent.click(repoCheckboxes()[0]);
+    await waitFor(() => expect(nameInput.value).toBe("api"));
+
+    // Select android (repo-b) -> "api + android".
+    await userEvent.click(repoCheckboxes()[1]);
+    await waitFor(() => expect(nameInput.value).toBe("api + android"));
+
+    // Type a custom name -> auto-fill stops.
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "My Workspace");
+    expect(nameInput.value).toBe("My Workspace");
+
+    // Toggling repos no longer rewrites the (now user-owned) name.
+    await userEvent.click(repoCheckboxes()[2]);
+    expect(nameInput.value).toBe("My Workspace");
+  });
+
+  it("bootstraps a first workarea + session after create", async () => {
+    renderWithClient(<NewWorkspaceModal />);
+    await waitFor(() => expect(repoCheckboxes()).toHaveLength(3));
+
+    await userEvent.type(
+      screen.getByPlaceholderText(/Payments revamp/i),
+      "Bootstrapped",
+    );
+    await userEvent.click(repoCheckboxes()[0]);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /create workspace/i }),
+    );
+
+    // The mocked CreateWorkspace resolves { id: "ws-new" }; bootstrap runs on it.
+    await waitFor(() =>
+      expect(bootstrapWorkspace).toHaveBeenCalledWith("ws-new"),
     );
   });
 });

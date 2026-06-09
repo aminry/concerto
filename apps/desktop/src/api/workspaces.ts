@@ -75,3 +75,56 @@ export async function createWorkspace(input: {
     })),
   });
 }
+
+/// One repo's attachment as read back for the edit form (mirrors
+/// `concerto.v1.WorkspaceRepoEntry`).
+export type WorkspaceRepoEntry = {
+  repository_id: string;
+  sparse_cones: string[];
+};
+
+export type ListWorkspaceReposResponse = {
+  repos: WorkspaceRepoEntry[];
+};
+
+/// `Workspaces.ListWorkspaceRepos` — the workspace's declared repos +
+/// per-repo cones, position-ordered. Used to pre-fill the edit form.
+export async function listWorkspaceRepos(
+  id: string,
+): Promise<ListWorkspaceReposResponse> {
+  return callRpc<{ id: string }, ListWorkspaceReposResponse>(
+    "Workspaces.ListWorkspaceRepos",
+    { id },
+  );
+}
+
+/// `Workspaces.UpdateWorkspace` — edit name/icon/description and/or replace
+/// the repo set. An omitted field leaves that value unchanged; an omitted
+/// (or empty) `repos` leaves the repo set unchanged.
+export async function updateWorkspace(input: {
+  id: string;
+  name?: string;
+  icon?: string;
+  description?: string;
+  repos?: WorkspaceRepoSpec[];
+}): Promise<Workspace> {
+  return callRpc<
+    {
+      workspace_id: string;
+      name?: string;
+      icon?: string;
+      description?: string;
+      repos: { repository_id: string; sparse_cones: string[] }[];
+    },
+    Workspace
+  >("Workspaces.UpdateWorkspace", {
+    workspace_id: input.id,
+    name: input.name,
+    icon: input.icon,
+    description: input.description,
+    repos: (input.repos ?? []).map((r) => ({
+      repository_id: r.repositoryId,
+      sparse_cones: r.sparseCones,
+    })),
+  });
+}

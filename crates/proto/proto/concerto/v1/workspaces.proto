@@ -83,6 +83,34 @@ message UpdateWorkspaceSettingsRequest {
   WorkspaceSettings settings = 2;
 }
 
+// Caller-supplied workspace edit (full-form parity beyond
+// UpdateWorkspaceSettings). Absent `optional` fields = leave that column
+// unchanged; present (incl. empty string) = set to that value. `repos`
+// empty = leave the repo set unchanged; non-empty = replace the whole set
+// (a workspace can never have zero repos, so empty is an unambiguous
+// "no change" sentinel). Slug is NOT editable — it is the stable handle
+// minted at creation.
+message UpdateWorkspaceRequest {
+  string workspace_id = 1;
+  optional string name = 2;
+  optional string icon = 3;
+  optional string description = 4;
+  repeated WorkspaceRepoSpec repos = 5;
+}
+
+// One repo's attachment as read back for the edit form: its id + the
+// per-(workspace, repo) sparse-cone snapshot. Empty `sparse_cones` = full
+// working tree.
+message WorkspaceRepoEntry {
+  string repository_id = 1;
+  repeated string sparse_cones = 2;
+}
+
+message ListWorkspaceReposResponse {
+  // Position-ordered (declaration order).
+  repeated WorkspaceRepoEntry repos = 1;
+}
+
 service Workspaces {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
   rpc GetWorkspace(WorkspaceId) returns (Workspace);
@@ -95,4 +123,10 @@ service Workspaces {
   // Task 32: patch mutable workspace settings (V0.1: only
   // `permission_mode`). Returns the updated `Workspace` row.
   rpc UpdateWorkspaceSettings(UpdateWorkspaceSettingsRequest) returns (Workspace);
+  // Edit name/icon/description and/or replace the repo set. Returns the
+  // updated Workspace row.
+  rpc UpdateWorkspace(UpdateWorkspaceRequest) returns (Workspace);
+  // Read a workspace's declared repos + per-repo cones (to pre-fill the
+  // edit form).
+  rpc ListWorkspaceRepos(WorkspaceId) returns (ListWorkspaceReposResponse);
 }

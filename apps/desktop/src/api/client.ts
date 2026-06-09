@@ -14,6 +14,8 @@ export type RpcMethod =
   | "Workspaces.ListWorkspaces"
   | "Workspaces.GetWorkspace"
   | "Workspaces.CreateWorkspace"
+  | "Workspaces.ListWorkspaceRepos"
+  | "Workspaces.UpdateWorkspace"
   | "Workareas.GetWorkarea"
   | "Workareas.ListWorkareas"
   | "Workareas.CreateWorkarea"

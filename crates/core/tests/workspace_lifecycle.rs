@@ -19,7 +19,8 @@
 #![cfg(unix)]
 
 use concerto_proto::v1::{
-    AddRepoRequest, CreateWorkspaceRequest, ListWorkspacesRequest, WorkspaceId, WorkspaceRepoSpec,
+    AddRepoRequest, CreateWorkspaceRequest, ListWorkspaceReposResponse, ListWorkspacesRequest,
+    UpdateWorkspaceRequest, WorkspaceId, WorkspaceRepoSpec,
 };
 use concerto_test_harness::CoreUnderTest;
 use tonic::Code;
@@ -319,6 +320,79 @@ async fn unknown_repo_returns_not_found() {
         "an unknown repo id should be NOT_FOUND; got {:?}",
         err.code()
     );
+
+    core.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn update_workspace_edits_metadata_and_repos() {
+    let core = CoreUnderTest::spawn().await.expect("spawn core");
+    let repo_a = register_repo(&core, "edit-a").await;
+    let repo_b = register_repo(&core, "edit-b").await;
+    let mut wsc = core.workspaces_client().await.expect("workspaces client");
+
+    let ws = wsc
+        .create_workspace(CreateWorkspaceRequest {
+            name: "Before".to_string(),
+            repos: vec![spec(&repo_a)],
+            permission_mode: None,
+            description: None,
+            icon: None,
+        })
+        .await
+        .expect("create")
+        .into_inner();
+    let original_slug = ws.slug.clone();
+
+    // Edit name + icon, add repo_b.
+    let updated = wsc
+        .update_workspace(UpdateWorkspaceRequest {
+            workspace_id: ws.id.clone(),
+            name: Some("After".to_string()),
+            icon: Some("🚀".to_string()),
+            description: None,
+            repos: vec![spec(&repo_a), spec(&repo_b)],
+        })
+        .await
+        .expect("update")
+        .into_inner();
+    assert_eq!(updated.name, "After");
+    assert_eq!(updated.icon.as_deref(), Some("🚀"));
+    assert_eq!(updated.slug, original_slug, "slug stays fixed on rename");
+
+    // ListWorkspaceRepos returns both, in declaration order.
+    let listed: ListWorkspaceReposResponse = wsc
+        .list_workspace_repos(WorkspaceId {
+            value: ws.id.clone(),
+        })
+        .await
+        .expect("list repos")
+        .into_inner();
+    assert_eq!(listed.repos.len(), 2);
+    assert_eq!(listed.repos[0].repository_id, repo_a);
+    assert_eq!(listed.repos[1].repository_id, repo_b);
+
+    // Metadata-only edit (empty repos = leave unchanged).
+    let only_desc = wsc
+        .update_workspace(UpdateWorkspaceRequest {
+            workspace_id: ws.id.clone(),
+            name: None,
+            icon: None,
+            description: Some("now described".to_string()),
+            repos: vec![],
+        })
+        .await
+        .expect("update desc")
+        .into_inner();
+    assert_eq!(only_desc.description.as_deref(), Some("now described"));
+    assert_eq!(only_desc.name, "After"); // name untouched
+
+    let still_two = wsc
+        .list_workspace_repos(WorkspaceId { value: ws.id })
+        .await
+        .expect("list repos again")
+        .into_inner();
+    assert_eq!(still_two.repos.len(), 2, "empty repos = no change");
 
     core.shutdown().await.expect("shutdown");
 }

@@ -2296,6 +2296,36 @@ message UpdateWorkspaceSettingsRequest {
 }
 ```
 
+### message `UpdateWorkspaceRequest`
+
+```proto
+message UpdateWorkspaceRequest {
+  string workspace_id = 1;
+  optional string name = 2;
+  optional string icon = 3;
+  optional string description = 4;
+  repeated WorkspaceRepoSpec repos = 5;
+}
+```
+
+### message `WorkspaceRepoEntry`
+
+```proto
+message WorkspaceRepoEntry {
+  string repository_id = 1;
+  repeated string sparse_cones = 2;
+}
+```
+
+### message `ListWorkspaceReposResponse`
+
+```proto
+message ListWorkspaceReposResponse {
+  // Position-ordered (declaration order).
+  repeated WorkspaceRepoEntry repos = 1;
+}
+```
+
 ### service `Workspaces`
 
 ```proto
@@ -2311,6 +2341,12 @@ service Workspaces {
   // Task 32: patch mutable workspace settings (V0.1: only
   // `permission_mode`). Returns the updated `Workspace` row.
   rpc UpdateWorkspaceSettings(UpdateWorkspaceSettingsRequest) returns (Workspace);
+  // Edit name/icon/description and/or replace the repo set. Returns the
+  // updated Workspace row.
+  rpc UpdateWorkspace(UpdateWorkspaceRequest) returns (Workspace);
+  // Read a workspace's declared repos + per-repo cones (to pre-fill the
+  // edit form).
+  rpc ListWorkspaceRepos(WorkspaceId) returns (ListWorkspaceReposResponse);
 }
 ```
 
