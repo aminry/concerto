@@ -82,12 +82,29 @@ jobs:
             cargo clippy --workspace --all-targets -- -D warnings
           fi
         shell: bash
-      - name: cargo test
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      # Run the test suite under cargo-nextest with retries: a one-off flaky
+      # test auto-retries (up to 2x) instead of reddening the whole build, and
+      # when a test DOES fail nextest prints exactly which test + how many
+      # retries it took — so flakes stay diagnosable (the failed-job log on a
+      # plain `cargo test` step is not always retrievable from GitHub). Doctests
+      # are NOT run by nextest, so they get their own deterministic step below.
+      - name: cargo nextest (auto-retries flaky tests)
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo test --workspace --no-fail-fast --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve
+            cargo nextest run --workspace --retries 2 --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve
           else
-            cargo test --workspace --no-fail-fast
+            cargo nextest run --workspace --retries 2
+          fi
+        shell: bash
+      - name: cargo test --doc (doctests; nextest does not run these)
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cargo test --workspace --doc --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve
+          else
+            cargo test --workspace --doc
           fi
         shell: bash
       - name: Check interface summaries are up to date
