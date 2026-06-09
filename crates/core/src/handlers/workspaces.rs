@@ -16,8 +16,10 @@ use async_trait::async_trait;
 use concerto_persist::WorkspaceId as PersistWorkspaceId;
 use concerto_proto::v1::workspaces_server::Workspaces as WorkspacesService;
 use concerto_proto::v1::{
-    CreateWorkspaceRequest, ListWorkspacesRequest, ListWorkspacesResponse, PermissionMode,
+    CreateWorkspaceRequest, ListWorkspaceReposResponse, ListWorkspacesRequest,
+    ListWorkspacesResponse, PermissionMode, UpdateWorkspaceRequest,
     UpdateWorkspaceSettingsRequest, Workspace as ProtoWorkspace, WorkspaceId as ProtoWorkspaceId,
+    WorkspaceRepoEntry,
 };
 use tonic::{Request, Response, Status};
 
@@ -171,6 +173,63 @@ impl WorkspacesService for WorkspacesHandler {
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(workspace_to_proto(row)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workspaces::UpdateWorkspace")]
+    async fn update_workspace(
+        &self,
+        request: Request<UpdateWorkspaceRequest>,
+    ) -> Result<Response<ProtoWorkspace>, Status> {
+        let req = request.into_inner();
+        if req.workspace_id.is_empty() {
+            return Err(Status::invalid_argument("workspace_id is required"));
+        }
+        // `optional string` → Option<String>. icon/description map to the
+        // actor's nested Option (present = set/clear, absent = no change).
+        let name = req.name;
+        let icon = req.icon.map(Some);
+        let description = req.description.map(Some);
+        let repos: Vec<WorkspaceRepoSpec> = req
+            .repos
+            .into_iter()
+            .map(|r| WorkspaceRepoSpec {
+                repository_id: concerto_persist::RepositoryId(r.repository_id),
+                sparse_cones: r.sparse_cones,
+            })
+            .collect();
+        let id = PersistWorkspaceId(req.workspace_id);
+        let row = self
+            .workspace_manager
+            .update_workspace(&id, name, icon, description, &repos)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(workspace_to_proto(row)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workspaces::ListWorkspaceRepos")]
+    async fn list_workspace_repos(
+        &self,
+        request: Request<ProtoWorkspaceId>,
+    ) -> Result<Response<ListWorkspaceReposResponse>, Status> {
+        let req = request.into_inner();
+        if req.value.is_empty() {
+            return Err(Status::invalid_argument("workspace id is required"));
+        }
+        let id = PersistWorkspaceId(req.value);
+        let repos = self
+            .workspace_manager
+            .list_workspace_repos(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ListWorkspaceReposResponse {
+            repos: repos
+                .into_iter()
+                .map(|r| WorkspaceRepoEntry {
+                    repository_id: r.repository_id.0,
+                    sparse_cones: r.sparse_cones,
+                })
+                .collect(),
+        }))
     }
 }
 
