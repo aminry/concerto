@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 //
 // Component tests for the Level-1 per-repo selector (Task 322, design/15
-// §3.4). Proves: one selector entry per workarea repo (replacing the
-// `repositories[0]` hack); the selected repo's id is passed to
-// `DiffViewer`; clicking another repo entry switches the DiffViewer's
-// `repositoryId`. `DiffViewer` is mocked (it mounts Monaco) so the test
-// only asserts the prop wiring.
+// §3.4). Proves: one selector entry per workarea repo (sourced from the
+// workarea-SCOPED `Workareas.ListWorkareaRepos`, NOT the global registry);
+// the selected repo's id is passed to `DiffViewer`; clicking another repo
+// entry switches the DiffViewer's `repositoryId`. `DiffViewer` is mocked (it
+// mounts Monaco) so the test only asserts the prop wiring.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
@@ -62,7 +62,10 @@ function mockInvoke(): void {
     switch (args.method) {
       case "Workareas.GetWorkarea":
         return Promise.resolve(workarea);
-      case "Repositories.ListRepositories":
+      // The Diff panel's repo list is workarea-scoped: it comes from
+      // `Workareas.ListWorkareaRepos` (only the repos this workarea
+      // materialized), NOT the unscoped global `Repositories.ListRepositories`.
+      case "Workareas.ListWorkareaRepos":
         return Promise.resolve({ repositories: repos });
       case "Workareas.GetWorkareaRepoDiff":
         return Promise.resolve({ files: [] });

@@ -1160,6 +1160,36 @@ impl WorkareaManager {
             .await
     }
 
+    /// List the repositories actually attached (materialized) to a workarea.
+    ///
+    /// Reads the `workarea_repos` junction (`list_workarea_repos`) — the same
+    /// source of truth `get_repo_diff` validates against — and resolves each
+    /// attached `repository_id` to its full [`Repository`] row, preserving the
+    /// junction's order. This is the workarea-scoped repo list the Desktop Diff
+    /// panel needs: unlike the global `Repositories.ListRepositories` registry,
+    /// every repo it returns is one `GetWorkareaRepoDiff` will accept.
+    ///
+    /// A NotFound / repo-less workarea yields an empty list (not an error), so
+    /// the Desktop can render before/without a materialized repo set. A junction
+    /// row whose repository row is missing from the registry is skipped (the
+    /// registry is the resolvable source of truth for the full row).
+    pub async fn list_repos(&self, workarea_id: &WorkareaId) -> Result<Vec<Repository>> {
+        let attached = concerto_persist::workareas::list_workarea_repos(
+            self.persistence.readers(),
+            workarea_id,
+        )
+        .await?;
+        let mut repos = Vec::with_capacity(attached.len());
+        for (repo_id, _worktree_path) in attached {
+            if let Some(row) =
+                concerto_persist::repositories::get(self.persistence.readers(), &repo_id).await?
+            {
+                repos.push(row);
+            }
+        }
+        Ok(repos)
+    }
+
     /// Task 319: set the `merge_order` of the PR in `workarea_id` for
     /// `repository_id`, then return the re-ordered PR set. Validates that
     /// the workarea and a matching PR row both exist (`NotFound`

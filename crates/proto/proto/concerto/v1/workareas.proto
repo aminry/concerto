@@ -14,7 +14,9 @@
 // respectively for V0.1; per the task spec, `status` may be promoted to
 // an enum in a later revision.
 //
-// Field numbers in this file are FROZEN as of Task 20.
+// Field numbers in this file are FROZEN as of Task 20. (Later additive RPCs
+// — e.g. `ListWorkareaRepos`, the workarea-scoped repo list backing the
+// Desktop Diff panel — only append messages/RPCs and never renumber.)
 
 syntax = "proto3";
 
@@ -23,6 +25,7 @@ package concerto.v1;
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "concerto/v1/common.proto";
+import "concerto/v1/repositories.proto";
 import "concerto/v1/vcs.proto";
 
 message Workarea {
@@ -308,6 +311,24 @@ enum RevertOutcome {
   REVERT_OUTCOME_FAILED = 3;
 }
 
+// Inputs for `Workareas.ListWorkareaRepos`. Identifies one workarea whose
+// actually-attached (materialized) repositories should be listed. Distinct
+// from `Repositories.ListRepositories`, which lists the GLOBAL registry
+// (every repo across all workspaces); this RPC scopes to the
+// `workarea_repos` junction so the Desktop Diff panel only ever offers repos
+// the workarea materialized (and that `GetWorkareaRepoDiff` will accept).
+message ListWorkareaReposRequest {
+  string workarea_id = 1;
+}
+
+// The repositories actually attached to a workarea (full `Repository` rows so
+// the Desktop consumer mirrors `ListRepositoriesResponse`). A NotFound /
+// repo-less workarea yields an empty list, not an error. `Repository` is
+// defined in `repositories.proto`.
+message ListWorkareaReposResponse {
+  repeated Repository repositories = 1;
+}
+
 service Workareas {
   rpc CreateWorkarea(CreateWorkareaRequest) returns (Workarea);
   rpc GetWorkarea(WorkareaId) returns (Workarea);
@@ -316,6 +337,12 @@ service Workareas {
   // Task 29: hot-path diff. Returns the structured worktree-vs-HEAD
   // diff for one repo inside a workarea.
   rpc GetWorkareaRepoDiff(GetDiffRequest) returns (DiffPayload);
+  // List the repositories actually attached (materialized) to a workarea,
+  // read from the `workarea_repos` junction. Backs the Desktop Diff panel's
+  // repo list — `Repositories.ListRepositories` is the unscoped global
+  // registry and would offer repos this workarea never materialized (which
+  // `GetWorkareaRepoDiff` then rejects as "not attached").
+  rpc ListWorkareaRepos(ListWorkareaReposRequest) returns (ListWorkareaReposResponse);
   // Task 31: archive + restore lifecycle.
   //
   // `ArchiveWorkareaWithOpts` exposes the `remove_worktree` knob; the

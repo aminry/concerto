@@ -24,9 +24,9 @@ use concerto_proto::v1::{
     AddRepoRequest, CreateSessionRequest, CreateWorkareaRequest, CreateWorkspaceRequest,
     EstimateConeSizeRequest, EstimateRepoSizeRequest, GetDiffRequest, ListRepositoriesRequest,
     ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListTreeRequest,
-    ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest, PermissionMode,
-    ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest,
-    SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest,
+    ListWorkareaReposRequest, ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest,
+    PermissionMode, ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId,
+    SetConesRequest, SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest,
     WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId, WorkspaceRepoSpec,
 };
 use serde::Deserialize;
@@ -137,6 +137,11 @@ struct ListWorkareasPayload {
 struct GetWorkareaRepoDiffPayload {
     workarea_id: String,
     repository_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListWorkareaReposPayload {
+    workarea_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -324,6 +329,18 @@ where
                 .get_workarea_repo_diff(GetDiffRequest {
                     workarea_id: req.workarea_id,
                     repository_id: req.repository_id,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Workareas.ListWorkareaRepos" => {
+            let req: ListWorkareaReposPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ListWorkareaRepos: {e}"))
+            })?;
+            let mut client = WorkareasClient::new(channel);
+            client
+                .list_workarea_repos(ListWorkareaReposRequest {
+                    workarea_id: req.workarea_id,
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))

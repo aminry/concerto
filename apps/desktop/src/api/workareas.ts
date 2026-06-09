@@ -4,26 +4,23 @@
 // this directory (see `workspaces.ts`), prost-serde keeps snake_case
 // field names; timestamps land as `[seconds, nanos]` tuples or null.
 //
-// ── Multi-repo workarea surface (Task 322) ───────────────────────────
-// Tasks 306/307 (the upstream Rust) deliberately did NOT add a
-// `repository_ids` field to the `Workarea` proto message nor a
-// `Workareas.ListWorkareaRepos` RPC — both handoffs say "if 322 needs an
-// explicit list surface, that is 322's to add" and 322 is forbidden from
-// touching Rust/proto. So there is no NEW wire shape to mirror.
+// ── Multi-repo workarea surface ──────────────────────────────────────
+// A V1.0 workspace declares 1..N repos and every workarea on it materializes
+// one worktree per declared repo (design/03 §6.2), recorded in the
+// `workarea_repos` junction. The per-repo diff RPC
+// `GetWorkareaRepoDiff(workarea_id, repository_id)` accepts exactly those
+// attached repository ids and rejects any other ("not attached to workarea").
 //
-// What IS frozen on `main`: a V1.0 workspace declares 1..N repos (Task
-// 306) and every workarea on it materializes one worktree per declared
-// repo (306 §6.2). The workspace's declared repos therefore ARE the
-// workarea's repos. The per-repo diff RPC `GetWorkareaRepoDiff(workarea_id,
-// repository_id)` already accepts any of those repository ids. So the
-// honest, FROZEN-respecting repo source for a workarea is the global
-// repository registry via `Repositories.ListRepositories` — see
-// `useWorkareaRepos`. This replaces the V0.1 `repositories[0]` hack with
-// the full list; it does not invent a wire shape. (Recorded as drift in the
-// 322 Handoff.)
+// `Workareas.ListWorkareaRepos` returns precisely that attached set (full
+// `Repository` rows). It is the workarea-scoped repo source the Diff panel
+// uses — see `useWorkareaRepos`. The global `Repositories.ListRepositories`
+// is the unscoped registry (every repo across all workspaces) and MUST NOT be
+// used for a workarea's repo list: it would offer repos the workarea never
+// materialized, which `GetWorkareaRepoDiff` then rejects.
 
 import { callRpc } from "./client";
 import { setCones } from "./cones";
+import type { Repository } from "./repositories";
 
 export type Workarea = {
   id: string;
@@ -59,6 +56,25 @@ export async function listWorkareas(
 
 export async function getWorkarea(id: string): Promise<Workarea> {
   return callRpc<{ id: string }, Workarea>("Workareas.GetWorkarea", { id });
+}
+
+export type ListWorkareaReposResponse = {
+  repositories: Repository[];
+};
+
+/// `Workareas.ListWorkareaRepos` — the repositories actually attached
+/// (materialized) to a workarea, read from the `workarea_repos` junction.
+/// This is the workarea-scoped repo list the Diff panel renders: every repo
+/// returned is one `GetWorkareaRepoDiff` will accept. A repo-less / unknown
+/// workarea yields an empty list. Distinct from the unscoped global
+/// `Repositories.ListRepositories`.
+export async function listWorkareaRepos(
+  workareaId: string,
+): Promise<ListWorkareaReposResponse> {
+  return callRpc<{ workarea_id: string }, ListWorkareaReposResponse>(
+    "Workareas.ListWorkareaRepos",
+    { workarea_id: workareaId },
+  );
 }
 
 /// A per-repo sparse cone chosen at workarea-create time. `cone_paths`
