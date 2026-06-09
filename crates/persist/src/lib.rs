@@ -19,6 +19,7 @@
 pub mod api;
 pub mod chat_messages;
 pub mod checkpoints;
+pub mod maestro_state;
 pub mod pull_requests;
 pub mod repositories;
 pub mod schedule_runs;
@@ -33,10 +34,10 @@ pub mod workareas;
 pub mod workspaces;
 
 pub use api::{
-    NewChat, NewPullRequest, NewRepository, NewSchedule, NewScheduleRun, NewSession, NewSkill,
-    NewSuggestionLearn, NewVcsCredential, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
-    PersistenceConfig, PullRequest, PullRequestId, Repository, RepositoryId, Schedule, ScheduleId,
-    ScheduleRun, ScheduleRunId, Session, SessionId, SkillFilter, SkillId, SkillRow, SkillScope,
-    SuggestionLearn, SuggestionLearnId, VcsCredential, VcsCredentialId, Workarea, WorkareaId,
-    Workspace, WorkspaceId, WorkspaceRepoCones, WriterGuard,
+    MaestroState, NewChat, NewPullRequest, NewRepository, NewSchedule, NewScheduleRun, NewSession,
+    NewSkill, NewSuggestionLearn, NewVcsCredential, NewWorkarea, NewWorkareaRepo, NewWorkspace,
+    Persistence, PersistenceConfig, PullRequest, PullRequestId, Repository, RepositoryId, Schedule,
+    ScheduleId, ScheduleRun, ScheduleRunId, Session, SessionId, SkillFilter, SkillId, SkillRow,
+    SkillScope, SuggestionLearn, SuggestionLearnId, VcsCredential, VcsCredentialId, Workarea,
+    WorkareaId, Workspace, WorkspaceId, WorkspaceRepoCones, WriterGuard,
 };

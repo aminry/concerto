@@ -863,6 +863,19 @@ pub struct ScheduleRun {
 }
 ```
 
+### struct `MaestroState`
+
+```rust
+pub struct MaestroState {
+    pub id: i64,
+    pub daily_in_today: i64,
+    pub daily_out_today: i64,
+    pub budget_resets_at: i64,
+    pub last_digest_at: Option<i64>,
+    pub enabled: bool,
+}
+```
+
 ### struct `SkillId`
 
 ```rust
