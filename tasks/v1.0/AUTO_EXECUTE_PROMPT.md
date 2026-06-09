@@ -23,9 +23,10 @@ You are the **Concerto V1.0 build orchestrator for Phase {PHASE}**. Walk the Pha
 
 1. `tasks/v1.0/README.md` — locked decisions (§4), the **three-tier verification model (§5)**, the **per-type verification command sets (§5.3)**, the phase inventory (§6), and the Phase-{PHASE} manual checklist (you do NOT run it — you hand it to the operator at the end).
 2. `tasks/v1.0/PROMPT_TEMPLATE.md` — the per-task sub-agent prompt you hand to every sub-agent with `{TASK_PATH}` substituted.
-3. Skim `design/00_Architecture_Overview.md §10` so you know where Phase {PHASE} sits.
+3. **The phase's planning addendum + machine-readable graph, if they exist** — `tasks/v1.0/PHASE{PHASE}_PLANNING.md` (locked decisions, cross-task FROZEN contracts, migration reservation, and the §8 concurrency/wave map) and `tasks/v1.0/PHASE{PHASE}_DAG.json` (per-task `deps` + `write_set` globs + `fanout` partition + the phase's `K` and wave plan). **You drive the Concurrency model from these.** For Phase 4 both exist and set **K = 4**.
+4. Skim `design/00_Architecture_Overview.md §10` so you know where Phase {PHASE} sits.
 
-Confirm in one line ("Read README + PROMPT_TEMPLATE + arch §10; Phase {PHASE} ready.") then start the loop.
+Confirm in one line ("Read README + PROMPT_TEMPLATE + PHASE{PHASE}_PLANNING/DAG + arch §10; Phase {PHASE} ready (K=N).") then start the loop.
 
 ## The loop — one iteration per task
 
@@ -46,7 +47,7 @@ Next task = the lowest-numbered `tasks/v1.0/Pss-<slug>.md` **in Phase {PHASE}** 
 
 Dispatch one fresh isolated sub-agent as the **task lead**. Prompt = the contents of `tasks/v1.0/PROMPT_TEMPLATE.md` from the `---` markers, `{TASK_PATH}` replaced by `tasks/v1.0/NNN-<slug>.md`, verbatim, **plus the orchestrator note** telling it: (a) its branch name + that its single commit becomes a PR against `main` (it must not push/PR/branch/amend); (b) **run `cargo fmt --all` before committing** (CI runs `cargo fmt --all -- --check`; the stable rustfmt skips `imports_granularity` with a harmless warning but still enforces `max_width = 100` across **every** workspace member); (c) any load-bearing Handoff Notes from the tasks it depends on; (d) the current highest migration number on `main`.
 
-**Dependency order is real, but execution is pipelined and may be bounded-parallel** — see the **Concurrency model** section. You do NOT have to wait for task `N` to *merge* before *starting* task `N+1`; you wait for `N` to merge before *merging* anything that depends on it. **The lead MAY also build its single task with multiple helper sub-agents in parallel** to go faster (proto + handler + tests concurrently, per-file UI work, an explore→implement→review split) — see `PROMPT_TEMPLATE.md` → *Parallel build*. Fan-out is the lead's choice and is invisible to you: the lead still returns **one coherent commit**, stays within `Outputs`, runs the per-type verification on the integrated result, and fills the `Handoff Notes`. You validate the result (Step 4), not the team shape.
+**Dependency order is real, but execution is pipelined and may be bounded-parallel** — see the **Concurrency model** section. You do NOT have to wait for task `N` to *merge* before *starting* task `N+1`; you wait for `N` to merge before *merging* anything that depends on it. **For every medium/large task, instruct the lead to fan out helper sub-agents by default** (it's the expected mode, not an afterthought) — Phase-4 task files carry a `Parallel build` plan, and `PHASE{PHASE}_DAG.json` carries a `fanout` field per task naming the disjoint sub-parts (e.g. `proto+regen ∥ streams-subject ∥ two-site-registration`); hand the lead that partition. Only `size: small` tasks stay solo. See `PROMPT_TEMPLATE.md` → *Parallel build*. Fan-out is invisible to you: the lead still returns **one coherent commit**, stays within `Outputs`, runs the per-type verification on the integrated result, and fills the `Handoff Notes`. You validate the result (Step 4), not the team shape.
 
 ### Step 4 — Validate (type- and tier-aware)
 
@@ -113,7 +114,7 @@ The loop is not strictly serial. Three levers cut wall-clock without weakening a
 
 **Lever 1 — Pipeline CI behind the next build.** Don't idle on `gh pr checks --watch`. The moment a task's PR is open and its fast local gate (Step 4) is green, background the CI watch and start the next eligible task's lead. CI (~10 min, Windows the long pole) then overlaps the next lead's build (~25–30 min) instead of stacking after it.
 
-**Lever 2 — Build up to K file-disjoint tasks at once.** Keep at most **K = 3** task leads in flight concurrently (≤3 open PRs / worktrees). A task is **eligible to start** when:
+**Lever 2 — Build up to K file-disjoint tasks at once.** Keep at most **K** task leads in flight concurrently (≤K open PRs / worktrees). **K defaults to 3; a phase's planning addendum may raise it — Phase 4 sets K = 4** (`tasks/v1.0/PHASE4_PLANNING.md §8` / `PHASE4_DAG.json.concurrency.K`). A task is **eligible to start** when:
   1. **Dependency-ready** — every `Depends on` task is either merged, or in flight *and ahead of it in the merge order* (so it will merge first). Never start a task whose dep hasn't even started.
   2. **File-disjoint from every other in-flight task** — the union of their `Outputs` (expanded to the likely shared seams below) does not overlap on a **hard-to-merge** file.
 Each concurrent task runs in its **own `git worktree`** (`git worktree add ../wt-NNN -b task-NNN-<slug> origin/main`) so builds don't trample each other; tear it down after merge (`git worktree remove`). Merges stay **serialized** (Step 6) and each merge **rebases the others** (Step 6's rebase rule), with the substantive-conflict fallback = re-dispatch the later task fresh.
@@ -124,7 +125,7 @@ Each concurrent task runs in its **own `git worktree`** (`git worktree add ../wt
 
 **Choosing the next task(s) each tick:** recompute the eligible set (ready + disjoint, respecting K). Prefer the **lowest-numbered** eligible task and tasks that **unblock the most downstream work** (e.g. a cluster root like a new-crate or trait-freezing task). If nothing new is eligible (all remaining tasks depend on in-flight ones, or would collide), just wait for the next merge and re-evaluate. A `doc`-type or `infra-ops` task that touches a near-disjoint file set is an ideal concurrency filler.
 
-**Phase-specific collision/wave map:** for Phase 3, `tasks/v1.0/PHASE3_PLANNING.md` §8 lists the clusters and which tasks are safe to run concurrently — consult it before parallelizing. When a phase has no such map, derive eligibility from `Outputs` disjointness using the seam rules above.
+**Phase-specific collision/wave map:** for Phase 3, `tasks/v1.0/PHASE3_PLANNING.md` §8 lists the clusters and which tasks are safe to run concurrently — consult it before parallelizing. **For Phase 4, `tasks/v1.0/PHASE4_PLANNING.md §8` + the machine-consumable `tasks/v1.0/PHASE4_DAG.json` declare each task's `deps` + `write_set` (file globs) + `cluster` + a wave plan — compute the eligible set directly from the DAG: a task is eligible when every `dep` is merged (or in-flight ahead of it in merge order) AND its `write_set` shares no `hard_seam_globs` path with any in-flight task's. Prefer the DAG's `waves_illustrative` ordering, recomputing each tick; watch the `soft_seam_note` (`maestro/mod.rs`) on rebase.** When a phase has no such map, derive eligibility from `Outputs` disjointness using the seam rules above.
 
 **If parallelism ever feels risky** (a rebase conflict you can't cleanly auto-resolve, an interface race between two in-flight tasks, ambiguity about disjointness) → **drop to K = 1 (strict sequential) for the rest of the cluster** and note it. Correctness and a green `main` always outrank speed.
 

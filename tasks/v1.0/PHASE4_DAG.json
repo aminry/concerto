@@ -1,0 +1,173 @@
+{
+  "$comment": "Machine-readable Phase-4 (Maestro) task graph for the auto-execute loop. The orchestrator (AUTO_EXECUTE_PROMPT.md) computes the next eligible task set from this: a task is ELIGIBLE when every dep is merged (or in-flight ahead of it in merge order) AND its write_set shares no hard-to-merge path with any in-flight task. Merges stay serialized in dependency order. Prose source of truth: PHASE4_PLANNING.md (esp. §6 deps, §8 waves). On any conflict, PHASE4_PLANNING.md wins. Update completion state in PHASE4_PLANNING.md §8 as tasks merge.",
+  "phase": 4,
+  "name": "Maestro Agent",
+  "concurrency": {
+    "K": 4,
+    "note": "Phase 4 raises the orchestrator default K=3 to K=4 (contract-first roots + apps/desktop disjointness make it safe). Merges remain serialized + dependency-ordered; main stays green; in-flight branches rebase onto each new main; substantive rebase conflict => re-dispatch the later task fresh; drop to K=1 on any disjointness ambiguity."
+  },
+  "hard_seam_globs": [
+    "**/*.proto",
+    "crates/*/src/lib.rs",
+    "**/mod.rs",
+    "crates/core/src/boot.rs",
+    "crates/core/src/api_server.rs",
+    "crates/core/src/connect_bridge.rs",
+    "crates/persist/migrations/*.sql"
+  ],
+  "trivially_mergeable_globs": [
+    "Cargo.lock",
+    "pnpm-lock.yaml",
+    "docs/interfaces/*",
+    "scripts/smoke.manifest"
+  ],
+  "soft_seam_note": "crates/core/src/maestro/mod.rs is touched by many maestro tasks (additive `pub mod X;` lines in distinct regions => usually auto-merges). 401 owns the initial mod.rs. Watch-on-rebase, not a hard block; serialize only if two in-flight tasks edit the same region.",
+  "tasks": [
+    {
+      "id": "400", "slug": "maestro-architecture-reconciliation", "type": "doc", "tier": 3,
+      "size": "small", "cluster": "M", "deps": [],
+      "title": "Maestro architecture reconciliation (design amendment)",
+      "write_set": ["design/08_Maestro_Agent.md", "design/04_Agent_Supervisor.md"],
+      "fanout": "solo (doc)",
+      "unblocks": ["401", "401.5"]
+    },
+    {
+      "id": "401", "slug": "concerto-maestro-mcp-server", "type": "rust", "tier": 1,
+      "size": "medium", "cluster": "M", "deps": ["400"],
+      "title": "concerto-maestro-mcp in-process server + MCP transport + 16 tool schemas FROZEN",
+      "write_set": ["crates/core/src/maestro/mod.rs", "crates/core/src/maestro/mcp.rs", "crates/core/src/maestro/tools/mod.rs", "Cargo.toml", "crates/core/Cargo.toml", "deny.toml", "Cargo.lock"],
+      "fanout": "transport-wiring || 16-tool-schema-registry || server-skeleton+rmcp-dep",
+      "unblocks": ["402", "404", "405", "406", "407", "408", "409"]
+    },
+    {
+      "id": "401.5", "slug": "maestro-wire-contract-freeze", "type": "rust", "tier": 1,
+      "size": "small", "cluster": "W", "deps": ["400"],
+      "title": "maestro.proto + MaestroHandle API + maestro.events subject + unimplemented MaestroServer (both sites)",
+      "write_set": ["crates/proto/proto/concerto/v1/maestro.proto", "crates/core/src/handlers/mod.rs", "crates/core/src/handlers/maestro.rs", "crates/core/src/handlers/streams.rs", "crates/core/src/api_server.rs", "crates/core/src/connect_bridge.rs", "docs/interfaces/proto.md"],
+      "fanout": "proto+regen || streams-subject-arm || two-site-registration",
+      "unblocks": ["414", "415"]
+    },
+    {
+      "id": "402", "slug": "maestro-as-agent", "type": "rust", "tier": 1,
+      "size": "medium", "cluster": "M", "deps": ["401"],
+      "title": "Maestro-as-agent: AgentKind::Maestro, strict+ReadOnly, scratch cwd, lifecycle, provider-trait freeze (Claude live)",
+      "write_set": ["crates/core/src/agent_supervisor/actor.rs", "crates/core/src/security/permission.rs", "crates/core/src/security/tool_classes.rs", "crates/core/src/handlers/sessions.rs", "crates/core/src/maestro/mod.rs", "crates/core/src/maestro/provider.rs"],
+      "fanout": "AgentKind+spawn-arm || ToolClass::ReadOnly+strict-matrix || provider-trait-freeze",
+      "unblocks": ["406", "408", "412"]
+    },
+    {
+      "id": "403", "slug": "maestro-state-table", "type": "rust", "tier": 1,
+      "size": "small", "cluster": "D", "deps": [],
+      "title": "maestro_state table (0015) + chats(kind=maestro) singleton + persist accessors",
+      "write_set": ["crates/persist/migrations/0015_maestro_state.sql", "crates/persist/src/maestro_state.rs", "crates/persist/src/api.rs", "crates/persist/src/lib.rs", "crates/persist/tests/initial_schema.rs", "docs/interfaces/schema.md", "docs/interfaces/rust-api.md"],
+      "fanout": "migration+accessors || singleton-bootstrap || schema-test+regen",
+      "unblocks": ["410", "412"]
+    },
+    {
+      "id": "404", "slug": "summary-cache", "type": "rust", "tier": 2,
+      "size": "medium", "cluster": "S", "deps": ["401"],
+      "title": "Per-workarea summary cache + WorkareaSummary types FROZEN + commits_ahead helper + Haiku summarizer",
+      "write_set": ["crates/core/src/maestro/summary.rs", "crates/core/src/maestro/mod.rs", "crates/gix-wrap/src/ahead.rs", "crates/gix-wrap/src/lib.rs"],
+      "fanout": "WorkareaSummary-types+cache || event-subscription-refresh || commits_ahead-gix-helper+summarizer",
+      "unblocks": ["405", "409", "413"]
+    },
+    {
+      "id": "405", "slug": "maestro-read-tools", "type": "rust", "tier": 1,
+      "size": "medium", "cluster": "S", "deps": ["401", "404"],
+      "title": "11 read tools",
+      "write_set": ["crates/core/src/maestro/tools/read.rs", "crates/core/src/maestro/tools/mod.rs", "crates/gix-wrap/src/api.rs (optional — get_workarea_recent_commits log helper; prefer api.rs over a new cmd.rs+lib.rs mod line to avoid the 404 lib.rs rebase overlap)"],
+      "fanout": "hierarchy-tools || adjacent-state-tools || cross_workarea_search",
+      "unblocks": ["406", "407"]
+    },
+    {
+      "id": "406", "slug": "maestro-write-tools", "type": "rust", "tier": 2,
+      "size": "medium", "cluster": "WT", "deps": ["401", "402"],
+      "title": "5 write tools (each chip-gated via AwaitingApproval/ResolveApproval)",
+      "write_set": ["crates/core/src/maestro/tools/write.rs", "crates/core/src/maestro/tools/mod.rs"],
+      "fanout": "route+fanout || create_workspace+create_workarea || set_workarea_paused+chip-gate-wiring",
+      "unblocks": ["411"]
+    },
+    {
+      "id": "407", "slug": "maestro-side-channel-tools", "type": "rust", "tier": 1,
+      "size": "small", "cluster": "WT", "deps": ["401"],
+      "title": "notify_user (stub against 14) + propose_chip (Maestro-owned slate)",
+      "write_set": ["crates/core/src/maestro/tools/side.rs", "crates/core/src/maestro/tools/mod.rs"],
+      "fanout": "solo (small)",
+      "unblocks": []
+    },
+    {
+      "id": "408", "slug": "routing-pre-parser", "type": "rust", "tier": 1,
+      "size": "medium", "cluster": "D", "deps": ["402"],
+      "title": "Deterministic routing pre-parser (@workarea, fanout, @all/@idle/@blocked, /digest /pause /new) + composer->session resolver",
+      "write_set": ["crates/core/src/maestro/routing.rs", "crates/core/src/maestro/mod.rs"],
+      "fanout": "parse-grammar+ParseOutcome || dynamic-set-resolution(@all/@idle/@blocked) || composer->workarea->session-resolver",
+      "unblocks": ["409"]
+    },
+    {
+      "id": "409", "slug": "digest-generation", "type": "rust", "tier": 2,
+      "size": "medium", "cluster": "D", "deps": ["404", "408"],
+      "title": "Digest generation (<5s p50) + own chip persistence",
+      "write_set": ["crates/core/src/maestro/digest.rs", "crates/core/src/maestro/mod.rs"],
+      "fanout": "digest-prompt+delta-compute || chip-persistence || latency-bench-fixture",
+      "unblocks": ["414"]
+    },
+    {
+      "id": "410", "slug": "daily-condensation", "type": "rust", "tier": 1,
+      "size": "medium", "cluster": "D", "deps": ["403"],
+      "title": "Daily history condensation (+ chat_messages.metadata, migration 0016)",
+      "write_set": ["crates/persist/migrations/0016_chat_messages_metadata.sql", "crates/persist/src/chat_messages.rs", "crates/core/src/maestro/condense.rs", "crates/core/src/maestro/mod.rs", "docs/interfaces/schema.md"],
+      "fanout": "migration+metadata-accessors || condensation-pass || verbatim/condensed-window-assembly",
+      "unblocks": []
+    },
+    {
+      "id": "411", "slug": "create-workspace-from-description", "type": "rust", "tier": 2,
+      "size": "medium", "cluster": "WT", "deps": ["406", "403", "305", "313"],
+      "title": "create_workspace_from_description (issue-fetch + ConeSuggester + SuggestCones RPC + privacy-debt fix)",
+      "write_set": ["crates/core/src/maestro/tools/write.rs", "crates/proto/proto/concerto/v1/repositories.proto", "crates/proto/proto/concerto/v1/vcs.proto", "crates/core/src/handlers/repositories.rs", "crates/core/src/handlers/vcs.rs", "crates/core/src/repo_manager/actor.rs", "crates/core/src/maestro/cone_suggester.rs", "docs/interfaces/proto.md"],
+      "fanout": "SuggestCones-RPC+ConeSuggester-impl || issue-parse+multi-repo-detect || confirm-chip-slate+privacy-debt-fix",
+      "unblocks": []
+    },
+    {
+      "id": "412", "slug": "pluggable-provider-budget", "type": "rust", "tier": 2,
+      "size": "medium", "cluster": "M", "deps": ["402", "403"],
+      "title": "Provider: Codex/Gemini CLI live + daily budget (200K/50K, inert-on-exhaust) + Direct-API frozen seam",
+      "write_set": ["crates/core/src/maestro/provider.rs", "crates/core/src/llm/mod.rs", "crates/core/src/llm/provider.rs", "crates/core/src/security/managed.rs"],
+      "fanout": "Codex+Gemini-CLI-impls || daily-budget+inert-on-exhaust || DirectApi-frozen-seam+model-selection",
+      "unblocks": []
+    },
+    {
+      "id": "413", "slug": "privacy-enforcement", "type": "rust", "tier": 1,
+      "size": "medium", "cluster": "S", "deps": ["404"],
+      "title": "Privacy: exclude_from_maestro skip + concerto_chat_full_chat_access + enterpriseDataPrivacy-disables-if-external",
+      "write_set": ["crates/core/src/maestro/privacy.rs", "crates/core/src/maestro/summary.rs", "crates/persist/src/workspaces.rs", "crates/core/src/maestro/mod.rs"],
+      "fanout": "exclude_from_maestro+full_chat_access || enterpriseDataPrivacy-gate || privacy-property-tests",
+      "unblocks": []
+    },
+    {
+      "id": "414", "slug": "maestro-grpc-service", "type": "rust", "tier": 1,
+      "size": "medium", "cluster": "W", "deps": ["401.5", "409"],
+      "title": "Live Maestro gRPC impl (fills 401.5 skeleton) + publish maestro.events",
+      "write_set": ["crates/core/src/handlers/maestro.rs", "crates/core/src/handlers/streams.rs", "crates/core/src/maestro/events.rs", "crates/core/src/boot.rs", "crates/core/src/api_server.rs", "crates/core/src/connect_bridge.rs"],
+      "fanout": "handler-impl(SendToMaestro/GetDigest/SetWorkareaVisibility) || event-publishing || boot-wiring",
+      "unblocks": []
+    },
+    {
+      "id": "415", "slug": "desktop-maestro-chat-ui", "type": "web-ts", "tier": 2,
+      "size": "medium", "cluster": "W", "deps": ["401.5", "218"],
+      "title": "Desktop Concerto chat top bar + digest rendering + routing UX + confirmation chips",
+      "write_set": ["apps/desktop/src/**"],
+      "fanout": "chat-topbar+composer || digest-rendering || routing-UX+confirmation-chips",
+      "verification_override": "pnpm -C apps/desktop typecheck|lint|test|build (NOT apps/web; per PHASE4_PLANNING §7)",
+      "note": "Tier-2 mocked-invoke web-ts: depends on 401.5's FROZEN proto, NOT on 414's live impl => overlaps the entire Rust spine.",
+      "unblocks": []
+    }
+  ],
+  "waves_illustrative": [
+    {"wave": 1, "start": ["400", "403"], "rationale": "doc-only + independent persist root; fully disjoint"},
+    {"wave": 2, "start": ["401", "401.5"], "rationale": "after 400 merges; different files (soft api_server seam); 403 still in flight => up to 4"},
+    {"wave": 3, "start": ["402", "404", "415", "410"], "rationale": "401 => maestro module exists; 401.5 => wire frozen so 415 UI starts in parallel with ALL rust; 410 after 403"},
+    {"wave": 4, "start": ["405", "408", "412", "413", "406", "407"], "rationale": "consumers of 404/402; 406/407 as tools/* files free up"},
+    {"wave": 5, "start": ["409", "411"], "rationale": "digest over summaries+routing; create-from-description over write-tools+vcs+cones"},
+    {"wave": 6, "start": ["414"], "rationale": "fills 401.5 skeleton + publishes events; 415 already done"}
+  ]
+}

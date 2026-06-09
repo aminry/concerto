@@ -42,9 +42,9 @@ You are executing **one** task from the Concerto **V1.0** build. Concerto is a l
 - **One commit per task.** Exact message from the task file. Don't amend, don't split, don't push, don't open a PR — the operator handles git remote ops.
 - **Don't modify prior tasks' files, the root `tasks/` (V0.1 history), or `design/`** — except a `doc`-type task whose `Outputs` explicitly lists a `design/` file (e.g. the embedded-mode retrofit). Drift is recorded in Handoff Notes.
 
-### Parallel build (optional — to go faster)
+### Parallel build (expected for medium/large tasks)
 
-You are the **task lead** and own the outcome, but you do not have to do all the work yourself. When this task has independent sub-parts, you MAY dispatch helper sub-agents to build them concurrently, then integrate. Good fan-out boundaries:
+You are the **task lead** and own the outcome, but you do not have to do all the work yourself. **If your task file has a `Parallel build` plan (or the orchestrator handed you a `fanout` partition from the phase DAG), follow it: dispatch helper sub-agents to build the disjoint sub-parts concurrently, then integrate.** Even without an explicit plan, fan out whenever the task has independent sub-parts — for a medium/large task this is the default, not an afterthought. Good fan-out boundaries:
 
 - **By output file / module** — e.g. one helper writes the `.proto` (+ regen), another the handler, another the tests; or one helper per independent file for multi-file UI/web work. The task's `Outputs` list is your partition map.
 - **Explore → implement → review** — a helper maps the exact existing code to reuse (per `Inputs to read`) while you scaffold; a final helper reviews the assembled diff against `Verification` + `Definition of Done` before you commit.
@@ -57,7 +57,7 @@ Rules that do **not** change with fan-out:
 - **Stay within `Outputs` and your tier.** The whole team is bound by the same `Scope`, `Outputs`, frozen `Public interface this task locks`, and `Verification tier`. A helper may not widen scope or downgrade the tier.
 - **Verify as a whole.** Run the full per-`Task type` tier verification on the **integrated** result (not per-helper). The task is not done until the assembled single commit passes everything.
 
-Small or tightly-coupled tasks don't need this — a lead working solo is fine. Use fan-out only when it actually saves wall-clock.
+Small (`size: small`) or tightly-coupled tasks may stay solo — a lead working alone is fine. For everything else fan-out is the default, but only partition along genuinely disjoint files; if the sub-parts can't be made file-disjoint, work solo rather than fight a merge between your own helpers.
 
 ### When you finish
 
