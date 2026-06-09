@@ -373,9 +373,20 @@ url = "2"
 # tree is pure-Rust + cross-platform. This mirrors octocrab's own `default`
 # feature set minus the `opentls`/native-tls path (which `default-features =
 # false` drops) — `cargo tree -i openssl-sys` / `-i native-tls` stay EMPTY.
+# `rustls-webpki-tokio` makes octocrab's `build()` use `hyper-rustls`'s
+# `with_webpki_roots()` (the bundled Mozilla CA set) instead of
+# `with_native_roots()`. The native path loads the OS trust store at
+# client-build time; on macOS that calls the Security framework
+# (`SecTrustSettingsCopyCertificates`), which is NOT concurrency-safe across
+# threads or processes — under `cargo test --workspace` parallelism the keychain
+# read intermittently returns OS error -36 (`ioErr`), which octocrab surfaces as
+# `Error::Other { "no native root CA certificates found" }` and flaked the vcs
+# tests. webpki roots are pure-Rust + cross-platform (strictly better for the
+# no-openssl / Windows-lane posture) and validate `api.github.com` fine.
 octocrab = { version = "0.53", default-features = false, features = [
     "rustls",
     "rustls-ring",
+    "rustls-webpki-tokio",
     "default-client",
     "jwt-rust-crypto",
 ] }
