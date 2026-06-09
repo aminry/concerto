@@ -26,7 +26,7 @@ use concerto_proto::v1::{
     ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListTreeRequest,
     ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest, PermissionMode,
     ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest,
-    SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest,
+    SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest, UpdateWorkspaceRequest,
     WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId, WorkspaceRepoSpec,
 };
 use serde::Deserialize;
@@ -117,6 +117,19 @@ struct CreateWorkspacePayload {
     description: Option<String>,
     #[serde(default)]
     permission_mode: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateWorkspacePayload {
+    workspace_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    repos: Vec<WorkspaceRepoSpecPayload>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,6 +361,39 @@ where
                     description: req.description,
                     icon: req.icon,
                 })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Workspaces.UpdateWorkspace" => {
+            let req: UpdateWorkspacePayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for UpdateWorkspace: {e}"))
+            })?;
+            let mut client = WorkspacesClient::new(channel);
+            client
+                .update_workspace(UpdateWorkspaceRequest {
+                    workspace_id: req.workspace_id,
+                    name: req.name,
+                    icon: req.icon,
+                    description: req.description,
+                    repos: req
+                        .repos
+                        .into_iter()
+                        .map(|r| WorkspaceRepoSpec {
+                            repository_id: r.repository_id,
+                            sparse_cones: r.sparse_cones,
+                        })
+                        .collect(),
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Workspaces.ListWorkspaceRepos" => {
+            let req: IdPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ListWorkspaceRepos: {e}"))
+            })?;
+            let mut client = WorkspacesClient::new(channel);
+            client
+                .list_workspace_repos(ProtoWorkspaceId { value: req.id })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }

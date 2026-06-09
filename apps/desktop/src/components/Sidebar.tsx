@@ -119,6 +119,7 @@ function WorkspaceNode({ workspace }: WorkspaceNodeProps): JSX.Element {
   const setSelectedWorkspace = useUiStore((s) => s.setSelectedWorkspace);
   const expandedWorkspaces = useUiStore((s) => s.expandedWorkspaces);
   const toggleExpanded = useUiStore((s) => s.toggleWorkspaceExpanded);
+  const setEditWorkspaceId = useUiStore((s) => s.setEditWorkspaceId);
 
   const active = workspace.id === selectedWorkspaceId;
   const expanded = expandedWorkspaces.has(workspace.id);
@@ -159,6 +160,15 @@ function WorkspaceNode({ workspace }: WorkspaceNodeProps): JSX.Element {
             </span>
           </span>
         </button>
+        <IconButton
+          label="Edit workspace"
+          onClick={(e) => {
+            e.stopPropagation();
+            setEditWorkspaceId(workspace.id);
+          }}
+        >
+          <Settings size={13} />
+        </IconButton>
       </div>
       {expanded && (
         <div className="pl-6 pt-1">

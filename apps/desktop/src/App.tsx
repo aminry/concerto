@@ -13,6 +13,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AppLayout } from "./components/AppLayout";
 import { ConnectCorePicker } from "./components/ConnectCorePicker";
+import { EditWorkspaceModal } from "./components/EditWorkspaceModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
 import { PairCoreModal } from "./components/PairCoreModal";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -44,6 +45,7 @@ function App(): JSX.Element {
       <div className="h-screen w-screen bg-background text-foreground font-sans">
         <AppLayout />
         <NewWorkspaceModal />
+        <EditWorkspaceModal />
         <SettingsPanel />
         <ConnectCorePicker />
         <PairCoreModal />
