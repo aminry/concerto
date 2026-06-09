@@ -1146,6 +1146,7 @@ fn map_workspace_event(ev: WorkspaceEvent) -> Event {
         WorkspaceEvent::Restored(ws) => (ws.id.to_string(), "restored".to_string()),
         // Task 306: `workspace.events: repos updated` (`design/03 §5.3`).
         WorkspaceEvent::ReposUpdated(ws) => (ws.id.to_string(), "repos_updated".to_string()),
+        WorkspaceEvent::Updated(ws) => (ws.id.to_string(), "updated".to_string()),
     };
     Event {
         offset: 0,

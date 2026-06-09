@@ -101,6 +101,9 @@ pub enum WorkspaceEvent {
     /// subscribers re-read `workspace_repos` (ordered by `position`) for
     /// the new set.
     ReposUpdated(Workspace),
+    /// A workspace's editable metadata (name/icon/description) changed.
+    /// Payload is the post-update row. Repo-set edits use `ReposUpdated`.
+    Updated(Workspace),
 }
 
 /// Cloneable handle to the Workspace Manager's shared state.
@@ -424,6 +427,83 @@ impl WorkspaceManager {
         // `Restored`.
         let _ = self.events.send(WorkspaceEvent::ReposUpdated(workspace));
         Ok(())
+    }
+
+    /// Edit a workspace's metadata (name/icon/description) and/or replace
+    /// its repo set. `name`/`icon`/`description` use `Option`: `None` =
+    /// leave unchanged. For icon/description the inner `Option` selects
+    /// set-vs-clear (`Some(Some(v))` set, `Some(None)` clear). `repos`
+    /// empty = leave the repo set unchanged; non-empty = replace via
+    /// [`update_workspace_repos`].
+    ///
+    /// Slug is never re-derived (it is the stable handle from creation).
+    /// Repo-set edits affect FUTURE workareas only — existing workareas keep
+    /// their materialized worktrees (see [`update_workspace_repos`]).
+    pub async fn update_workspace(
+        &self,
+        id: &WorkspaceId,
+        name: Option<String>,
+        icon: Option<Option<String>>,
+        description: Option<Option<String>>,
+        repos: &[WorkspaceRepoSpec],
+    ) -> Result<Workspace> {
+        if self.get(id).await?.is_none() {
+            return Err(Error::NotFound(format!("workspace {id} not found")));
+        }
+        if let Some(n) = name.as_deref() {
+            if n.is_empty() {
+                return Err(Error::Validation("name must not be empty".into()));
+            }
+        }
+
+        let has_metadata = name.is_some() || icon.is_some() || description.is_some();
+        if has_metadata {
+            let mut writer = self.persistence.writer().await;
+            let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+            concerto_persist::workspaces::set_metadata(
+                &mut tx,
+                id,
+                name.as_deref(),
+                icon.as_ref().map(|o| o.as_deref()),
+                description.as_ref().map(|o| o.as_deref()),
+            )
+            .await?;
+            tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
+            drop(writer);
+        }
+
+        let repos_changed = !repos.is_empty();
+        if repos_changed {
+            self.update_workspace_repos(id, repos).await?;
+        }
+
+        let updated = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::Internal(format!("workspace {id} vanished mid-update")))?;
+
+        if has_metadata && !repos_changed {
+            let _ = self.events.send(WorkspaceEvent::Updated(updated.clone()));
+        }
+        Ok(updated)
+    }
+
+    /// List a workspace's declared repos with their per-(workspace, repo)
+    /// cone snapshots, position-ordered (for the edit form pre-fill).
+    pub async fn list_workspace_repos(
+        &self,
+        id: &WorkspaceId,
+    ) -> Result<Vec<WorkspaceRepoSpec>> {
+        let pairs =
+            concerto_persist::workspaces::list_repo_cones(self.persistence.readers(), id).await?;
+        let mut out = Vec::with_capacity(pairs.len());
+        for (repo_id, cones_json) in pairs {
+            let sparse_cones: Vec<String> = serde_json::from_str(&cones_json).map_err(|e| {
+                Error::Internal(format!("parse sparse_cones for {}: {e}", repo_id.0))
+            })?;
+            out.push(WorkspaceRepoSpec { repository_id: repo_id, sparse_cones });
+        }
+        Ok(out)
     }
 
     /// Look up a workspace by id.
@@ -851,6 +931,44 @@ mod tests {
                 .await,
             Err(Error::Validation(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_changes_metadata_and_repos() {
+        fn spec(repo_id: &str) -> WorkspaceRepoSpec {
+            WorkspaceRepoSpec {
+                repository_id: RepositoryId(repo_id.to_string()),
+                sparse_cones: vec![],
+            }
+        }
+
+        let (_dir, mgr, repos) = seed_manager(&["a", "b"]).await;
+        let repo_a = repos[0].clone();
+        let repo_b = repos[1].clone();
+
+        let ws = mgr
+            .create_workspace("Original", &[spec(&repo_a)], None, None, None)
+            .await
+            .expect("create");
+
+        let updated = mgr
+            .update_workspace(
+                &ws.id,
+                Some("Renamed".to_string()),
+                Some(Some("🚀".to_string())),
+                None,
+                &[spec(&repo_a), spec(&repo_b)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "Renamed");
+        assert_eq!(updated.icon.as_deref(), Some("🚀"));
+        assert_eq!(updated.slug, ws.slug); // slug immutable
+
+        let repos = mgr.list_workspace_repos(&ws.id).await.unwrap();
+        assert_eq!(repos.len(), 2);
+        assert_eq!(repos[0].repository_id.0, repo_a);
+        assert_eq!(repos[1].repository_id.0, repo_b);
     }
 
     #[tokio::test]
