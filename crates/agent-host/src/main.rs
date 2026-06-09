@@ -43,6 +43,7 @@ mod unix {
     use std::io::{Read as _, Write as _};
     use subtle::ConstantTimeEq;
     use tokio::fs;
+    use tokio::io::AsyncWriteExt as _;
     use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::{Mutex, Notify};
     use tokio::task::JoinHandle;
@@ -556,6 +557,30 @@ mod unix {
                     let send_result =
                         write_frame(&mut *w, &HostFrame::AgentExited { exit_code, signal }).await;
                     if send_result.is_ok() {
+                        // Half-close (shutdown SHUT_WR) the write side *before*
+                        // signalling `delivered_exit`. This is what makes the
+                        // surviving-host invariant real instead of best-effort.
+                        //
+                        // Setting `delivered_exit` releases the accept loop
+                        // (main.rs ~line 659), which breaks, lets `main` return,
+                        // and exits the process — tearing down the UDS. The bare
+                        // `write_frame` above only guarantees the AgentExited
+                        // bytes reached the kernel send buffer; it does NOT
+                        // guarantee the peer has been sent an orderly EOF. If the
+                        // process exits and the kernel closes this still-open fd
+                        // while that final frame is unread, the close can surface
+                        // to the peer as a connection reset (RST) rather than a
+                        // graceful FIN, and an RST discards the un-acked in-flight
+                        // bytes — the Core then sees `FrameError::Eof` with the
+                        // AgentExited frame lost (the echo_round_trip flake).
+                        //
+                        // An explicit `shutdown` issues SHUT_WR now: it flushes
+                        // all buffered data and delivers a deterministic FIN, so
+                        // by the time we set `delivered_exit` the peer is
+                        // guaranteed to read the AgentExited frame followed by a
+                        // clean EOF, no matter how fast the process then exits.
+                        // A failed shutdown (peer already gone) is harmless here.
+                        let _ = w.shutdown().await;
                         *state_w.delivered_exit.lock().await = true;
                         state_w.exit_delivered_notify.notify_waiters();
                     }
