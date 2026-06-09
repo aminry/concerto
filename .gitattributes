@@ -1,0 +1,4 @@
+
+# graphify: union-merge the committed knowledge graph so parallel commits never leave conflict markers.
+# Falls back to the default merge if graphify is not installed locally.
+graphify-out/graph.json merge=graphify-union
