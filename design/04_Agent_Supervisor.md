@@ -133,7 +133,9 @@ Reads (status, diff, git log) are concurrent.
 - **Writes** project-level `.mcp.json` from the UI (per repo; the user picks which repo's `.mcp.json` to edit). Personal is the user's home; plugin and enterprise are managed externally.
 - **Does not implement the MCP wire protocol** — that's between the agent and the MCP server. We just configure.
 
-We also ship one MCP server of our own (`concerto-mcp`) implementing the Concerto-specific tools (workarea introspection, PR linkage, todos, scratch). **It runs in-process inside the Core** — no separate executable. The Core speaks MCP over stdio to the agent CLI via a pipe owned by `concerto-agent-host`. Same pattern as `concerto-maestro-mcp` (08 §3.2): one binary, two distinct tool surfaces, two distinct roles. No extraction, no install step. See `§3.11` for the tool surface.
+We also ship one MCP server of our own (`concerto-mcp`) implementing the Concerto-specific tools (workarea introspection, PR linkage, todos, scratch). **It runs in-process inside the Core** — no separate executable. The Core serves MCP over a net-new **`rmcp` stdio transport** dialed by the spawned CLI via the CLI's own `--mcp-config` + `--strict-mcp-config`. Same transport mechanism as `concerto-maestro-mcp` (08 §3.2): one binary, two distinct tool surfaces (`concerto-mcp` for workarea sessions, `concerto-maestro-mcp` for the Maestro), two distinct roles. No extraction, no install step. See `§3.11` for the tool surface.
+
+> **Built-state reconciliation (2026-06-09).** The in-process MCP **server** + the Core↔CLI MCP-stdio transport **does not exist yet** — the prior text ("Core speaks MCP over stdio … via a pipe owned by `concerto-agent-host`") conflated two unrelated channels. The `concerto-agent-host` is **PTY + CBOR-over-UDS *terminal* multiplexing** (§3.6/§3.9), **NOT** an MCP transport; the MCP stdio stream is a separate, net-new channel the CLI opens directly to the in-process `rmcp` server. The only MCP code on `main` today is **read-only config *discovery*** (`crates/core/src/agent_supervisor/mcp.rs:54` `McpServer` / `:73` `McpScope` — it parses config files; it is not a server), and `rmcp` is not in the workspace. **`concerto-maestro-mcp` (Maestro, Phase 4) is the FIRST such server — FROZEN by Task 401** (PHASE4_PLANNING §4.1); `concerto-mcp` (workarea sessions) remains a future instance of the same net-new transport. This keeps the "two distinct tool surfaces, two distinct roles" claim true while marking the transport itself as net-new.
 
 ### 3.7 Restart policy
 
@@ -231,7 +233,7 @@ The Core records `external_session_id` per `sessions` row as soon as the parser 
 
 | Tool category | `strict` | `normal` |
 |---|---|---|
-| Read file, list directory, get diff, glob, grep | Ask | Auto |
+| Read-only introspection (`ToolClass::ReadOnly`: read file, list directory, get diff, glob, grep; the 11 Maestro read tools, `08 §5.1`) | **Auto** | Auto |
 | Get URL, fetch documentation | Ask | Auto |
 | Write file (inside workarea — any repo or `.context/`) | Ask | Ask |
 | Run shell command (any) | Ask | Ask |
@@ -241,6 +243,10 @@ The Core records `external_session_id` per `sessions` row as soon as the parser 
 | MCP tool (untrusted server) | Ask | Ask |
 
 The classification table ships in `tool-classifications.toml` per agent-kind, version-pinned alongside the parser packs.
+
+**Strict-mode `ToolClass::ReadOnly` auto-approve (PHASE4_PLANNING D4).** Under `strict`, tools classified **`ToolClass::ReadOnly`** auto-approve; **all other classes still `MustAsk`**. This is what lets the Maestro (`08 §3.1`, always `strict`) read freely while every write tool stays gated. For the Maestro toolset (`08 §5.1`): the **11 read tools → `ToolClass::ReadOnly`** (auto under strict); the **5 write tools + `propose_chip` → `MustAsk` under strict** (surfaced as the existing `AwaitingApproval`/`ResolveApproval` confirmation chip carrying `urgent`/`destructive_label`); `notify_user` routes to 14, not a chip. **No bypass** of the write-tool confirmation (`08 R-2`). Keep the tool names identical to `08 §5.1`.
+
+> **Built-state reconciliation (2026-06-09).** The built `PermissionResolver::decide` maps **`(PermissionMode::Strict, _) => Decision::MustAsk`** for *every* tool (even `Safe` reads) — `crates/core/src/security/permission.rs:451` — and the built `ToolClass` is the closed set `{Safe, Restricted, Dangerous}` with **no `ReadOnly`** variant (enum at `permission.rs:352`; table at `crates/core/src/security/tool_classes.rs:42`). The §3.10 `resolve()` pseudo-code below already *names* `ToolClass::ReadOnly` in its `Normal` arm, so the enum and the matrix are currently inconsistent with the code. **Task 402** adds the `ToolClass::ReadOnly` variant, classifies the 11 Maestro read tools into it, and extends ReadOnly-auto-approve into the `Strict` arm — **FROZEN by Task 402** (PHASE4_PLANNING §4.8). This design edit pins the rule; it leaves `permission.rs:451`/`tool_classes.rs:42` untouched (402 owns the code).
 
 **Entry ceremony:**
 
@@ -301,7 +307,14 @@ impl PermissionResolver {
 
         // 3. Mode-based decision
         match self.mode {
-            PermissionMode::Strict => Decision::MustAsk,
+            // Strict still auto-approves ReadOnly introspection (the 11
+            // Maestro read tools); every other class MustAsk. (D4 — Task 402
+            // adds the `ToolClass::ReadOnly` variant + this Strict arm; the
+            // built code is `(Strict, _) => MustAsk`, permission.rs:451.)
+            PermissionMode::Strict => match self.classify(tool) {
+                ToolClass::ReadOnly => Decision::AutoApprove,
+                _ => Decision::MustAsk,
+            },
             PermissionMode::Normal => match self.classify(tool) {
                 ToolClass::ReadOnly => Decision::AutoApprove,
                 _ => Decision::MustAsk,
@@ -864,7 +877,7 @@ Consumers:
 | R-6 | Structured-mode parsing as default for Claude Code | **Terminal parser is default for V0.1; auto-switch to structured-mode mid-V1.0** once the upstream contract is stable. User can opt in earlier. | §3.2 |
 | R-7 | Approval timeout: auto-deny vs hang forever | **Hang forever.** Approvals stay `awaiting` indefinitely; no auto-deny. User can stop the session manually. Audit captures request-time and decision-time. | §3.3, §8 failure modes |
 | R-8 | MCP install UX | **Owned by `06 Skills Registry`**; doc 04 only consumes the config. | §3.6 |
-| R-9 | `concerto-mcp` installation flow | **Pure in-process MCP** — no separate executable, no extraction. Core speaks MCP over stdio to the agent CLI via a pipe owned by `concerto-agent-host`. Same pattern as `concerto-maestro-mcp` (08 §3.2). | §3.6 |
+| R-9 | `concerto-mcp` installation flow | **Pure in-process MCP** — no separate executable, no extraction. The Core serves MCP over a net-new `rmcp` **stdio transport** dialed by the CLI via `--mcp-config` + `--strict-mcp-config` (the agent-host PTY/CBOR-over-UDS stream is NOT this transport). Same mechanism as `concerto-maestro-mcp` (08 §3.2). **Net-new on `main`** (only read-only config discovery exists today, `agent_supervisor/mcp.rs:54`); first instance FROZEN by Task 401. | §3.6 |
 | R-10 | Streaming partial messages (typewriter effect) | **Yes on desktop/web; off by default on mobile** (saves bandwidth via the lite-mode mechanism in `16 §3.10`). `Message` events carry partial content; UI assembles incrementally. | §4.2 events, §10 client design |
 
 ---
