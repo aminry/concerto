@@ -1,0 +1,20 @@
+# Transient / machine-specific graphify internals — rebuildable, not for version control.
+# Tracked deliverables: graph.json, graph.html, GRAPH_REPORT.md
+
+# Rebuildable extraction cache (~9 MB)
+cache/
+
+# Contains absolute machine paths
+manifest.json
+
+# Local cumulative token tracker
+cost.json
+
+# Absolute path to a local venv
+.graphify_python
+
+# Absolute path to the local workspace
+.graphify_root
+
+# Internal community-label helper
+.graphify_labels.json
