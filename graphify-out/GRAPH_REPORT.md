@@ -1,16 +1,16 @@
 # Graph Report - kabul  (2026-06-08)
 
 ## Corpus Check
-- 16523 files · ~11,919,222 words
+- 16526 files · ~11,920,840 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 60363 nodes · 84192 edges · 9224 communities (6286 shown, 2938 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 571 edges (avg confidence: 0.81)
+- 60389 nodes · 84250 edges · 9222 communities (6306 shown, 2916 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 572 edges (avg confidence: 0.81)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `47c288fc`
+- Built from commit: `544db5f0`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -954,6 +954,7 @@
 - [[_COMMUNITY_Community 975|Community 975]]
 - [[_COMMUNITY_Community 976|Community 976]]
 - [[_COMMUNITY_Community 977|Community 977]]
+- [[_COMMUNITY_Community 978|Community 978]]
 - [[_COMMUNITY_Community 979|Community 979]]
 - [[_COMMUNITY_Community 980|Community 980]]
 - [[_COMMUNITY_Community 981|Community 981]]
@@ -5435,8 +5436,6 @@
 - [[_COMMUNITY_Community 5529|Community 5529]]
 - [[_COMMUNITY_Community 5530|Community 5530]]
 - [[_COMMUNITY_Community 5531|Community 5531]]
-- [[_COMMUNITY_Community 5532|Community 5532]]
-- [[_COMMUNITY_Community 5533|Community 5533]]
 - [[_COMMUNITY_Community 5534|Community 5534]]
 - [[_COMMUNITY_Community 5535|Community 5535]]
 - [[_COMMUNITY_Community 5536|Community 5536]]
@@ -5502,16 +5501,16 @@
 10. `yoga` - 79 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `onConcertoEvent()` --implements--> `CoreClient trait (UDS/Iroh)`  [INFERRED]
-  apps/desktop/src/api/client.ts → design/15_Desktop_Client.md
+- `isRemoteTransport()` --references--> `CoreClient trait (UDS/Iroh)`  [INFERRED]
+  apps/desktop/src/api/runtime.ts → design/15_Desktop_Client.md
+- `getServerCapabilities()` --references--> `CoreClient trait (UDS/Iroh)`  [INFERRED]
+  apps/desktop/src/api/runtime.ts → design/15_Desktop_Client.md
+- `useCoreConnection()` --references--> `CoreClient trait (UDS/Iroh)`  [INFERRED]
+  apps/desktop/src/hooks/useCoreConnection.ts → design/15_Desktop_Client.md
 - `loadLayoutState()` --references--> `Tauri 2 Shell + React SPA`  [INFERRED]
   apps/desktop/src/state/useUiStore.ts → design/15_Desktop_Client.md
 - `State` --implements--> `PTY Subprocess Agent Backend (portable-pty)`  [INFERRED]
   crates/agent-host/src/main.rs → design/04_Agent_Supervisor.md
-- `run_connection()` --implements--> `PTY Subprocess Agent Backend (portable-pty)`  [INFERRED]
-  crates/agent-host/src/main.rs → design/04_Agent_Supervisor.md
-- `EffectiveMode` --implements--> `Permission Modes (strict/normal/auto/yolo)`  [INFERRED]
-  crates/core/src/agent_supervisor/actor.rs → design/04_Agent_Supervisor.md
 
 ## Import Cycles
 - 1-file cycle: `apps/desktop/src-tauri/src/commands.rs -> apps/desktop/src-tauri/src/commands.rs`
@@ -5543,7 +5542,7 @@
 - **Three Client Surfaces over one Core** — design_16_mobile_clients_mobile_clients, design_17_web_client_web_client, desktop_readme_desktop_app, design_concerto_prd_local_api [INFERRED 0.85]
 - **OSS-vs-Operated Governance** — design_18_distribution_and_operations_oss_vs_operated_boundary, design_18_distribution_and_operations_self_host_parity, design_18_distribution_and_operations_bsl_plugin_seam, design_18_distribution_and_operations_concerto_pro [INFERRED 0.75]
 
-## Communities (9224 total, 2938 thin omitted)
+## Communities (9222 total, 2916 thin omitted)
 
 ### Community 0 - "Community 0"
 Cohesion: 0.04
@@ -5551,11 +5550,11 @@ Nodes (79): errorMessage(), aggregateBand(), checkBand, CheckConclusion, CheckRu
 
 ### Community 1 - "Community 1"
 Cohesion: 0.12
-Nodes (13): Debug, Default, Formatter, JoinHandle, Option, PathBuf, PermissionMode, Receiver (+5 more)
+Nodes (25): Debug, Default, JoinHandle, Option, Path, PathBuf, PermissionMode, Receiver (+17 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.05
-Nodes (80): AckOffsetRequest, Attach, BoxEventStream, AgentEvent, AgentSupervisorHandle, Arc, AtomicU64, Chip (+72 more)
+Cohesion: 0.13
+Nodes (17): BoxEventStream, AgentSupervisorHandle, Arc, AtomicU64, Drop, HashMap, Mutex, Sender (+9 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.08
@@ -5570,20 +5569,20 @@ Cohesion: 0.13
 Nodes (38): AppHandle, Box, CoreClient, CoreClientError, HashMap, JoinHandle, M, Mutex (+30 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.21
+Cohesion: 0.11
 Nodes (24): CoreSecretSlot, Into, Option, Result, SecretValue, Self, String, VcsSecretSlot (+16 more)
 
 ### Community 7 - "Community 7"
-Cohesion: 0.04
-Nodes (77): callRpc(), ConeStats, estimateConeSize(), setCones(), invoke, formatError(), addRepository(), AddRepositoryInput (+69 more)
+Cohesion: 0.05
+Nodes (60): addRepository(), AddRepositoryInput, CloneStrategy, estimateRepoSize(), listRepositories(), ListRepositoriesResponse, listTree(), ListTreeResponse (+52 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.11
-Nodes (35): CancellationToken, Endpoint, EndpointId, Option, RecvStream, RelayUrl, Result, Self (+27 more)
+Cohesion: 0.08
+Nodes (49): CancellationToken, Endpoint, EndpointId, Option, RecvStream, RelayUrl, Result, Self (+41 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.08
-Nodes (51): Drop, HandshakeState, IdentityError, Instant, NoiseSession, Option, R, Result (+43 more)
+Cohesion: 0.14
+Nodes (26): Drop, HandshakeState, IdentityError, Instant, NoiseSession, Option, R, Result (+18 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.12
@@ -5602,12 +5601,12 @@ Cohesion: 0.11
 Nodes (43): Arc, CheckRunSnapshot, CheckRunsSource, HashMap, MergeMethod, MergeProgress, MergeReport, Mutex (+35 more)
 
 ### Community 14 - "Community 14"
-Cohesion: 0.11
-Nodes (33): AgentEvent, AgentSupervisorHandle, Arc, BTreeMap, CheckRunsSource, HashMap, Instant, Mutex (+25 more)
+Cohesion: 0.12
+Nodes (30): AgentEvent, Arc, BTreeMap, CheckRunsSource, HashMap, Instant, Mutex, Notify (+22 more)
 
 ### Community 15 - "Community 15"
-Cohesion: 0.04
-Nodes (64): completePairingFromPayload(), CompletePairingResult, CoreTransportKind, decodePairingPayload(), encodePairingPayload(), getActiveCore(), listPairedCores(), PairedCore (+56 more)
+Cohesion: 0.06
+Nodes (48): completePairingFromPayload(), CompletePairingResult, CoreTransportKind, decodePairingPayload(), encodePairingPayload(), getActiveCore(), listPairedCores(), PairedCore (+40 more)
 
 ### Community 16 - "Community 16"
 Cohesion: 0.12
@@ -5626,12 +5625,12 @@ Cohesion: 0.06
 Nodes (45): Actor, ActorContext, AgentEvent, AgentSupervisorHandle, Arc, Box, CancellationToken, Chip (+37 more)
 
 ### Community 20 - "Community 20"
-Cohesion: 0.13
-Nodes (25): CloneStream, ConeStats, ConeSuggestError, RepoManager, Repository, Request, Response, Result (+17 more)
+Cohesion: 0.10
+Nodes (30): AddRepoRequest, CloneStream, run(), ConeStats, ConeSuggestError, RepoManager, Repository, Request (+22 more)
 
 ### Community 21 - "Community 21"
-Cohesion: 0.06
-Nodes (45): checkCommand(), CloneProgressEvent, cloneRepository(), eventNameForSubject(), onCloneProgress(), onConcertoEvent(), RpcMethod, subscribe() (+37 more)
+Cohesion: 0.07
+Nodes (41): checkCommand(), eventNameForSubject(), onConcertoEvent(), RpcMethod, subscribe(), unsubscribe(), chunkToBytes(), createSession() (+33 more)
 
 ### Community 22 - "Community 22"
 Cohesion: 0.06
@@ -5650,24 +5649,24 @@ Cohesion: 0.09
 Nodes (37): Actor, ActorContext, Arc, AuditWriter, Config, Option, PathBuf, Persistence (+29 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.10
-Nodes (40): Display, Option, String, Vec, binary_max_schema_version(), NewChat, NewPullRequest, NewRepository (+32 more)
+Cohesion: 0.08
+Nodes (46): Display, Formatter, Option, PathBuf, Result, Self, String, Vec (+38 more)
 
 ### Community 27 - "Community 27"
 Cohesion: 0.10
 Nodes (49): Option, Path, PathBuf, Result, Self, String, Vec, Files-to-copy (copy/symlink/exclude) (+41 more)
 
 ### Community 28 - "Community 28"
-Cohesion: 0.12
-Nodes (26): Workarea, CodePrRegion(), SessionRegion(), useEditMutexContention(), CenterPanel(), RightRail(), Sidebar(), WorkspaceNode() (+18 more)
+Cohesion: 0.08
+Nodes (31): callRpc(), ConeStats, estimateConeSize(), setCones(), invoke, getPullRequest(), createWorkarea(), CreateWorkareaOptions (+23 more)
 
 ### Community 29 - "Community 29"
 Cohesion: 0.11
 Nodes (37): Arc, AtomicUsize, Duration, Error, Into, Mutex, Option, Receiver (+29 more)
 
 ### Community 30 - "Community 30"
-Cohesion: 0.01
-Nodes (241): is_function, is_function<Ret(Args..., ...)BOOST_TT_NOEXCEPT_DECL>, is_function<Ret(Args..., ...)const BOOST_TT_NOEXCEPT_DECL>, is_function<Ret(Args..., ...)const volatile BOOST_TT_NOEXCEPT_DECL>, is_function<Ret(Args..., ...)volatile BOOST_TT_NOEXCEPT_DECL>, is_function<Ret BOOST_TT_DEF_CALL(Args...)BOOST_TT_NOEXCEPT_DECL>, is_function<Ret BOOST_TT_DEF_CALL(Args...)const BOOST_TT_NOEXCEPT_DECL>, is_function<Ret BOOST_TT_DEF_CALL(Args...)const volatile BOOST_TT_NOEXCEPT_DECL> (+233 more)
+Cohesion: 0.02
+Nodes (225): is_function, is_function<Ret(Args..., ...)BOOST_TT_NOEXCEPT_DECL>, is_function<Ret(Args..., ...)const BOOST_TT_NOEXCEPT_DECL>, is_function<Ret(Args..., ...)const volatile BOOST_TT_NOEXCEPT_DECL>, is_function<Ret(Args..., ...)volatile BOOST_TT_NOEXCEPT_DECL>, is_function<Ret BOOST_TT_DEF_CALL(Args...)BOOST_TT_NOEXCEPT_DECL>, is_function<Ret BOOST_TT_DEF_CALL(Args...)const BOOST_TT_NOEXCEPT_DECL>, is_function<Ret BOOST_TT_DEF_CALL(Args...)const volatile BOOST_TT_NOEXCEPT_DECL> (+217 more)
 
 ### Community 31 - "Community 31"
 Cohesion: 0.07
@@ -5686,8 +5685,8 @@ Cohesion: 0.20
 Nodes (29): ConePath, Path, Result, Vec, Path, PathBuf, String, TempDir (+21 more)
 
 ### Community 35 - "Community 35"
-Cohesion: 0.17
-Nodes (8): Arc, F, Option, Self, PoolsInner, ProviderKey, RateLimitBudget, RateLimitPools
+Cohesion: 0.12
+Nodes (14): Arc, F, Into, Mutex, Option, Self, String, Vec (+6 more)
 
 ### Community 36 - "Community 36"
 Cohesion: 0.04
@@ -5698,8 +5697,8 @@ Cohesion: 0.08
 Nodes (30): Attributes, Context, Debug, Error, Event, Id, Mutex, S (+22 more)
 
 ### Community 38 - "Community 38"
-Cohesion: 0.05
-Nodes (27): diffViewerSpy, invoke, repos, workarea, eventCallbacks, invoke, prSet, renderActions() (+19 more)
+Cohesion: 0.04
+Nodes (40): CloneProgressEvent, cloneRepository(), onCloneProgress(), diffViewerSpy, invoke, repos, workarea, eventCallbacks (+32 more)
 
 ### Community 39 - "Community 39"
 Cohesion: 0.09
@@ -5718,8 +5717,8 @@ Cohesion: 0.11
 Nodes (39): bench_sparse_cone(), build_fixture(), Cell, count_worktree_files(), Fixture, fsmonitor_running(), git(), git_capture() (+31 more)
 
 ### Community 43 - "Community 43"
-Cohesion: 0.10
-Nodes (24): Actor, ActorContext, AgentSupervisorHandle, Arc, CancellationToken, Config, EditMutexRegistry, IssueWriteBack (+16 more)
+Cohesion: 0.33
+Nodes (4): Actor, ActorContext, Config, WorkareaManagerActor
 
 ### Community 44 - "Community 44"
 Cohesion: 0.11
@@ -5730,34 +5729,34 @@ Cohesion: 0.12
 Nodes (32): Arc, AtomicUsize, Mutex, OneShotLlm, Path, PathBuf, Persistence, PrComposeContext (+24 more)
 
 ### Community 46 - "Community 46"
-Cohesion: 0.07
-Nodes (70): adopt_resume_session(), AgentKind, AgentSupervisorActor, AgentSupervisorConfig, AgentSupervisorHandle, build_path_policy(), bypass_for_session(), dispatch_parse_event() (+62 more)
+Cohesion: 0.09
+Nodes (59): adopt_resume_session(), AgentKind, AgentSupervisorConfig, AgentSupervisorHandle, build_path_policy(), bypass_for_session(), dispatch_parse_event(), emit_edit_mutex_blocked() (+51 more)
 
 ### Community 47 - "Community 47"
 Cohesion: 0.01
-Nodes (92): facebook(), std(), facebook(), std(), if_, if_c<
+Nodes (65): if_, if_c<
     is_const<Type>::value,
     detail::const_identity_base<Type>,detail::non_const_identity_base<Type>
   >::type, if_
         < function_types::is_callable_builtin<T>
         , typename components<T>::function_arity, boost::blank
-        >::type, facebook() (+84 more)
+        >::type, facebook(), isSizeEmpty(), rnscreens(), facebook(), facebook() (+57 more)
 
 ### Community 48 - "Community 48"
 Cohesion: 0.14
 Nodes (23): CoreClientError, CoreSecretSlot, Default, Mutex, Option, PathBuf, Result, SecretValue (+15 more)
 
 ### Community 49 - "Community 49"
-Cohesion: 0.08
-Nodes (36): ChecksAggregator, Arc, CheckRun, Issue, IssueDetail, Option, Path, PathBuf (+28 more)
+Cohesion: 0.07
+Nodes (41): ChecksAggregator, Arc, CheckRun, IngestOutcome, Issue, IssueDetail, Option, Path (+33 more)
 
 ### Community 50 - "Community 50"
 Cohesion: 0.16
 Nodes (38): Error, HashSet, Option, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow (+30 more)
 
 ### Community 51 - "Community 51"
-Cohesion: 0.12
-Nodes (22): civil_from_days(), civil_from_unix(), days_from_civil(), days_from_civil_round_trips(), JsonlFileSubscriber, OpenFile, parse_audit_date(), RotationConfig (+14 more)
+Cohesion: 0.09
+Nodes (40): civil_from_days(), civil_from_unix(), days_from_civil(), days_from_civil_round_trips(), JsonlFileSubscriber, OpenFile, parse_audit_date(), RotationConfig (+32 more)
 
 ### Community 52 - "Community 52"
 Cohesion: 0.10
@@ -5768,8 +5767,8 @@ Cohesion: 0.09
 Nodes (27): CheckRun, CreatePrRequest, Deployment, Issue, MergeMethod, MergeReport, Option, ProviderPrId (+19 more)
 
 ### Community 54 - "Community 54"
-Cohesion: 0.12
-Nodes (25): Arc, CancellationToken, Duration, JoinHandle, Option, PathBuf, Persistence, Receiver (+17 more)
+Cohesion: 0.19
+Nodes (15): Duration, PathBuf, Result, Self, TempDir, Core as Source of Truth, Single-instance PID-lock guard, PidFile (+7 more)
 
 ### Community 55 - "Community 55"
 Cohesion: 0.10
@@ -5784,12 +5783,12 @@ Cohesion: 0.09
 Nodes (25): Arc, AtomicU64, CancellationToken, Error, Option, RelayError, Result, Self (+17 more)
 
 ### Community 58 - "Community 58"
-Cohesion: 0.20
-Nodes (14): Arc, CancellationToken, Endpoint, Mutex, RelayState, RelayUrl, Result, Self (+6 more)
+Cohesion: 0.13
+Nodes (31): Arc, CancellationToken, Endpoint, EndpointId, Mutex, RecvStream, RelayState, RelayUrl (+23 more)
 
 ### Community 59 - "Community 59"
 Cohesion: 0.12
-Nodes (34): CoreClientError, Option, Result, StreamSink, StreamSubscription, String, T, Value (+26 more)
+Nodes (35): CoreClientError, Option, Result, StreamSink, StreamSubscription, String, T, Value (+27 more)
 
 ### Community 60 - "Community 60"
 Cohesion: 0.12
@@ -5800,12 +5799,12 @@ Cohesion: 0.08
 Nodes (29): ApiDispatcher, Arc, Box, Channel, EchoReply, EchoRequest, FirehoseRequest, FirehoseStream (+21 more)
 
 ### Community 62 - "Community 62"
-Cohesion: 0.08
-Nodes (21): ListMcpResponse, listMcpServers(), McpServer, listSchedules(), ListSchedulesResponse, Schedule, listSkills(), ListSkillsResponse (+13 more)
+Cohesion: 0.07
+Nodes (37): formatError(), ListMcpResponse, listMcpServers(), McpServer, listSchedules(), ListSchedulesResponse, Schedule, listSkills() (+29 more)
 
 ### Community 63 - "Community 63"
-Cohesion: 0.06
-Nodes (46): BranchRef, Default, Duration, Error, HashSet, MergeMethod, Path, ProgressSink (+38 more)
+Cohesion: 0.07
+Nodes (35): BranchRef, AgentSupervisorHandle, Arc, CancellationToken, EditMutexRegistry, HashSet, IssueWriteBack, OneShotLlm (+27 more)
 
 ### Community 64 - "Community 64"
 Cohesion: 0.11
@@ -5820,20 +5819,20 @@ Cohesion: 0.12
 Nodes (25): Arc, Debug, Display, Drop, Duration, Formatter, HashMap, Mutex (+17 more)
 
 ### Community 67 - "Community 67"
-Cohesion: 0.11
-Nodes (17): Arc, Formatter, Mutex, Path, PathBuf, Result, Self, SqliteConnection (+9 more)
+Cohesion: 0.16
+Nodes (13): Arc, Mutex, Path, SqliteConnection, SqlitePool, DerefMut, Single-writer Queue + WAL, MutexGuard (+5 more)
 
 ### Community 68 - "Community 68"
 Cohesion: 0.18
 Nodes (31): claude_json_parses_canonical_shape(), ClaudeMcpFile, codex_toml_parses_mcp_servers_table(), CodexConfigFile, entries_to_servers(), entries_to_servers_skips_missing_command(), list_mcp_servers(), malformed_json_returns_empty_not_panic() (+23 more)
 
 ### Community 69 - "Community 69"
-Cohesion: 0.13
-Nodes (34): ArchiveWorkareaRequest, DiffPayload, Request, Response, Result, RevertReport, Self, Status (+26 more)
+Cohesion: 0.16
+Nodes (27): ArchiveWorkareaRequest, Request, Response, Result, Self, Status, Workarea, WorkareaManager (+19 more)
 
 ### Community 70 - "Community 70"
-Cohesion: 0.07
-Nodes (32): DiffHunk, DiffKind, MergeProgress, Path, ProtoPullRequest, PullRequest, String, Timestamp (+24 more)
+Cohesion: 0.05
+Nodes (41): DiffHunk, DiffKind, DiffPayload, MergeProgress, Path, ProtoPullRequest, PullRequest, RevertReport (+33 more)
 
 ### Community 71 - "Community 71"
 Cohesion: 0.13
@@ -5853,15 +5852,15 @@ Nodes (29): AgentSupervisorHandle, Arc, CancellationToken, Default, Option, Pers
 
 ### Community 75 - "Community 75"
 Cohesion: 0.01
-Nodes (214): false_type, is_function<R(&&)()>, is_function<R(&&)(Arg1)>, is_function<R(&&)(Arg1, Arg2)>, is_function<R(&&)(Arg1, Arg2, Arg3)>, is_function<R(&&)(Arg1, Arg2, Arg3, Arg4)>, is_function<R(&&)(Arg1, Arg2, Arg3, Arg4, Arg5)>, is_rvalue_reference<R(&&)()> (+206 more)
+Nodes (221): false_type, is_function<R(&&)()>, is_function<R(&&)(Arg1)>, is_function<R(&&)(Arg1, Arg2)>, is_function<R(&&)(Arg1, Arg2, Arg3)>, is_function<R(&&)(Arg1, Arg2, Arg3, Arg4)>, is_function<R(&&)(Arg1, Arg2, Arg3, Arg4, Arg5)>, is_rvalue_reference<R(&&)()> (+213 more)
 
 ### Community 76 - "Community 76"
-Cohesion: 0.04
-Nodes (50): IrohDuplex, Vec, SignedDeviceCert, Vec, Arc, CancellationToken, Channel, ClientKind (+42 more)
+Cohesion: 0.06
+Nodes (34): Arc, CancellationToken, Channel, ClientKind, Connection, ConnectionPath, D, DeviceId (+26 more)
 
 ### Community 77 - "Community 77"
-Cohesion: 0.11
-Nodes (17): ArchiveOpts, AgentEvent, DiffPayload, IssueRef, Option, Repository, Result, Workarea (+9 more)
+Cohesion: 0.08
+Nodes (29): ArchiveOpts, AgentEvent, DiffPayload, IssueRef, Option, PrComposeContext, ProviderMergeReport, ProviderRevertReport (+21 more)
 
 ### Community 78 - "Community 78"
 Cohesion: 0.15
@@ -5885,7 +5884,7 @@ Nodes (27): BackupArgs, BackupError, civil_from_unix(), ConcertoPaths, export_au
 
 ### Community 83 - "Community 83"
 Cohesion: 0.08
-Nodes (32): Arc, CheckRun, Error, HashMap, Issue, Mutex, NowSecs, Option (+24 more)
+Nodes (31): Arc, CheckRun, Error, HashMap, Issue, Mutex, NowSecs, Option (+23 more)
 
 ### Community 84 - "Community 84"
 Cohesion: 0.10
@@ -5900,8 +5899,8 @@ Cohesion: 0.01
 Nodes (192): is_mem_fun_pointer_impl, is_mem_fun_pointer_impl<R(T::*)()>, is_mem_fun_pointer_impl<R (T::*)(BOOST_PP_ENUM_PARAMS(BOOST_PP_COUNTER,T))>, is_mem_fun_pointer_impl<R (T::*)(BOOST_PP_ENUM_PARAMS(BOOST_PP_COUNTER,T)) const>, is_mem_fun_pointer_impl<R(T::*)(BOOST_PP_ENUM_PARAMS(BOOST_PP_COUNTER, T)) const noexcept>, is_mem_fun_pointer_impl<R(T::*)(BOOST_PP_ENUM_PARAMS(BOOST_PP_COUNTER, T)) const volatile noexcept>, is_mem_fun_pointer_impl<R(T::*)(BOOST_PP_ENUM_PARAMS(BOOST_PP_COUNTER, T))noexcept>, is_mem_fun_pointer_impl<R (T::*)(BOOST_PP_ENUM_PARAMS(BOOST_PP_COUNTER,T)) volatile> (+184 more)
 
 ### Community 87 - "Community 87"
-Cohesion: 0.08
-Nodes (29): DiffHunk, DiffKind, DiffPayload, FileDiff, getWorkareaRepoDiff(), CodePrRegionProps, CodePrSubTab, DiffViewer() (+21 more)
+Cohesion: 0.10
+Nodes (21): DiffHunk, DiffKind, DiffPayload, FileDiff, getWorkareaRepoDiff(), CodePrRegionProps, CodePrSubTab, DiffViewer() (+13 more)
 
 ### Community 88 - "Community 88"
 Cohesion: 0.15
@@ -5940,24 +5939,24 @@ Cohesion: 0.17
 Nodes (15): PathBuf, TempDir, Persistence, TempDir, WorkareaId, WorkspaceId, SqliteConnectOptions, fresh_db_boots_and_migrates() (+7 more)
 
 ### Community 97 - "Community 97"
-Cohesion: 0.10
-Nodes (29): run(), run(), Request, Response, Result, SchedulerHandle, Self, Status (+21 more)
+Cohesion: 0.13
+Nodes (24): run(), Request, Response, Result, SchedulerHandle, Self, Status, Timestamp (+16 more)
 
 ### Community 98 - "Community 98"
 Cohesion: 0.11
 Nodes (37): Arc, DeviceCertIssuer, DeviceContext, Option, PairingRequest, Persistence, Request, Result (+29 more)
 
 ### Community 99 - "Community 99"
-Cohesion: 0.11
-Nodes (12): AuthObserverInner, HashMap, Instant, ActiveSession, AuthObserver, ClientKind, ConnectionPath, DeviceId (+4 more)
+Cohesion: 0.06
+Nodes (30): iterator_range, base_type, check_find_result(), find_format_store, m_FormatResult, FindResultT, format_result_type, formatter_type (+22 more)
 
 ### Community 100 - "Community 100"
 Cohesion: 0.10
 Nodes (18): Arc, IssueProvider, Option, Persistence, Result, SecretValue, TempDir, WriteBackTokens (+10 more)
 
 ### Community 101 - "Community 101"
-Cohesion: 0.14
-Nodes (31): adopt_orphans(), cold_path_one(), concerto_persist::Session, FinalInfo, find_cold_candidates(), find_session_by_socket(), _hint_arc(), mark_crashed() (+23 more)
+Cohesion: 0.12
+Nodes (33): adopt_orphans(), cold_path_one(), concerto_persist::Session, FinalInfo, find_cold_candidates(), find_session_by_socket(), _hint_arc(), mark_crashed() (+25 more)
 
 ### Community 102 - "Community 102"
 Cohesion: 0.11
@@ -5981,11 +5980,11 @@ Nodes (27): Error, Option, RepositoryId, Result, SqliteConnection, SqlitePool, S
 
 ### Community 107 - "Community 107"
 Cohesion: 0.14
-Nodes (10): Option, RelayConfig, Result, Self, SocketAddr, String, WebhookRouteServer, WssBridgeServer (+2 more)
+Nodes (11): Option, RelayConfig, Result, Self, SocketAddr, String, WebhookRouteServer, WssBridgeServer (+3 more)
 
 ### Community 108 - "Community 108"
-Cohesion: 0.18
-Nodes (12): Concerto Architecture Overview, Local-First Orchestration Platform, Locked Architectural Decisions, MIT Licensing Posture, LLM-ranked Mode (pluggable provider), Local Frequency-and-Recency Learning, SuggestionRuleSource trait (extension seam), concerto-maestro-mcp (in-process tools) (+4 more)
+Cohesion: 0.13
+Nodes (16): Concerto Architecture Overview, Local-First Orchestration Platform, Locked Architectural Decisions, MIT Licensing Posture, Git-URL Marketplace Format, SkillRegistrySource trait (extension seam), Skill Visibility Overrides, LLM-ranked Mode (pluggable provider) (+8 more)
 
 ### Community 109 - "Community 109"
 Cohesion: 0.14
@@ -5997,11 +5996,11 @@ Nodes (24): DiffHunk, DiffKind, Option, Path, PathBuf, Result, String, Vec (+16 
 
 ### Community 111 - "Community 111"
 Cohesion: 0.01
-Nodes (152): boost::integral_constant<bool, ::boost::type_traits::is_mem_fun_pointer_impl<typename remove_cv<T>::type>::value>, integral_constant, is_pod, not_satisfied, wrap_constraints, is_integral, is_signed, make_unsigned (+144 more)
+Nodes (160): boost::integral_constant<bool, ::boost::type_traits::is_mem_fun_pointer_impl<typename remove_cv<T>::type>::value>, integral_constant, is_pod, not_satisfied, wrap_constraints, is_integral, is_signed, make_unsigned (+152 more)
 
 ### Community 112 - "Community 112"
 Cohesion: 0.01
-Nodes (178): add_const_reference, add_const_reference<T&>, aligned_next, aligned_next<Len, Align, max_align_t, false>, aligned_storage_impl, aligned_struct, aligned_struct<1>, data (+170 more)
+Nodes (180): add_const_reference, add_const_reference<T&>, aligned_next, aligned_next<Len, Align, max_align_t, false>, aligned_storage_impl, aligned_struct, aligned_struct<1>, data (+172 more)
 
 ### Community 113 - "Community 113"
 Cohesion: 0.08
@@ -6028,8 +6027,8 @@ Cohesion: 0.17
 Nodes (22): CancellationToken, Option, Path, RuntimeConfig, String, Embedded-Core Mode, EmbeddedHandle (CancellationToken teardown), Launch Modes (EmbeddedReal/Scratch/External) (+14 more)
 
 ### Community 119 - "Community 119"
-Cohesion: 0.08
-Nodes (33): ApiDispatcher, Arc, Box, CoreClient, CoreClientError, Endpoint, EndpointAddr, Future (+25 more)
+Cohesion: 0.05
+Nodes (49): ApiDispatcher, Arc, Box, CoreClient, CoreClientError, Endpoint, EndpointAddr, Future (+41 more)
 
 ### Community 120 - "Community 120"
 Cohesion: 0.19
@@ -6061,7 +6060,7 @@ Nodes (16): AgentKind, Decision, Option, ParseEvent, ParserPack, Regex, Self, St
 
 ### Community 127 - "Community 127"
 Cohesion: 0.01
-Nodes (176): if_c, add_const_if_c, add_const_if_c, add_const_reference, add_const_reference<T&>, aligned_next, aligned_next<Len, Align, max_align_t, false>, aligned_storage_impl (+168 more)
+Nodes (179): add_const_reference, add_const_reference<T&>, aligned_next, aligned_next<Len, Align, max_align_t, false>, aligned_storage_impl, aligned_struct, aligned_struct<1>, data (+171 more)
 
 ### Community 128 - "Community 128"
 Cohesion: 0.21
@@ -6069,7 +6068,7 @@ Nodes (19): Option, RepositoryId, String, WorkareaId, assemble_appends_footer_an
 
 ### Community 129 - "Community 129"
 Cohesion: 0.02
-Nodes (105): apply<Set,typename Pos::type>, O1_size_impl, set0, apply, AUX778076_OP_IMPL_NAME, AUX778076_OP_IMPL_NAME<integral_c_tag,na>, AUX778076_OP_IMPL_NAME<na,integral_c_tag>, AUX778076_OP_IMPL_NAME<na,na> (+97 more)
+Nodes (62): apply<Set,typename Pos::type>, set0, apply, clear_impl< aux::set_tag >, apply, erase_impl< aux::set_tag >, apply, has_key_impl< aux::set_tag > (+54 more)
 
 ### Community 130 - "Community 130"
 Cohesion: 0.18
@@ -6116,12 +6115,12 @@ Cohesion: 0.22
 Nodes (19): DeviceCert, IdentityError, KeyPair, PublicKey, Result, SignedDeviceCert, Vec, Signed Device Certificate (CBOR) (+11 more)
 
 ### Community 141 - "Community 141"
-Cohesion: 0.10
-Nodes (33): CancellationToken, Endpoint, From, IpAddr, Mutex, NoiseSession, Option, Receiver (+25 more)
+Cohesion: 0.04
+Nodes (66): AuthObserverInner, Arc, Box, CancellationToken, Connection, D, Endpoint, EndpointId (+58 more)
 
 ### Community 142 - "Community 142"
-Cohesion: 0.11
-Nodes (22): Client, Issue, Option, RefreshToken, Result, SecretValue, Self, String (+14 more)
+Cohesion: 0.15
+Nodes (14): Issue, Option, String, Value, Vec, JiraFields, JiraStatus, flatten_adf() (+6 more)
 
 ### Community 143 - "Community 143"
 Cohesion: 0.13
@@ -6152,16 +6151,16 @@ Cohesion: 0.28
 Nodes (17): Channel, PathBuf, RepositoriesClient, Result, RuntimeClient, SessionsClient, StreamsClient, WorkareasClient (+9 more)
 
 ### Community 150 - "Community 150"
-Cohesion: 0.14
-Nodes (16): IngestOutcome, Option, Send, String, Sync, Vec, Webhook Receiver + HMAC Verification, decode_hex() (+8 more)
+Cohesion: 0.17
+Nodes (13): Option, Send, String, Sync, Vec, decode_hex(), IngestOutcome, parse_event() (+5 more)
 
 ### Community 151 - "Community 151"
 Cohesion: 0.10
 Nodes (19): compilerOptions, allowImportingTsExtensions, allowSyntheticDefaultImports, esModuleInterop, isolatedModules, jsx, lib, module (+11 more)
 
 ### Community 152 - "Community 152"
-Cohesion: 0.02
-Nodes (128): and_impl<
+Cohesion: 0.01
+Nodes (185): and_impl<
           BOOST_MPL_AUX_NESTED_TYPE_WKND(T1)::value
         , T2, T3, T4, T5
         >, and_<
@@ -6172,22 +6171,22 @@ Nodes (128): and_impl<
     mpl::not_<is_transparent<F,Arg1,Arg2> >,
     is_convertible<const Arg2,Arg1>,
     is_transparent<F,Arg1,Arg1>
-  >, false_, or_impl<
+  >, false_, is_le, or_impl<
           BOOST_MPL_AUX_NESTED_TYPE_WKND(T1)::value
         , T2, T3, T4, T5
-        >, apply, if_na, if_na_impl (+120 more)
+        >, is_lambda_expression, lambda (+177 more)
 
 ### Community 153 - "Community 153"
-Cohesion: 0.14
-Nodes (23): allowed_passes_through(), classify_policy_for_path(), classify_policy_for_path_is_publicly_callable(), denied_overrides_resolver(), outside_returns_outside(), passthrough_when_no_path_extracted(), policy_override(), PolicyVerdict (+15 more)
+Cohesion: 0.15
+Nodes (22): allowed_passes_through(), classify_policy_for_path(), classify_policy_for_path_is_publicly_callable(), denied_overrides_resolver(), outside_returns_outside(), passthrough_when_no_path_extracted(), policy_override(), PolicyVerdict (+14 more)
 
 ### Community 154 - "Community 154"
 Cohesion: 0.20
 Nodes (17): cold_status(), ensure_cold(), fixture_path(), GateMeasurement, have_sparse_checkout(), index_is_sparse(), measure_gate(), pct() (+9 more)
 
 ### Community 155 - "Community 155"
-Cohesion: 0.14
-Nodes (18): getServerCapabilities(), isRemoteTransport(), ServerCapabilities, TransportKind, StatusBar(), CoreClient trait (UDS/Iroh), CoreConnectionState, useCoreConnection() (+10 more)
+Cohesion: 0.18
+Nodes (14): getServerCapabilities(), StatusBar(), CoreConnectionState, useCoreConnection(), useTheme(), useThemeController(), UseThemeResult, loadPreference() (+6 more)
 
 ### Community 156 - "Community 156"
 Cohesion: 0.20
@@ -6198,8 +6197,8 @@ Cohesion: 0.16
 Nodes (15): Chip, Request, Response, Result, Self, Status, SuggestionEngineHandle, GetSuggestionsRequest (+7 more)
 
 ### Community 158 - "Community 158"
-Cohesion: 0.29
-Nodes (18): Map, Option, Path, PathBuf, Result, String, Value, read() (+10 more)
+Cohesion: 0.08
+Nodes (20): SessionComposer(), SessionComposerProps, AutoUpdateToast(), FirstRunClaudeToast(), AutoUpdateState, useAutoUpdate(), react, queryClient (+12 more)
 
 ### Community 159 - "Community 159"
 Cohesion: 0.18
@@ -6226,8 +6225,12 @@ Cohesion: 0.23
 Nodes (18): Option, Repository, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow, String (+10 more)
 
 ### Community 165 - "Community 165"
-Cohesion: 0.20
-Nodes (5): EndpointId, Result, Url, Split-host Deployment Topology, TransportHandle<D>
+Cohesion: 0.08
+Nodes (20): ClassTypeTransform, components, components_bcc, components_bcc<typename remove_cv<T>::type,T,
+            ClassTypeTransform>(), components_impl, vector<
+          na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >, apply, clear_impl< aux::vector_tag > (+12 more)
 
 ### Community 166 - "Community 166"
 Cohesion: 0.24
@@ -6410,24 +6413,24 @@ Cohesion: 0.03
 Nodes (140): addAnimatedEventToView(), addListener(), addMenuItem(), addNetworkingHandler(), addWebSocketHandler(), alertWithArgs(), animatedShouldSignalBatch(), announceForAccessibility() (+132 more)
 
 ### Community 212 - "Community 212"
-Cohesion: 0.11
-Nodes (19): Actor, ActorContext, Arc, Config, Option, PathBuf, Persistence, Result (+11 more)
+Cohesion: 0.27
+Nodes (9): Actor, Arc, PathBuf, Persistence, Self, SkillsRegistryHandle, SkillsRegistryActor, SkillsRegistryConfig (+1 more)
 
 ### Community 213 - "Community 213"
 Cohesion: 0.03
 Nodes (140): jsi, addAnimatedEventToView(), addListener(), addMenuItem(), addNetworkingHandler(), addWebSocketHandler(), alertWithArgs(), animatedShouldSignalBatch() (+132 more)
 
 ### Community 214 - "Community 214"
-Cohesion: 0.18
-Nodes (8): Decision, PermissionMode, Vec, allow_yolo_false_blocks_yolo(), full_matrix_4_modes_x_3_classes(), managed_cap_auto_blocks_yolo(), matrix(), MatrixCase
+Cohesion: 0.16
+Nodes (9): Decision, PermissionMode, Vec, allow_yolo_false_blocks_yolo(), deny_list_still_applies_in_yolo(), full_matrix_4_modes_x_3_classes(), managed_cap_auto_blocks_yolo(), matrix() (+1 more)
 
 ### Community 215 - "Community 215"
 Cohesion: 0.24
 Nodes (11): DeviceCert, known_answer_cert_bytes_are_frozen(), known_answer_signature_is_frozen(), non_canonical_trailing_garbage_fails_even_with_valid_sig(), print_known_answer_vector(), public_key_from_cert_core_pubkey_is_usable(), sign_then_verify_happy_path(), single_bit_tamper_in_body_fails() (+3 more)
 
 ### Community 216 - "Community 216"
-Cohesion: 0.29
-Nodes (10): Arc, CancellationToken, Mutex, RelayState, IrohRelayMetrics, IrohRelayServer, RelayMetrics, RelayInner (+2 more)
+Cohesion: 0.33
+Nodes (9): Arc, CancellationToken, Mutex, RelayState, IrohRelayMetrics, IrohRelayServer, RelayMetrics, RelayInner (+1 more)
 
 ### Community 217 - "Community 217"
 Cohesion: 0.03
@@ -6443,7 +6446,7 @@ Nodes (92): a, allocator_type, AllocatorOrContainer, args, BOOST_CONTAINER_ATTRI
 
 ### Community 220 - "Community 220"
 Cohesion: 0.14
-Nodes (16): Arc, Box, Connection, D, Fn, NoiseStatic, OnceLock, Self (+8 more)
+Nodes (25): E, IdentityError, Instant, NoiseSession, NoiseStatic, Receiver, Result, Vec (+17 more)
 
 ### Community 221 - "Community 221"
 Cohesion: 0.48
@@ -6562,15 +6565,29 @@ Cohesion: 0.24
 Nodes (5): ChannelTag, Result, Logical Channel Tags (0x01-0x04), ChannelTag, tag_from_byte()
 
 ### Community 250 - "Community 250"
-Cohesion: 0.02
-Nodes (112): ClassTypeTransform, components, components_bcc, components_bcc<typename remove_cv<T>::type,T,
-            ClassTypeTransform>(), components_impl, deque, deque<
+Cohesion: 0.03
+Nodes (101): deque, deque<
           na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
         , na, na, na
         >, deque<
           T0, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
         , na, na, na
-        > (+104 more)
+        >, deque<
+          T0, T1, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >, deque<
+          T0, T1, T2, na, na, na, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >, deque<
+          T0, T1, T2, T3, na, na, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >, deque<
+          T0, T1, T2, T3, T4, na, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >, deque<
+          T0, T1, T2, T3, T4, T5, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        > (+93 more)
 
 ### Community 251 - "Community 251"
 Cohesion: 0.18
@@ -6602,7 +6619,7 @@ Nodes (9): CoreUnderTest, Path, String, TempDir, get_workarea_repo_diff_returns_
 
 ### Community 258 - "Community 258"
 Cohesion: 0.02
-Nodes (98): disable_if_c, disable_if_and, disable_if_or, BOOST_MOVE_FORCEINLINE, add_const, add_const_lvalue_reference, add_const<T&>, add_lvalue_reference (+90 more)
+Nodes (99): add_rvalue_reference_impl<T>, disable_if_c, add_rvalue_reference, disable_if_and, disable_if_or, BOOST_MOVE_FORCEINLINE, add_const, add_const_lvalue_reference (+91 more)
 
 ### Community 259 - "Community 259"
 Cohesion: 0.02
@@ -6650,7 +6667,7 @@ Nodes (4): StdoutSubscriber, AuditEvent, AuditLogSubscriber, Self
 
 ### Community 269 - "Community 269"
 Cohesion: 0.02
-Nodes (96): add_rvalue_reference_impl<T>, BOOST_MOVE_FORCEINLINE, add_const, add_const_lvalue_reference, add_const<T&>, add_lvalue_reference, add_lvalue_reference<const void>, add_lvalue_reference<const volatile void> (+88 more)
+Nodes (102): disable_if, disable_if_memtransfer_copy_assignable, disable_if_memtransfer_copy_constructible, disable_if_single_value_proxy, BOOST_MOVE_FORCEINLINE, add_const, add_const_lvalue_reference, add_const<T&> (+94 more)
 
 ### Community 270 - "Community 270"
 Cohesion: 0.50
@@ -6666,7 +6683,7 @@ Nodes (8): Persistence, RepositoryId, TempDir, WorkareaId, fresh_db(), get_worka
 
 ### Community 273 - "Community 273"
 Cohesion: 0.02
-Nodes (56): and_, iterator_difference, not_, range_difference<BOOST_DEDUCED_TYPENAME remove_reference<T>::type>, apply, contains_impl, apply, find_if_pred (+48 more)
+Nodes (62): and_, iterator_difference, not_, range_difference<BOOST_DEDUCED_TYPENAME remove_reference<T>::type>, enable_type, is_convertible<use_default,To>, iterator_adaptor_base, type (+54 more)
 
 ### Community 274 - "Community 274"
 Cohesion: 0.31
@@ -6693,8 +6710,8 @@ Cohesion: 0.32
 Nodes (6): MdnsBrowser, Option, DiscoveredCore, discover_until(), opt_out_suppresses_publication(), publish_and_browse_round_trip_exact_txt_schema()
 
 ### Community 280 - "Community 280"
-Cohesion: 0.02
-Nodes (70): long_, long_<N>, advance, advance_c, advance_impl, apply, at_c, apply (+62 more)
+Cohesion: 0.03
+Nodes (55): long_, long_<N>, at_c, apply, begin_impl, begin_type, end_impl, end_type (+47 more)
 
 ### Community 281 - "Community 281"
 Cohesion: 0.52
@@ -6714,7 +6731,7 @@ Nodes (49): facebook(), facebook(), facebook(), facebook(), DisplayType, faceboo
 
 ### Community 285 - "Community 285"
 Cohesion: 0.02
-Nodes (83): and_<
+Nodes (91): and_<
                     mpl::not_<
                         is_convertible<
                             Source,
@@ -6725,28 +6742,39 @@ Nodes (83): and_<
                 >, bool_<
             is_non_proxy_reference_impl<Reference, Value>::value
         >, integral_constant<bool, false>, is_convertible, is_convertible<T, typename equivalent_function_pointer<T>::type
->, is_default_constructible, foo, p (+75 more)
+>, foo, p, lvalue_deref_helper (+83 more)
 
 ### Community 286 - "Community 286"
 Cohesion: 0.06
 Nodes (90): Archive, b, BOOST_CATCH_END, BOOST_DEDUCED_TYPENAME, BOOST_MULTI_INDEX_FUNCTION_PARAM_PACK, BOOST_RV_REF, both_unbounded_tag, CompatibleCompare (+82 more)
 
 ### Community 287 - "Community 287"
-Cohesion: 0.02
-Nodes (84): is_le, is_lambda_expression, lambda, lambda< arg<N>,Tag AUX778076_ARITY_PARAM(int_<-1>) >, lambda<
-          bind<F,AUX778076_BIND_PARAMS(T)>
+Cohesion: 0.07
+Nodes (27): lambda, lambda< arg<N>,Tag, int_< -1 > >, lambda<
+          bind0<F>
         , Tag
-        AUX778076_ARITY_PARAM(int_<BOOST_PP_INC(BOOST_MPL_LIMIT_METAFUNCTION_ARITY)>)
+        , int_<1>
         >, lambda<
-          BOOST_PP_CAT(bind,i_)<F AUX778076_BIND_N_PARAMS(i_, T)>, lambda< 
-          F<AUX778076_LAMBDA_PARAMS(i_, T)>
+          bind1< F,T1 >
         , Tag
-        AUX778076_ARITY_PARAM(int_<i_>)
+        , int_<2>
         >, lambda<
-          lambda<F,Tag1,Arity>
-        , Tag2
+          bind2< F,T1,T2 >
+        , Tag
         , int_<3>
-        > (+76 more)
+        >, lambda<
+          bind3< F,T1,T2,T3 >
+        , Tag
+        , int_<4>
+        >, lambda<
+          bind4< F,T1,T2,T3,T4 >
+        , Tag
+        , int_<5>
+        >, lambda<
+          bind5< F,T1,T2,T3,T4,T5 >
+        , Tag
+        , int_<6>
+        > (+19 more)
 
 ### Community 288 - "Community 288"
 Cohesion: 0.52
@@ -6813,15 +6841,15 @@ Cohesion: 0.40
 Nodes (4): Error, From, Self, SecretsError
 
 ### Community 304 - "Community 304"
-Cohesion: 0.01
-Nodes (127): apply, BOOST_TESTED_AT, Deref, DerefMut, __IBMCPP__, is_same, iter_fold_if_impl<
+Cohesion: 0.02
+Nodes (110): apply, BOOST_TESTED_AT, Deref, __IBMCPP__, is_same, iter_fold_if_impl<
           first_
         , State
         , ForwardOp
         , protect< aux::iter_fold_if_pred< ForwardPredicate,last_ > >
         , BackwardOp
         , backward_pred_
-        >, apply (+119 more)
+        >, class_transform, class_transform< T, add_pointer<_> > (+102 more)
 
 ### Community 305 - "Community 305"
 Cohesion: 0.33
@@ -6877,7 +6905,7 @@ Nodes (5): Desktop App, Tray Inactive Icon, Inactive State, Menu Bar Tray Icon, 
 
 ### Community 321 - "Community 321"
 Cohesion: 0.03
-Nodes (79): detail::if_true<
+Nodes (73): detail::if_true<
           is_reference_to_function<T>::value
       >::template then<
           boost::false_type
@@ -6906,14 +6934,14 @@ Nodes (79): detail::if_true<
       >, integral_constant<bool,
           is_reference<T>::value &&
           !is_reference_to_const<T>::value
-      >, is_function, is_member_function_pointer, is_pointer_to_class (+71 more)
+      >, is_function, is_member_function_pointer, is_pointer_to_class (+65 more)
 
 ### Community 322 - "Community 322"
-Cohesion: 0.03
-Nodes (69): fold, fold<
+Cohesion: 0.06
+Nodes (39): fold, fold<
     BOOST_DEDUCED_TYPENAME Index::tag_list,
     MplSet,
-    duplicate_tag_marker>, iterator_range, reverse_fold, base_type, check_find_result(), find_format_store, m_FormatResult (+61 more)
+    duplicate_tag_marker>, reverse_fold, copy_impl, reverse_copy_impl, apply, remove_if_helper, remove_if_impl (+31 more)
 
 ### Community 323 - "Community 323"
 Cohesion: 0.06
@@ -6940,16 +6968,20 @@ Cohesion: 0.06
 Nodes (85): Align, BoxSizing, Dimension, Direction, Display, Edge, FlexDirection, FloatOptional (+77 more)
 
 ### Community 329 - "Community 329"
-Cohesion: 0.14
-Nodes (16): blake2b_256(), run(), Code, CoreUnderTest, String, create_get_list_archive_workspace(), duplicate_repo_rejected(), multi_repo_create_persists_positions() (+8 more)
+Cohesion: 0.26
+Nodes (9): CoreUnderTest, String, create_get_list_archive_workspace(), duplicate_repo_rejected(), multi_repo_create_persists_positions(), register_repo(), slug_collision_auto_suffix(), spec() (+1 more)
 
 ### Community 331 - "Community 331"
 Cohesion: 0.06
 Nodes (85): Align, BoxSizing, Dimension, Direction, Display, Edge, FlexDirection, FloatOptional (+77 more)
 
+### Community 332 - "Community 332"
+Cohesion: 0.13
+Nodes (19): Default, Duration, Error, MergeMethod, ProgressSink, String, Per-workarea Implicit PR Set, Three-layer Settings Precedence (+11 more)
+
 ### Community 371 - "Community 371"
-Cohesion: 0.22
-Nodes (17): EndpointId, RecvStream, SendStream, SocketAddr, String, TcpListener, TcpStream, TlsAcceptor (+9 more)
+Cohesion: 0.15
+Nodes (21): AgentEvent, Chip, Event, Option, Timestamp, WorkareaEvent, map_agent_event(), map_pr_set_event() (+13 more)
 
 ### Community 372 - "Community 372"
 Cohesion: 0.06
@@ -6968,8 +7000,8 @@ Cohesion: 0.06
 Nodes (85): Align, BoxSizing, Dimension, Direction, Display, Edge, FlexDirection, FloatOptional (+77 more)
 
 ### Community 376 - "Community 376"
-Cohesion: 0.02
-Nodes (57): Base, facebook(), facebook(), facebook(), facebook(), namespace, facebook(), namespace (+49 more)
+Cohesion: 0.01
+Nodes (110): Base, facebook(), facebook(), facebook(), facebook(), facebook(), facebook(), facebook() (+102 more)
 
 ### Community 377 - "Community 377"
 Cohesion: 0.53
@@ -6984,8 +7016,8 @@ Cohesion: 0.07
 Nodes (83): Allocator, B, BOOST_CONTAINER_FORCEINLINE, are_elements_contiguous, are_elements_contiguous<boost::container::vec_iterator<Pointer, IsConst> >, value, are_elements_contiguous< ::boost::interprocess::offset_ptr<PointedType, DifferenceType, OffsetType, OffsetAlignment> >, value (+75 more)
 
 ### Community 380 - "Community 380"
-Cohesion: 0.07
-Nodes (38): AddRepoRequest, CloneRequest, run(), run(), run(), run(), create_workspace(), next_event() (+30 more)
+Cohesion: 0.04
+Nodes (49): run(), run(), run(), run(), run(), run(), run(), run() (+41 more)
 
 ### Community 381 - "Community 381"
 Cohesion: 0.47
@@ -6997,7 +7029,7 @@ Nodes (55): facebook(), ParagraphAttributes, namespace, facebook(), namespace, f
 
 ### Community 385 - "Community 385"
 Cohesion: 0.04
-Nodes (72): A, accept(), add_cref, add_cref< M T::*, 0 >, add_cref< M T::*, 1 >, add_cref< R (T::*) (), 1 >, add_cref< R (T::*) () const, 1 >, add_cref< R (T::*) () const noexcept, 1 > (+64 more)
+Nodes (69): A, accept(), add_cref, add_cref< M T::*, 0 >, add_cref< M T::*, 1 >, add_cref< R (T::*) (), 1 >, add_cref< R (T::*) () const, 1 >, add_cref< R (T::*) () const noexcept, 1 > (+61 more)
 
 ### Community 386 - "Community 386"
 Cohesion: 0.06
@@ -7041,16 +7073,14 @@ Nodes (41): facebook(), LayoutMetrics, facebook(), facebook(), namespace, facebo
 
 ### Community 396 - "Community 396"
 Cohesion: 0.04
-Nodes (57): eval_if, has_range_const_iterator_impl<
-            BOOST_DEDUCED_TYPENAME remove_reference<T>::type>, has_range_iterator_impl<
-            BOOST_DEDUCED_TYPENAME remove_reference<T>::type>, if_c<
+Nodes (42): eval_if, if_c<
             is_const<typename remove_reference<C>::type>::value,
             range_const_iterator<typename remove_const<typename remove_reference<C>::type>::type>,
             range_mutable_iterator<typename remove_reference<C>::type>
-        >::type, mpl::false_, mpl::true_, set_insert_impl<
+        >::type, set_insert_impl<
               Set
             , typename if_na<KeyOrNA,PosOrKey>::type
-            >, apply (+49 more)
+            >, apply, erase_key_impl< aux::set_tag >, apply, insert_impl< aux::set_tag >, set_insert_impl (+34 more)
 
 ### Community 397 - "Community 397"
 Cohesion: 0.05
@@ -7122,7 +7152,7 @@ Nodes (52): Allocator, BOOST_CONTAINER_CATCH_END, BOOST_CONTAINER_FORCEINLINE, B
 
 ### Community 414 - "Community 414"
 Cohesion: 0.04
-Nodes (64): add_lvalue_reference, add_reference, unvoid_ref, is_convertible_basic_impl_add_lvalue_reference, add_reference, unvoid_ref, lvalue_type, no_type (+56 more)
+Nodes (63): add_lvalue_reference, add_reference, unvoid_ref, is_convertible_basic_impl_add_lvalue_reference, add_reference, unvoid_ref, lvalue_type, no_type (+55 more)
 
 ### Community 415 - "Community 415"
 Cohesion: 0.08
@@ -7169,16 +7199,8 @@ Cohesion: 0.09
 Nodes (59): allocator_type, const_iterator, const_reference, assign(), at(), back(), begin(), buffer() (+51 more)
 
 ### Community 431 - "Community 431"
-Cohesion: 0.05
-Nodes (59): boost::is_same<Tag, null_tag>, compound_tag< detail::compound_tag<Tag1,Tag2>, 
-        detail::compound_tag<Tag3,Tag4> >, compound_tag<detail::compound_tag<Tag1,Tag2>,Tag3>, compound_tag<Tag1,Tag2>, integral_constant<bits_t,Value>, integral_constant<bool,
-        ::boost::function_types::detail::tag_ice
-          < ::boost::function_types::detail::bits<Tag>::value
-          , ::boost::function_types::detail::mask<Tag>::value
-          , ::boost::function_types::detail::bits<QueryTag>::value
-          , ::boost::function_types::detail::mask<QueryTag>::value
-          >::match
-      >, represents_impl<Tag, detail::retag_default_cc<QueryTag,Tag> >, represents_impl<Tag,  PropertyTag> (+51 more)
+Cohesion: 0.16
+Nodes (17): represents_impl<Tag,  PropertyTag>, bits, changed_tag, compound_tag, encode_bits_impl, extract, has_const_property_tag, has_cv_property_tag (+9 more)
 
 ### Community 432 - "Community 432"
 Cohesion: 0.08
@@ -7206,15 +7228,15 @@ Nodes (57): is_function_ptr_helper, is_function_ptr_helper<R(*)()>, is_function_
 
 ### Community 438 - "Community 438"
 Cohesion: 0.04
-Nodes (57): lvalue_type, no_type, any_conversion, checker, BOOST_TT_DECL, _m_check, is_convertible_basic_impl, is_convertible_basic_impl_add_lvalue_reference<From[]> (+49 more)
+Nodes (56): lvalue_type, no_type, any_conversion, checker, BOOST_TT_DECL, _m_check, is_convertible_basic_impl, is_convertible_basic_impl_add_lvalue_reference<From[]> (+48 more)
 
 ### Community 439 - "Community 439"
 Cohesion: 0.03
 Nodes (57): is_function_ptr_helper, is_function_ptr_helper<R(*)()>, is_function_ptr_helper<R (*)(BOOST_PP_ENUM_PARAMS(BOOST_PP_COUNTER,T))>, is_function_ptr_helper<R(*)(BOOST_PP_ENUM_PARAMS(BOOST_PP_COUNTER, T))noexcept>, is_function_ptr_helper<R(*)()noexcept>, is_function_ptr_helper<R(*)(T0)>, is_function_ptr_helper<R(*)(T0)noexcept>, is_function_ptr_helper<R(*)(T0, T1)> (+49 more)
 
 ### Community 440 - "Community 440"
-Cohesion: 0.03
-Nodes (57): no_cv_t, is_unsigned, is_unsigned< ::boost::long_long_type>, is_unsigned< ::boost::ulong_long_type>, is_unsigned<char>, is_unsigned<const ::boost::long_long_type>, is_unsigned<const ::boost::ulong_long_type>, is_unsigned<const char> (+49 more)
+Cohesion: 0.50
+Nodes (4): no_cv_t, is_unsigned_values, minus_one, zero
 
 ### Community 441 - "Community 441"
 Cohesion: 0.08
@@ -7325,8 +7347,8 @@ Cohesion: 0.04
 Nodes (45): authors, compiler_flags, dependencies, hermes-engine, RCTRequired, RCTTypeSafety, React-Core, React-Core-prebuilt (+37 more)
 
 ### Community 466 - "Community 466"
-Cohesion: 0.11
-Nodes (44): build_client_endpoint(), build_server_addr(), decode_pub(), decode_token(), files_round_trip(), random_32(), stream_opens(), Ascii (+36 more)
+Cohesion: 0.14
+Nodes (37): build_client_endpoint(), build_server_addr(), decode_pub(), decode_token(), files_round_trip(), random_32(), stream_opens(), CertInterceptorFactory (+29 more)
 
 ### Community 467 - "Community 467"
 Cohesion: 0.06
@@ -7343,8 +7365,8 @@ Cohesion: 0.05
 Nodes (22): cdp(), Option, Value, Option, Json, DestructiveMatch, is_destructive(), matches() (+14 more)
 
 ### Community 470 - "Community 470"
-Cohesion: 0.06
-Nodes (37): cpp0x_result_of<F(Args...)>, cpp0x_result_of<F(BOOST_RESULT_OF_ARGS)>, make_slist_base_hook, make_slist_member_hook, slist_base_hook, slist_member_hook, nested_type_wknd, conjunction (+29 more)
+Cohesion: 0.04
+Nodes (49): cpp0x_result_of<F(Args...)>, cpp0x_result_of<F(BOOST_RESULT_OF_ARGS)>, make_slist_base_hook, make_slist_member_hook, slist_base_hook, slist_member_hook, eval_if, eval_if_c (+41 more)
 
 ### Community 471 - "Community 471"
 Cohesion: 0.04
@@ -7407,11 +7429,11 @@ Cohesion: 0.05
 Nodes (41): 10. Phase targeting summary, 11. Architectural prototype spikes — committed for V0.1 week 1–2, 12.1 Index, 12. Document map, 13. Glossary, 1. Purpose of this document, 2. System at a glance, 3. System context (+33 more)
 
 ### Community 486 - "Community 486"
-Cohesion: 0.12
-Nodes (37): iterator_range_base<
+Cohesion: 0.11
+Nodes (38): iterator_range_base<
                     IteratorT,
                     BOOST_DEDUCED_TYPENAME iterator_range_detail::pure_iterator_traversal<IteratorT>::type
-                >, BOOST_DEDUCED_TYPENAME, ForwardRange, IntegerT, Iterator, Iterator1T, Iterator2T, IteratorT (+29 more)
+                >, BOOST_DEDUCED_TYPENAME, ForwardRange, IntegerT, Iterator, Iterator1T, Iterator2T, IteratorT (+30 more)
 
 ### Community 487 - "Community 487"
 Cohesion: 0.07
@@ -7459,7 +7481,7 @@ Nodes (40): 03 — Workspace, Workarea & Session Manager, 10. Testing strategy, 
 
 ### Community 498 - "Community 498"
 Cohesion: 0.05
-Nodes (38): element_impl<N, T, ::boost::is_const<T>::value>, access_traits, access_traits<T&>, apply, drop_front, drop_front<0>, element, element_impl (+30 more)
+Nodes (41): element_impl<N, T, ::boost::is_const<T>::value>, integral_constant<std::size_t, 1 + length<typename T::tail_type>::value>, access_traits, access_traits<T&>, apply, drop_front, drop_front<0>, element (+33 more)
 
 ### Community 499 - "Community 499"
 Cohesion: 0.05
@@ -7471,7 +7493,9 @@ Nodes (32): BOOST_CONSTEXPR, BOOST_FORCEINLINE, addressof(), addrof, addrof_addr
 
 ### Community 501 - "Community 501"
 Cohesion: 0.05
-Nodes (36): alignment_of_hack, c, t1, t2, empty_helper_t1, i, msvc_eti_base, msvc_eti_base_impl (+28 more)
+Nodes (39): apply_chooser< 
+          aux::apply_count_args< AUX778076_APPLY_PARAMS(T) >::value
+        >::template result_< F, AUX778076_APPLY_PARAMS(T) >::type, i_, alignment_of_hack, c, t1, t2, empty_helper_t1, i (+31 more)
 
 ### Community 502 - "Community 502"
 Cohesion: 0.08
@@ -7598,8 +7622,9 @@ Cohesion: 0.08
 Nodes (31): ActivityIndicatorViewSize, AndroidDrawerLayoutDrawerLockMode, AndroidDrawerLayoutDrawerPosition, AndroidDrawerLayoutKeyboardDismissMode, AndroidSwipeRefreshLayoutSize, Float, folly, ModalHostViewSupportedOrientationsMask (+23 more)
 
 ### Community 533 - "Community 533"
-Cohesion: 0.12
-Nodes (18): BOOST_CONTAINER_FORCEINLINE, default_init_construct_iterator, explicit, friend, m_num, std, emplace_iterator, difference_type (+10 more)
+Cohesion: 0.09
+Nodes (27): boost::container::iterator
+      <std::random_access_iterator_tag, T, std::ptrdiff_t, const T*, const T &>, BOOST_CONTAINER_FORCEINLINE, advance(), default_init_construct_iterator, explicit, friend, m_num, std (+19 more)
 
 ### Community 534 - "Community 534"
 Cohesion: 0.08
@@ -7736,8 +7761,8 @@ Cohesion: 0.15
 Nodes (35): explicit, blockingRead(), blockingReadWithTicket(), computeStride(), dequeue(), dequeueImpl(), dequeueWithTicketBase(), destroyContents() (+27 more)
 
 ### Community 552 - "Community 552"
-Cohesion: 0.09
-Nodes (28): accessibilityExtraExtraLarge(), accessibilityLarge(), allowExternalStorage(), anchor(), applicationIconBadgeNumber(), buttons(), cancelButtonIndex(), cancelButtonTintColor() (+20 more)
+Cohesion: 0.10
+Nodes (26): accessibilityExtraExtraLarge(), accessibilityLarge(), allowExternalStorage(), anchor(), applicationIconBadgeNumber(), buttons(), cancelButtonIndex(), cancelButtonTintColor() (+18 more)
 
 ### Community 553 - "Community 553"
 Cohesion: 0.06
@@ -7773,8 +7798,8 @@ Cohesion: 0.09
 Nodes (21): BOOST_CONSTEXPR, BOOST_RANDOM_DETAIL_INEQUALITY_OPERATOR, IntType, is, It, Iter, max, min (+13 more)
 
 ### Community 561 - "Community 561"
-Cohesion: 0.09
-Nodes (29): bidirectional_iterator_helper, forward_iterator_helper, random_access_iterator_helper, Base, Class, Derived, advance(), apply (+21 more)
+Cohesion: 0.10
+Nodes (25): bidirectional_iterator_helper, random_access_iterator_helper, Base, Class, Derived, advance(), apply, bidirectional_iter_adaptor_base (+17 more)
 
 ### Community 562 - "Community 562"
 Cohesion: 0.06
@@ -7805,8 +7830,8 @@ Cohesion: 0.15
 Nodes (34): RNSBottomTabsScreenIconType, RNSBottomTabsScreenOrientation, RNSBottomTabsScreenSpecialEffectsRepeatedTabSelectionStruct, RNSBottomTabsScreenSystemItem, RNSBottomTabsTabBarItemLabelVisibilityMode, RNSBottomTabsTabBarMinimizeBehavior, fromRawValue(), gestureResponseDistance() (+26 more)
 
 ### Community 569 - "Community 569"
-Cohesion: 0.10
-Nodes (26): accessibilityExtraExtraLarge(), accessibilityLarge(), allowExternalStorage(), anchor(), applicationIconBadgeNumber(), buttons(), cancelButtonIndex(), cancelButtonTintColor() (+18 more)
+Cohesion: 0.09
+Nodes (28): accessibilityExtraExtraLarge(), accessibilityLarge(), allowExternalStorage(), anchor(), applicationIconBadgeNumber(), buttons(), cancelButtonIndex(), cancelButtonTintColor() (+20 more)
 
 ### Community 570 - "Community 570"
 Cohesion: 0.10
@@ -7821,8 +7846,8 @@ Cohesion: 0.10
 Nodes (26): accessibilityExtraExtraLarge(), accessibilityLarge(), allowExternalStorage(), anchor(), applicationIconBadgeNumber(), buttons(), cancelButtonIndex(), cancelButtonTintColor() (+18 more)
 
 ### Community 573 - "Community 573"
-Cohesion: 0.10
-Nodes (26): accessibilityExtraExtraLarge(), accessibilityLarge(), allowExternalStorage(), anchor(), applicationIconBadgeNumber(), buttons(), cancelButtonIndex(), cancelButtonTintColor() (+18 more)
+Cohesion: 0.09
+Nodes (28): accessibilityExtraExtraLarge(), accessibilityLarge(), allowExternalStorage(), anchor(), applicationIconBadgeNumber(), buttons(), cancelButtonIndex(), cancelButtonTintColor() (+20 more)
 
 ### Community 574 - "Community 574"
 Cohesion: 0.10
@@ -7941,13 +7966,12 @@ Cohesion: 0.12
 Nodes (32): Chain, connect_uds(), resolve_server_addr(), seed_chain(), try_connect_uds(), Channel, Duration, Endpoint (+24 more)
 
 ### Community 603 - "Community 603"
-Cohesion: 0.12
-Nodes (17): boost::container::iterator
-      <std::random_access_iterator_tag, T, std::ptrdiff_t, const T*, const T &>, BOOST_CONTAINER_FORCEINLINE, advance(), default_init_construct_iterator, explicit, friend, m_num, std (+9 more)
+Cohesion: 0.08
+Nodes (26): BOOST_CONTAINER_FORCEINLINE, advance(), default_init_construct_iterator, explicit, friend, m_num, std, less() (+18 more)
 
 ### Community 604 - "Community 604"
-Cohesion: 0.06
-Nodes (31): 06 — Skills Registry, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 3.1 Discovery model: on-demand filesystem scan + cached index, 3.2 Slash commands as first-class skills (+23 more)
+Cohesion: 0.07
+Nodes (28): 06 — Skills Registry, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 3.1 Discovery model: on-demand filesystem scan + cached index, 3.2 Slash commands as first-class skills (+20 more)
 
 ### Community 605 - "Community 605"
 Cohesion: 0.06
@@ -7955,11 +7979,11 @@ Nodes (32): 10. Testing strategy, 11. Open questions / deferred, 12. Resolved de
 
 ### Community 606 - "Community 606"
 Cohesion: 0.07
-Nodes (25): integral_c, apply, AUX778076_OP_IMPL_NAME<integral_c_tag,integral_c_tag>, BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, shift_left, shift_left_impl, shift_left_impl< integral_c_tag,integral_c_tag > (+17 more)
+Nodes (24): integral_c, apply, AUX778076_OP_IMPL_NAME<integral_c_tag,integral_c_tag>, BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, shift_left, shift_left_impl, shift_left_impl< integral_c_tag,integral_c_tag > (+16 more)
 
 ### Community 607 - "Community 607"
 Cohesion: 0.06
-Nodes (32): `crates/proto/proto/concerto/v1/workareas.proto`, enum `DiffKind`, enum `FailureKind`, enum `RevertOutcome`, message `ArchiveWorkareaRequest`, message `CreateWorkareaRequest`, message `DiffHunk`, message `DiffPayload` (+24 more)
+Nodes (34): `crates/proto/proto/concerto/v1/workareas.proto`, enum `DiffKind`, enum `FailureKind`, enum `RevertOutcome`, message `ArchiveWorkareaRequest`, message `CreateWorkareaRequest`, message `DiffHunk`, message `DiffPayload` (+26 more)
 
 ### Community 608 - "Community 608"
 Cohesion: 0.06
@@ -8000,8 +8024,8 @@ Cohesion: 0.16
 Nodes (27): Error, Output, Path, PathBuf, Result, S, String, Vec (+19 more)
 
 ### Community 617 - "Community 617"
-Cohesion: 0.06
-Nodes (31): 01 — Core Daemon Runtime, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 3.1 Daemonization strategy: rely on OS integration, not double-fork, 3.2 Supervision tree shape: typed actor pattern over tokio tasks (+23 more)
+Cohesion: 0.08
+Nodes (24): 01 — Core Daemon Runtime, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 4.1 On-disk, 4.2 In-memory state (+16 more)
 
 ### Community 618 - "Community 618"
 Cohesion: 0.06
@@ -8114,8 +8138,8 @@ Nodes (29): apply, bind, bind0, bind1, bind2, bind3, bind3<
     > (+21 more)
 
 ### Community 644 - "Community 644"
-Cohesion: 0.07
-Nodes (27): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, equal_to, equal_to_impl, equal_to_impl< integral_c_tag,integral_c_tag >, equal_to_impl< na,na >, equal_to_impl< na,Tag >, equal_to_impl< Tag,na > (+19 more)
+Cohesion: 0.20
+Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, equal_to, equal_to_impl, equal_to_impl< integral_c_tag,integral_c_tag >, equal_to_impl< na,na >, equal_to_impl< na,Tag >, equal_to_impl< Tag,na > (+1 more)
 
 ### Community 645 - "Community 645"
 Cohesion: 0.15
@@ -8168,19 +8192,8 @@ Cohesion: 0.07
 Nodes (27): detail::function_traits_helper<typename boost::add_pointer<Function>::type>, function_traits, function_traits_helper, function_traits_helper<R (*)(T1)>, function_traits_helper<R (*)(T1, T2)>, function_traits_helper<R (*)(T1, T2, T3)>, function_traits_helper<R (*)(T1, T2, T3, T4)>, function_traits_helper<R (*)(T1, T2, T3, T4, T5)> (+19 more)
 
 ### Community 656 - "Community 656"
-Cohesion: 0.09
-Nodes (22): enable_if<
-          is_convertible<From, To>
-        , boost::iterators::detail::enable_type
-      >, enable_if<
-        mpl::or_<
-            is_same<From,To>
-          , is_convertible<From, To>
-        >
-      , boost::iterators::detail::enable_type
-    >, iterators::detail::iterator_adaptor_base<
-        Derived, Base, Value, Traversal, Reference, Difference
-      >::type, Base, C, D, distance_to(), enable_if_convertible (+14 more)
+Cohesion: 0.16
+Nodes (15): ClientKind, ConnectionPath, invalid_subject(), map_client_kind(), map_path(), map_transport_event(), map_transport_event_carries_the_frozen_oneof_arm(), parse_checks_subject_missing_repo_errors() (+7 more)
 
 ### Community 657 - "Community 657"
 Cohesion: 0.07
@@ -8255,8 +8268,9 @@ Cohesion: 0.11
 Nodes (17): BOOST_RANDOM_DETAIL_INEQUALITY_OPERATOR, Engine, is, lhs, os, param_type, operator()(), triangle_distribution (+9 more)
 
 ### Community 675 - "Community 675"
-Cohesion: 0.09
-Nodes (18): advance(), repeat_iterator, explicit, friend, iterator_from_iiterator, m_iit, m_num, m_ptr (+10 more)
+Cohesion: 0.13
+Nodes (11): boost::container::iterator
+      <std::random_access_iterator_tag, T, std::ptrdiff_t, T*, T&>, repeat_iterator, explicit, friend, iterator_from_iiterator, m_iit, m_num, m_ptr (+3 more)
 
 ### Community 676 - "Community 676"
 Cohesion: 0.08
@@ -8367,8 +8381,8 @@ Cohesion: 0.11
 Nodes (18): BOOST_RANDOM_DETAIL_INEQUALITY_OPERATOR, Engine, false_type, is, lhs, os, param_type, generate_uniform_real() (+10 more)
 
 ### Community 697 - "Community 697"
-Cohesion: 0.07
-Nodes (25): Integer< ::boost::long_long_type>, Integer< ::boost::ulong_long_type>, Integer<char>, Integer<int>, Integer<__int64>, Integer<long>, Integer<short>, Integer<signed char> (+17 more)
+Cohesion: 0.04
+Nodes (48): Assignable, BinaryFunction, BinaryPredicate, BOOST_CONCEPT_USAGE(), ignore_unused_variable_warning(), Integer< ::boost::long_long_type>, Integer< ::boost::ulong_long_type>, Integer<char> (+40 more)
 
 ### Community 698 - "Community 698"
 Cohesion: 0.16
@@ -8425,12 +8439,23 @@ Nodes (25): conjunction<
     >, is_iterator_impl< T >::type, is_iterator, is_iterator< const T >, is_iterator< const volatile T >, is_iterator_impl, is_iterator_impl< T* > (+17 more)
 
 ### Community 708 - "Community 708"
-Cohesion: 0.10
-Nodes (20): eval_if<
+Cohesion: 0.06
+Nodes (36): enable_if<
+          is_convertible<From, To>
+        , boost::iterators::detail::enable_type
+      >, enable_if<
+        mpl::or_<
+            is_same<From,To>
+          , is_convertible<From, To>
+        >
+      , boost::iterators::detail::enable_type
+    >, eval_if<
             is_same<T, use_default>
           , DefaultNullaryFn
           , mpl::identity<T>
-        >, ia_dflt_help, Base, C, D, distance_to(), enable_type, equal() (+12 more)
+        >, iterators::detail::iterator_adaptor_base<
+        Derived, Base, Value, Traversal, Reference, Difference
+      >::type, Base, C, D, distance_to() (+28 more)
 
 ### Community 709 - "Community 709"
 Cohesion: 0.07
@@ -8491,8 +8516,8 @@ Cohesion: 0.09
 Nodes (26): any_hook_base_value_traits, any_hook_base_value_traits<void, AnyToSomeHook_ProtoValueTraits>, any_or_concrete_value_traits, any_or_concrete_value_traits<AnyToSomeHook_ProtoValueTraits, true>, any_or_concrete_value_traits<SupposedValueTraits, false>, concrete_hook_base_value_traits, concrete_hook_base_value_traits<void, BaseHook>, get_base_value_traits (+18 more)
 
 ### Community 723 - "Community 723"
-Cohesion: 0.11
-Nodes (22): Base, Class, Derived, advance(), apply, bidirectional_iter_adaptor_base, decrement(), dereference() (+14 more)
+Cohesion: 0.10
+Nodes (26): forward_iterator_helper, forward_iter_adaptor_base, Base, Class, Derived, advance(), apply, bidirectional_iter_adaptor_base (+18 more)
 
 ### Community 724 - "Community 724"
 Cohesion: 0.15
@@ -8610,7 +8635,7 @@ Nodes (9): BOOST_INTRUSIVE_FORCEINLINE, const_node_ptr, circular_list_algorithms
 
 ### Community 744 - "Community 744"
 Cohesion: 0.11
-Nodes (24): BOOST_MOVE_FORCEINLINE, BOOST_NOEXCEPT(), deleter(), deleter_types, get_deleter(), get_element_type, get_element_type<T*>, value (+16 more)
+Nodes (25): BOOST_MOVE_DOC0PTR, BOOST_MOVE_FORCEINLINE, BOOST_RV_REF_BEG, D1, D2, BOOST_NOEXCEPT(), deleter(), deleter_types (+17 more)
 
 ### Community 745 - "Community 745"
 Cohesion: 0.11
@@ -8797,7 +8822,7 @@ Nodes (23): 14.10 Mobile considerations, 14.11.1 Returning from a meeting, 14.11
 
 ### Community 787 - "Community 787"
 Cohesion: 0.16
-Nodes (20): find_iterator_base<IteratorT>, iterator_facade, FinderT, m_bEof, m_End, m_Match, m_Next, RangeT (+12 more)
+Nodes (19): find_iterator_base<IteratorT>, FinderT, m_bEof, m_End, m_Match, m_Next, RangeT, return (+11 more)
 
 ### Community 788 - "Community 788"
 Cohesion: 0.12
@@ -8812,8 +8837,8 @@ Cohesion: 0.09
 Nodes (23): `crates/proto/proto/concerto/v1/vcs.proto`, enum `VcsCredentialProvider`, message `CheckRun`, message `CreatePrRequest`, message `Deployment`, message `FetchIssueByUrlRequest`, message `FetchIssueRequest`, message `GetChecksRequest` (+15 more)
 
 ### Community 790 - "Community 790"
-Cohesion: 0.10
-Nodes (17): is_base_and_derived, is_tag, tag, tag_marker, is_base_of, is_base_of<Base, Derived&>, is_base_of_imp, base_token (+9 more)
+Cohesion: 0.17
+Nodes (11): is_base_and_derived, is_tag, tag, tag_marker, base_token, is_noncopyable, is_tag, tag (+3 more)
 
 ### Community 791 - "Community 791"
 Cohesion: 0.09
@@ -8908,8 +8933,15 @@ Cohesion: 0.10
 Nodes (19): BytePtr, ChunkPtr, class, desiredCapacity, chunkAllocSize(), computeCapacity(), f14(), F14HashToken() (+11 more)
 
 ### Community 814 - "Community 814"
-Cohesion: 0.09
-Nodes (23): Assignable, BinaryFunction, BinaryPredicate, BOOST_CONCEPT_USAGE(), ignore_unused_variable_warning(), require_boolean_expr(), test(), Comparable (+15 more)
+Cohesion: 0.16
+Nodes (16): has_range_const_iterator_impl<
+            BOOST_DEDUCED_TYPENAME remove_reference<T>::type>, has_range_iterator_impl<
+            BOOST_DEDUCED_TYPENAME remove_reference<T>::type>, mpl::false_, mpl::true_, has_range_const_iterator, has_range_const_iterator_impl, has_range_const_iterator_impl<
+            T,
+            BOOST_DEDUCED_TYPENAME ::boost::enable_if<
+                has_type<boost::range_const_iterator<T> >
+            >::type
+        >, has_range_iterator (+8 more)
 
 ### Community 815 - "Community 815"
 Cohesion: 0.16
@@ -8948,8 +8980,8 @@ Cohesion: 0.09
 Nodes (22): 6.10 Agent modes — Plan, Fast, reasoning levels, personalities, 6.11 Multi-agent orchestration (Claude Code + Codex in one workspace), 6.12 Slash commands, 6.13 MCP (Model Context Protocol) support, 6.14 Deep links (`concerto://`), 6.15 Spotlight testing, 6.16 Big Terminal Mode, 6.17 Composers (workspace naming) (+14 more)
 
 ### Community 824 - "Community 824"
-Cohesion: 0.10
-Nodes (21): is_convertible<FromPointer, ThisPointer>, is_same<D, E>, deleter_types, get_element_type, get_element_type<T*>, value, is_noncopyable, value (+13 more)
+Cohesion: 0.50
+Nodes (4): unique_moveconvert_assignable, unique_moveconvert_assignable<T[], D, U[N], E>, t_is_array, value
 
 ### Community 825 - "Community 825"
 Cohesion: 0.09
@@ -8997,8 +9029,8 @@ Cohesion: 0.15
 Nodes (13): BOOST_RANDOM_DETAIL_INEQUALITY_OPERATOR, chi_squared_distribution, is, lhs, os, param_type, operator()(), student_t_distribution (+5 more)
 
 ### Community 835 - "Community 835"
-Cohesion: 0.14
-Nodes (10): abstract_value_type, difference_type, iterator_range_base, iterator_range_base<IteratorT, bidirectional_traversal_tag>, iterator_range_base<IteratorT, random_access_traversal_tag>, base_type, m_Begin, m_End (+2 more)
+Cohesion: 0.15
+Nodes (9): abstract_value_type, difference_type, iterator_range_base, iterator_range_base<IteratorT, bidirectional_traversal_tag>, iterator_range_base<IteratorT, random_access_traversal_tag>, base_type, m_Begin, m_End (+1 more)
 
 ### Community 836 - "Community 836"
 Cohesion: 0.12
@@ -9043,7 +9075,7 @@ Nodes (10): abstract_value_type, difference_type, iterator_range_base, iterator_
 
 ### Community 845 - "Community 845"
 Cohesion: 0.12
-Nodes (11): FMT_BEGIN_NAMESPACE, FMT_END_EXPORT, detail(), detail_exported(), dragonbox(), enums(), it(), iterator() (+3 more)
+Nodes (11): FMT_BEGIN_NAMESPACE, FMT_END_EXPORT, Char(), copy2(), detail(), detail_exported(), dragonbox(), enums() (+3 more)
 
 ### Community 846 - "Community 846"
 Cohesion: 0.10
@@ -9070,8 +9102,8 @@ Cohesion: 0.19
 Nodes (18): AuditWriter, KeyPair, Path, PathBuf, PublicKey, Result, Secrets, concerto_dir() (+10 more)
 
 ### Community 851 - "Community 851"
-Cohesion: 0.14
-Nodes (14): Error, HashMap, Into, Mutex, String, Vec, check_run_backoff_secs(), is_rate_limited() (+6 more)
+Cohesion: 0.25
+Nodes (8): Error, HashMap, check_run_backoff_secs(), is_rate_limited(), OpPriority, PoolsInner, rate_limited(), rate_limited_reset_at()
 
 ### Community 852 - "Community 852"
 Cohesion: 0.10
@@ -9202,8 +9234,8 @@ Cohesion: 0.16
 Nodes (19): Args, explicit, FOLLY_ERASE, FOLLY_NOINLINE, arg(), detail(), exception_ptr_access(), exception_ptr_get_object() (+11 more)
 
 ### Community 884 - "Community 884"
-Cohesion: 0.17
-Nodes (18): FinderT, m_bEof, m_End, m_Match, m_Next, RangeT, return, equal() (+10 more)
+Cohesion: 0.10
+Nodes (25): iterator_facade, BOOST_DEFAULTED_FUNCTION, find_iterator_base, m_Finder, finder_type, input_iterator_type, match_type, FinderT (+17 more)
 
 ### Community 885 - "Community 885"
 Cohesion: 0.14
@@ -9309,8 +9341,8 @@ Cohesion: 0.12
 Nodes (18): BOOST_NESTED_TEMPLATE result_<T>, boost::type_traits::is_function_ptr_helper<T*>, is_function, is_function_chooser, is_function_chooser<false>, is_function_impl, t, is_function<T&&> (+10 more)
 
 ### Community 908 - "Community 908"
-Cohesion: 0.25
-Nodes (17): Result, Self, Managed Settings (managed.json) Enforcement, allow_flags_parse(), cap_to_auto_parses(), explicit_version_one_parses(), future_version_errors(), load_managed_policy() (+9 more)
+Cohesion: 0.21
+Nodes (18): Formatter, Result, Self, Managed Settings (managed.json) Enforcement, allow_flags_parse(), cap_to_auto_parses(), explicit_version_one_parses(), future_version_errors() (+10 more)
 
 ### Community 909 - "Community 909"
 Cohesion: 0.10
@@ -9409,8 +9441,8 @@ Cohesion: 0.16
 Nodes (10): BOOST_RANDOM_DETAIL_INEQUALITY_OPERATOR, lagged_fibonacci_engine, fill, i, result_type, x, uint32_t, UIntType (+2 more)
 
 ### Community 933 - "Community 933"
-Cohesion: 0.15
-Nodes (11): BOOST_RANDOM_DETAIL_INEQUALITY_OPERATOR, IntType, is, lhs, os, param_type, uniform_int_distribution, _max (+3 more)
+Cohesion: 0.11
+Nodes (18): BOOST_RANDOM_DETAIL_INEQUALITY_OPERATOR, Engine, false_type, IntType, is, lhs, os, param_type (+10 more)
 
 ### Community 934 - "Community 934"
 Cohesion: 0.17
@@ -9543,8 +9575,8 @@ Nodes (18): first_param, first_param
       < TemplateClass<T, P0, P1, P2, P3, P4> > (+10 more)
 
 ### Community 965 - "Community 965"
-Cohesion: 0.15
-Nodes (18): BOOST_MOVE_DOC0PTR, BOOST_MOVE_FORCEINLINE, BOOST_RV_REF_BEG, D1, D2, BOOST_NOEXCEPT(), deleter(), get_deleter() (+10 more)
+Cohesion: 0.09
+Nodes (29): BOOST_MOVE_DOC0PTR, BOOST_MOVE_FORCEINLINE, BOOST_RV_REF_BEG, D1, D2, BOOST_NOEXCEPT(), deleter(), deleter_types (+21 more)
 
 ### Community 966 - "Community 966"
 Cohesion: 0.15
@@ -9608,9 +9640,13 @@ Nodes (16): Channel, Option, Path, PathBuf, Result, OnceCell, connect_uds(), con
 Cohesion: 0.16
 Nodes (7): ConePath, Option, Vec, parse_flat_array(), parse_workspace_cone_default(), resolve_cones(), three_layer_precedence_table()
 
-### Community 979 - "Community 979"
+### Community 978 - "Community 978"
 Cohesion: 0.21
-Nodes (15): Vec, Fn, Option, String, rate_limit_headers(), background_op_queues_and_resumes_after_reset(), budget_seeds_from_a_real_octocrab_call(), budget_seeds_from_headers() (+7 more)
+Nodes (9): Attach, Receiver, Self, Vec, VecDeque, Streams Service + Ring Buffer Reconnect, Attach, RingBound (+1 more)
+
+### Community 979 - "Community 979"
+Cohesion: 0.19
+Nodes (16): Vec, Fn, Option, String, rate_limit_headers(), rate_limit_headers_and_synthetic_clock(), background_op_queues_and_resumes_after_reset(), budget_seeds_from_a_real_octocrab_call() (+8 more)
 
 ### Community 980 - "Community 980"
 Cohesion: 0.11
@@ -9801,8 +9837,8 @@ Cohesion: 0.18
 Nodes (10): common_slist_algorithms<NodeTraits>, BOOST_INTRUSIVE_FORCEINLINE, const_node_ptr, Disposer, get_algo<LinearSListAlgorithms, NodeTraits>, linear_slist_algorithms, size_t detach_and_dispose(), node_pair (+2 more)
 
 ### Community 1022 - "Community 1022"
-Cohesion: 0.29
-Nodes (14): IrohDuplex, Result, read_ack(), write_envelope(), String, Vec, WebhookAck, WebhookEnvelope (+6 more)
+Cohesion: 0.18
+Nodes (16): bits, changed_tag, compound_tag, encode_bits_impl, extract, has_const_property_tag, has_cv_property_tag, has_default_cc_property_tag (+8 more)
 
 ### Community 1023 - "Community 1023"
 Cohesion: 0.17
@@ -9817,8 +9853,8 @@ Cohesion: 0.16
 Nodes (13): ExpoAppDelegate, ExpoReactNativeFactoryDelegate, NSUserActivity, RCTBridge, RCTReactNativeFactory, AppDelegate, ReactNativeDelegate, Any (+5 more)
 
 ### Community 1026 - "Community 1026"
-Cohesion: 0.13
-Nodes (15): is_destructible, is_destructible_imp, is_destructible<T&>, is_destructible<T[N]>, is_destructible<void>, is_destructible<void const>, is_destructible<void const volatile>, is_destructible<void volatile> (+7 more)
+Cohesion: 0.05
+Nodes (43): is_default_constructible, is_destructible, is_constructible_imp, is_constructible<Ref&, Arg>, is_constructible<Ref&, void>, is_constructible<T>, is_constructible<T, void>, is_constructible<void> (+35 more)
 
 ### Community 1027 - "Community 1027"
 Cohesion: 0.12
@@ -9948,9 +9984,8 @@ Cohesion: 0.12
 Nodes (13): basic_appender, basic_string_view, class, advance_to(), arg_index(), detail(), operator(), printf_width_handler() (+5 more)
 
 ### Community 1058 - "Community 1058"
-Cohesion: 0.12
-Nodes (11): boost::container::iterator
-      <std::random_access_iterator_tag, T, std::ptrdiff_t, T*, T&>, repeat_iterator, explicit, friend, iterator_from_iiterator, m_iit, m_num, m_ptr (+3 more)
+Cohesion: 0.31
+Nodes (15): create_workspace(), next_event(), next_workspace_event(), run(), subscribe(), Channel, Duration, Event (+7 more)
 
 ### Community 1059 - "Community 1059"
 Cohesion: 0.23
@@ -9961,8 +9996,8 @@ Cohesion: 0.17
 Nodes (12): ebo_functor_holder, BOOST_INTRUSIVE_FORCEINLINE, node_cloner, safemode_or_autounlink, traits_, node_disposer, node_disposer, safemode_or_autounlink (+4 more)
 
 ### Community 1061 - "Community 1061"
-Cohesion: 0.12
-Nodes (15): `crates/proto/proto/concerto/v1/common.proto`, `crates/proto/proto/concerto/v1/workspaces.proto`, enum `PermissionMode`, message `ConcertoError`, message `CreateWorkspaceRequest`, message `Identifier`, message `ListWorkspacesRequest`, message `ListWorkspacesResponse` (+7 more)
+Cohesion: 0.20
+Nodes (10): `crates/proto/proto/concerto/v1/workspaces.proto`, message `CreateWorkspaceRequest`, message `ListWorkspacesRequest`, message `ListWorkspacesResponse`, message `UpdateWorkspaceSettingsRequest`, message `Workspace`, message `WorkspaceId`, message `WorkspaceRepoSpec` (+2 more)
 
 ### Community 1062 - "Community 1062"
 Cohesion: 0.12
@@ -10365,8 +10400,8 @@ Cohesion: 0.19
 Nodes (10): add, add<T1, T2, /* signed or else T2 has more digits than T1 so the cast always works - needed when T2 is a multiprecision type and T1 is a native integer */ false>, add<T1, T2, /* signed */ true>, subtract, subtract<T, /* signed */ false>, subtract<T, /* signed */ true>, result_type, T (+2 more)
 
 ### Community 1162 - "Community 1162"
-Cohesion: 0.15
-Nodes (10): It, Iter, generate(), generator_bits, generator_bits<lagged_fibonacci_01_engine<RealType, w, p, q> >, generator_bits<lagged_fibonacci_01<RealType, w, p, q> >, lagged_fibonacci, lagged_fibonacci_doc (+2 more)
+Cohesion: 0.18
+Nodes (9): Iter, fill(), generate(), generator_bits, generator_bits<lagged_fibonacci_01_engine<RealType, w, p, q> >, generator_bits<lagged_fibonacci_01<RealType, w, p, q> >, lagged_fibonacci_doc, RealType (+1 more)
 
 ### Community 1163 - "Community 1163"
 Cohesion: 0.20
@@ -10413,14 +10448,12 @@ Cohesion: 0.14
 Nodes (14): Args, Case, Cases, explicit, f, folly(), operator(), Overload() (+6 more)
 
 ### Community 1174 - "Community 1174"
-Cohesion: 0.18
-Nodes (12): apply_chooser< 
-          aux::apply_count_args< AUX778076_APPLY_PARAMS(T) >::value
-        >::template result_< F, AUX778076_APPLY_PARAMS(T) >::type, i_, apply, apply_chooser<i_>, apply< F AUX778076_APPLY_N_PARTIAL_SPEC_PARAMS(i_, T, na) >, BOOST_PP_CAT, result_, apply (+4 more)
+Cohesion: 0.23
+Nodes (10): Arc, CancellationToken, JoinHandle, Option, Persistence, Receiver, SystemTime, ReloadEvent (+2 more)
 
 ### Community 1175 - "Community 1175"
-Cohesion: 0.16
-Nodes (6): AtomicI64, NowSecs, String, GitHubProvider, epoch_secs_to_rfc3339(), SyntheticClock
+Cohesion: 0.10
+Nodes (10): AtomicI64, NowSecs, Self, String, GitHubProvider, MockServer, epoch_secs_to_rfc3339(), FakeJira (+2 more)
 
 ### Community 1176 - "Community 1176"
 Cohesion: 0.18
@@ -10458,8 +10491,8 @@ Cohesion: 0.30
 Nodes (13): Arc, Path, Persistence, RepoManager, String, TempDir, git(), git_capture() (+5 more)
 
 ### Community 1179 - "Community 1179"
-Cohesion: 0.20
-Nodes (4): Self, MockServer, FakeJira, FakeLinear
+Cohesion: 0.13
+Nodes (13): msvc_type, msvc_type_impl, msvc_type_impl<true>, msvc_type<int>, result_, is_bind_template, msvc_type, msvc_type_impl (+5 more)
 
 ### Community 1180 - "Community 1180"
 Cohesion: 0.22
@@ -10546,8 +10579,8 @@ Cohesion: 0.20
 Nodes (11): initializer_list, Iter, generate(), param(), seed_seq, v, Range, result_type (+3 more)
 
 ### Community 1200 - "Community 1200"
-Cohesion: 0.20
-Nodes (8): BOOST_STATIC_ASSERT, subtract_with_carry_01_engine, carry, k, _modulus, x, RealType, result_type
+Cohesion: 0.17
+Nodes (10): BOOST_STATIC_ASSERT, subtract_with_carry_01_engine, carry, k, _modulus, x, RealType, SeedSeq (+2 more)
 
 ### Community 1201 - "Community 1201"
 Cohesion: 0.23
@@ -10634,8 +10667,8 @@ Cohesion: 0.15
 Nodes (12): Architecture decisions, Coding standards, Contributing to Concerto, Developer Certificate of Origin (DCO), License, License compliance, Project structure, Security (+4 more)
 
 ### Community 1222 - "Community 1222"
-Cohesion: 0.41
-Nodes (13): Path, String, Value, Vec, json_type_name(), ManagedFile, ManagedPolicyLoad, parse_managed_policy_load_at() (+5 more)
+Cohesion: 0.15
+Nodes (10): ActorContext, Config, Option, Result, SkillFilter, SkillId, SkillRow, Vec (+2 more)
 
 ### Community 1223 - "Community 1223"
 Cohesion: 0.15
@@ -10880,8 +10913,8 @@ Cohesion: 0.21
 Nodes (12): equal(), equal_impl(), BinaryPredicate, IteratorCategoryTag1, IteratorCategoryTag2, random_access_iterator_tag, RandomAccessTraversalReadableIterator1, RandomAccessTraversalReadableIterator2 (+4 more)
 
 ### Community 1262 - "Community 1262"
-Cohesion: 0.17
-Nodes (12): is_mem_fun_pointer_select, is_mem_fun_pointer_select<false>, is_member_function_pointer_impl, m_t, is_member_function_pointer_impl<T&>, is_member_function_pointer_impl<void>, is_member_function_pointer_impl<void const>, is_member_function_pointer_impl<void const volatile> (+4 more)
+Cohesion: 0.18
+Nodes (10): O1_size_impl, BOOST_MPL_AUX_LAMBDA_SUPPORT, O1_size, size_impl< aux::vector_tag >, size_impl< aux::vector_tag<N> >, BOOST_MPL_AUX_LAMBDA_SUPPORT, O1_size, size_impl< aux::vector_tag > (+2 more)
 
 ### Community 1263 - "Community 1263"
 Cohesion: 0.17
@@ -11498,8 +11531,8 @@ Cohesion: 0.18
 Nodes (9): BOOST_CONSTEXPR, T, bool_, integral_c, integral_c_tag, integral_constant, integral_constant<bool, val>, value (+1 more)
 
 ### Community 1416 - "Community 1416"
-Cohesion: 0.17
-Nodes (11): BOOST_STATIC_ASSERT, bd_helper, is_base_and_derived, is_base_and_derived<Base, Base>, is_base_and_derived<Base&, Derived>, is_base_and_derived_impl, is_base_and_derived_impl2, is_base_and_derived_impl3 (+3 more)
+Cohesion: 0.33
+Nodes (11): byte_eviction_for_session_io_bounds_by_bytes_not_count(), byte_eviction_retains_single_oversized_chunk(), count_eviction_drops_oldest_and_advances_floor(), gap_detection_boundary(), io_event(), prune_to_min_ack_never_drops_unacked_by_attached_subscriber(), prune_with_zero_subscribers_retains_tail(), publish_assigns_monotonic_offsets_from_zero() (+3 more)
 
 ### Community 1417 - "Community 1417"
 Cohesion: 0.26
@@ -11591,7 +11624,7 @@ Nodes (9): BOOST_CONSTEXPR, T, bool_, integral_c, integral_c_tag, integral_const
 
 ### Community 1439 - "Community 1439"
 Cohesion: 0.17
-Nodes (11): BOOST_STATIC_ASSERT, bd_helper, is_base_and_derived, is_base_and_derived<Base, Base>, is_base_and_derived<Base&, Derived>, is_base_and_derived_impl, is_base_and_derived_impl2, is_base_and_derived_impl3 (+3 more)
+Nodes (12): apply, AUX778076_OP_IMPL_NAME, AUX778076_OP_IMPL_NAME<integral_c_tag,na>, AUX778076_OP_IMPL_NAME<na,integral_c_tag>, AUX778076_OP_IMPL_NAME<na,na>, AUX778076_OP_IMPL_NAME<na,Tag>, AUX778076_OP_IMPL_NAME<Tag,na>, AUX778076_OP_NAME (+4 more)
 
 ### Community 1440 - "Community 1440"
 Cohesion: 0.26
@@ -11630,8 +11663,8 @@ Cohesion: 0.18
 Nodes (11): 13.1 What the feature is, 13.2.1 Agent-state heuristics (deterministic, always-on), 13.2.2 Learned suggestions (per-user, per-project), 13.2.3 Org-shared best practices (V2), 13.2 Where suggestions come from, 13.3 The auto-compact and other safety-net prompts, 13.4 How the user controls suggestions, 13.5 What suggestions deliberately don't do (+3 more)
 
 ### Community 1449 - "Community 1449"
-Cohesion: 0.18
-Nodes (11): disable_if, disable_if_memtransfer_copy_assignable, disable_if_memtransfer_copy_constructible, disable_if_single_value_proxy, disable_if_convertible, disable_if_same_or_convertible, disable_if_memtransfer_copy_assignable, disable_if_memtransfer_copy_constructible (+3 more)
+Cohesion: 0.17
+Nodes (12): apply, AUX778076_OP_IMPL_NAME, AUX778076_OP_IMPL_NAME<integral_c_tag,na>, AUX778076_OP_IMPL_NAME<na,integral_c_tag>, AUX778076_OP_IMPL_NAME<na,na>, AUX778076_OP_IMPL_NAME<na,Tag>, AUX778076_OP_IMPL_NAME<Tag,na>, AUX778076_OP_NAME (+4 more)
 
 ### Community 1450 - "Community 1450"
 Cohesion: 0.25
@@ -12083,8 +12116,8 @@ Cohesion: 0.44
 Nodes (9): find_format_copy_impl(), find_format_copy_impl2(), find_format_impl(), find_format_impl2(), FindResultT, FormatResultT, FormatterT, InputT (+1 more)
 
 ### Community 1561 - "Community 1561"
-Cohesion: 0.24
-Nodes (6): BOOST_DEFAULTED_FUNCTION, find_iterator_base, m_Finder, finder_type, input_iterator_type, match_type
+Cohesion: 0.18
+Nodes (10): advance, advance_c, advance_impl, apply, advance, advance_c, advance_impl, apply (+2 more)
 
 ### Community 1562 - "Community 1562"
 Cohesion: 0.44
@@ -12175,16 +12208,16 @@ Cohesion: 0.20
 Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, less, less_impl, less_impl< integral_c_tag,integral_c_tag >, less_impl< na,na >, less_impl< na,Tag >, less_impl< Tag,na > (+1 more)
 
 ### Community 1580 - "Community 1580"
-Cohesion: 0.20
-Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, modulus, modulus_impl, modulus_impl< integral_c_tag,integral_c_tag >, modulus_impl< na,na >, modulus_impl< na,Tag >, modulus_impl< Tag,na > (+1 more)
+Cohesion: 0.06
+Nodes (28): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, modulus, modulus_impl, modulus_impl< integral_c_tag,integral_c_tag >, modulus_impl< na,na >, modulus_impl< na,Tag >, modulus_impl< Tag,na > (+20 more)
 
 ### Community 1581 - "Community 1581"
 Cohesion: 0.20
 Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, not_equal_to, not_equal_to_impl, not_equal_to_impl< integral_c_tag,integral_c_tag >, not_equal_to_impl< na,na >, not_equal_to_impl< na,Tag >, not_equal_to_impl< Tag,na > (+1 more)
 
 ### Community 1582 - "Community 1582"
-Cohesion: 0.20
-Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, shift_right, shift_right_impl, shift_right_impl< integral_c_tag,integral_c_tag >, shift_right_impl< na,na >, shift_right_impl< na,Tag >, shift_right_impl< Tag,na > (+1 more)
+Cohesion: 0.17
+Nodes (11): advance_impl<aux::pair_iter_tag>, apply, deref< pair_iter<Iter1,Iter2,C> >, distance_impl<aux::pair_iter_tag>, next< pair_iter<Iter1,Iter2,C> >, pair_iter, pair_iter_tag, pair_view (+3 more)
 
 ### Community 1583 - "Community 1583"
 Cohesion: 0.27
@@ -12315,8 +12348,8 @@ Cohesion: 0.20
 Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, less_equal, less_equal_impl, less_equal_impl< integral_c_tag,integral_c_tag >, less_equal_impl< na,na >, less_equal_impl< na,Tag >, less_equal_impl< Tag,na > (+1 more)
 
 ### Community 1611 - "Community 1611"
-Cohesion: 0.20
-Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, less, less_impl, less_impl< integral_c_tag,integral_c_tag >, less_impl< na,na >, less_impl< na,Tag >, less_impl< Tag,na > (+1 more)
+Cohesion: 0.35
+Nodes (7): AckOffsetRequest, Request, Response, Result, Status, Subject, SubscribeStream
 
 ### Community 1612 - "Community 1612"
 Cohesion: 0.20
@@ -12331,16 +12364,16 @@ Cohesion: 0.20
 Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, shift_left, shift_left_impl, shift_left_impl< integral_c_tag,integral_c_tag >, shift_left_impl< na,na >, shift_left_impl< na,Tag >, shift_left_impl< Tag,na > (+1 more)
 
 ### Community 1615 - "Community 1615"
-Cohesion: 0.27
-Nodes (5): f, is, os, fill(), RealType
+Cohesion: 0.36
+Nodes (3): f, is, os
 
 ### Community 1616 - "Community 1616"
-Cohesion: 0.20
-Nodes (10): FMT_BEGIN_EXPORT, assume(), count_digits(), do_count_digits(), enum(), operator(), signbit(), FMT_INLINE (+2 more)
+Cohesion: 0.25
+Nodes (8): assume(), count_digits(), do_count_digits(), operator(), signbit(), FMT_INLINE, T, uint128_opt
 
 ### Community 1617 - "Community 1617"
-Cohesion: 0.40
-Nodes (10): FMT_CONSTEXPR20, align(), assign_pow10(), bigint(), divmod_assign(), float_format(), num_bigits(), resize() (+2 more)
+Cohesion: 0.32
+Nodes (12): FMT_BEGIN_EXPORT, FMT_CONSTEXPR20, align(), assign_pow10(), bigint(), divmod_assign(), enum(), float_format() (+4 more)
 
 ### Community 1618 - "Community 1618"
 Cohesion: 0.20
@@ -12499,8 +12532,8 @@ Cohesion: 0.22
 Nodes (5): BOOST_FUNCTION_VOID_RETURN_TYPE, BOOST_FUNCTION_VOID_FUNCTION_INVOKER, BOOST_FUNCTION_VOID_FUNCTION_OBJ_INVOKER, BOOST_FUNCTION_VOID_FUNCTION_REF_INVOKER, BOOST_FUNCTION_VOID_MEMBER_INVOKER
 
 ### Community 1657 - "Community 1657"
-Cohesion: 0.22
-Nodes (8): class_transform, class_transform< T, add_pointer<_> >, class_transform< T, add_pointer< remove_cv<_> > >, class_transform< T, add_reference<_> >, class_transform< T, add_reference< remove_cv<_> > >, class_transform< T, mpl::always<U> >, class_transform< T, mpl::identity<_> >, class_transform< T, remove_cv<_> >
+Cohesion: 0.25
+Nodes (8): Client, RefreshToken, Result, SecretValue, Self, JiraResult, JiraClient, parse_jira_key()
 
 ### Community 1658 - "Community 1658"
 Cohesion: 0.31
@@ -12523,8 +12556,8 @@ Cohesion: 0.25
 Nodes (8): apply, quote1, quote2, quote3, quote4, quote5, quote_impl, quote_impl< T,false >
 
 ### Community 1663 - "Community 1663"
-Cohesion: 0.22
-Nodes (8): v_item, item_, v_item<T,Base,1>, item_, v_mask, v_mask<Base,1>, item_, item_
+Cohesion: 0.40
+Nodes (9): CoreUnderTest, Path, String, TempDir, git(), list_workarea_repos_is_scoped_to_the_workarea(), make_bare_with_commit(), seed() (+1 more)
 
 ### Community 1664 - "Community 1664"
 Cohesion: 0.33
@@ -12651,16 +12684,16 @@ Cohesion: 0.31
 Nodes (6): mref, mref<T &>, unvoid, unvoid<const void>, unvoid<void>, T
 
 ### Community 1695 - "Community 1695"
-Cohesion: 0.22
-Nodes (9): BOOST_MOVE_DOC0PTR, BOOST_RV_REF_BEG, D1, D2, operator=(), size_t, T, T1 (+1 more)
+Cohesion: 0.20
+Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, greater_equal, greater_equal_impl, greater_equal_impl< integral_c_tag,integral_c_tag >, greater_equal_impl< na,na >, greater_equal_impl< na,Tag >, greater_equal_impl< Tag,na > (+1 more)
 
 ### Community 1696 - "Community 1696"
 Cohesion: 0.25
 Nodes (8): apply, quote1, quote2, quote3, quote4, quote5, quote_impl, quote_impl< T,false >
 
 ### Community 1697 - "Community 1697"
-Cohesion: 0.22
-Nodes (8): v_item, item_, v_item<T,Base,1>, item_, v_mask, v_mask<Base,1>, item_, item_
+Cohesion: 0.20
+Nodes (9): BOOST_MPL_AUX_LAMBDA_SUPPORT, apply, shift_right, shift_right_impl, shift_right_impl< integral_c_tag,integral_c_tag >, shift_right_impl< na,na >, shift_right_impl< na,Tag >, shift_right_impl< Tag,na > (+1 more)
 
 ### Community 1698 - "Community 1698"
 Cohesion: 0.33
@@ -12683,8 +12716,8 @@ Cohesion: 0.36
 Nodes (8): basic_istream, basic_ostream, CharT, print_vector(), read_vector(), T, Traits, vector
 
 ### Community 1703 - "Community 1703"
-Cohesion: 0.33
-Nodes (3): lagged_fibonacci_01, SeedSeq, seq
+Cohesion: 0.21
+Nodes (6): It, lagged_fibonacci, lagged_fibonacci_01, seed(), SeedSeq, seq
 
 ### Community 1704 - "Community 1704"
 Cohesion: 0.25
@@ -12871,8 +12904,8 @@ Cohesion: 0.29
 Nodes (7): AsyncEventEmitter, jsi, namespace, Object, facebook(), toJs(), std
 
 ### Community 1750 - "Community 1750"
-Cohesion: 0.36
-Nodes (7): jsi, namespace, facebook(), fromJs(), toJs(), std, T
+Cohesion: 0.32
+Nodes (7): blake2b_256(), run(), Code, Path, Result, String, Vec
 
 ### Community 1751 - "Community 1751"
 Cohesion: 0.25
@@ -13219,8 +13252,8 @@ Cohesion: 0.46
 Nodes (7): div_t, quotient, remainder, muldiv(), muldivmod(), mulmod(), uintmax_t
 
 ### Community 1836 - "Community 1836"
-Cohesion: 0.32
-Nodes (7): Engine, false_type, generate_uniform_int(), operator()(), result_type, T, true_type
+Cohesion: 0.25
+Nodes (7): iter_fold_if_backward_step, iter_fold_if_forward_step, iter_fold_if_impl, iter_fold_if_null_step, iter_fold_if_step_impl, iter_fold_if_step_impl<false>, result_
 
 ### Community 1837 - "Community 1837"
 Cohesion: 0.25
@@ -13275,8 +13308,8 @@ Cohesion: 0.29
 Nodes (6): facebook(), toJs(), jsi, namespace, std, Value
 
 ### Community 1850 - "Community 1850"
-Cohesion: 0.33
-Nodes (6): run(), McpScopeRequest, Option, Path, Result, String
+Cohesion: 0.25
+Nodes (7): Ascii, Clone, FnMut, MetadataValue, Request, CertInterceptorFactory, Status
 
 ### Community 1851 - "Community 1851"
 Cohesion: 0.29
@@ -13319,12 +13352,12 @@ Cohesion: 0.48
 Nodes (7): integer_traits_base< ::boost::ulong_long_type, 0, ~0uLL>, integer_traits_base< ::boost::ulong_long_type, 0, ULLONG_MAX>, integer_traits_base< ::boost::ulong_long_type, 0, ULONG_LONG_MAX>, integer_traits_base< ::boost::ulong_long_type, 0, ULONGLONG_MAX>, numeric_limits< ::boost::ulong_long_type>, integer_traits< ::boost::ulong_long_type>, integer_traits< ::boost::ulong_long_type>
 
 ### Community 1861 - "Community 1861"
-Cohesion: 0.33
-Nodes (6): integer_traits_base<short, SHRT_MIN, SHRT_MAX>, numeric_limits<short>, integer_traits<short>, integer_traits_base, integer_traits<short>, integer_traits<wchar_t>
+Cohesion: 0.67
+Nodes (4): integer_traits_base<short, SHRT_MIN, SHRT_MAX>, numeric_limits<short>, integer_traits<short>, integer_traits<short>
 
 ### Community 1862 - "Community 1862"
-Cohesion: 0.29
-Nodes (7): `crates/proto/proto/concerto/v1/suggestions.proto`, message `Chip`, message `GetSuggestionsRequest`, message `RecordSuggestionOutcomeRequest`, message `RecordSuggestionOutcomeResponse`, message `SuggestionsResponse`, service `Suggestions`
+Cohesion: 0.15
+Nodes (12): `crates/proto/proto/concerto/v1/common.proto`, `crates/proto/proto/concerto/v1/suggestions.proto`, enum `PermissionMode`, message `Chip`, message `ConcertoError`, message `GetSuggestionsRequest`, message `Identifier`, message `RecordSuggestionOutcomeRequest` (+4 more)
 
 ### Community 1863 - "Community 1863"
 Cohesion: 0.29
@@ -13352,16 +13385,16 @@ Nodes (6): list0_c, list20_c, list_c, list_c<
 
 ### Community 1867 - "Community 1867"
 Cohesion: 0.29
-Nodes (6): list19_c, list5_c, list_c<
+Nodes (6): list16_c, list5_c, list_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, C16, C17, C18, LONG_MAX
+        , C15, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         >, list_c<
           T, C0, C1, C2, C3, C4, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         >, list_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, C16, C17, C18, LONG_MAX
+        , C15, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         >, list_c<
           T, C0, C1, C2, C3, C4, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
@@ -13552,7 +13585,7 @@ Nodes (6): apply, divides_impl, divides_impl< na,na >, divides_impl< na,Tag >, d
 
 ### Community 1916 - "Community 1916"
 Cohesion: 0.29
-Nodes (6): apply, minus_impl, minus_impl< na,na >, minus_impl< na,Tag >, minus_impl< Tag,na >, minus_tag
+Nodes (7): 3.1 Daemonization strategy: rely on OS integration, not double-fork, 3.2 Supervision tree shape: typed actor pattern over tokio tasks, 3.3 Single-instance guard: advisory lock on a PID file, 3.4 Configuration model: layered, JSON, hot-reload via SIGHUP / equivalent, 3.5 Tray / menu-bar UI host: sidecar Tauri process, not in-Core, 3.6 OpenTelemetry exporter: opt-in, off by default, 3. Key design decisions (sub-system-internal)
 
 ### Community 1917 - "Community 1917"
 Cohesion: 0.29
@@ -13566,35 +13599,27 @@ Nodes (6): apply, times_impl, times_impl< na,na >, times_impl< na,Tag >, times_i
 Cohesion: 0.29
 Nodes (6): vector_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, C16, C17, LONG_MAX, LONG_MAX
-        >, vector_c<
-          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, LONG_MAX, LONG_MAX, LONG_MAX
-        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        , LONG_MAX
+        , C15, C16, C17, C18, LONG_MAX
         >, vector_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
         , C15, C16, C17, LONG_MAX, LONG_MAX
         >, vector_c<
-          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, LONG_MAX, LONG_MAX, LONG_MAX
-        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        , LONG_MAX
-        >, vector18_c, vector9_c
+          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
+        , C15, C16, C17, C18, LONG_MAX
+        >, vector_c<
+          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
+        , C15, C16, C17, LONG_MAX, LONG_MAX
+        >, vector18_c, vector19_c
 
 ### Community 1920 - "Community 1920"
-Cohesion: 0.29
-Nodes (6): vector_c<
-          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, C16, C17, C18, LONG_MAX
-        >, vector_c<
+Cohesion: 0.67
+Nodes (3): vector_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
         , C15, C16, LONG_MAX, LONG_MAX, LONG_MAX
         >, vector_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, C16, C17, C18, LONG_MAX
-        >, vector_c<
-          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
         , C15, C16, LONG_MAX, LONG_MAX, LONG_MAX
-        >, vector17_c, vector19_c
+        >, vector17_c
 
 ### Community 1921 - "Community 1921"
 Cohesion: 0.29
@@ -13621,8 +13646,8 @@ Cohesion: 0.33
 Nodes (4): argument_type, base_type, random_number_generator, result_type
 
 ### Community 1927 - "Community 1927"
-Cohesion: 0.43
-Nodes (3): SeedSeq, seq, subtract_with_carry
+Cohesion: 0.38
+Nodes (6): is_POD, is_pod<T[sz]>, is_pod<void>, is_pod<void const>, is_pod<void const volatile>, is_pod<void volatile>
 
 ### Community 1928 - "Community 1928"
 Cohesion: 0.38
@@ -13826,27 +13851,27 @@ Nodes (5): parseAnimationProperty(), parseAnimationType(), parseLayoutAnimationC
 
 ### Community 1979 - "Community 1979"
 Cohesion: 0.40
-Nodes (5): run(), Option, Path, Result, String
+Nodes (5): CloneRequest, run(), Path, Result, String
 
 ### Community 1980 - "Community 1980"
 Cohesion: 0.40
-Nodes (5): run(), SendMessageRequest, Path, Result, String
+Nodes (5): run(), ListSchedulesRequest, Path, Result, String
 
 ### Community 1981 - "Community 1981"
-Cohesion: 0.40
-Nodes (5): run(), SetConesRequest, Path, Result, String
+Cohesion: 0.70
+Nodes (3): AgentSupervisorHandle, Persistence, Self
 
 ### Community 1982 - "Community 1982"
 Cohesion: 0.40
-Nodes (5): run(), Option, Path, Result, String
+Nodes (5): integral_constant<bits_t,Value>, constant, encode_bits, constant, encode_bits
 
 ### Community 1983 - "Community 1983"
-Cohesion: 0.40
-Nodes (5): run(), CreateSessionRequest, Path, Result, String
+Cohesion: 0.50
+Nodes (4): apply, index_applier, multi_index_base_type, nth_layer
 
 ### Community 1984 - "Community 1984"
-Cohesion: 0.40
-Nodes (5): run(), StopSessionRequest, Path, Result, String
+Cohesion: 0.67
+Nodes (3): facebook(), std(), namespace
 
 ### Community 1985 - "Community 1985"
 Cohesion: 0.40
@@ -13893,28 +13918,22 @@ Cohesion: 0.40
 Nodes (4): dynamic(), isZero(), Float, operator
 
 ### Community 1996 - "Community 1996"
-Cohesion: 0.33
-Nodes (5): list0, list8, list<
+Cohesion: 0.29
+Nodes (6): list0, list20, list, list<
           na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
         , na, na, na
-        >, list<
-          T0, T1, T2, T3, T4, T5, T6, T7, na, na, na, na, na, na, na, na, na
-        , na, na, na
-        >, list<
+        >, list, list<
           na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
         , na, na, na
         >
 
 ### Community 1997 - "Community 1997"
-Cohesion: 0.33
-Nodes (5): map0, map2, map<
+Cohesion: 0.29
+Nodes (6): map0, map20, map, map<
           na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
         , na, na, na
-        >, map<
-          T0, T1, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
-        , na, na, na
-        >, map<
-          T0, T1, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
+        >, map, map<
+          na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
         , na, na, na
         >
 
@@ -13939,15 +13958,12 @@ Cohesion: 0.67
 Nodes (5): emit_brace_blocks(), gen_proto(), gen_rust_api(), gen_schema(), regen-interfaces.sh script
 
 ### Community 2003 - "Community 2003"
-Cohesion: 0.33
-Nodes (5): set0_c, set16_c, set_c<
-          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        >, set_c<
+Cohesion: 0.29
+Nodes (6): set0_c, set20_c, set_c, set_c<
           T, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        >, set_c<
+        >, set_c, set_c<
           T, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
@@ -14102,8 +14118,8 @@ Cohesion: 0.47
 Nodes (5): PredicateT, Range1T, SequenceSequenceT, join(), join_if()
 
 ### Community 2041 - "Community 2041"
-Cohesion: 0.27
-Nodes (6): list2, list8, list2, list8, storage2, storage8
+Cohesion: 0.17
+Nodes (9): list2, list8, list9, list2, list8, list9, storage2, storage8 (+1 more)
 
 ### Community 2042 - "Community 2042"
 Cohesion: 0.33
@@ -14471,13 +14487,10 @@ Cohesion: 0.40
 Nodes (4): jsinspector_modern(), setExecutor(), namespace, VoidExecutor
 
 ### Community 2130 - "Community 2130"
-Cohesion: 0.40
-Nodes (4): list16, list<
+Cohesion: 0.67
+Nodes (3): list16, list<
           T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
         , T15, na, na, na, na
-        >, list<
-          T0, T1, T2, T3, T4, T5, T6, T7, na, na, na, na, na, na, na, na, na
-        , na, na, na
         >, list<
           T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
         , T15, na, na, na, na
@@ -14496,16 +14509,19 @@ Cohesion: 0.40
 Nodes (5): pod_target_xcconfig, CLANG_CXX_LANGUAGE_STANDARD, HEADER_SEARCH_PATHS, OTHER_CPLUSPLUSFLAGS, OTHER_SWIFT_FLAGS
 
 ### Community 2134 - "Community 2134"
-Cohesion: 0.40
-Nodes (4): map16, map<
+Cohesion: 0.29
+Nodes (6): map16, map17, map<
           T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
         , T15, na, na, na, na
         >, map<
-          na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
-        , na, na, na
+          T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
+        , T15, T16, na, na, na
         >, map<
           T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
         , T15, na, na, na, na
+        >, map<
+          T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
+        , T15, T16, na, na, na
         >
 
 ### Community 2135 - "Community 2135"
@@ -14553,13 +14569,10 @@ Cohesion: 0.40
 Nodes (4): RCTScrollViewHandleCommand(), id, NSArray, NSString
 
 ### Community 2147 - "Community 2147"
-Cohesion: 0.40
-Nodes (4): set15_c, set_c<
+Cohesion: 0.67
+Nodes (3): set15_c, set_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        >, set_c<
-          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         >, set_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
         , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
@@ -15003,8 +15016,8 @@ Cohesion: 0.40
 Nodes (3): indexed_by, indexed_by, vector<BOOST_PP_ENUM_PARAMS(BOOST_MULTI_INDEX_INDEXED_BY_SIZE,T)>
 
 ### Community 2262 - "Community 2262"
-Cohesion: 0.40
-Nodes (3): Engine, apply(), uintmax_t
+Cohesion: 0.25
+Nodes (4): Engine, apply(), result_type, uintmax_t
 
 ### Community 2263 - "Community 2263"
 Cohesion: 0.40
@@ -15304,8 +15317,8 @@ Cohesion: 0.67
 Nodes (4): integer_traits_base<char, CHAR_MIN, CHAR_MAX>, numeric_limits<char>, integer_traits<char>, integer_traits<char>
 
 ### Community 2351 - "Community 2351"
-Cohesion: 0.67
-Nodes (4): integer_traits_base< __int64, _I64_MIN, _I64_MAX>, numeric_limits< __int64>, integer_traits< __int64>, integer_traits< __int64>
+Cohesion: 0.33
+Nodes (6): integer_traits_base< __int64, _I64_MIN, _I64_MAX>, numeric_limits< __int64>, integer_traits< __int64>, integer_traits_base, integer_traits< __int64>, integer_traits<wchar_t>
 
 ### Community 2352 - "Community 2352"
 Cohesion: 0.67
@@ -15802,8 +15815,8 @@ Cohesion: 0.50
 Nodes (3): static_assert_test, STATIC_ASSERTION_FAILURE, STATIC_ASSERTION_FAILURE<true>
 
 ### Community 2519 - "Community 2519"
-Cohesion: 0.50
-Nodes (4): no_cv_t, is_signed_values, minus_one, zero
+Cohesion: 0.03
+Nodes (58): no_cv_t, is_signed, is_signed< ::boost::long_long_type>, is_signed< ::boost::ulong_long_type>, is_signed<char>, is_signed<const ::boost::long_long_type>, is_signed<const ::boost::ulong_long_type>, is_signed<const char> (+50 more)
 
 ### Community 2520 - "Community 2520"
 Cohesion: 0.50
@@ -15845,6 +15858,10 @@ Nodes (4): _(), detail(), format_value(), namespace
 Cohesion: 0.67
 Nodes (3): namespace, folly(), std()
 
+### Community 2536 - "Community 2536"
+Cohesion: 0.17
+Nodes (8): AgentSupervisorActor, AgentEvent, MessageRole, Actor, ActorContext, Config, Session, Concerto Preamble
+
 ### Community 2546 - "Community 2546"
 Cohesion: 0.67
 Nodes (3): boost::move_detail::enable_if_c
@@ -15857,6 +15874,22 @@ Nodes (3): boost::move_detail::enable_if_c
          , Tag2
          >::value
          , R>, iterator_enable_if_convertible_tag, iterator_enable_if_convertible_tag
+
+### Community 2547 - "Community 2547"
+Cohesion: 0.67
+Nodes (3): facebook(), std(), namespace
+
+### Community 2548 - "Community 2548"
+Cohesion: 0.67
+Nodes (3): namespace, facebook(), std()
+
+### Community 2551 - "Community 2551"
+Cohesion: 0.67
+Nodes (3): namespace, facebook(), std()
+
+### Community 2554 - "Community 2554"
+Cohesion: 0.67
+Nodes (3): namespace, facebook(), std()
 
 ### Community 2580 - "Community 2580"
 Cohesion: 0.67
@@ -15894,7 +15927,7 @@ Nodes (3): enable_if_c
 
 ### Community 2751 - "Community 2751"
 Cohesion: 0.67
-Nodes (3): integral_constant<std::size_t, 1 + length<typename T::tail_type>::value>, length, length
+Nodes (3): namespace, facebook(), std()
 
 ### Community 2794 - "Community 2794"
 Cohesion: 0.67
@@ -16030,13 +16063,7 @@ Nodes (3): list15_c, list_c<
 
 ### Community 2807 - "Community 2807"
 Cohesion: 0.67
-Nodes (3): list16_c, list_c<
-          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        >, list_c<
-          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
-        , C15, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        >
+Nodes (3): namespace, facebook(), std()
 
 ### Community 2808 - "Community 2808"
 Cohesion: 0.67
@@ -16112,7 +16139,7 @@ Nodes (3): list2, list<
 
 ### Community 2815 - "Community 2815"
 Cohesion: 0.67
-Nodes (3): list20, list, list
+Nodes (3): namespace, facebook(), std()
 
 ### Community 2816 - "Community 2816"
 Cohesion: 0.67
@@ -16171,12 +16198,18 @@ Nodes (3): list4_c, list_c<
         >
 
 ### Community 2821 - "Community 2821"
-Cohesion: 0.67
-Nodes (3): list5, list<
+Cohesion: 0.29
+Nodes (6): list5, list8, list<
           T0, T1, T2, T3, T4, na, na, na, na, na, na, na, na, na, na, na, na
         , na, na, na
         >, list<
+          T0, T1, T2, T3, T4, T5, T6, T7, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >, list<
           T0, T1, T2, T3, T4, na, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >, list<
+          T0, T1, T2, T3, T4, T5, T6, T7, na, na, na, na, na, na, na, na, na
         , na, na, na
         >
 
@@ -16342,13 +16375,7 @@ Nodes (3): map15, map<
 
 ### Community 2839 - "Community 2839"
 Cohesion: 0.67
-Nodes (3): map17, map<
-          T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
-        , T15, T16, na, na, na
-        >, map<
-          T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14
-        , T15, T16, na, na, na
-        >
+Nodes (3): namespace, facebook(), std()
 
 ### Community 2840 - "Community 2840"
 Cohesion: 0.67
@@ -16371,8 +16398,8 @@ Nodes (3): map19, map<
         >
 
 ### Community 2842 - "Community 2842"
-Cohesion: 0.67
-Nodes (3): map20, map, map
+Cohesion: 0.50
+Nodes (4): no_cv_t, is_unsigned_values, minus_one, zero
 
 ### Community 2843 - "Community 2843"
 Cohesion: 0.67
@@ -16553,13 +16580,21 @@ Nodes (3): set18_c, set_c<
         >
 
 ### Community 3015 - "Community 3015"
-Cohesion: 0.67
-Nodes (3): set19_c, set_c<
+Cohesion: 0.29
+Nodes (6): set19_c, set5_c, set_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
         , C15, C16, C17, C18, LONG_MAX
         >, set_c<
+          T, C0, C1, C2, C3, C4, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        >, set_c<
           T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
         , C15, C16, C17, C18, LONG_MAX
+        >, set_c<
+          T, C0, C1, C2, C3, C4, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
         >
 
 ### Community 3016 - "Community 3016"
@@ -16575,8 +16610,8 @@ Nodes (3): set1_c, set_c<
         >
 
 ### Community 3017 - "Community 3017"
-Cohesion: 0.67
-Nodes (3): set20_c, set_c, set_c
+Cohesion: 0.50
+Nodes (4): is_same_cvelement_and_convertible, same_cvless, value, is_unique_ptr_convertible
 
 ### Community 3018 - "Community 3018"
 Cohesion: 0.67
@@ -16615,16 +16650,8 @@ Nodes (3): set4_c, set_c<
         >
 
 ### Community 3021 - "Community 3021"
-Cohesion: 0.67
-Nodes (3): set5_c, set_c<
-          T, C0, C1, C2, C3, C4, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        >, set_c<
-          T, C0, C1, C2, C3, C4, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
-        >
+Cohesion: 0.50
+Nodes (4): unique_moveconvert_assignable, unique_moveconvert_assignable<T[], D, U[N], E>, t_is_array, value
 
 ### Community 3022 - "Community 3022"
 Cohesion: 0.67
@@ -16682,6 +16709,23 @@ Nodes (3): facebook, nativeEventPath(), stack()
 Cohesion: 0.67
 Nodes (3): facebook, nativeEventPath(), stack()
 
+### Community 3443 - "Community 3443"
+Cohesion: 0.67
+Nodes (3): map_msg_role(), MessageRole, MsgRole
+
+### Community 3444 - "Community 3444"
+Cohesion: 0.67
+Nodes (3): boost::is_same<Tag, null_tag>, has_property_tag<Tag,null_tag>, has_property_tag<Tag,null_tag>
+
+### Community 3447 - "Community 3447"
+Cohesion: 0.67
+Nodes (3): compound_tag< detail::compound_tag<Tag1,Tag2>, 
+        detail::compound_tag<Tag3,Tag4> >, tag, tag
+
+### Community 3451 - "Community 3451"
+Cohesion: 0.67
+Nodes (3): compound_tag<detail::compound_tag<Tag1,Tag2>,Tag3>, tag<Tag1,Tag2,Tag3,null_tag>, tag<Tag1,Tag2,Tag3,null_tag>
+
 ### Community 3486 - "Community 3486"
 Cohesion: 0.67
 Nodes (3): facebook, nativeEventPath(), stack()
@@ -16689,6 +16733,14 @@ Nodes (3): facebook, nativeEventPath(), stack()
 ### Community 3497 - "Community 3497"
 Cohesion: 0.67
 Nodes (3): facebook, nativeEventPath(), stack()
+
+### Community 3876 - "Community 3876"
+Cohesion: 0.67
+Nodes (3): compound_tag<Tag1,Tag2>, tag<Tag1,Tag2,null_tag,null_tag>, tag<Tag1,Tag2,null_tag,null_tag>
+
+### Community 3882 - "Community 3882"
+Cohesion: 0.67
+Nodes (3): if_c, add_const_if_c, add_const_if_c
 
 ### Community 3917 - "Community 3917"
 Cohesion: 0.67
@@ -16698,6 +16750,25 @@ Nodes (3): facebook, nativeEventPath(), stack()
 Cohesion: 0.67
 Nodes (3): facebook, nativeEventPath(), stack()
 
+### Community 4307 - "Community 4307"
+Cohesion: 0.67
+Nodes (3): integral_constant<bool,
+        ::boost::function_types::detail::tag_ice
+          < ::boost::function_types::detail::bits<Tag>::value
+          , ::boost::function_types::detail::mask<Tag>::value
+          , ::boost::function_types::detail::bits<QueryTag>::value
+          , ::boost::function_types::detail::mask<QueryTag>::value
+          >::match
+      >, represents_impl, represents_impl
+
+### Community 4313 - "Community 4313"
+Cohesion: 0.67
+Nodes (3): is_convertible<FromPointer, ThisPointer>, is_unique_ptr_convertible<false, FromPointer, ThisPointer>, is_unique_ptr_convertible<false, FromPointer, ThisPointer>
+
+### Community 4314 - "Community 4314"
+Cohesion: 0.67
+Nodes (3): is_same<D, E>, unique_deleter_is_initializable, unique_deleter_is_initializable
+
 ### Community 4350 - "Community 4350"
 Cohesion: 0.67
 Nodes (3): facebook, nativeEventPath(), stack()
@@ -16705,6 +16776,26 @@ Nodes (3): facebook, nativeEventPath(), stack()
 ### Community 4361 - "Community 4361"
 Cohesion: 0.67
 Nodes (3): facebook, nativeEventPath(), stack()
+
+### Community 4739 - "Community 4739"
+Cohesion: 0.67
+Nodes (3): list19_c, list_c<
+          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
+        , C15, C16, C17, C18, LONG_MAX
+        >, list_c<
+          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
+        , C15, C16, C17, C18, LONG_MAX
+        >
+
+### Community 4745 - "Community 4745"
+Cohesion: 0.67
+Nodes (3): map2, map<
+          T0, T1, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >, map<
+          T0, T1, na, na, na, na, na, na, na, na, na, na, na, na, na, na, na
+        , na, na, na
+        >
 
 ### Community 4779 - "Community 4779"
 Cohesion: 0.67
@@ -16731,8 +16822,16 @@ Cohesion: 0.67
 Nodes (3): iterator_arrow_result(), I, T
 
 ### Community 4804 - "Community 4804"
-Cohesion: 0.67
-Nodes (3): vector_c, vector_c, vector20_c
+Cohesion: 0.29
+Nodes (6): vector_c, vector_c<
+          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, LONG_MAX, LONG_MAX, LONG_MAX
+        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        , LONG_MAX
+        >, vector_c, vector_c<
+          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, LONG_MAX, LONG_MAX, LONG_MAX
+        , LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        , LONG_MAX
+        >, vector20_c, vector9_c
 
 ### Community 4805 - "Community 4805"
 Cohesion: 0.67
@@ -16940,7 +17039,7 @@ Nodes (3): iterator_arrow_result(), I, T
 
 ### Community 5051 - "Community 5051"
 Cohesion: 0.67
-Nodes (3): is_union, is_union_noextents_cv, value
+Nodes (3): represents_impl<Tag, detail::retag_default_cc<QueryTag,Tag> >, represents, represents
 
 ### Community 5087 - "Community 5087"
 Cohesion: 0.67
@@ -16956,7 +17055,13 @@ Nodes (3): detail(), safe_duration_cast(), namespace
 
 ### Community 5109 - "Community 5109"
 Cohesion: 0.67
-Nodes (3): Char(), copy2(), locale_ref
+Nodes (3): set16_c, set_c<
+          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
+        , C15, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        >, set_c<
+          T, C0, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14
+        , C15, LONG_MAX, LONG_MAX, LONG_MAX, LONG_MAX
+        >
 
 ### Community 5110 - "Community 5110"
 Cohesion: 0.67
@@ -16966,25 +17071,37 @@ Nodes (3): str_(), format_signed, format_unsigned
 Cohesion: 0.67
 Nodes (3): facebook, nativeEventPath(), stack()
 
+### Community 5404 - "Community 5404"
+Cohesion: 0.67
+Nodes (3): tag<Tag1,null_tag,null_tag,null_tag>, tag<Tag1,null_tag,null_tag,null_tag>, Tag1
+
+### Community 5419 - "Community 5419"
+Cohesion: 0.67
+Nodes (3): is_void, is_void_cv, value
+
+### Community 5439 - "Community 5439"
+Cohesion: 0.67
+Nodes (3): it(), iterator(), write
+
 ## Knowledge Gaps
-- **19190 isolated node(s):** `PreToolUse`, `name`, `private`, `version`, `type` (+19185 more)
+- **19197 isolated node(s):** `PreToolUse`, `name`, `private`, `version`, `type` (+19192 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **2938 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **2916 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `ordered_index_node` connect `Community 290` to `Community 233`?**
-  _High betweenness centrality (0.019) - this node is a cross-community bridge._
+  _High betweenness centrality (0.021) - this node is a cross-community bridge._
 - **Why does `ordered_index_node` connect `Community 290` to `Community 233`?**
-  _High betweenness centrality (0.019) - this node is a cross-community bridge._
+  _High betweenness centrality (0.021) - this node is a cross-community bridge._
 - **Why does `yoga` connect `Community 284` to `Community 3458`, `Community 3459`, `Community 4752`, `Community 4753`, `Community 3475`, `Community 4756`, `Community 4766`, `Community 4768`, `Community 3889`, `Community 3902`, `Community 3906`, `Community 323`, `Community 328`, `Community 331`, `Community 1998`, `Community 2012`, `Community 375`, `Community 4321`, `Community 4324`, `Community 2021`, `Community 2539`, `Community 2030`, `Community 4334`, `Community 372`, `Community 2039`, `Community 4345`, `Community 254`?**
-  _High betweenness centrality (0.014) - this node is a cross-community bridge._
+  _High betweenness centrality (0.011) - this node is a cross-community bridge._
 - **What connects `PreToolUse`, `name`, `private` to the rest of the system?**
-  _19203 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _19210 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Community 0` be split into smaller, more focused modules?**
   _Cohesion score 0.036487322201607914 - nodes in this community are weakly interconnected._
 - **Should `Community 1` be split into smaller, more focused modules?**
-  _Cohesion score 0.1164021164021164 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.11875843454790823 - nodes in this community are weakly interconnected._
 - **Should `Community 2` be split into smaller, more focused modules?**
-  _Cohesion score 0.05311250713877784 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.1341991341991342 - nodes in this community are weakly interconnected._
