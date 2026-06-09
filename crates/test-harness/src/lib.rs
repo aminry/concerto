@@ -65,9 +65,13 @@ pub type Result<T> = std::result::Result<T, HarnessError>;
 
 /// Default budget for the socket-appearance wait in [`CoreUnderTest::spawn`].
 ///
-/// 15 s matches `scripts/smoke.sh`'s budget so the harness and the smoke
-/// gate agree on what "the Core didn't come up" means.
-pub const SPAWN_SOCKET_TIMEOUT: Duration = Duration::from_secs(15);
+/// In isolation a freshly-built Core binds its UDS socket in ~6-8 s, but under
+/// `cargo test --workspace` the spawn competes with parallel build/test load
+/// for CPU and I/O, and a 15 s budget timed out spuriously (`SocketTimeout`).
+/// 60 s keeps the "the Core didn't come up" signal meaningful while tolerating
+/// heavy contention — matching the repo's pattern of widening integration-test
+/// timeouts. Centralized here so every harness-spawned-Core test benefits.
+pub const SPAWN_SOCKET_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Budget for the graceful-shutdown SIGTERM path in
 /// [`CoreUnderTest::shutdown`]. After this elapses we escalate to SIGKILL.
