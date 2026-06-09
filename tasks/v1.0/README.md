@@ -221,7 +221,7 @@ The hardest phase and the dependency root for all remote features. Heavy Tier-2 
 | 318 | Scheduler `wait_for_check_runs` primitive (poll + backoff + webhook), consumed by PR-set merge | 315 | 1 | rust |
 | 319 | PR-set semantics: implicit per-workarea, `merge_order`, `GetPrSet` | 308, 313 | 1 | rust |
 | 320 | Coordinated merge loop (merge → wait_for_check_runs → continue/pause-on-fail) + coordinated revert | 318, 319 | 2 | rust |
-| 320.5 | Linear/Jira issue write-back on coordinated-merge completion (per-project opt-in; reuses 317's seam; added 2026-06-05 per decision D5) | 317, 320 | 2 | rust |
+| 320.5 | Linear/Jira issue write-back on coordinated-merge completion (per-workspace opt-in; reuses 317's seam; added 2026-06-05 per decision D5) | 317, 320 | 2 | rust |
 | 321 | LLM-composed PR title/body (on by default, 2s deterministic fallback) | 313, 312, 310 | 1 | rust |
 | 322 | Desktop: multi-repo session UI + sparse-cone picker | 302, 306, 218 | 2 | web-ts |
 | 323 | Desktop: parallel workareas + multi-agent session tabs UI | 308, 218 | 2 | web-ts |
@@ -263,8 +263,8 @@ Wholly new. Depends on 03/04/05/07/13 (all present after P3) and 14 (`notify_use
 | 502 | SQLite inbox + chronological feed + dedup window | 501 | 1 | rust |
 | 503 | `PushBackend` trait + `ExpoPushBackend` (BYO Expo creds) + ID-only wakeup payload | 501 | 2 | rust |
 | 504 | Post-wakeup `GetNotification` over E2EE + multi-device fan-out + first-to-approve-wins + active-viewing detection | 503, 209 | 2 | rust |
-| 505 | `ActOnChip`→ResolveApproval/SendMessage + per-project opt-out + prefs | 504 | 1 | rust |
-| 506 | Privacy property test: no PII in WakeupPayload; no body for enterprise-private projects | 503 | 1 | rust |
+| 505 | `ActOnChip`→ResolveApproval/SendMessage + per-workspace opt-out + prefs | 504 | 1 | rust |
+| 506 | Privacy property test: no PII in WakeupPayload; no body for enterprise-private workspaces | 503 | 1 | rust |
 | 507 | `Notifications` gRPC service + `NotificationHandle`; wire Maestro `notify_user` live | 504, 407 | 1 | rust |
 | 508 | `apps/mobile` Expo scaffold + EAS config + shared `packages/` proto-client extraction | — | 2 | rn-mobile |
 | 509 | `ConcertoIroh` native module (Rust→C→JSI iOS / Rust→JNI Android) + XCFramework/.aar + CI | 212, 508 | 2 | rn-mobile |

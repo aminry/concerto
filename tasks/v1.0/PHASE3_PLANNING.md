@@ -30,7 +30,7 @@ contradicts a §4 contract, that's a Stop-and-ask, not a silent re-lock.
 | **D6** | OAuth flow on a headless/remote Core (317) | **Desktop-mediated OAuth**: the Desktop runs the 3LO dance in its webview and ships the resulting token to the Core over the paired transport → keychain. **Linear also accepts a personal API key** (simple path). No redirect URI invented for a tray-less Core. | 317 |
 | **D7** | `merge_order` + PR-set merge ownership | **Default = insertion order** (`max(merge_order)+1` per workarea); **`SetMergeOrder` RPC (319)** lets the user reorder; **324** UI drag writes it. No dependency-graph inference (that's `R-6`/V2.0). Coordinated-merge RPCs live on the **`Workareas`** gRPC service next to the existing `GetWorkareaPrSet` (03 owns the merge loop). | 319, 320, 324 |
 | **D8** | Desktop "Code & PRs" IA | **Follow `design/15 §3.4`** (center-bottom region, Level-1 repo selector + Level-2 Diff/Checks/PR tabs). V0.1 shipped these as flat right-rail tabs with no repo dimension; 322 *needs* the repo dimension. Record the right-rail→center move as **drift in the 322 Handoff**. | 322, 324 |
-| **D9** | Migration & settings-schema coordination | (a) **Migration-number reservation table** (§3) — each task owns a fixed number. (b) **Canonicalize `managed.json` on camelCase** per `design/12 §3.8`, with **serde `alias`** for the already-shipped snake_case keys (back-compat), noted as a one-line design-amendment in 310. (c) The published `project_settings.json` schema artifact (editor autocomplete) → folded into **310**. | 307, 310, 313, 315, 319 |
+| **D9** | Migration & settings-schema coordination | (a) **Migration-number reservation table** (§3) — each task owns a fixed number. (b) **Canonicalize `managed.json` on camelCase** per `design/12 §3.8`, with **serde `alias`** for the already-shipped snake_case keys (back-compat), noted as a one-line design-amendment in 310. (c) The published `workspace_settings.json` schema artifact (editor autocomplete) → folded into **310**. | 307, 310, 313, 315, 319 |
 
 ---
 
@@ -45,7 +45,7 @@ contradicts a §4 contract, that's a Stop-and-ask, not a silent re-lock.
 | 305 | `suggest_cones` | **Rust trait seam only**, unwired (delegates to Maestro 08, P4). The telemetry (`ConeStats` / `EstimateConeSize`) IS implemented in P3 (reads the git index). |
 | 307 | `finished` / `partial` workarea status | **Both added** as persisted statuses (migration **0009**, recreate-table to widen the `workareas.status` CHECK) + FSM states + the proto status-comment. `partial` = a multi-repo workarea where ≥1 repo's `git worktree add` failed (`design/03 §8`). |
 | 308 | per-workarea edit mutex placement | A **shared `EditMutexRegistry`** (`HashMap<WorkareaId, Arc<Mutex<()>>>`) in a neutral module both the workarea owner (03) and the supervisor (04) hold an `Arc` to. |
-| 309 | reference worktree for files-to-copy | **First repo by `workspace_repos.position`** (the ordering column 306 adds — see §3). No per-project designation field in V1.0. |
+| 309 | reference worktree for files-to-copy | **First repo by `workspace_repos.position`** (the ordering column 306 adds — see §3). No per-workspace designation field in V1.0. |
 | 311 | `exclude_from_maestro` surface | **Typed proto `bool` on the `Workarea` message** (next free field number), derived from `workareas.settings_json.exclude_from_maestro`. Sets the precedent for future derived settings keys. |
 | 312 / 321 | one-shot LLM ownership | **312 owns** `crates/core/src/llm/oneshot.rs`: the `OneShotLlm` trait + a `DeterministicOneShot` impl (LIVE) + `compose_action_prompt` (reads 310's resolved `action_prefs`). **321 reuses** it for PR title/body — adds no new LLM machinery. |
 | 313 | `fetch_issue` routing | GitHub `fetch_issue(repo, number)` stays on the `VcsProvider` trait; a top-level `VcsHandle::fetch_issue(url)` **router** dispatches GitHub-vs-Linear-vs-Jira by URL host (`design/13 §6.1`). |
@@ -79,7 +79,7 @@ column, a `settings_json`/JSON key, the keychain, or repo-local state).
 
 311 (`exclude_from_maestro`) = `workareas.settings_json` JSON key, **no migration**.
 302/305 = existing columns / git index, **no migration**.
-320.5 (write-back enable) = `projects.settings_json` JSON key, **no migration**.
+320.5 (write-back enable) = `workspaces.settings_json` JSON key, **no migration**.
 
 ---
 
@@ -131,7 +131,7 @@ bool done = 3; }` (304). `CloneStrategy` enum serializing to the existing
 | Task | Goal | Deps | Tier | Type |
 |---|---|---|---|---|
 | **315.0** | Amend `design/11`/`design/13`: relay→Core inbound-webhook framing on the new `0x04` Webhook channel (envelope, endpoint targeting, offline-Core drop). Runs before 315. (doc, like Task 200.) | 215 | 3 | doc |
-| **320.5** | Linear/Jira issue **write-back** on coordinated-merge completion (transition issue status; per-project opt-in via `projects.settings_json`; reuses 317's `write_back` seam + the `testkit` doubles). | 317, 320 | 2 | rust |
+| **320.5** | Linear/Jira issue **write-back** on coordinated-merge completion (transition issue status; per-workspace opt-in via `workspaces.settings_json`; reuses 317's `write_back` seam + the `testkit` doubles). | 317, 320 | 2 | rust |
 
 ---
 
