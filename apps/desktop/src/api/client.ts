@@ -20,6 +20,11 @@ export type RpcMethod =
   | "Workareas.ListWorkareas"
   | "Workareas.CreateWorkarea"
   | "Workareas.GetWorkareaRepoDiff"
+  // The workarea-scoped repo list (the repos materialized in the workarea via
+  // the `workarea_repos` junction) backing the Diff panel — distinct from the
+  // unscoped global `Repositories.ListRepositories`. Matches the Rust shell
+  // dispatch arm.
+  | "Workareas.ListWorkareaRepos"
   | "Repositories.AddRepository"
   | "Repositories.ListRepositories"
   // DS-1 — pre-clone size probe (Task 301) backing the add-repo

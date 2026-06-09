@@ -21,15 +21,15 @@ use concerto_proto::v1::workareas_server::Workareas as WorkareasService;
 use concerto_proto::v1::{
     merge_progress, ArchiveWorkareaRequest, CreateWorkareaRequest, DiffHunk as ProtoDiffHunk,
     DiffKind as ProtoDiffKind, DiffPayload as ProtoDiffPayload, FailureKind as ProtoFailureKind,
-    FileDiff as ProtoFileDiff, GetDiffRequest, GetWorkareaPrSetResponse, ListWorkareasRequest,
-    ListWorkareasResponse, MergePlan as ProtoMergePlan, MergeProgress as ProtoMergeProgress,
-    MergeSetMerged, MergeSetPaused, MergeStep as ProtoMergeStep, MergeStepCompleted,
-    MergeStepFailed, MergeStepStarted, MergeWorkareaPrSetRequest, PermissionMode,
-    PullRequest as ProtoPullRequest, RevertOutcome as ProtoRevertOutcome,
-    RevertReport as ProtoRevertReport, RevertStep as ProtoRevertStep, RevertWorkareaPrSetRequest,
-    SetMergeOrderRequest, SetWorkareaBypassDestructiveGuardRequest,
-    SetWorkareaExcludeFromMaestroRequest, UpdateWorkareaPermissionModeRequest,
-    Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
+    FileDiff as ProtoFileDiff, GetDiffRequest, GetWorkareaPrSetResponse, ListWorkareaReposRequest,
+    ListWorkareaReposResponse, ListWorkareasRequest, ListWorkareasResponse,
+    MergePlan as ProtoMergePlan, MergeProgress as ProtoMergeProgress, MergeSetMerged,
+    MergeSetPaused, MergeStep as ProtoMergeStep, MergeStepCompleted, MergeStepFailed,
+    MergeStepStarted, MergeWorkareaPrSetRequest, PermissionMode, PullRequest as ProtoPullRequest,
+    RevertOutcome as ProtoRevertOutcome, RevertReport as ProtoRevertReport,
+    RevertStep as ProtoRevertStep, RevertWorkareaPrSetRequest, SetMergeOrderRequest,
+    SetWorkareaBypassDestructiveGuardRequest, SetWorkareaExcludeFromMaestroRequest,
+    UpdateWorkareaPermissionModeRequest, Workarea as ProtoWorkarea, WorkareaId as ProtoWorkareaId,
 };
 use concerto_vcs::provider::MergeMethod;
 use futures::Stream;
@@ -136,6 +136,32 @@ impl WorkareasService for WorkareasHandler {
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(diff_payload_to_proto(payload)))
+    }
+
+    #[tracing::instrument(skip_all, name = "Workareas::ListWorkareaRepos")]
+    async fn list_workarea_repos(
+        &self,
+        request: Request<ListWorkareaReposRequest>,
+    ) -> Result<Response<ListWorkareaReposResponse>, Status> {
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        let id = PersistWorkareaId(req.workarea_id);
+        // The workarea-scoped repo list: only the repos materialized in this
+        // workarea (the `workarea_repos` junction), NOT the global registry.
+        // A NotFound / repo-less workarea resolves to an empty list.
+        let rows = self
+            .workarea_manager
+            .list_repos(&id)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(ListWorkareaReposResponse {
+            repositories: rows
+                .into_iter()
+                .map(crate::handlers::repositories::repository_to_proto)
+                .collect(),
+        }))
     }
 
     #[tracing::instrument(skip_all, name = "Workareas::ArchiveWorkarea")]

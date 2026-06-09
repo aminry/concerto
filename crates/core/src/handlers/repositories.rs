@@ -388,7 +388,7 @@ pub fn cone_suggest_error_to_status(err: ConeSuggestError) -> Status {
 }
 
 /// Convert a persisted `Repository` into the wire shape.
-fn repository_to_proto(row: concerto_persist::Repository) -> Repository {
+pub(crate) fn repository_to_proto(row: concerto_persist::Repository) -> Repository {
     Repository {
         id: row.id.to_string(),
         name: row.name,

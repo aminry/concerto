@@ -7,7 +7,7 @@
 //! `IssueDetail`) onto the trait value types, and preserves the V0.1 token
 //! hygiene (never logs subprocess stdout/stderr — only command name + arg count,
 //! enforced inside `gh_cli::run_gh`), the `which`-style `gh`/`gh.exe` resolution,
-//! and the `--title-file`/`--body-file` temp-file path.
+//! and the inline-`--title` + `--body-file` temp-file path.
 //!
 //! The GraphQL methods + `revert_pr` are signature-frozen stubs here too — `gh`
 //! could shell out for some of these later, but freezing the surface now keeps

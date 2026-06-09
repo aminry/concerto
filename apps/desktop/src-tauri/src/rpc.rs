@@ -18,13 +18,15 @@ use concerto_proto::v1::schedules_client::SchedulesClient;
 use concerto_proto::v1::sessions_client::SessionsClient;
 use concerto_proto::v1::skills_client::SkillsClient;
 use concerto_proto::v1::streams_client::StreamsClient;
+use concerto_proto::v1::vcs_client::VcsClient;
 use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
-    AddRepoRequest, CreateSessionRequest, CreateWorkareaRequest, CreateWorkspaceRequest,
-    EstimateConeSizeRequest, EstimateRepoSizeRequest, GetDiffRequest, ListRepositoriesRequest,
-    ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListTreeRequest,
-    ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest, PermissionMode,
+    AddRepoRequest, CreatePrRequest, CreateSessionRequest, CreateWorkareaRequest,
+    CreateWorkspaceRequest, EstimateConeSizeRequest, EstimateRepoSizeRequest, GetChecksRequest,
+    GetDiffRequest, GetPrRequest, ListRepositoriesRequest, ListSchedulesRequest,
+    ListSessionsRequest, ListSkillsRequest, ListTreeRequest, ListWorkareaReposRequest,
+    ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest, MergePrRequest, PermissionMode,
     ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest,
     SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest, UpdateWorkspaceRequest,
     WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId, WorkspaceRepoSpec,
@@ -153,6 +155,11 @@ struct GetWorkareaRepoDiffPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct ListWorkareaReposPayload {
+    workarea_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct AddRepositoryPayload {
     name: String,
     #[serde(default)]
@@ -232,6 +239,38 @@ struct ListMcpServersPayload {
     scope: Option<String>,
     #[serde(default)]
     repository_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetChecksPayload {
+    repository_id: String,
+    sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetPullRequestPayload {
+    repository_id: String,
+    pr_number: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatePullRequestPayload {
+    workarea_id: String,
+    repository_id: String,
+    #[serde(default)]
+    base: String,
+    head: String,
+    title: String,
+    #[serde(default)]
+    body: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MergePullRequestPayload {
+    repository_id: String,
+    pr_number: i64,
+    #[serde(default)]
+    method: String,
 }
 
 /// Dispatch one unary `"<Service>.<Rpc>"` call over an already-resolved channel.
@@ -337,6 +376,18 @@ where
                 .get_workarea_repo_diff(GetDiffRequest {
                     workarea_id: req.workarea_id,
                     repository_id: req.repository_id,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Workareas.ListWorkareaRepos" => {
+            let req: ListWorkareaReposPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for ListWorkareaRepos: {e}"))
+            })?;
+            let mut client = WorkareasClient::new(channel);
+            client
+                .list_workarea_repos(ListWorkareaReposRequest {
+                    workarea_id: req.workarea_id,
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
@@ -614,6 +665,62 @@ where
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Vcs.GetChecks" => {
+            let req: GetChecksPayload = serde_json::from_value(payload)
+                .map_err(|e| CoreClientError::Rpc(format!("invalid payload for GetChecks: {e}")))?;
+            let mut client = VcsClient::new(channel);
+            client
+                .get_checks(GetChecksRequest {
+                    repository_id: req.repository_id,
+                    sha: req.sha,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Vcs.GetPullRequest" => {
+            let req: GetPullRequestPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for GetPullRequest: {e}"))
+            })?;
+            let mut client = VcsClient::new(channel);
+            client
+                .get_pull_request(GetPrRequest {
+                    repository_id: req.repository_id,
+                    pr_number: req.pr_number,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Vcs.CreatePullRequest" => {
+            let req: CreatePullRequestPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for CreatePullRequest: {e}"))
+            })?;
+            let mut client = VcsClient::new(channel);
+            client
+                .create_pull_request(CreatePrRequest {
+                    workarea_id: req.workarea_id,
+                    repository_id: req.repository_id,
+                    base: req.base,
+                    head: req.head,
+                    title: req.title,
+                    body: req.body,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Vcs.MergePullRequest" => {
+            let req: MergePullRequestPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for MergePullRequest: {e}"))
+            })?;
+            let mut client = VcsClient::new(channel);
+            client
+                .merge_pull_request(MergePrRequest {
+                    repository_id: req.repository_id,
+                    pr_number: req.pr_number,
+                    method: req.method,
+                })
+                .await
+                .map(|_| Value::Null)
         }
         other => return Err(CoreClientError::NotImplemented(other.to_string())),
     };

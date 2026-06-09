@@ -2143,6 +2143,22 @@ enum RevertOutcome {
 }
 ```
 
+### message `ListWorkareaReposRequest`
+
+```proto
+message ListWorkareaReposRequest {
+  string workarea_id = 1;
+}
+```
+
+### message `ListWorkareaReposResponse`
+
+```proto
+message ListWorkareaReposResponse {
+  repeated Repository repositories = 1;
+}
+```
+
 ### service `Workareas`
 
 ```proto
@@ -2154,6 +2170,12 @@ service Workareas {
   // Task 29: hot-path diff. Returns the structured worktree-vs-HEAD
   // diff for one repo inside a workarea.
   rpc GetWorkareaRepoDiff(GetDiffRequest) returns (DiffPayload);
+  // List the repositories actually attached (materialized) to a workarea,
+  // read from the `workarea_repos` junction. Backs the Desktop Diff panel's
+  // repo list — `Repositories.ListRepositories` is the unscoped global
+  // registry and would offer repos this workarea never materialized (which
+  // `GetWorkareaRepoDiff` then rejects as "not attached").
+  rpc ListWorkareaRepos(ListWorkareaReposRequest) returns (ListWorkareaReposResponse);
   // Task 31: archive + restore lifecycle.
   //
   // `ArchiveWorkareaWithOpts` exposes the `remove_worktree` knob; the
