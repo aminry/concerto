@@ -80,7 +80,7 @@ async fn make_bare_with_commit() -> (String, TempDir, TempDir) {
     (format!("file://{}", bare.path().display()), bare, work)
 }
 
-async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, TempDir) {
+async fn make_repo_manager() -> (Arc<Persistence>, RepoManager, TempDir) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("concerto.db");
     let persistence = Persistence::open(PersistenceConfig {
@@ -90,14 +90,6 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
     .await
     .expect("open persistence");
     let persistence = Arc::new(persistence);
-    {
-        let mut writer = persistence.writer().await;
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-            .bind(project_id)
-            .execute(&mut *writer)
-            .await
-            .expect("insert project");
-    }
     let repos_root = tmp.path().join("repos");
     let manager = RepoManager::new(Arc::clone(&persistence), repos_root);
     (persistence, manager, tmp)
@@ -105,19 +97,12 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn add_persists_real_strategy_and_clone_routes_through_it() {
-    let (persistence, manager, _tmp) = make_repo_manager("p-strat").await;
+    let (persistence, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     // add_repository with a real Blobless strategy — no more hardcoded "full".
     let repo = manager
-        .add_repository(
-            "p-strat",
-            "fixture",
-            &url,
-            "main",
-            CloneStrategy::Blobless,
-            false,
-        )
+        .add_repository("fixture", &url, "main", CloneStrategy::Blobless, false)
         .await
         .expect("add_repository");
     assert_eq!(
@@ -151,18 +136,11 @@ async fn add_persists_real_strategy_and_clone_routes_through_it() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn clone_writes_concerto_state_json_with_size_and_object_count() {
-    let (_persistence, manager, _tmp) = make_repo_manager("p-state").await;
+    let (_persistence, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository(
-            "p-state",
-            "fixture",
-            &url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("fixture", &url, "main", CloneStrategy::Full, false)
         .await
         .expect("add_repository");
     manager
@@ -195,7 +173,7 @@ async fn clone_writes_concerto_state_json_with_size_and_object_count() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn estimate_size_returns_populated_report_recommending_full() {
-    let (_persistence, manager, _tmp) = make_repo_manager("p-est").await;
+    let (_persistence, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let report = manager.estimate_size(&url).await.expect("estimate_size");

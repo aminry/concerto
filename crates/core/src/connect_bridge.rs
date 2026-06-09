@@ -219,13 +219,11 @@ async fn build_and_serve(
     shutdown: CancellationToken,
 ) -> Result<()> {
     use crate::handlers::files::FilesHandler;
-    use crate::handlers::projects::ProjectsHandler;
     use crate::handlers::repositories::RepositoriesHandler;
     use crate::handlers::runtime::RuntimeHandler;
     use crate::handlers::workareas::WorkareasHandler;
     use crate::handlers::workspaces::WorkspacesHandler;
     use concerto_proto::v1::files_server::FilesServer;
-    use concerto_proto::v1::projects_server::ProjectsServer;
     use concerto_proto::v1::repositories_server::RepositoriesServer;
     use concerto_proto::v1::runtime_server::RuntimeServer;
     use concerto_proto::v1::workareas_server::WorkareasServer;
@@ -262,19 +260,16 @@ async fn build_and_serve(
         .add_service(runtime_service);
 
     if let Some(persistence) = persistence {
-        // Same construction as `run_uds`: `Files` shares the `Persistence`
-        // handle (workarea → worktree scope) and the `home` deny-list root;
-        // then `Projects` takes the original Arc.
+        // Same construction as `run_uds`: `Files` owns the `Persistence`
+        // handle (workarea → worktree scope) and the `home` deny-list root.
         if let Some(home) = home::home_dir() {
-            let files_service = FilesServer::new(FilesHandler::new(persistence.clone(), home));
+            let files_service = FilesServer::new(FilesHandler::new(persistence, home));
             builder = builder.add_service(files_service);
         } else {
             tracing::warn!(
                 "home::home_dir() returned None; Files service omitted from Connect-Web bridge"
             );
         }
-        let projects_service = ProjectsServer::new(ProjectsHandler::new(persistence));
-        builder = builder.add_service(projects_service);
     }
     if let Some(repo_manager) = repo_manager {
         let repositories_service = RepositoriesServer::new(RepositoriesHandler::new(repo_manager));

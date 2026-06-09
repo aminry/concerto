@@ -3,10 +3,13 @@
 //! Owns the persistence-side API for the V0.1 surface of
 //! `crates/gix-wrap`. Schema is locked by migration 0001 (Task 09):
 //!
+//! Repositories are a global registry after the Project→Workspace
+//! collapse (D9): there is no parent project, and `url`/`name` are
+//! globally unique. Schema is locked by migration 0001:
+//!
 //! ```sql
 //! CREATE TABLE repositories (
 //!     id TEXT PRIMARY KEY,
-//!     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 //!     name TEXT NOT NULL,
 //!     url TEXT NOT NULL,
 //!     local_path TEXT NOT NULL,
@@ -15,8 +18,8 @@
 //!     cone_defaults_json TEXT NOT NULL DEFAULT '[]',
 //!     fs_monitor_pid INTEGER,
 //!     last_fetch_at INTEGER,
-//!     UNIQUE(project_id, url),
-//!     UNIQUE(project_id, name)
+//!     UNIQUE(url),
+//!     UNIQUE(name)
 //! );
 //! ```
 //!
@@ -42,12 +45,11 @@ pub async fn insert(conn: &mut SqliteConnection, repo: NewRepository) -> Result<
     let id = repo.id.clone();
     sqlx::query(
         "INSERT INTO repositories (
-            id, project_id, name, url, local_path,
+            id, name, url, local_path,
             clone_strategy, default_branch
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+         ) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&id.0)
-    .bind(&repo.project_id)
     .bind(&repo.name)
     .bind(&repo.url)
     .bind(&repo.local_path)
@@ -62,7 +64,7 @@ pub async fn insert(conn: &mut SqliteConnection, repo: NewRepository) -> Result<
 /// Fetch one repository by id (read-only).
 pub async fn get(pool: &SqlitePool, id: &RepositoryId) -> Result<Option<Repository>> {
     let row = sqlx::query(
-        "SELECT id, project_id, name, url, local_path,
+        "SELECT id, name, url, local_path,
                 clone_strategy, default_branch, cone_defaults_json,
                 action_prefs_json, last_fetch_at, fs_monitor_pid
          FROM repositories WHERE id = ?",
@@ -74,31 +76,32 @@ pub async fn get(pool: &SqlitePool, id: &RepositoryId) -> Result<Option<Reposito
     Ok(row.map(row_to_repository))
 }
 
-/// List repositories in a project (read-only). Sorted by `name` for
-/// deterministic UI output.
-pub async fn list_by_project(pool: &SqlitePool, project_id: &str) -> Result<Vec<Repository>> {
-    let rows = sqlx::query(
-        "SELECT id, project_id, name, url, local_path,
+/// Fetch one repository by `url` (read-only) — the registry de-dup lookup
+/// (D9). The Core checks this before cloning a URL so an already-present
+/// repository is reused rather than re-registered.
+pub async fn get_by_url(pool: &SqlitePool, url: &str) -> Result<Option<Repository>> {
+    let row = sqlx::query(
+        "SELECT id, name, url, local_path,
                 clone_strategy, default_branch, cone_defaults_json,
                 action_prefs_json, last_fetch_at, fs_monitor_pid
-         FROM repositories WHERE project_id = ? ORDER BY name",
+         FROM repositories WHERE url = ?",
     )
-    .bind(project_id)
-    .fetch_all(pool)
+    .bind(url)
+    .fetch_optional(pool)
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
-    Ok(rows.into_iter().map(row_to_repository).collect())
+    Ok(row.map(row_to_repository))
 }
 
-/// List every repository in the database (read-only). The Task 28
-/// fsmonitor supervisor walks this list every 30s to probe each
-/// recorded daemon PID.
+/// List every repository in the database (read-only). Sorted by `name`
+/// for deterministic UI output. The Task 28 fsmonitor supervisor also
+/// walks this list every 30s to probe each recorded daemon PID.
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Repository>> {
     let rows = sqlx::query(
-        "SELECT id, project_id, name, url, local_path,
+        "SELECT id, name, url, local_path,
                 clone_strategy, default_branch, cone_defaults_json,
                 action_prefs_json, last_fetch_at, fs_monitor_pid
-         FROM repositories ORDER BY id",
+         FROM repositories ORDER BY name",
     )
     .fetch_all(pool)
     .await
@@ -167,7 +170,6 @@ pub async fn set_cone_defaults(
 fn row_to_repository(row: sqlx::sqlite::SqliteRow) -> Repository {
     Repository {
         id: RepositoryId(row.get::<String, _>("id")),
-        project_id: row.get::<String, _>("project_id"),
         name: row.get::<String, _>("name"),
         url: row.get::<String, _>("url"),
         local_path: row.get::<String, _>("local_path"),

@@ -1,38 +1,9 @@
-// Repositories service — V0.1 surface for adding a repository to a project,
-// cloning it onto disk, and listing per-project memberships.
+// Repositories service — global registry of repositories (not scoped to a
+// project). Cloning, sparse-cone management, and browsable repo-tree surface.
 //
-// Owned in design by `02_Repository_Manager.md`. V0.1 ships full clone only:
-// no sparse, no blobless, no treeless. Future tasks extend with sparse cones
-// (`Repositories.SetCones`), prewarm (`PrewarmBlobs`), fetch (`Fetch`), and
-// estimate (`EstimateConeSize`) — all locked at higher field numbers so they
-// land additively.
+// Owned in design by `02_Repository_Manager.md`.
 //
-// Field numbers in this file are FROZEN as of Task 18; Task 25 adds the
-// read-side `ListByProject` RPC + accompanying request / response messages
-// without re-numbering the existing fields.
-//
-// Task 301 (V1.0, design/02 §3.5/§7.1) appends the pre-clone
-// `EstimateRepoSize(EstimateRepoSizeRequest) → SizeReport` probe RPC after
-// `ListByProject` and adds `clone_strategy = 5` + `with_sparse = 6` to
-// `AddRepoRequest`. All existing RPCs + field numbers are unchanged.
-//
-// Task 302 (V1.0, design/02 §3.2/§5.1) appends the per-(workarea, repo)
-// `SetCones(SetConesRequest) → SetConesResponse` RPC after `EstimateRepoSize`
-// (cone-mode + sparse-index always). All existing RPCs + field numbers are
-// unchanged.
-//
-// Task 304 (V1.0, design/02 §3.3/§5.2) appends the idle blob prewarm RPC
-// `PrewarmBlobs(PrewarmRequest) → stream PrewarmProgress` after `SetCones`.
-// `PrewarmProgress` is FROZEN by PHASE3_PLANNING §4.6. All existing RPCs +
-// field numbers are unchanged. (Task 305 owns the sibling
-// `EstimateConeSize`/`ConeStats` shapes; the two tasks do not collide.)
-//
-// Task 305 (V1.0, design/02 §3.2/§5.1/§5.2) appends the cone-level telemetry
-// probe `EstimateConeSize(EstimateConeSizeRequest) → ConeStats` (unary) after
-// `PrewarmBlobs`. `ConeStats` + `EstimateConeSizeRequest` are FROZEN by
-// PHASE3_PLANNING §4.6. This is the post-clone, per-cone, git-index-read probe
-// — distinct from Task 301's pre-clone `EstimateRepoSize` and Task 304's blob
-// prewarm. All existing RPCs + field numbers are unchanged.
+// Field numbers re-locked 2026-06-08 (Project→Workspace collapse).
 
 syntax = "proto3";
 
@@ -40,13 +11,12 @@ package concerto.v1;
 
 import "google/protobuf/timestamp.proto";
 
-// Persistent shape of a repository row. Mirrors the V0.1 columns of the
-// `repositories` table (see `crates/persist/migrations/0001_initial_schema.sql`).
-// `clone_strategy` is always `"full"` in V0.1; the column accepts
-// `full | blobless | treeless` in anticipation of V1.0.
+// Persistent shape of a repository row. Mirrors the columns of the
+// `repositories` table (see `crates/persist/migrations/`).
+// `clone_strategy` accepts `full | blobless | treeless`.
 message Repository {
   string id = 1;
-  string project_id = 2;
+  // (field 2 was project_id, removed in the Project→Workspace collapse)
   string name = 3;
   string url = 4;
   string local_path = 5;
@@ -62,12 +32,14 @@ message Repository {
 }
 
 // Inputs for `Repositories.AddRepository`. The Repo Manager picks the
-// `repository_id` (UUIDv7) and the on-disk `local_path`
-// (`<data_dir>/repos/<id>/`). The caller supplies project membership, a
-// short name used in path segments, and the URL.
+// `repository_id` (UUIDv7) and the on-disk clone path
+// (`<data_dir>/repos/<id>/`). The caller supplies a short name used in
+// path segments and either a URL (clone into the shared pool) or a
+// local_path (adopt an existing on-disk git repo in place).
 message AddRepoRequest {
-  string project_id = 1;
   string name = 2;
+  // Exactly one of url / local_path is set. `url` -> clone into the shared
+  // pool; `local_path` -> adopt an existing on-disk git repo in place.
   string url = 3;
   // Optional explicit default branch. V0.1 accepts `"main"` as a fallback
   // when empty; later tasks may probe the remote.
@@ -82,6 +54,7 @@ message AddRepoRequest {
   // The size→strategy recommendation's "Blobless + Sparse" is
   // `clone_strategy = "blobless"` + `with_sparse = true`.
   bool with_sparse = 6;
+  string local_path = 7;
 }
 
 // Inputs for `Repositories.Clone`. The repository must already exist (via
@@ -107,12 +80,10 @@ message CloneProgress {
   bool done = 5;
 }
 
-// Inputs for `Repositories.ListByProject` (Task 25). The Desktop "Add
-// Repository" form uses this to render the list of repos already attached
-// to the active project so the New Workspace modal's repo picker has data.
-message ListRepositoriesRequest {
-  string project_id = 1;
-}
+// Inputs for Repositories.ListRepositories. Repositories are a global
+// registry (Project→Workspace collapse), so listing is unscoped — the
+// New Workspace repo picker shows every registered repo.
+message ListRepositoriesRequest {}
 
 message ListRepositoriesResponse {
   repeated Repository repositories = 1;
@@ -244,32 +215,23 @@ message ListTreeResponse { repeated TreeEntry entries = 1; }
 // Inputs for `Repositories.SetRepoConeDefaults` (design/02 §3.2). Sets the
 // repository's default sparse cone (`repositories.cone_defaults_json`) AND
 // propagates it to every existing workarea of the repo (re-applying the
-// cone to each workarea worktree). `cone_paths` are forward-slash,
+// cone to each workarea worktree). `cone_defaults` are forward-slash,
 // repo-root-relative directory paths; `[]` clears the default. An invalid
 // path (absent from the repo index) is rejected with INVALID_ARGUMENT
 // before anything is persisted.
 message SetRepoConeDefaultsRequest {
   string repository_id = 1;
-  repeated string cone_paths = 2;
-}
-
-// Result of `Repositories.SetRepoConeDefaults`. Echoes the applied cone
-// set and reports how many existing workareas were successfully
-// re-applied (propagation is best-effort per workarea — a workarea with
-// conflicting local changes is skipped with a warning and not counted).
-message SetRepoConeDefaultsResponse {
-  repeated string cone_paths = 1;
-  uint32 workareas_updated = 2;
+  repeated string cone_defaults = 2;
 }
 
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
-  rpc ListByProject(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListRepositoriesResponse);
   rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
   rpc SetCones(SetConesRequest) returns (SetConesResponse);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
   rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
   rpc ListTree(ListTreeRequest) returns (ListTreeResponse);
-  rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (SetRepoConeDefaultsResponse);
+  rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (Repository);
 }

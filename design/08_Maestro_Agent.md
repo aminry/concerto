@@ -22,7 +22,7 @@ It owns:
 - **Digest generation** — periodic and on-demand rolling summaries across active workareas.
 - **Per-workarea summary cache** — short summaries of workarea state (plus its sessions' last turns), refreshed as workareas work.
 - **Routing parser** — `@workarea` / `@workarea/session` / `@all` / `@idle` / `@blocked` / `/digest` / `/pause` / `/new`.
-- **Privacy enforcement** — what the Maestro can read from each workarea (summary-only by default; full chat opt-in per project).
+- **Privacy enforcement** — what the Maestro can read from each workarea (summary-only by default; full chat opt-in per workspace).
 - **Maestro chat history** — persisted like any chat; with daily condense pass.
 - **Cost guardrails** — per-day token cap; cheap-model default.
 
@@ -115,7 +115,7 @@ pub struct RepoSummary {
 
 **Per-workarea privacy toggle:** if `workareas.settings_json.exclude_from_maestro = true`, only the hard facts (status, branch, repo names) are exposed; summaries are blanked. The workarea shows up as `[private workarea, name only]` in the Maestro's view.
 
-**Per-project full-chat access:** `projects.settings_json.concerto_chat_full_chat_access = true` lifts the Maestro out of summary-only and grants it the raw last-3-turns of chat (per session). Off by default.
+**Per-workspace full-chat access:** `workspaces.settings_json.concerto_chat_full_chat_access = true` lifts the Maestro out of summary-only and grants it the raw last-3-turns of chat (per session). Off by default.
 
 ### 3.4 Summary generation
 
@@ -414,7 +414,7 @@ The Maestro subscribes to `session.events.*` for every active session. On `TurnC
 
 Hard facts (commits ahead, PR state, CI) are pulled from 03 + 13 caches on demand.
 
-If `concerto_chat_full_chat_access = true` for a project: the summary cache also pulls last-3-turn raw text and stores it.
+If `concerto_chat_full_chat_access = true` for a workspace: the summary cache also pulls last-3-turn raw text and stores it.
 
 ### 6.3 Routing pre-parse implementation
 

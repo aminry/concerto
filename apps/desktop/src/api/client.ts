@@ -11,8 +11,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type RpcMethod =
   | "Runtime.GetServerCapabilities"
-  | "Projects.ListProjects"
-  | "Projects.CreateProject"
   | "Workspaces.ListWorkspaces"
   | "Workspaces.GetWorkspace"
   | "Workspaces.CreateWorkspace"
@@ -21,7 +19,7 @@ export type RpcMethod =
   | "Workareas.CreateWorkarea"
   | "Workareas.GetWorkareaRepoDiff"
   | "Repositories.AddRepository"
-  | "Repositories.ListByProject"
+  | "Repositories.ListRepositories"
   // DS-1 — pre-clone size probe (Task 301) backing the add-repo
   // size→strategy recommendation. Matches the Rust shell dispatch arm.
   | "Repositories.EstimateRepoSize"

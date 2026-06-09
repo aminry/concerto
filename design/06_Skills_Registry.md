@@ -13,11 +13,11 @@ It owns:
 - **Discovery** across the four scopes — enterprise (managed), personal (`~/.claude/skills/`), project (`.claude/skills/`), plugin (`<plugin>/skills/`).
 - **Marketplace** integration — Git-URL-based marketplaces (Anthropic's, Awesome Skills, custom).
 - **Install / uninstall / update.**
-- **Per-project enable/disable** without uninstalling.
+- **Per-workspace enable/disable** without uninstalling.
 - **Visibility overrides** — the four states (`on` / `name-only` / `user-invocable-only` / `off`).
 - **Slash commands** — `.claude/commands/*.md` and `.codex/commands/*.md` are treated as skills with default frontmatter (PRD §11.3) and appear in the same explorer.
 - **Sandbox testing** — "Try this skill" launches a scratch chat with the skill pre-invoked.
-- **Last-invocation tracking** — when each skill was last used in each project (PRD §11.1).
+- **Last-invocation tracking** — when each skill was last used in each workspace (PRD §11.1).
 - **Enterprise-managed skills** — pinned via managed settings; cannot be uninstalled by user.
 
 It does **not** own: the skill execution loop (the agent does that); the SKILL.md format (that's the agent's standard, we just read it).
@@ -28,7 +28,7 @@ It does **not** own: the skill execution loop (the agent does that); the SKILL.m
 
 | Phase | What ships |
 |---|---|
-| **V0.1** | Discovery across all four scopes. Per-project enable/disable. Visibility overrides. Slash commands surfaced together. No marketplace. |
+| **V0.1** | Discovery across all four scopes. Per-workspace enable/disable. Visibility overrides. Slash commands surfaced together. No marketplace. |
 | **V1.0** | + marketplace add by Git URL. + install / uninstall / update. + version pinning (commit SHA / tag / branch). + scheduled marketplace refresh. + sandboxed "Try this skill". + last-invocation tracking. + enterprise-managed allow/deny lists. + diff view between installed and upstream when an update is available. |
 | **V2.0** | + signature-verification on marketplaces (when the marketplace publishes a pubkey). + skill telemetry (opt-in: per-skill usage histograms shared back to skill authors). + AI-ranked skill suggestions (Maestro recommends installing a skill that fits a recurring user pattern). |
 
@@ -123,7 +123,7 @@ Already-installed skills remain functional; they're local files.
 
 ### 3.5 Visibility overrides
 
-**Choice:** Each skill has a per-(scope × project) override matrix:
+**Choice:** Each skill has a per-(scope × workspace) override matrix:
 
 ```
 state ∈ { on, name-only, user-invocable-only, off }
@@ -136,13 +136,13 @@ state ∈ { on, name-only, user-invocable-only, off }
 | `user-invocable-only` | No | Yes | Yes |
 | `off` | No | No | No |
 
-This matches Claude Code's `skillOverrides` setting. The registry persists these per `(skill_id, scope, project_id)` in `skills_index` augmented rows; the agent reads them via the skills-config writeback below.
+This matches Claude Code's `skillOverrides` setting. The registry persists these per `(skill_id, scope, workspace_id)` in `skills_index` augmented rows; the agent reads them via the skills-config writeback below.
 
 ### 3.6 Writing back to the agent's config files
 
 **Choice:** When the user toggles a skill in our UI, we write back to the agent's config files where the agent expects them:
 
-- Per-project: `.claude/settings.json` (the `skillOverrides` section).
+- Per-repo: `.claude/settings.json` (the `skillOverrides` section).
 - Personal: `~/.claude/settings.json` ditto.
 - Project `.mcp.json` if MCP is part of the toggle.
 
@@ -173,15 +173,15 @@ Primary table: `skills_index` (09 §4.5). The full schema is small enough to rep
 ```sql
 CREATE TABLE skills_index (
     id              TEXT PRIMARY KEY,
-    scope           TEXT NOT NULL,                     -- personal | project | plugin | enterprise
-    project_id      TEXT REFERENCES projects(id),
+    scope           TEXT NOT NULL,                     -- personal | workspace | plugin | enterprise
+    workspace_id    TEXT REFERENCES workspaces(id),
     name            TEXT NOT NULL,
     description     TEXT,
     path            TEXT NOT NULL,                     -- filesystem path to skill dir
     marketplace_id  TEXT,                              -- which marketplace it came from
     pinned_version  TEXT,                              -- commit SHA or tag
     visibility      TEXT NOT NULL DEFAULT 'on',        -- on | name-only | user-invocable-only | off
-    enabled         INTEGER NOT NULL DEFAULT 1,        -- per-project enable
+    enabled         INTEGER NOT NULL DEFAULT 1,        -- per-workspace enable
     last_used_at    INTEGER,
     invocation_count INTEGER NOT NULL DEFAULT 0,
     kind            TEXT NOT NULL DEFAULT 'skill'      -- skill | slash_command
@@ -198,7 +198,7 @@ CREATE TABLE marketplaces (
 );
 ```
 
-The `skills_index` row is rebuilt by the discovery scan; durable fields (visibility, enabled, last_used_at, invocation_count) are preserved across rescans by keying on `(scope, name, project_id)`.
+The `skills_index` row is rebuilt by the discovery scan; durable fields (visibility, enabled, last_used_at, invocation_count) are preserved across rescans by keying on `(scope, name, workspace_id)`.
 
 ---
 
@@ -215,9 +215,9 @@ impl SkillsRegistryHandle {
     pub async fn list_skills(&self, filter: ListSkillsFilter) -> Result<Vec<Skill>>;
     pub async fn get_skill(&self, id: SkillId) -> Result<Option<Skill>>;
 
-    // Per-project toggling
-    pub async fn set_skill_enabled(&self, id: SkillId, project: ProjectId, enabled: bool) -> Result<()>;
-    pub async fn set_skill_visibility(&self, id: SkillId, project: ProjectId, v: Visibility) -> Result<()>;
+    // Per-workspace toggling
+    pub async fn set_skill_enabled(&self, id: SkillId, workspace: WorkspaceId, enabled: bool) -> Result<()>;
+    pub async fn set_skill_visibility(&self, id: SkillId, workspace: WorkspaceId, v: Visibility) -> Result<()>;
 
     // Marketplaces
     pub async fn add_marketplace(&self, url: GitUrl, pin: Option<GitRef>) -> Result<MarketplaceId>;
@@ -234,7 +234,7 @@ impl SkillsRegistryHandle {
     pub async fn try_skill(&self, id: SkillId) -> Result<SessionId>;
 
     // Invocation tracking (called by 04 when an agent uses a skill)
-    pub async fn record_invocation(&self, id: SkillId, project: ProjectId) -> Result<()>;
+    pub async fn record_invocation(&self, id: SkillId, workspace: WorkspaceId) -> Result<()>;
 }
 ```
 
@@ -376,7 +376,7 @@ sequenceDiagram
 | Layer | What | How |
 |---|---|---|
 | Unit | SKILL.md parser | Golden fixtures (good + malformed) |
-| Unit | Per-(scope, project, name) override matrix | Property-based |
+| Unit | Per-(scope, workspace, name) override matrix | Property-based |
 | Integration | Discovery against a fake skills tree | E2E fixture |
 | Integration | Install + uninstall + update round-trip | With a local fake marketplace (a tmp git repo) |
 | Integration | Agent config writeback round-trips (we write; the agent reads correctly) | E2E with real `claude` |

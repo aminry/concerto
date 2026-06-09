@@ -24,6 +24,10 @@ tauri-build = { version = "2", default-features = false , features = [] }
 # via `tauri::image::Image::from_path`. `updater` / `notification` come
 # online in Phase 4.
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# Native folder/file picker for the "Add local folder" repo source in the
+# New Workspace modal (Phase 4). The renderer drives it via
+# `@tauri-apps/plugin-dialog`'s `open({ directory: true })`.
+tauri-plugin-dialog = "2"
 # Optional: linked only when the `embedded-core` feature is on, so the
 # lean daemon-client build carries no Core code or transitive deps.
 concerto-core = { path = "../../../crates/core", optional = true }

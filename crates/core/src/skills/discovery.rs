@@ -1,10 +1,10 @@
 //! Skill discovery walker (Task 39).
 //!
-//! Scans `~/.claude/skills/*/SKILL.md` (personal scope) and per-project
-//! `<repo.local_path>/.claude/skills/*/SKILL.md` (project scope),
-//! parses each SKILL.md's YAML frontmatter, and upserts each entry
-//! into `skills_index`. Malformed files are warned + skipped — the
-//! walk never aborts because of one bad fixture.
+//! Scans `~/.claude/skills/*/SKILL.md` (personal scope) and per-workspace
+//! `<repo.local_path>/.claude/skills/*/SKILL.md` (workspace scope) for every
+//! repo attached to a workspace, parses each SKILL.md's YAML frontmatter, and
+//! upserts each entry into `skills_index`. Malformed files are warned +
+//! skipped — the walk never aborts because of one bad fixture.
 //!
 //! ## Frontmatter shape
 //!
@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use concerto_error::Result;
-use concerto_persist::{NewSkill, Persistence, ProjectId, SkillId, SkillScope};
+use concerto_persist::{NewSkill, Persistence, SkillId, SkillScope, WorkspaceId};
 use serde::Deserialize;
 
 /// Parsed `SKILL.md` frontmatter. All fields except `name` are
@@ -52,10 +52,10 @@ pub struct SkillsRefreshReport {
 }
 
 /// Walk the personal scope (`<home_dir>/.claude/skills/`) and the
-/// per-project scope (`<repo.local_path>/.claude/skills/`) for every
-/// repository registered against `project_filter` (or every project
-/// when `project_filter` is `None`), parsing each SKILL.md and
-/// upserting the result into `skills_index`.
+/// per-workspace scope (`<repo.local_path>/.claude/skills/`) for every
+/// repo attached to a workspace matching `workspace_filter` (or every
+/// workspace when `None`), parsing each SKILL.md and upserting the result
+/// into `skills_index`.
 ///
 /// The walk is sync filesystem I/O wrapped in `spawn_blocking` so the
 /// tokio runtime stays unblocked. Returns a [`SkillsRefreshReport`]
@@ -63,7 +63,7 @@ pub struct SkillsRefreshReport {
 pub async fn discover(
     persistence: &Arc<Persistence>,
     home_dir: &Path,
-    project_filter: Option<&ProjectId>,
+    workspace_filter: Option<&WorkspaceId>,
 ) -> Result<SkillsRefreshReport> {
     let mut report = SkillsRefreshReport::default();
 
@@ -78,18 +78,18 @@ pub async fn discover(
     )
     .await?;
 
-    // ---- Project scope ---------------------------------------------------
-    // Resolve every repository's `local_path` per the project filter.
-    // V0.1 walks both `personal` and `project` on every refresh;
-    // marketplace fetch lands in V1.0 behind the same RPC.
-    let repos = list_project_repos(persistence, project_filter).await?;
-    for (project_id, local_path) in repos {
-        let project_root = PathBuf::from(local_path).join(".claude").join("skills");
+    // ---- Workspace scope -------------------------------------------------
+    // Resolve every (workspace, repo.local_path) per the filter. V0.1 walks
+    // both `personal` and `workspace` on every refresh; marketplace fetch
+    // lands in V1.0 behind the same RPC.
+    let repos = list_workspace_repos(persistence, workspace_filter).await?;
+    for (workspace_id, local_path) in repos {
+        let repo_root = PathBuf::from(local_path).join(".claude").join("skills");
         walk_scope(
             persistence,
-            &project_root,
-            SkillScope::Project,
-            Some(project_id),
+            &repo_root,
+            SkillScope::Workspace,
+            Some(workspace_id),
             &mut report,
         )
         .await?;
@@ -105,7 +105,7 @@ async fn walk_scope(
     persistence: &Arc<Persistence>,
     root: &Path,
     scope: SkillScope,
-    project_id: Option<ProjectId>,
+    workspace_id: Option<WorkspaceId>,
     report: &mut SkillsRefreshReport,
 ) -> Result<()> {
     if !root.is_dir() {
@@ -171,7 +171,7 @@ async fn walk_scope(
         let new = NewSkill {
             id: SkillId(uuid::Uuid::now_v7().to_string()),
             scope,
-            project_id: project_id.clone(),
+            workspace_id: workspace_id.clone(),
             name,
             slash_command: frontmatter.slash_command,
             description: frontmatter.description,
@@ -234,33 +234,44 @@ pub(crate) fn parse_frontmatter(raw: &str) -> std::result::Result<SkillFrontmatt
     serde_yaml::from_str::<SkillFrontmatter>(&body).map_err(|e| format!("yaml parse error: {e}"))
 }
 
-/// Read every repository's `(project_id, local_path)` per the optional
-/// filter. Returns `(ProjectId, String)` so the caller can compose the
-/// per-repo `.claude/skills/` path directly.
-async fn list_project_repos(
+/// Read every `(workspace_id, repo.local_path)` pair per the optional
+/// filter, joining `workspace_repos` → `repositories`. Returns
+/// `(WorkspaceId, String)` so the caller can compose the per-repo
+/// `.claude/skills/` path directly. A repo attached to multiple workspaces
+/// is walked once per workspace (its skills are workspace-scoped).
+async fn list_workspace_repos(
     persistence: &Arc<Persistence>,
-    project_filter: Option<&ProjectId>,
-) -> Result<Vec<(ProjectId, String)>> {
+    workspace_filter: Option<&WorkspaceId>,
+) -> Result<Vec<(WorkspaceId, String)>> {
     use sqlx::Row;
     let pool = persistence.readers();
-    let rows = if let Some(p) = project_filter {
-        sqlx::query("SELECT project_id, local_path FROM repositories WHERE project_id = ?")
-            .bind(&p.0)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| concerto_error::Error::Sqlx(Box::new(e)))?
+    let rows = if let Some(w) = workspace_filter {
+        sqlx::query(
+            "SELECT wr.workspace_id AS workspace_id, r.local_path AS local_path
+             FROM workspace_repos wr
+             JOIN repositories r ON r.id = wr.repository_id
+             WHERE wr.workspace_id = ?",
+        )
+        .bind(&w.0)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| concerto_error::Error::Sqlx(Box::new(e)))?
     } else {
-        sqlx::query("SELECT project_id, local_path FROM repositories")
-            .fetch_all(pool)
-            .await
-            .map_err(|e| concerto_error::Error::Sqlx(Box::new(e)))?
+        sqlx::query(
+            "SELECT wr.workspace_id AS workspace_id, r.local_path AS local_path
+             FROM workspace_repos wr
+             JOIN repositories r ON r.id = wr.repository_id",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| concerto_error::Error::Sqlx(Box::new(e)))?
     };
     Ok(rows
         .into_iter()
         .map(|r| {
-            let pid: String = r.get("project_id");
+            let wid: String = r.get("workspace_id");
             let path: String = r.get("local_path");
-            (ProjectId(pid), path)
+            (WorkspaceId(wid), path)
         })
         .collect())
 }

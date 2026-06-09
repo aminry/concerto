@@ -10,22 +10,25 @@
 //!   that emits `workspace.events: created / archived` for the future
 //!   `Streams` service to subscribe to (Task 24).
 //!
-//! ## Contract (Task 19, relaxed to 1..N by Task 306)
+//! ## Contract (Task 19, relaxed to 1..N by Task 306; registry by Phase 3)
 //!
-//! - `create_workspace` accepts **1..N** repositories (Task 306 dropped
-//!   the V0.1 single-repo guard). It rejects an empty set with
-//!   [`NO_REPOS_WIRE_CODE`] and a repeated id with
-//!   [`DUPLICATE_REPO_WIRE_CODE`], both inside an [`Error::Validation`]
-//!   the gRPC handler maps to `INVALID_ARGUMENT`. [`SINGLE_REPO_WIRE_CODE`]
-//!   is retired as an active rejection (kept defined for one release for
-//!   client back-compat; no code path emits it).
+//! - `create_workspace` accepts **1..N** repositories from the global
+//!   registry (the Project→Workspace collapse dropped project scoping).
+//!   It rejects an empty set with [`NO_REPOS_WIRE_CODE`] and a repeated id
+//!   with [`DUPLICATE_REPO_WIRE_CODE`], both inside an [`Error::Validation`]
+//!   the gRPC handler maps to `INVALID_ARGUMENT`.
 //! - `name` must derive to a non-empty slug.
-//! - `project_id` must exist in `projects`.
-//! - Every `repository_id` must exist and belong to that `project_id`.
-//! - `update_workspace_repos` re-validates + re-positions the set and
-//!   emits `workspace.events: repos updated` (`design/03 §5.1`, §6.1).
-//! - Slug collisions inside a project auto-suffix `-2`, `-3`, … with a
-//!   bound on retries to stop a runaway loop.
+//! - Every `repository_id` must exist in the global `repositories`
+//!   registry (no project membership check — repos are global, D9).
+//! - Per-(workspace, repo) sparse cones are **snapshots** seeded at attach
+//!   from the repo's `cone_defaults_json` when the caller passes an empty
+//!   `sparse_cones` (D4); editing the repo default never mutates an
+//!   existing workspace snapshot.
+//! - `update_workspace_repos` re-validates + re-positions the set, seeds
+//!   cones (preserving an existing per-repo snapshot), and emits
+//!   `workspace.events: repos updated` (`design/03 §5.1`, §6.1).
+//! - Slug collisions auto-suffix `-2`, `-3`, … with a bound on retries to
+//!   stop a runaway loop.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,23 +37,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
 use concerto_persist::{
-    NewWorkspace, Persistence, Repository, RepositoryId, Workspace, WorkspaceId,
+    NewWorkspace, Persistence, RepositoryId, Workspace, WorkspaceId, WorkspaceRepoCones,
 };
 use sqlx::Connection;
 use tokio::sync::broadcast;
 
 use crate::supervisor::{Actor, ActorContext};
 
-/// Wire-code the V0.1 Core surfaced when a caller requested a multi-repo
-/// workspace. **Retired by Task 306** — multi-repo workspaces are now
-/// supported, so no code path emits this. Kept defined for one release so
-/// clients still switching on the string compile; remove once every
-/// client has migrated.
-#[deprecated(
-    since = "1.0.0",
-    note = "multi-repo workspaces are supported as of Task 306; this rejection no longer fires"
-)]
-pub const SINGLE_REPO_WIRE_CODE: &str = "workspace.v0_single_repo_only";
+/// Manager-level spec for one repository's attachment to a workspace at
+/// create / update time. Distinct from the proto `WorkspaceRepoSpec`: the
+/// handler maps the wire shape onto this. An empty `sparse_cones` means
+/// "seed the per-(workspace, repo) snapshot from the repository's
+/// `cone_defaults_json`" (D4); a non-empty list is used verbatim.
+#[derive(Debug, Clone)]
+pub struct WorkspaceRepoSpec {
+    pub repository_id: RepositoryId,
+    /// Empty → seed from repo `cone_defaults_json` (snapshot, D4).
+    pub sparse_cones: Vec<String>,
+}
 
 /// Wire-code surfaced inside the [`Error::Validation`] payload when a
 /// caller requests a workspace with an **empty** repository set (Task
@@ -171,21 +175,19 @@ impl WorkspaceManager {
 
     /// Create a workspace.
     ///
-    /// Validates the request, persists `workspaces` + `workspace_repos`
-    /// rows in one transaction, emits a [`WorkspaceEvent::Created`] on
-    /// success, and returns the persisted row.
+    /// Validates the request, seeds per-(workspace, repo) cone snapshots
+    /// (D4), persists `workspaces` + `workspace_repos` rows in one
+    /// transaction, emits a [`WorkspaceEvent::Created`] on success, and
+    /// returns the persisted row.
     pub async fn create_workspace(
         &self,
-        project_id: &str,
         name: &str,
-        repository_ids: &[String],
+        repos: &[WorkspaceRepoSpec],
         permission_mode: Option<String>,
         description: Option<String>,
+        icon: Option<String>,
     ) -> Result<Workspace> {
         // ---- Validation ----------------------------------------------------
-        if project_id.is_empty() {
-            return Err(Error::Validation("project_id is required".into()));
-        }
         if name.is_empty() {
             return Err(Error::Validation("name is required".into()));
         }
@@ -199,22 +201,13 @@ impl WorkspaceManager {
             validate_permission_mode(mode)?;
         }
 
-        // Project must exist.
-        let project = concerto_persist::projects::get(
-            self.persistence.readers(),
-            &concerto_persist::ProjectId(project_id.to_string()),
-        )
-        .await?;
-        if project.is_none() {
-            return Err(Error::NotFound(format!("project {project_id} not found")));
-        }
-
-        // Validate the 1..N repo set: non-empty, no dups, each exists +
-        // belongs to the project. `repo_ids` preserves the caller's order
-        // (= the declaration order persisted as `workspace_repos.position`).
-        let repo_ids = self
-            .validate_workspace_repos(project_id, repository_ids)
-            .await?;
+        // Resolve + seed the cone snapshots for the 1..N repo set. Validates
+        // non-empty / no-dups / each exists in the global registry, and
+        // seeds each per-(workspace, repo) snapshot from the repo's
+        // `cone_defaults_json` when the spec's `sparse_cones` is empty (D4).
+        // `seeded` preserves the caller's order (= the declaration order
+        // persisted as `workspace_repos.position`).
+        let seeded = self.seed_repo_cones(repos).await?;
 
         // ---- Persistence: one transaction, slug-collision retry ------------
         let now_ms = now_unix_ms();
@@ -229,9 +222,9 @@ impl WorkspaceManager {
             };
             let new_ws = NewWorkspace {
                 id: id.clone(),
-                project_id: project_id.to_string(),
                 name: name.to_string(),
                 slug: slug.clone(),
+                icon: icon.clone(),
                 description: description.clone(),
                 permission_mode: permission_mode.clone(),
                 created_at: now_ms,
@@ -246,14 +239,14 @@ impl WorkspaceManager {
 
             match concerto_persist::workspaces::insert(&mut tx, new_ws.clone()).await {
                 Ok(_) => {
-                    concerto_persist::workspaces::update_repos(&mut tx, &id, &repo_ids).await?;
+                    concerto_persist::workspaces::update_repos(&mut tx, &id, &seeded).await?;
                     tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
                     drop(writer);
                     break Workspace {
                         id: id.clone(),
-                        project_id: project_id.to_string(),
                         name: name.to_string(),
                         slug,
+                        icon: icon.clone(),
                         description: description.clone(),
                         permission_mode: permission_mode.clone(),
                         created_at: now_ms,
@@ -269,7 +262,7 @@ impl WorkspaceManager {
                     attempt += 1;
                     if attempt > MAX_SLUG_ATTEMPTS {
                         return Err(Error::Internal(format!(
-                            "exhausted {MAX_SLUG_ATTEMPTS} slug-suffix attempts for {base_slug:?} in project {project_id}"
+                            "exhausted {MAX_SLUG_ATTEMPTS} slug-suffix attempts for {base_slug:?}"
                         )));
                     }
                     continue;
@@ -290,11 +283,10 @@ impl WorkspaceManager {
         // subscribers; this is the typed path that lands in the JSONL
         // file on disk.
         if let Some(audit) = self.audit.as_ref() {
-            let rid_strs: Vec<String> = repo_ids.iter().map(|r| r.0.clone()).collect();
+            let rid_strs: Vec<String> = seeded.iter().map(|r| r.repository_id.0.clone()).collect();
             let details = serde_json::json!({
                 "name": workspace.name,
                 "slug": workspace.slug,
-                "project_id": workspace.project_id,
                 "repository_ids": rid_strs,
                 "permission_mode": workspace.permission_mode,
             });
@@ -304,76 +296,90 @@ impl WorkspaceManager {
                     crate::audit::AuditActor::System,
                 )
                 .with_subject(crate::audit::EntityKind::Workspace, workspace.id.0.clone())
-                .with_subject(
-                    crate::audit::EntityKind::Project,
-                    workspace.project_id.clone(),
-                )
                 .with_details(details),
             );
         }
         Ok(workspace)
     }
 
-    /// Validate a workspace's 1..N repository set (Task 306).
+    /// Validate a workspace's 1..N repo set against the global registry and
+    /// seed each per-(workspace, repo) cone snapshot (D4/D9).
     ///
     /// Checks, in order (returning the first failure for a good error):
     /// 1. **non-empty** — an empty set is rejected with
     ///    [`NO_REPOS_WIRE_CODE`] (`INVALID_ARGUMENT`).
     /// 2. **no duplicates** — a repeated id is rejected with
     ///    [`DUPLICATE_REPO_WIRE_CODE`] (`INVALID_ARGUMENT`).
-    /// 3. **exists + belongs** — every id must exist in `repositories`
-    ///    AND have `project_id == project_id` (else `NotFound`).
+    /// 3. **exists** — every id must exist in the global `repositories`
+    ///    registry (else `NotFound`).
     ///
-    /// Returns the resolved [`RepositoryId`]s **in caller order**, which
-    /// is the declaration order persisted as `workspace_repos.position`.
-    /// Shared by [`Self::create_workspace`] and
-    /// [`Self::update_workspace_repos`].
-    async fn validate_workspace_repos(
+    /// For each spec, resolves the seeded cone JSON: an empty `sparse_cones`
+    /// snapshots the repo's `cone_defaults_json` (D4); a non-empty list is
+    /// serialized verbatim. Returns the [`WorkspaceRepoCones`] in caller
+    /// order (= `workspace_repos.position`). Shared by
+    /// [`Self::create_workspace`].
+    async fn seed_repo_cones(
         &self,
-        project_id: &str,
-        repository_ids: &[String],
-    ) -> Result<Vec<RepositoryId>> {
-        if repository_ids.is_empty() {
+        repos: &[WorkspaceRepoSpec],
+    ) -> Result<Vec<WorkspaceRepoCones>> {
+        if repos.is_empty() {
             return Err(Error::Validation(format!(
                 "{NO_REPOS_WIRE_CODE}: a workspace must declare at least one repository"
             )));
         }
         // Reject duplicates (a repo listed twice).
-        let mut seen = std::collections::HashSet::with_capacity(repository_ids.len());
-        for rid in repository_ids {
-            if !seen.insert(rid.as_str()) {
+        let mut seen = std::collections::HashSet::with_capacity(repos.len());
+        for spec in repos {
+            if !seen.insert(spec.repository_id.as_str()) {
                 return Err(Error::Validation(format!(
-                    "{DUPLICATE_REPO_WIRE_CODE}: repository {rid} is listed more than once"
+                    "{DUPLICATE_REPO_WIRE_CODE}: repository {} is listed more than once",
+                    spec.repository_id
                 )));
             }
         }
-        // Each must exist and belong to the project.
-        let repos =
-            concerto_persist::repositories::list_by_project(self.persistence.readers(), project_id)
-                .await?;
-        let mut repo_ids = Vec::with_capacity(repository_ids.len());
-        for rid in repository_ids {
-            match repos.iter().find(|r: &&Repository| r.id.as_str() == rid) {
-                Some(r) => repo_ids.push(r.id.clone()),
-                None => {
-                    return Err(Error::NotFound(format!(
-                        "repository {rid} not found in project {project_id}"
-                    )));
-                }
-            }
+        let mut out = Vec::with_capacity(repos.len());
+        for spec in repos {
+            let repo = concerto_persist::repositories::get(
+                self.persistence.readers(),
+                &spec.repository_id,
+            )
+            .await?
+            .ok_or_else(|| {
+                Error::NotFound(format!(
+                    "repository {} not found in the registry",
+                    spec.repository_id
+                ))
+            })?;
+            // D4: empty spec → snapshot the repo's current cone defaults;
+            // else serialize the explicit list verbatim.
+            let sparse_cones_json = if spec.sparse_cones.is_empty() {
+                repo.cone_defaults_json.clone()
+            } else {
+                serde_json::to_string(&spec.sparse_cones).map_err(|e| {
+                    Error::Internal(format!(
+                        "serialize sparse_cones for {}: {e}",
+                        spec.repository_id
+                    ))
+                })?
+            };
+            out.push(WorkspaceRepoCones {
+                repository_id: spec.repository_id.clone(),
+                sparse_cones_json,
+            });
         }
-        Ok(repo_ids)
+        Ok(out)
     }
 
     /// Replace a workspace's repository set (`design/03 §5.1`, §6.1 —
-    /// "edit the repo list"; Task 306).
+    /// "edit the repo list").
     ///
-    /// Re-validates the set (non-empty / no-dups / each exists + belongs
-    /// to the workspace's project) via [`Self::validate_workspace_repos`],
-    /// then re-positions it: `workspace_repos.position` = the index of
-    /// each id in `repository_ids` (declaration order). Emits a
-    /// [`WorkspaceEvent::Created`]-sibling `repos updated` event on the
-    /// `workspace.events` broadcast.
+    /// Re-validates the set (non-empty / no-dups / each exists in the global
+    /// registry), then re-positions it: `workspace_repos.position` = the
+    /// index of each id in `repos` (declaration order). For each repo it
+    /// PRESERVES an existing per-(workspace, repo) snapshot when the repo was
+    /// already attached (read via `get_repo_cones`); otherwise it seeds from
+    /// the repo's `cone_defaults_json` (D4). Emits a `repos updated` event on
+    /// the `workspace.events` broadcast.
     ///
     /// Note: this edits the *declared* repo set; it materializes nothing
     /// on disk. Existing workareas keep their already-materialized
@@ -381,28 +387,41 @@ impl WorkspaceManager {
     pub async fn update_workspace_repos(
         &self,
         id: &WorkspaceId,
-        repository_ids: &[String],
+        repos: &[WorkspaceRepoSpec],
     ) -> Result<()> {
         let workspace = self
             .get(id)
             .await?
             .ok_or_else(|| Error::NotFound(format!("workspace {id} not found")))?;
 
-        let repo_ids = self
-            .validate_workspace_repos(&workspace.project_id, repository_ids)
-            .await?;
+        // Seed the base (validate + per-spec snapshot from repo defaults).
+        let mut seeded = self.seed_repo_cones(repos).await?;
+        // Preserve any existing snapshot for a repo already attached to this
+        // workspace (the snapshot is sticky once seeded, D4) — but only when
+        // the caller did not pass an explicit cone list for that repo.
+        for (idx, spec) in repos.iter().enumerate() {
+            if spec.sparse_cones.is_empty() {
+                if let Some(existing) = concerto_persist::workspaces::get_repo_cones(
+                    self.persistence.readers(),
+                    id,
+                    &spec.repository_id,
+                )
+                .await?
+                {
+                    seeded[idx].sparse_cones_json = existing;
+                }
+            }
+        }
 
         let mut writer = self.persistence.writer().await;
         let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
-        concerto_persist::workspaces::update_repos(&mut tx, id, &repo_ids).await?;
+        concerto_persist::workspaces::update_repos(&mut tx, id, &seeded).await?;
         tx.commit().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
         drop(writer);
 
-        // `workspace.events: repos updated` (`design/03 §5.3`). The
-        // payload carries the post-update workspace row, mirroring
-        // `Created` / `Restored`. (A typed audit-log `AuditKind` for repo
-        // edits is deferred — `audit/event.rs` is out of this task's
-        // Outputs; the broadcast event is the §5.3 surface.)
+        // `workspace.events: repos updated` (`design/03 §5.3`). The payload
+        // carries the post-update workspace row, mirroring `Created` /
+        // `Restored`.
         let _ = self.events.send(WorkspaceEvent::ReposUpdated(workspace));
         Ok(())
     }
@@ -412,9 +431,9 @@ impl WorkspaceManager {
         concerto_persist::workspaces::get(self.persistence.readers(), id).await
     }
 
-    /// List workspaces in a project.
-    pub async fn list_by_project(&self, project_id: &str) -> Result<Vec<Workspace>> {
-        concerto_persist::workspaces::list_by_project(self.persistence.readers(), project_id).await
+    /// List every workspace (the registry is global after the collapse).
+    pub async fn list_all(&self) -> Result<Vec<Workspace>> {
+        concerto_persist::workspaces::list_all(self.persistence.readers()).await
     }
 
     /// Archive a workspace + cascade to every non-archived workarea
@@ -525,7 +544,7 @@ impl WorkspaceManager {
     ///
     /// `permission_mode = Some(mode)` sets the column to the lowercase
     /// SQL string; `Some` of an empty string or `None` clears the column
-    /// (inherit-from-project). The managed-policy cap (`managed.json`)
+    /// (inherit-from-workspace-defaults). The managed-policy cap (`managed.json`)
     /// is enforced: requesting `yolo` when the cap is `auto` returns
     /// [`Error::PolicyLocked`] / `PERMISSION_DENIED`.
     ///
@@ -698,24 +717,17 @@ fn now_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
-// Suppress an unused-import lint when no callers reach for PathBuf in
-// V0.1 (the type is referenced in design but not yet wired through).
-#[allow(dead_code)]
-fn _path_marker(_p: PathBuf) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build a `WorkspaceManager` over a fresh tempdir SQLite DB plus a
-    /// seeded project + N repos, and return the manager, the project id,
-    /// and the repo ids (Task 306 helper).
+    /// Build a `WorkspaceManager` over a fresh tempdir SQLite DB plus N
+    /// repos inserted directly into the global registry, and return the
+    /// manager + the repo ids.
     async fn seed_manager(
         repo_names: &[&str],
-    ) -> (tempfile::TempDir, WorkspaceManager, String, Vec<String>) {
-        use concerto_persist::{
-            NewProject, NewRepository, Persistence, PersistenceConfig, ProjectId, RepositoryId,
-        };
+    ) -> (tempfile::TempDir, WorkspaceManager, Vec<String>) {
+        use concerto_persist::{NewRepository, Persistence, PersistenceConfig, RepositoryId};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let persist = Persistence::open(PersistenceConfig {
@@ -725,28 +737,15 @@ mod tests {
         .await
         .expect("open");
 
-        let project_id = "proj-1".to_string();
         let mut repo_ids = Vec::new();
         {
             let mut w = persist.writer().await;
-            concerto_persist::projects::insert(
-                &mut w,
-                NewProject {
-                    id: ProjectId(project_id.clone()),
-                    name: "Test".to_string(),
-                    icon: None,
-                    created_at: 1,
-                },
-            )
-            .await
-            .expect("insert project");
             for name in repo_names {
                 let rid = format!("repo-{name}");
                 concerto_persist::repositories::insert(
                     &mut w,
                     NewRepository {
                         id: RepositoryId(rid.clone()),
-                        project_id: project_id.clone(),
                         name: name.to_string(),
                         url: format!("file:///tmp/{name}.git"),
                         local_path: format!("/tmp/repos/{name}"),
@@ -761,14 +760,26 @@ mod tests {
         }
 
         let manager = WorkspaceManager::new(Arc::new(persist), Arc::new(dir.path().to_path_buf()));
-        (dir, manager, project_id, repo_ids)
+        (dir, manager, repo_ids)
+    }
+
+    /// Build a `WorkspaceRepoSpec` set with empty cones (seed-from-defaults)
+    /// for the given repo ids, in order.
+    fn specs(repo_ids: &[String]) -> Vec<WorkspaceRepoSpec> {
+        repo_ids
+            .iter()
+            .map(|rid| WorkspaceRepoSpec {
+                repository_id: RepositoryId(rid.clone()),
+                sparse_cones: Vec::new(),
+            })
+            .collect()
     }
 
     #[tokio::test]
     async fn create_workspace_accepts_multi_repo_in_declaration_order() {
-        let (_dir, mgr, project_id, repos) = seed_manager(&["api", "android", "ios"]).await;
+        let (_dir, mgr, repos) = seed_manager(&["api", "android", "ios"]).await;
         let ws = mgr
-            .create_workspace(&project_id, "Cross Platform", &repos, None, None)
+            .create_workspace("Cross Platform", &specs(&repos), None, None, None)
             .await
             .expect("multi-repo create");
         let listed = mgr.list_repos(&ws.id).await.expect("list_repos");
@@ -778,11 +789,11 @@ mod tests {
 
     #[tokio::test]
     async fn create_workspace_rejects_empty_dup_and_foreign() {
-        let (_dir, mgr, project_id, repos) = seed_manager(&["api"]).await;
+        let (_dir, mgr, repos) = seed_manager(&["api"]).await;
 
         // Empty.
         let empty = mgr
-            .create_workspace(&project_id, "Empty", &[], None, None)
+            .create_workspace("Empty", &[], None, None, None)
             .await
             .expect_err("empty set rejected");
         assert!(matches!(empty, Error::Validation(m) if m.contains(NO_REPOS_WIRE_CODE)));
@@ -790,9 +801,9 @@ mod tests {
         // Duplicate.
         let dup = mgr
             .create_workspace(
-                &project_id,
                 "Dup",
-                &[repos[0].clone(), repos[0].clone()],
+                &specs(&[repos[0].clone(), repos[0].clone()]),
+                None,
                 None,
                 None,
             )
@@ -802,7 +813,7 @@ mod tests {
 
         // Foreign / unknown.
         let foreign = mgr
-            .create_workspace(&project_id, "Foreign", &["nope".to_string()], None, None)
+            .create_workspace("Foreign", &specs(&["nope".to_string()]), None, None, None)
             .await
             .expect_err("foreign rejected");
         assert!(matches!(foreign, Error::NotFound(_)));
@@ -810,15 +821,15 @@ mod tests {
 
     #[tokio::test]
     async fn update_workspace_repos_revalidates_and_repositions() {
-        let (_dir, mgr, project_id, repos) = seed_manager(&["api", "android", "ios"]).await;
+        let (_dir, mgr, repos) = seed_manager(&["api", "android", "ios"]).await;
         let ws = mgr
-            .create_workspace(&project_id, "WS", &repos, None, None)
+            .create_workspace("WS", &specs(&repos), None, None, None)
             .await
             .expect("create");
 
         // Reorder + reduce to [ios, api].
         let reordered = vec![repos[2].clone(), repos[0].clone()];
-        mgr.update_workspace_repos(&ws.id, &reordered)
+        mgr.update_workspace_repos(&ws.id, &specs(&reordered))
             .await
             .expect("update_workspace_repos");
         let listed: Vec<String> = mgr
@@ -836,10 +847,71 @@ mod tests {
             Err(Error::Validation(_))
         ));
         assert!(matches!(
-            mgr.update_workspace_repos(&ws.id, &[repos[0].clone(), repos[0].clone()])
+            mgr.update_workspace_repos(&ws.id, &specs(&[repos[0].clone(), repos[0].clone()]))
                 .await,
             Err(Error::Validation(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn create_workspace_seeds_repo_cone_defaults_as_snapshot() {
+        // A repo with cone_defaults=["api/"], attached with an empty spec,
+        // seeds the workspace snapshot ["api/"]; editing the repo default
+        // afterward does NOT mutate the existing workspace snapshot (D4).
+        let (_dir, mgr, repos) = seed_manager(&["api"]).await;
+        let repo_id = RepositoryId(repos[0].clone());
+
+        // Set the repo's cone_defaults to ["api/"].
+        {
+            let mut w = mgr.persistence.writer().await;
+            concerto_persist::repositories::set_cone_defaults(
+                &mut w,
+                &repo_id,
+                &["api/".to_string()],
+            )
+            .await
+            .expect("set cone defaults");
+        }
+
+        // Attach with an empty spec → snapshot seeded from the repo default.
+        let ws = mgr
+            .create_workspace("Snap", &specs(&repos), None, None, None)
+            .await
+            .expect("create");
+        let snap = concerto_persist::workspaces::get_repo_cones(
+            mgr.persistence.readers(),
+            &ws.id,
+            &repo_id,
+        )
+        .await
+        .expect("get_repo_cones")
+        .expect("snapshot present");
+        assert_eq!(snap, r#"["api/"]"#, "snapshot seeded from repo defaults");
+
+        // Edit the repo default to ["web/"] — the workspace snapshot must NOT
+        // change (D4: snapshots are sticky).
+        {
+            let mut w = mgr.persistence.writer().await;
+            concerto_persist::repositories::set_cone_defaults(
+                &mut w,
+                &repo_id,
+                &["web/".to_string()],
+            )
+            .await
+            .expect("edit cone defaults");
+        }
+        let snap_after = concerto_persist::workspaces::get_repo_cones(
+            mgr.persistence.readers(),
+            &ws.id,
+            &repo_id,
+        )
+        .await
+        .expect("get_repo_cones")
+        .expect("snapshot present");
+        assert_eq!(
+            snap_after, r#"["api/"]"#,
+            "editing the repo default does not mutate an existing workspace snapshot (D4)"
+        );
     }
 
     #[test]

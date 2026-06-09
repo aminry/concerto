@@ -77,6 +77,8 @@ Made during the 2026-05-30 planning conversation. Each task file inherits these 
 | V8 | Client monorepo placement | All clients in this repo: `apps/mobile` (Expo), `apps/web` (reuses the Desktop SPA via a shared `packages/` extraction). Each has its own Tier-2 verification (vitest/jest + simulator/headless screenshot tests). |
 | V9 | Task types | Every task is one of: `rust` / `web-ts` / `rn-mobile` / `infra-ops` / `spike` / `doc`. Each type has its own verification command set (§5.3). The orchestrator (`AUTO_EXECUTE_PROMPT.md`) branches on the type. |
 
+> **Amendment (2026-06-08) — Project→Workspace collapse.** After this breakdown was approved, the 4-level hierarchy `Project → Workspace → Workarea → Session` was collapsed to a 3-level hierarchy `Workspace → Workarea → Session` over a **global Repository registry**. The `Project` entity is gone (no `projects` table, no `Projects` gRPC service, no `ProjectId`); everything it owned (shared settings/scripts, permission/deliberation defaults, icon, repo ownership) moved onto the **Workspace**, and repositories became a global registry that workspaces select from via `workspace_repos`. Design + rationale: `docs/superpowers/specs/2026-06-08-collapse-project-into-workspace-design.md`; execution plan: `docs/superpowers/plans/2026-06-08-collapse-project-into-workspace.md`. The canonical design docs (`design/00`, `02`, `03`, `09`, `10`, `13`, `15`) were updated to match. **The `tasks/v1.0/NNN-*.md` task files in this directory remain FROZEN history and are NOT rewritten** — where a task file describes the old Project-scoped model, read it through this amendment.
+
 ---
 
 ## 5. Verification model

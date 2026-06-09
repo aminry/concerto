@@ -1,8 +1,10 @@
 -- 0001_initial_schema.sql — Concerto V0.1 core entity schema.
 --
--- This migration is FROZEN per tasks/09-initial-db-schema.md. Schema
--- changes after merge land in subsequent numbered migrations
--- (0002_*.sql, 0003_*.sql, …), never as edits to this file.
+-- Rewritten 2026-06-08 as part of the Project→Workspace collapse (D5).
+-- The `projects` table has been removed; repositories and workspaces are
+-- now top-level (global registry). This is a one-time approved exception
+-- to the frozen-migrations discipline — there is no deployed database and
+-- no backward-compatibility requirement.
 --
 -- Source of truth: design/09_Persistence.md §4.1, §4.2, §4.4. Column
 -- names match the design doc one-for-one. Tables for schedules,
@@ -21,13 +23,13 @@
 --     crates/proto/proto/concerto/v1/*.proto). The proto field stays
 --     `string` for forward compat; the DB CHECK is the enforcement.
 --   * `permission_mode` is nullable on workspaces and workareas to
---     express "inherit from parent" (design/03 §3.2 + proto `optional`
+--     express "inherit from workspace" (design/03 §3.2 + proto `optional`
 --     PermissionMode). NULL ≠ PERMISSION_MODE_UNSPECIFIED.
 --   * Foreign keys use ON DELETE CASCADE where the child has no
 --     meaning without its parent (design/09 §4.1 implies this for the
---     project → workspace → workarea → session chain). FKs are
---     enforced at runtime because crates/persist sets
---     `foreign_keys = ON` on every connection (Task 08).
+--     workspace → workarea → session chain). FKs are enforced at runtime
+--     because crates/persist sets `foreign_keys = ON` on every connection
+--     (Task 08).
 --
 -- Transaction wrapping: `sqlx::migrate!` runs each .sql file inside an
 -- implicit `BEGIN; ... COMMIT;` (design/09 §6.2's "single transaction
@@ -35,67 +37,64 @@
 -- "cannot start a transaction within a transaction", so we don't.
 
 -- ---------------------------------------------------------------------------
--- Projects: top-level grouping. Owns 1..N repositories and 1..N workspaces.
--- design/09 §4.1.
--- ---------------------------------------------------------------------------
-CREATE TABLE projects (
-    id              TEXT PRIMARY KEY,                  -- UUIDv7
-    name            TEXT NOT NULL,
-    icon            TEXT,
-    created_at      INTEGER NOT NULL,                  -- unix epoch ms
-    archived_at     INTEGER,
-    settings_json   TEXT NOT NULL DEFAULT '{}'         -- schema in design/09 §4.1
-);
-
--- ---------------------------------------------------------------------------
--- Repositories within a project. Clone lives at ~/concerto/repos/<id>/.git
--- and is shared across all workareas (one .git, many worktrees).
--- design/09 §4.1.
+-- Repositories: global registry. Clone lives at ~/concerto/repos/<id>/.git
+-- and is shared across all workareas (one .git, many worktrees). Referenced
+-- by workspaces via workspace_repos. design/09 §4.1.
 -- ---------------------------------------------------------------------------
 CREATE TABLE repositories (
     id                  TEXT PRIMARY KEY,
-    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name                TEXT NOT NULL,                 -- short name used in folder paths
     url                 TEXT NOT NULL,
     local_path          TEXT NOT NULL,                 -- ~/concerto/repos/<id>/
     clone_strategy      TEXT NOT NULL,                 -- full | blobless | treeless
-    default_branch     TEXT NOT NULL,
+    default_branch      TEXT NOT NULL,
     cone_defaults_json  TEXT NOT NULL DEFAULT '[]',
     fs_monitor_pid      INTEGER,
     last_fetch_at       INTEGER,
-    UNIQUE(project_id, url),
-    UNIQUE(project_id, name)
+    UNIQUE(url),
+    UNIQUE(name)
 );
 
 -- ---------------------------------------------------------------------------
 -- Workspaces: a logical workstream. No own worktree; 1..N repos via
--- workspace_repos. design/09 §4.1.
+-- workspace_repos. Top-level entity after the Project→Workspace collapse.
+-- design/09 §4.1.
 --
 -- `permission_mode` and `bypass_destructive_guard` are nullable: NULL means
--- "inherit from project" per design/03 §3.2.
+-- "inherit from workspace defaults" per design/03 §3.2.
 -- ---------------------------------------------------------------------------
 CREATE TABLE workspaces (
     id                          TEXT PRIMARY KEY,
-    project_id                  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name                        TEXT NOT NULL,
     slug                        TEXT NOT NULL,
+    icon                        TEXT,
     description                 TEXT,
     permission_mode             TEXT CHECK (permission_mode IS NULL OR permission_mode IN ('strict','normal','auto','yolo')),
     bypass_destructive_guard    INTEGER CHECK (bypass_destructive_guard IS NULL OR bypass_destructive_guard IN (0,1)),
     settings_json               TEXT NOT NULL DEFAULT '{}',
     created_at                  INTEGER NOT NULL,
     archived_at                 INTEGER,
-    UNIQUE(project_id, slug)
+    UNIQUE(slug)
 );
 
 -- ---------------------------------------------------------------------------
--- Workspace ↔ repository join. design/09 §4.1.
+-- Workspace ↔ repository join. `position` is the per-workspace 0-based
+-- ordinal (folded in from migration 0009 by the Project→Workspace collapse).
+-- `sparse_cones_json` is the per-(workspace, repo) sparse cone set.
+-- design/09 §4.1.
 -- ---------------------------------------------------------------------------
 CREATE TABLE workspace_repos (
-    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    repository_id   TEXT NOT NULL REFERENCES repositories(id),
+    workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    repository_id     TEXT NOT NULL REFERENCES repositories(id),
+    position          INTEGER NOT NULL DEFAULT 0,
+    sparse_cones_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (workspace_id, repository_id)
 );
+
+-- Ordered-read index for `list_repos` (and Task 309's first-by-position
+-- reference-repo lookup). Originally from migration 0009; folded here by
+-- the Project→Workspace collapse (2026-06-08).
+CREATE INDEX idx_workspace_repos_position ON workspace_repos(workspace_id, position);
 
 -- ---------------------------------------------------------------------------
 -- Workareas: a specific attempt at a workspace's task. Worktrees on disk.
@@ -103,7 +102,7 @@ CREATE TABLE workspace_repos (
 --
 -- `status` values match the value list in
 -- crates/proto/proto/concerto/v1/workareas.proto. `permission_mode` and
--- `bypass_destructive_guard` are nullable for the same inherit-from-parent
+-- `bypass_destructive_guard` are nullable for the same inherit-from-workspace
 -- reason as workspaces.
 -- ---------------------------------------------------------------------------
 CREATE TABLE workareas (

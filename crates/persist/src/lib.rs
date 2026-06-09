@@ -10,9 +10,8 @@
 //! Task 18 adds the `repositories` table CRUD under [`repositories`];
 //! the table itself is part of migration 0001.
 //!
-//! Task 19 adds the `projects` and `workspaces`/`workspace_repos`
-//! helpers under [`projects`] and [`workspaces`]; the tables themselves
-//! ship in migration 0001.
+//! Task 19 adds the `workspaces`/`workspace_repos` helpers under
+//! [`workspaces`]; the tables themselves ship in migration 0001.
 //!
 //! Task 20 adds the `workareas`/`workarea_repos` helpers under
 //! [`workareas`]; the tables themselves ship in migration 0001.
@@ -20,7 +19,6 @@
 pub mod api;
 pub mod chat_messages;
 pub mod checkpoints;
-pub mod projects;
 pub mod pull_requests;
 pub mod repositories;
 pub mod schedule_runs;
@@ -35,10 +33,10 @@ pub mod workareas;
 pub mod workspaces;
 
 pub use api::{
-    NewChat, NewProject, NewPullRequest, NewRepository, NewSchedule, NewScheduleRun, NewSession,
-    NewSkill, NewSuggestionLearn, NewVcsCredential, NewWorkarea, NewWorkareaRepo, NewWorkspace,
-    Persistence, PersistenceConfig, Project, ProjectId, PullRequest, PullRequestId, Repository,
-    RepositoryId, Schedule, ScheduleId, ScheduleRun, ScheduleRunId, Session, SessionId,
-    SkillFilter, SkillId, SkillRow, SkillScope, SuggestionLearn, SuggestionLearnId, VcsCredential,
-    VcsCredentialId, Workarea, WorkareaId, Workspace, WorkspaceId, WriterGuard,
+    NewChat, NewPullRequest, NewRepository, NewSchedule, NewScheduleRun, NewSession, NewSkill,
+    NewSuggestionLearn, NewVcsCredential, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
+    PersistenceConfig, PullRequest, PullRequestId, Repository, RepositoryId, Schedule, ScheduleId,
+    ScheduleRun, ScheduleRunId, Session, SessionId, SkillFilter, SkillId, SkillRow, SkillScope,
+    SuggestionLearn, SuggestionLearnId, VcsCredential, VcsCredentialId, Workarea, WorkareaId,
+    Workspace, WorkspaceId, WorkspaceRepoCones, WriterGuard,
 };

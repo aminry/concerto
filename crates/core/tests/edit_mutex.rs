@@ -198,13 +198,9 @@ async fn open_persistence() -> (TempDir, Arc<Persistence>) {
 
 async fn seed_parents(persistence: &Persistence) {
     let mut w = persistence.writer().await;
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES ('p', 'p', 0)")
-        .execute(&mut *w)
-        .await
-        .expect("project");
     sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) \
-         VALUES ('ws', 'p', 'ws', 'ws', 0)",
+        "INSERT INTO workspaces (id, name, slug, created_at) \
+         VALUES ('ws', 'ws', 'ws', 0)",
     )
     .execute(&mut *w)
     .await

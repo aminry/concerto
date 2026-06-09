@@ -1,18 +1,19 @@
-// Right-rail Skills tab — lists discovered skills for the active project
+// Right-rail Skills tab — lists discovered skills for the active workspace
 // (Task 39 surface). V0.1 is read-only; enable/disable + refresh controls
 // land in the settings polish task.
 
+import { formatError } from "../../api/errors";
 import { useUiStore } from "../../state/useUiStore";
 import { useSkills } from "../../hooks/useSkills";
 
 export function SkillsTab(): JSX.Element {
-  const projectId = useUiStore((s) => s.selectedProjectId);
-  const query = useSkills(projectId);
+  const workspaceId = useUiStore((s) => s.selectedWorkspaceId);
+  const query = useSkills(workspaceId);
 
-  if (!projectId) {
+  if (!workspaceId) {
     return (
       <p className="text-xs text-faint p-3">
-        Select a project to see its skills.
+        Select a workspace to see its skills.
       </p>
     );
   }
@@ -22,7 +23,7 @@ export function SkillsTab(): JSX.Element {
   if (query.isError) {
     return (
       <p className="text-xs text-err p-3">
-        Failed to load skills: {String(query.error)}
+        Failed to load skills: {formatError(query.error)}
       </p>
     );
   }

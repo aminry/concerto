@@ -1,15 +1,13 @@
-//! `concerto workspace ls [--project <id>]` — lists workspaces as a table.
+//! `concerto workspace ls [--include-archived]` — lists workspaces as a table.
 //!
-//! The frozen `Workspaces.ListWorkspaces` RPC takes a `project_id`, so when
-//! the caller doesn't pass `--project` we enumerate every project via
-//! `Projects.ListProjects` and union their workspaces — giving a useful
-//! cross-project `workspace ls` without inventing a new RPC.
+//! Workspaces are a global, top-level entity after the Project→Workspace
+//! collapse, so `Workspaces.ListWorkspaces` is unscoped; the only knob is
+//! `--include-archived`.
 
 use std::path::Path;
 
-use concerto_proto::v1::projects_client::ProjectsClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
-use concerto_proto::v1::{ListProjectsRequest, ListWorkspacesRequest, PermissionMode};
+use concerto_proto::v1::{ListWorkspacesRequest, PermissionMode};
 use serde::Serialize;
 
 use super::{call, CommandError, OutputFormat};
@@ -19,7 +17,6 @@ use crate::client;
 #[derive(Debug, Serialize)]
 struct WorkspaceRow {
     id: String,
-    project_id: String,
     name: String,
     slug: String,
     /// `permission_mode` as the proto enum's string name, or `(default)`
@@ -29,49 +26,32 @@ struct WorkspaceRow {
     archived: bool,
 }
 
-/// Run `concerto workspace ls`. `project` filters to a single project when
-/// `Some`; otherwise every project's workspaces are listed.
+/// Run `concerto workspace ls`. Lists every workspace; archived workspaces
+/// are included only when `include_archived` is set.
 pub async fn run(
     socket: &Path,
-    project: Option<String>,
+    include_archived: bool,
     format: OutputFormat,
 ) -> Result<(), CommandError> {
     let channel = client::connect(socket).await?;
 
-    let project_ids = match project {
-        Some(id) => vec![id],
-        None => {
-            let mut projects = ProjectsClient::new(channel.clone());
-            let resp = call(
-                "Projects.ListProjects",
-                projects.list_projects(ListProjectsRequest {}),
-            )
-            .await?;
-            resp.projects.into_iter().map(|p| p.id).collect()
-        }
-    };
-
     let mut workspaces = WorkspacesClient::new(channel);
-    let mut rows = Vec::new();
-    for pid in project_ids {
-        let resp = call(
-            "Workspaces.ListWorkspaces",
-            workspaces.list_workspaces(ListWorkspacesRequest {
-                project_id: pid.clone(),
-            }),
-        )
-        .await?;
-        for ws in resp.workspaces {
-            rows.push(WorkspaceRow {
-                id: ws.id,
-                project_id: ws.project_id,
-                name: ws.name,
-                slug: ws.slug,
-                permission_mode: render_permission_mode(ws.permission_mode),
-                archived: ws.archived_at.is_some(),
-            });
-        }
-    }
+    let resp = call(
+        "Workspaces.ListWorkspaces",
+        workspaces.list_workspaces(ListWorkspacesRequest { include_archived }),
+    )
+    .await?;
+    let rows: Vec<WorkspaceRow> = resp
+        .workspaces
+        .into_iter()
+        .map(|ws| WorkspaceRow {
+            id: ws.id,
+            name: ws.name,
+            slug: ws.slug,
+            permission_mode: render_permission_mode(ws.permission_mode),
+            archived: ws.archived_at.is_some(),
+        })
+        .collect();
 
     render(&rows, format)
 }

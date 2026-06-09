@@ -16,7 +16,7 @@
 //! - V0.1 (Task 14): window opens, renderer round-trips
 //!   `Runtime.GetServerCapabilities` over UDS.
 //! - Phase 2 (Task 24): persistent gRPC channel, wider dispatcher
-//!   (Projects.ListProjects, Workspaces.{List,Get},
+//!   (Workspaces.{List,Get},
 //!   Workareas.GetWorkarea, Sessions.ListSessions stub), and the
 //!   `concerto_subscribe`/`unsubscribe` bridge over Streams.
 //! - Phase 4 (Task 49+, 53): launchd integration, auto-update, code
@@ -44,6 +44,9 @@ fn main() {
         // error. The renderer drives the check via
         // `@tauri-apps/plugin-updater` (see `src/hooks/useAutoUpdate.ts`).
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Phase 4: native folder picker for "Add local folder" in the New
+        // Workspace modal. Renderer calls `open({ directory: true })`.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(feature = "embedded-core")]
             {

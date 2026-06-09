@@ -113,13 +113,9 @@ async fn make_fixture(n: usize) -> Fixture {
     let mut repo_ids = Vec::new();
     {
         let mut w = persistence.writer().await;
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES ('p', 'p', 0)")
-            .execute(&mut *w)
-            .await
-            .expect("project");
         sqlx::query(
-            "INSERT INTO workspaces (id, project_id, name, slug, created_at)
-             VALUES ('ws', 'p', 'ws', 'ws', 0)",
+            "INSERT INTO workspaces (id, name, slug, created_at)
+             VALUES ('ws', 'ws', 'ws', 0)",
         )
         .execute(&mut *w)
         .await
@@ -131,11 +127,11 @@ async fn make_fixture(n: usize) -> Fixture {
         let url = format!("file://{}", repo.bare.path().display());
         let mut w = persistence.writer().await;
         sqlx::query(
-            "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-             VALUES (?, 'p', ?, ?, ?, 'full', 'main')",
+            "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+             VALUES (?, ?, ?, ?, 'full', 'main')",
         )
         .bind(&repo_id)
-        .bind(format!("name-{i}"))
+        .bind(&repo_id)
         .bind(&url)
         .bind(repo.local_path.to_string_lossy().to_string())
         .execute(&mut *w)

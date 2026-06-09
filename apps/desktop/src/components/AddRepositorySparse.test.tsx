@@ -26,11 +26,9 @@ vi.mock("../api/client", async (importActual) => {
 
 import { AddRepositoryForm } from "./AddRepositoryForm";
 import { renderWithClient } from "./test-utils";
-import { useUiStore } from "../state/useUiStore";
 
 const BLOBLESS_REPO = {
   id: "r1",
-  project_id: "p1",
   name: "api",
   url: "https://example.com/api.git",
   local_path: "",
@@ -40,7 +38,6 @@ const BLOBLESS_REPO = {
 };
 const FULL_REPO = {
   id: "r2",
-  project_id: "p1",
   name: "web",
   url: "https://example.com/web.git",
   local_path: "",
@@ -53,7 +50,7 @@ function mockInvoke(): void {
   invoke.mockImplementation((cmd: string, args: { method?: string }) => {
     if (cmd !== "concerto_rpc") return Promise.resolve(undefined);
     switch (args.method) {
-      case "Repositories.ListByProject":
+      case "Repositories.ListRepositories":
         return Promise.resolve({ repositories: [BLOBLESS_REPO, FULL_REPO] });
       case "Repositories.ListTree":
         return Promise.resolve({
@@ -62,7 +59,7 @@ function mockInvoke(): void {
       case "Repositories.EstimateConeSize":
         return Promise.resolve({ file_count: 1, disk_size_bytes: 10 });
       case "Repositories.SetRepoConeDefaults":
-        return Promise.resolve({ cone_paths: ["src"], workareas_updated: 2 });
+        return Promise.resolve({ ...BLOBLESS_REPO, cone_defaults: ["src"] });
       case "Repositories.EstimateRepoSize":
         return Promise.reject({ kind: "Rpc", message: "no probe" });
       default:
@@ -73,7 +70,6 @@ function mockInvoke(): void {
 
 beforeEach(() => {
   invoke.mockReset();
-  useUiStore.setState({ selectedProjectId: "p1" });
 });
 
 describe("AddRepositoryForm sparse-directories entry point", () => {
@@ -108,9 +104,11 @@ describe("AddRepositoryForm sparse-directories entry point", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
         method: "Repositories.SetRepoConeDefaults",
-        payload: { repository_id: "r1", cone_paths: ["src"] },
+        payload: { repository_id: "r1", cone_defaults: ["src"] },
       }),
     );
-    expect(await screen.findByText(/Updated 2 workareas/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Saved 1 directory as the default/i),
+    ).toBeInTheDocument();
   });
 });

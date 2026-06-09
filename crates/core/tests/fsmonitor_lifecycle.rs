@@ -101,7 +101,7 @@ async fn make_bare_with_commit() -> (String, TempDir, TempDir) {
 
 /// Build an in-process `RepoManager` over a tempdir SQLite DB. Seeds the
 /// `projects` row the FK requires.
-async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, TempDir) {
+async fn make_repo_manager() -> (Arc<Persistence>, RepoManager, TempDir) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("concerto.db");
     let persistence = Persistence::open(PersistenceConfig {
@@ -114,14 +114,6 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
 
     // Seed the `projects` row directly — the Projects gRPC service
     // doesn't exist in V0.1; matches `repository_clone.rs`.
-    {
-        let mut writer = persistence.writer().await;
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-            .bind(project_id)
-            .execute(&mut *writer)
-            .await
-            .expect("insert project");
-    }
 
     let repos_root = tmp.path().join("repos");
     let manager = RepoManager::new(Arc::clone(&persistence), repos_root);
@@ -132,18 +124,11 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
 /// the four locked perf config keys are written to the clone's `.git/config`.
 #[tokio::test(flavor = "multi_thread")]
 async fn clone_applies_perf_config() {
-    let (_persistence, manager, _tmp) = make_repo_manager("p-perf").await;
+    let (_persistence, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository(
-            "p-perf",
-            "fixture",
-            &url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("fixture", &url, "main", CloneStrategy::Full, false)
         .await
         .expect("add_repository");
     manager
@@ -181,18 +166,11 @@ async fn clone_applies_perf_config() {
 /// are treated as "not supported on this filesystem" per `design/02 §8`.
 #[tokio::test(flavor = "multi_thread")]
 async fn clone_records_alive_fsmonitor_pid_when_supported() {
-    let (persistence, manager, _tmp) = make_repo_manager("p-fsmon").await;
+    let (persistence, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository(
-            "p-fsmon",
-            "fixture",
-            &url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("fixture", &url, "main", CloneStrategy::Full, false)
         .await
         .expect("add_repository");
     manager
@@ -249,18 +227,11 @@ async fn restart_policy_disables_after_three_in_window() {
 /// restart attempt is made).
 #[tokio::test(flavor = "multi_thread")]
 async fn probe_all_respects_disabled_flag() {
-    let (persistence, manager, _tmp) = make_repo_manager("p-probe").await;
+    let (persistence, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository(
-            "p-probe",
-            "fixture",
-            &url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("fixture", &url, "main", CloneStrategy::Full, false)
         .await
         .expect("add_repository");
     // We don't need an on-disk clone for this test; the probe only
@@ -301,18 +272,11 @@ async fn probe_all_respects_disabled_flag() {
 /// by the mock, with no side effects.
 #[tokio::test(flavor = "multi_thread")]
 async fn probe_all_reports_alive_when_pid_is_live() {
-    let (persistence, manager, _tmp) = make_repo_manager("p-alive").await;
+    let (persistence, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let repo = manager
-        .add_repository(
-            "p-alive",
-            "fixture",
-            &url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("fixture", &url, "main", CloneStrategy::Full, false)
         .await
         .expect("add_repository");
     {

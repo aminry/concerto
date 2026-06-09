@@ -18,8 +18,7 @@ use concerto_proto::v1::{
     AddRepoRequest, CloneProgress, CloneRequest, ConeStats, EstimateConeSizeRequest,
     EstimateRepoSizeRequest, ListRepositoriesRequest, ListRepositoriesResponse, ListTreeRequest,
     ListTreeResponse, PrewarmProgress, PrewarmRequest, Repository, SetConesRequest,
-    SetConesResponse, SetRepoConeDefaultsRequest, SetRepoConeDefaultsResponse, SizeReport,
-    TreeEntry,
+    SetConesResponse, SetRepoConeDefaultsRequest, SizeReport, TreeEntry,
 };
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -52,14 +51,23 @@ impl RepositoriesService for RepositoriesHandler {
         request: Request<AddRepoRequest>,
     ) -> Result<Response<Repository>, Status> {
         let req = request.into_inner();
-        if req.project_id.is_empty() {
-            return Err(Status::invalid_argument("project_id is required"));
-        }
         if req.name.is_empty() {
             return Err(Status::invalid_argument("name is required"));
         }
+        // Exactly one of `local_path` (adopt an existing on-disk git repo in
+        // place, D9) or `url` (clone into the shared pool) is set.
+        if !req.local_path.is_empty() {
+            let row = self
+                .repo_manager
+                .import_local(&req.name, std::path::Path::new(&req.local_path))
+                .await
+                .map_err(error_to_status)?;
+            return Ok(Response::new(repository_to_proto(row)));
+        }
         if req.url.is_empty() {
-            return Err(Status::invalid_argument("url is required"));
+            return Err(Status::invalid_argument(
+                "exactly one of url or local_path is required",
+            ));
         }
         // Task 301: parse the wire `clone_strategy` (empty → Full, preserving
         // V0.1 callers). An unrecognized value is INVALID_ARGUMENT, never a
@@ -69,7 +77,6 @@ impl RepositoriesService for RepositoriesHandler {
         let row = self
             .repo_manager
             .add_repository(
-                &req.project_id,
                 &req.name,
                 &req.url,
                 &req.default_branch,
@@ -317,7 +324,7 @@ impl RepositoriesService for RepositoriesHandler {
     async fn set_repo_cone_defaults(
         &self,
         request: Request<SetRepoConeDefaultsRequest>,
-    ) -> Result<Response<SetRepoConeDefaultsResponse>, Status> {
+    ) -> Result<Response<Repository>, Status> {
         let req = request.into_inner();
         if req.repository_id.is_empty() {
             return Err(Status::invalid_argument("repository_id is required"));
@@ -327,29 +334,30 @@ impl RepositoriesService for RepositoriesHandler {
         // (a bad path → INVALID_ARGUMENT via `error_to_status`, before
         // anything is persisted), persists the repo-level default, then
         // propagates to every existing workarea (best-effort per workarea).
-        let workareas_updated = self
-            .repo_manager
-            .set_repo_cone_defaults(&repo, &req.cone_paths)
+        self.repo_manager
+            .set_repo_cone_defaults(&repo, &req.cone_defaults)
             .await
             .map_err(error_to_status)?;
-        Ok(Response::new(SetRepoConeDefaultsResponse {
-            cone_paths: req.cone_paths,
-            workareas_updated,
-        }))
+        // Return the updated `Repository` row (the new proto contract).
+        let row = self
+            .repo_manager
+            .get(&repo)
+            .await
+            .map_err(error_to_status)?
+            .ok_or_else(|| Status::not_found(format!("repository {repo} not found")))?;
+        Ok(Response::new(repository_to_proto(row)))
     }
 
-    #[tracing::instrument(skip_all, name = "Repositories::ListByProject")]
-    async fn list_by_project(
+    #[tracing::instrument(skip_all, name = "Repositories::ListRepositories")]
+    async fn list_repositories(
         &self,
-        request: Request<ListRepositoriesRequest>,
+        _request: Request<ListRepositoriesRequest>,
     ) -> Result<Response<ListRepositoriesResponse>, Status> {
-        let req = request.into_inner();
-        if req.project_id.is_empty() {
-            return Err(Status::invalid_argument("project_id is required"));
-        }
+        // Repositories are a global registry (Project→Workspace collapse,
+        // D9), so listing is unscoped — every registered repo is returned.
         let rows = self
             .repo_manager
-            .list_by_project(&req.project_id)
+            .list_all()
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(ListRepositoriesResponse {
@@ -383,7 +391,6 @@ pub fn cone_suggest_error_to_status(err: ConeSuggestError) -> Status {
 fn repository_to_proto(row: concerto_persist::Repository) -> Repository {
     Repository {
         id: row.id.to_string(),
-        project_id: row.project_id,
         name: row.name,
         url: row.url,
         local_path: row.local_path,

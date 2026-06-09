@@ -28,8 +28,8 @@ import { renderWithClient } from "./test-utils";
 import type { Repository } from "../api/repositories";
 
 const repos: Repository[] = [
-  { id: "repo-a", project_id: "p1", name: "api", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
-  { id: "repo-b", project_id: "p1", name: "web", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
+  { id: "repo-a", name: "api", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
+  { id: "repo-b", name: "web", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
 ];
 
 function ControlledPicker(): JSX.Element {

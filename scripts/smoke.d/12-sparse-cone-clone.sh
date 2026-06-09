@@ -54,9 +54,8 @@ check_sparse_cone_clone() {
     git -C "$SC_SEED" push --quiet origin main
 
     echo "Smoke gate: sparse-cone-clone — add (blobless+sparse) + clone..."
-    SC_PROJECT_ID=$("${SMOKE_CLIENT[@]}" add-project --name "sparse-cone")
     SC_REPO_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" add-repo \
-        --project-id "$SC_PROJECT_ID" --url "file://$SC_BARE" \
+        --url "file://$SC_BARE" --name "sparse-cone-repo" \
         --clone-strategy blobless --with-sparse)
     if ! "${SMOKE_CLIENT[@]}" --socket "$SOCKET" clone --repo-id "$SC_REPO_ID"; then
         echo "FAIL sparse-cone-clone"
@@ -65,16 +64,16 @@ check_sparse_cone_clone() {
 
     echo "Smoke gate: sparse-cone-clone — create workspace + workarea..."
     SC_WS_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" new-workspace \
-        --project-id "$SC_PROJECT_ID" --name "sparse-cone-ws" --repo-id "$SC_REPO_ID")
+        --name "sparse-cone-ws" --repo-id "$SC_REPO_ID")
     SC_WA_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" new-workarea --workspace-id "$SC_WS_ID")
 
-    # Resolve the workarea's repo worktree: <data>/workspaces/<slug>/<composer>/smoke-repo
+    # Resolve the workarea's repo worktree: <data>/workspaces/<slug>/<composer>/sparse-cone-repo
     SC_WT_ROOT=$(find "$CORE_DATA_DIR/workspaces" -maxdepth 2 -mindepth 2 -type d -path "*sparse-cone-ws*" | head -n 1)
     if [ -z "$SC_WT_ROOT" ]; then
         echo "FAIL sparse-cone-clone"
         fail "workarea root not found under $CORE_DATA_DIR/workspaces (ws=$SC_WS_ID)"
     fi
-    SC_REPO_WT="$SC_WT_ROOT/smoke-repo"
+    SC_REPO_WT="$SC_WT_ROOT/sparse-cone-repo"
     if [ ! -e "$SC_REPO_WT/.git" ]; then
         echo "FAIL sparse-cone-clone"
         fail "repo worktree .git missing at $SC_REPO_WT"

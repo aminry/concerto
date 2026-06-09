@@ -568,7 +568,6 @@ pub struct RepositoryId(pub String);
 ```rust
 pub struct NewRepository {
     pub id: RepositoryId,
-    pub project_id: String,
     pub name: String,
     pub url: String,
     pub local_path: String,
@@ -582,7 +581,6 @@ pub struct NewRepository {
 ```rust
 pub struct Repository {
     pub id: RepositoryId,
-    pub project_id: String,
     pub name: String,
     pub url: String,
     pub local_path: String,
@@ -594,7 +592,7 @@ pub struct Repository {
     /// Per-repo action preferences, a JSON object keyed by the seven action
     /// names (Task 310, `design/04 §3.13`, migration 0011) — the local-DB
     /// layer of the settings precedence chain. Defaults to `"{}"`. Read by
-    /// the `ProjectSettingsResolver` as the per-repo `action_prefs.<action>`
+    /// the `WorkspaceSettingsResolver` as the per-repo `action_prefs.<action>`
     /// layer (managed > checked-in `.concerto/action_prefs.toml` > this >
     /// default).
     pub action_prefs_json: String,
@@ -606,34 +604,14 @@ pub struct Repository {
 }
 ```
 
-### struct `ProjectId`
+### struct `WorkspaceRepoCones`
 
 ```rust
-pub struct ProjectId(pub String);
-```
-
-### struct `NewProject`
-
-```rust
-pub struct NewProject {
-    pub id: ProjectId,
-    pub name: String,
-    pub icon: Option<String>,
-    /// Unix epoch milliseconds. Supplied by the caller to keep this
-    /// layer pure (no wall-clock reads).
-    pub created_at: i64,
-}
-```
-
-### struct `Project`
-
-```rust
-pub struct Project {
-    pub id: ProjectId,
-    pub name: String,
-    pub icon: Option<String>,
-    pub created_at: i64,
-    pub archived_at: Option<i64>,
+pub struct WorkspaceRepoCones {
+    pub repository_id: RepositoryId,
+    /// Per-`(workspace, repo)` sparse-cone snapshot as a JSON
+    /// `["<cone_path>", …]` array string (Task 302, D6).
+    pub sparse_cones_json: String,
 }
 ```
 
@@ -648,12 +626,11 @@ pub struct WorkspaceId(pub String);
 ```rust
 pub struct NewWorkspace {
     pub id: WorkspaceId,
-    pub project_id: String,
     pub name: String,
     pub slug: String,
+    pub icon: Option<String>,
     pub description: Option<String>,
-    pub permission_mode: Option<String>,
-    /// Unix epoch milliseconds.
+    pub permission_mode: Option<String>, // None = inherit from workspace defaults
     pub created_at: i64,
 }
 ```
@@ -663,12 +640,12 @@ pub struct NewWorkspace {
 ```rust
 pub struct Workspace {
     pub id: WorkspaceId,
-    pub project_id: String,
     pub name: String,
     pub slug: String,
+    pub icon: Option<String>,
     pub description: Option<String>,
     /// Lowercase SQL form (`"strict" | "normal" | "auto" | "yolo"`) or
-    /// `None` for "inherit from project".
+    /// `None` for "inherit from workspace defaults".
     pub permission_mode: Option<String>,
     pub created_at: i64,
     pub archived_at: Option<i64>,
@@ -897,7 +874,7 @@ pub struct SkillId(pub String);
 ```rust
 pub enum SkillScope {
     Personal,
-    Project,
+    Workspace,
     Plugin,
     Enterprise,
 }
@@ -909,9 +886,9 @@ pub enum SkillScope {
 pub struct NewSkill {
     pub id: SkillId,
     pub scope: SkillScope,
-    /// MUST be `Some` when `scope == SkillScope::Project`; MUST be
+    /// MUST be `Some` when `scope == SkillScope::Workspace`; MUST be
     /// `None` otherwise.
-    pub project_id: Option<ProjectId>,
+    pub workspace_id: Option<WorkspaceId>,
     pub name: String,
     pub slash_command: Option<String>,
     pub description: Option<String>,
@@ -928,7 +905,7 @@ pub struct NewSkill {
 pub struct SkillRow {
     pub id: SkillId,
     pub scope: SkillScope,
-    pub project_id: Option<ProjectId>,
+    pub workspace_id: Option<WorkspaceId>,
     pub name: String,
     pub slash_command: Option<String>,
     pub description: Option<String>,
@@ -944,7 +921,7 @@ pub struct SkillRow {
 ```rust
 pub struct SkillFilter {
     pub scope: Option<SkillScope>,
-    pub project_id: Option<ProjectId>,
+    pub workspace_id: Option<WorkspaceId>,
     pub enabled_only: bool,
 }
 ```

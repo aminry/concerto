@@ -7,11 +7,11 @@
 //! ## V0.1 surface
 //!
 //! - [`SkillsRegistryHandle::list`] reads the persisted
-//!   `skills_index` rows filtered on `(scope, project_id, enabled_only)`.
+//!   `skills_index` rows filtered on `(scope, workspace_id, enabled_only)`.
 //! - [`SkillsRegistryHandle::toggle`] flips a row's `enabled` column
 //!   and returns the updated row.
 //! - [`SkillsRegistryHandle::refresh`] walks `~/.claude/skills/` and the
-//!   per-project `<repo.local_path>/.claude/skills/` directories,
+//!   per-workspace `<repo.local_path>/.claude/skills/` directories,
 //!   upserting every well-formed SKILL.md into `skills_index`.
 
 use std::path::PathBuf;
@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
-use concerto_persist::{Persistence, ProjectId, SkillFilter, SkillId, SkillRow};
+use concerto_persist::{Persistence, SkillFilter, SkillId, SkillRow, WorkspaceId};
 
 use super::discovery::{discover, SkillsRefreshReport};
 use crate::supervisor::{Actor, ActorContext};
@@ -65,7 +65,7 @@ impl SkillsRegistryHandle {
         Arc::clone(&self.persistence)
     }
 
-    /// List skills, optionally filtered on `(scope, project_id,
+    /// List skills, optionally filtered on `(scope, workspace_id,
     /// enabled_only)`. Pure read.
     pub async fn list(&self, filter: SkillFilter) -> Result<Vec<SkillRow>> {
         concerto_persist::skills::list(self.persistence.readers(), &filter).await
@@ -86,11 +86,14 @@ impl SkillsRegistryHandle {
             .ok_or_else(|| Error::Internal(format!("skill {skill_id} missing after toggle")))
     }
 
-    /// Re-run the discovery walk. V0.1 walks personal + per-project
+    /// Re-run the discovery walk. V0.1 walks personal + per-workspace
     /// scopes; V1.0 will add real marketplace fetch behind the same
     /// entry point.
-    pub async fn refresh(&self, project_filter: Option<&ProjectId>) -> Result<SkillsRefreshReport> {
-        discover(&self.persistence, &self.home_dir, project_filter).await
+    pub async fn refresh(
+        &self,
+        workspace_filter: Option<&WorkspaceId>,
+    ) -> Result<SkillsRefreshReport> {
+        discover(&self.persistence, &self.home_dir, workspace_filter).await
     }
 }
 

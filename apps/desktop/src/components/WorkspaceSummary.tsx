@@ -32,6 +32,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 
+import { formatError } from "../api/errors";
 import { useWorkareas } from "../hooks/useWorkareas";
 import { useUiStore } from "../state/useUiStore";
 import { useEventSubscription } from "../hooks/useEventSubscription";
@@ -87,7 +88,7 @@ export function WorkspaceSummary({
         <p className="text-xs text-faint">Loading workareas…</p>
       )}
       {query.isError && (
-        <p className="text-xs text-err">Failed: {String(query.error)}</p>
+        <p className="text-xs text-err">Failed: {formatError(query.error)}</p>
       )}
       {!query.isLoading && !query.isError && workareas.length === 0 && (
         <p className="text-xs text-faint">

@@ -31,6 +31,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { RefreshCw } from "lucide-react";
 
+import { formatError } from "../../api/errors";
 import type { DiffHunk, DiffPayload, FileDiff } from "../../api/diff";
 import { diffQueryKey, useDiff } from "../../hooks/useDiff";
 import { useUiStore, type DiffViewMode } from "../../state/useUiStore";
@@ -144,7 +145,7 @@ export function DiffViewer(props: DiffViewerProps): JSX.Element {
         </div>
         <div className="min-w-0 min-h-0">
           {diffQuery.isError ? (
-            <ErrorBanner message={String(diffQuery.error)} />
+            <ErrorBanner message={formatError(diffQuery.error)} />
           ) : selected ? (
             <DiffEditor
               key={`${selected.path}:${diffViewMode}`}

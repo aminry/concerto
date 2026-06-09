@@ -85,7 +85,7 @@ async fn seed(core: &CoreUnderTest, slug: &str) -> Seeded {
 
     let (bare_url, bare, work) = make_bare_with_commit().await;
 
-    let project_id = format!("proj-{slug}");
+    let _project_id = format!("proj-{slug}");
     let workspace_id = format!("ws-{slug}");
     let repo_id = format!("repo-{slug}");
     let repo_name = format!("name-{slug}");
@@ -99,32 +99,23 @@ async fn seed(core: &CoreUnderTest, slug: &str) -> Seeded {
         .connect_with(opts)
         .await
         .expect("open db write pool");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-        .bind(&project_id)
-        .execute(&pool)
-        .await
-        .expect("insert project");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind(&repo_id)
-    .bind(&project_id)
     .bind(&repo_name)
     .bind(&bare_url)
     .bind(local_path.to_string_lossy().to_string())
     .execute(&pool)
     .await
     .expect("insert repository");
-    sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES (?, ?, 'test', ?, 0)",
-    )
-    .bind(&workspace_id)
-    .bind(&project_id)
-    .bind(slug)
-    .execute(&pool)
-    .await
-    .expect("insert workspace");
+    sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, 'test', ?, 0)")
+        .bind(&workspace_id)
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .expect("insert workspace");
     sqlx::query("INSERT INTO workspace_repos (workspace_id, repository_id) VALUES (?, ?)")
         .bind(&workspace_id)
         .bind(&repo_id)
@@ -268,7 +259,7 @@ async fn attach_second_repo(
     std::mem::forget(_bare);
     std::mem::forget(_work);
 
-    let project_id = format!("proj-{slug}");
+    let _project_id = format!("proj-{slug}");
     let repo_id = format!("repo2-{slug}");
     let repo_name = format!("name2-{slug}");
     let local_path = core.data_dir.join("repos").join(&repo_id);
@@ -282,11 +273,10 @@ async fn attach_second_repo(
         .await
         .expect("open db");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind(&repo_id)
-    .bind(&project_id)
     .bind(&repo_name)
     .bind(&bare_url)
     .bind(local_path.to_string_lossy().to_string())
@@ -391,9 +381,9 @@ async fn create_workarea_checked_in_worktreeinclude_wins_over_db_rules() {
             .connect_with(opts)
             .await
             .expect("db");
-        sqlx::query("UPDATE projects SET settings_json = ? WHERE id = ?")
+        sqlx::query("UPDATE workspaces SET settings_json = ? WHERE id = ?")
             .bind(r#"{"files_to_copy_rules":[{"pattern":"db_only.txt","mode":"copy"}]}"#)
-            .bind(format!("proj-{}", "ftc-precedence"))
+            .bind(format!("ws-{}", "ftc-precedence"))
             .execute(&pool)
             .await
             .expect("update settings_json");
@@ -459,9 +449,9 @@ async fn create_workarea_uses_db_rules_when_no_checked_in_file() {
             .connect_with(opts)
             .await
             .expect("db");
-        sqlx::query("UPDATE projects SET settings_json = ? WHERE id = ?")
+        sqlx::query("UPDATE workspaces SET settings_json = ? WHERE id = ?")
             .bind(r#"{"files_to_copy_rules":[{"pattern":".env","mode":"copy"}]}"#)
-            .bind(format!("proj-{}", "ftc-dbonly"))
+            .bind(format!("ws-{}", "ftc-dbonly"))
             .execute(&pool)
             .await
             .expect("update settings_json");

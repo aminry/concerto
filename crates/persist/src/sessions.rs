@@ -372,7 +372,7 @@ mod tests {
         (dir, persist)
     }
 
-    /// Seed the full project → workspace → workarea → session chain plus
+    /// Seed the full workspace → workarea → session chain plus
     /// every dependent that participates in the cascade (chat, chat_message,
     /// checkpoint, tool_approval, schedule + schedule_run), delete the
     /// session, and assert the cascade behaviour:
@@ -383,21 +383,13 @@ mod tests {
         let (_dir, persist) = fresh_db().await;
         let mut w = persist.writer().await;
 
-        // ----- project / repository / workspace / workarea ----------------
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-            .bind("proj-1")
-            .bind("p")
-            .bind(0_i64)
-            .execute(&mut *w)
-            .await
-            .expect("project");
+        // ----- repository / workspace / workarea --------------------------
         sqlx::query(
             "INSERT INTO repositories \
-             (id, project_id, name, url, local_path, clone_strategy, default_branch) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (id, name, url, local_path, clone_strategy, default_branch) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind("repo-1")
-        .bind("proj-1")
         .bind("r")
         .bind("git@example.com:r.git")
         .bind("/tmp/repo-1")
@@ -407,11 +399,10 @@ mod tests {
         .await
         .expect("repository");
         sqlx::query(
-            "INSERT INTO workspaces (id, project_id, name, slug, created_at) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO workspaces (id, name, slug, created_at) \
+             VALUES (?, ?, ?, ?)",
         )
         .bind("ws-1")
-        .bind("proj-1")
         .bind("w")
         .bind("w")
         .bind(0_i64)

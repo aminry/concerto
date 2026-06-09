@@ -13,7 +13,7 @@
 # (subscribes to workspace.events, creates two workspaces, reconnects).
 #
 # Requires (from echo-session + earlier):
-#   SMOKE_CLIENT, SOCKET, CONCERTO_HOME, CORE_LOG, SID, PROJECT_ID, REPO_ID.
+#   SMOKE_CLIENT, SOCKET, CONCERTO_HOME, CORE_LOG, SID, REPO_ID.
 check_streams_subscribe() {
     echo "Smoke gate v3: streaming session output..."
     SESSION_LOG="$CONCERTO_HOME/session-out.log"
@@ -43,7 +43,7 @@ check_streams_subscribe() {
     echo "Smoke gate v3: probing Streams.Subscribe reconnect (since_offset + GapDetected)..."
     PROBE_LOG="$CONCERTO_HOME/streams-replay-probe.log"
     if ! "${SMOKE_CLIENT[@]}" --socket "$SOCKET" streams-replay-probe \
-        --project-id "$PROJECT_ID" --repo-id "$REPO_ID" \
+        --repo-id "$REPO_ID" \
         > "$PROBE_LOG" 2>"$CONCERTO_HOME/streams-replay-probe-err.log"; then
         echo "smoke: streams-replay-probe stderr:" >&2
         sed 's/^/    /' "$CONCERTO_HOME/streams-replay-probe-err.log" >&2 || true

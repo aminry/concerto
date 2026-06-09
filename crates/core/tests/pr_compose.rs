@@ -54,7 +54,8 @@ async fn git(args: &[&str], cwd: &Path) {
 }
 
 struct RepoOnDisk {
-    bare: TempDir,
+    /// Kept alive so the bare repo's tempdir is not deleted under the test.
+    _bare: TempDir,
     local_path: std::path::PathBuf,
 }
 
@@ -81,7 +82,10 @@ async fn make_repo(data_dir: &Path, repo_id: &str) -> RepoOnDisk {
         Path::new("."),
     )
     .await;
-    RepoOnDisk { bare, local_path }
+    RepoOnDisk {
+        _bare: bare,
+        local_path,
+    }
 }
 
 struct Fixture {
@@ -111,13 +115,9 @@ async fn make_fixture() -> Fixture {
 
     {
         let mut w = persistence.writer().await;
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES ('p', 'p', 0)")
-            .execute(&mut *w)
-            .await
-            .expect("project");
         sqlx::query(
-            "INSERT INTO workspaces (id, project_id, name, slug, created_at)
-             VALUES ('ws', 'p', 'ws', 'ws', 0)",
+            "INSERT INTO workspaces (id, name, slug, created_at)
+             VALUES ('ws', 'ws', 'ws', 0)",
         )
         .execute(&mut *w)
         .await
@@ -126,15 +126,13 @@ async fn make_fixture() -> Fixture {
 
     let repo_id = "r0".to_string();
     let repo = make_repo(&data_dir, &repo_id).await;
-    let url = format!("file://{}", repo.bare.path().display());
     {
         let mut w = persistence.writer().await;
         sqlx::query(
-            "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-             VALUES (?, 'p', 'name-0', ?, ?, 'full', 'main')",
+            "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+             VALUES (?, 'p', 'name-0', ?, 'full', 'main')",
         )
         .bind(&repo_id)
-        .bind(&url)
         .bind(repo.local_path.to_string_lossy().to_string())
         .execute(&mut *w)
         .await
@@ -171,10 +169,10 @@ impl Fixture {
         )
     }
 
-    /// Set the project's `pr_compose` opt-out flag.
+    /// Set the workspace's `pr_compose` opt-out flag.
     async fn set_pr_compose(&self, enabled: bool) {
         let mut w = self.persistence.writer().await;
-        sqlx::query("UPDATE projects SET settings_json = ? WHERE id = 'p'")
+        sqlx::query("UPDATE workspaces SET settings_json = ? WHERE id = 'ws'")
             .bind(format!("{{\"pr_compose\":{enabled}}}"))
             .execute(&mut *w)
             .await

@@ -7,7 +7,6 @@
 
 pub mod devices;
 pub mod files;
-pub mod projects;
 pub mod repositories;
 pub mod runtime;
 #[cfg(unix)]

@@ -87,7 +87,7 @@
 //! the camelCase `disableRemote`.
 //!
 //! Task 310 also adds the project-layer managed fields the three-layer
-//! [`crate::settings::ProjectSettingsResolver`] caps on top of:
+//! [`crate::settings::WorkspaceSettingsResolver`] caps on top of:
 //! `defaultPermissionMode`, `enterpriseDataPrivacy`, `defaultModel`, and the
 //! three agent-executable paths (`claudeExecutablePath` /
 //! `codexExecutablePath` / `geminiExecutablePath`). They are parsed + exposed
@@ -203,7 +203,7 @@ pub struct ManagedPolicy {
     /// no org default (fall through to checked-in / local DB / global).
     /// **Boundary:** the live permission *decision* path
     /// ([`crate::security::resolve_effective_mode`]) caps on
-    /// [`Self::max_permission_mode`], NOT on this — this is the project-default
+    /// [`Self::max_permission_mode`], NOT on this — this is the workspace-default
     /// provenance the Settings UI renders. Read via
     /// [`Self::default_permission_mode`].
     pub default_permission_mode: Option<PermissionMode>,
@@ -319,11 +319,11 @@ impl ManagedPolicy {
         &self.deny_filesystem_paths
     }
 
-    /// The org-pinned project default permission mode, if any (`design/12
+    /// The org-pinned workspace default permission mode, if any (`design/12
     /// §3.8` `defaultPermissionMode`, Task 310).
     ///
-    /// **Boundary note:** this is the *project-default* managed-layer value
-    /// the [`crate::settings::ProjectSettingsResolver`] reports for the
+    /// **Boundary note:** this is the *workspace-default* managed-layer value
+    /// the [`crate::settings::WorkspaceSettingsResolver`] reports for the
     /// `default_permission_mode` field + its source. The live permission
     /// *decision* still flows through
     /// [`crate::security::resolve_effective_mode`], which caps on

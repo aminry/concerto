@@ -8,7 +8,6 @@ import { callRpc } from "./client";
 
 export type Repository = {
   id: string;
-  project_id: string;
   name: string;
   url: string;
   local_path: string;
@@ -71,12 +70,13 @@ export async function estimateRepoSize(url: string): Promise<SizeReport> {
   );
 }
 
-export async function listRepositories(
-  projectId: string,
-): Promise<ListRepositoriesResponse> {
-  return callRpc<{ project_id: string }, ListRepositoriesResponse>(
-    "Repositories.ListByProject",
-    { project_id: projectId },
+/// `Repositories.ListRepositories` — lists ALL repositories in the global
+/// registry (the Project layer was collapsed away; repos are no longer
+/// project-scoped).
+export async function listRepositories(): Promise<ListRepositoriesResponse> {
+  return callRpc<Record<string, never>, ListRepositoriesResponse>(
+    "Repositories.ListRepositories",
+    {},
   );
 }
 
@@ -102,22 +102,22 @@ export async function listTree(
 
 /// `Repositories.SetRepoConeDefaults` (design/02 §3.2) — set the
 /// repository's default sparse cone AND propagate it to every existing
-/// workarea of the repo. `conePaths` are forward-slash, repo-root-relative
-/// directory paths; `[]` clears the default. Returns the applied cone set +
-/// the count of workareas successfully re-applied (propagation is
-/// best-effort per workarea). A bad path → INVALID_ARGUMENT surfaced as a
-/// `CoreClientError`, before anything is persisted.
+/// workarea of the repo. `coneDefaults` are forward-slash, repo-root-relative
+/// directory paths; `[]` clears the default. Returns the updated
+/// `Repository` (whose `cone_defaults` reflects the applied set). A bad path
+/// → INVALID_ARGUMENT surfaced as a `CoreClientError`, before anything is
+/// persisted.
 export async function setRepoConeDefaults(
   repositoryId: string,
-  conePaths: string[],
-): Promise<{ cone_paths: string[]; workareas_updated: number }> {
-  return callRpc<
-    { repository_id: string; cone_paths: string[] },
-    { cone_paths: string[]; workareas_updated: number }
-  >("Repositories.SetRepoConeDefaults", {
-    repository_id: repositoryId,
-    cone_paths: conePaths,
-  });
+  coneDefaults: string[],
+): Promise<Repository> {
+  return callRpc<{ repository_id: string; cone_defaults: string[] }, Repository>(
+    "Repositories.SetRepoConeDefaults",
+    {
+      repository_id: repositoryId,
+      cone_defaults: coneDefaults,
+    },
+  );
 }
 
 /// The user-selectable clone strategies (Task 301). Treeless is omitted by
@@ -126,33 +126,53 @@ export async function setRepoConeDefaults(
 /// knobs below fully express the three picker choices.
 export type CloneStrategy = "full" | "blobless";
 
-export async function addRepository(input: {
-  projectId: string;
-  name: string;
-  url: string;
-  defaultBranch?: string;
-  /// Empty/omitted → Full on the Core (preserves the original behavior).
-  cloneStrategy?: CloneStrategy;
-  /// When true, clone `--sparse --no-checkout` so the cone picker can size
-  /// the worktree afterwards (the ">10 GB → Blobless + Sparse" tier).
-  withSparse?: boolean;
-}): Promise<Repository> {
-  return callRpc<
-    {
-      project_id: string;
+/// Register a repository in the global registry. Two variants:
+///   - `{ url, ... }` clones a remote into the shared pool.
+///   - `{ localPath, name }` ADOPTS an existing on-disk git repo in place
+///     (non-destructive). Exactly one of `url` / `localPath` is set.
+export type AddRepositoryInput =
+  | {
       name: string;
       url: string;
-      default_branch: string;
-      clone_strategy: string;
-      with_sparse: boolean;
-    },
-    Repository
-  >("Repositories.AddRepository", {
-    project_id: input.projectId,
-    name: input.name,
-    url: input.url,
-    default_branch: input.defaultBranch ?? "",
-    clone_strategy: input.cloneStrategy ?? "",
-    with_sparse: input.withSparse ?? false,
-  });
+      localPath?: undefined;
+      defaultBranch?: string;
+      /// Empty/omitted → Full on the Core (preserves the original behavior).
+      cloneStrategy?: CloneStrategy;
+      /// When true, clone `--sparse --no-checkout` so the cone picker can size
+      /// the worktree afterwards (the ">10 GB → Blobless + Sparse" tier).
+      withSparse?: boolean;
+    }
+  | {
+      name: string;
+      localPath: string;
+      url?: undefined;
+    };
+
+export async function addRepository(
+  input: AddRepositoryInput,
+): Promise<Repository> {
+  // The local-folder variant adopts an existing repo in place, so the
+  // clone-strategy knobs do not apply; the url variant clones.
+  const wire =
+    input.localPath !== undefined
+      ? {
+          name: input.name,
+          url: "",
+          default_branch: "",
+          clone_strategy: "",
+          with_sparse: false,
+          local_path: input.localPath,
+        }
+      : {
+          name: input.name,
+          url: input.url,
+          default_branch: input.defaultBranch ?? "",
+          clone_strategy: input.cloneStrategy ?? "",
+          with_sparse: input.withSparse ?? false,
+          local_path: "",
+        };
+  return callRpc<typeof wire, Repository>(
+    "Repositories.AddRepository",
+    wire,
+  );
 }

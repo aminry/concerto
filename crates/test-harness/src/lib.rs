@@ -38,8 +38,8 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 pub use crate::clients::{
-    ClientError, ProjectsClient, RepositoriesClient, RuntimeClient, SessionsClient, StreamsClient,
-    WorkareasClient, WorkspacesClient,
+    ClientError, RepositoriesClient, RuntimeClient, SessionsClient, StreamsClient, WorkareasClient,
+    WorkspacesClient,
 };
 pub use crate::process::ProcessError;
 
@@ -148,13 +148,6 @@ impl CoreUnderTest {
     /// "fresh connection per call" semantics.
     pub async fn runtime_client(&self) -> Result<RuntimeClient> {
         Ok(clients::runtime_client(self.socket_path.clone()).await?)
-    }
-
-    /// Connect a Tonic [`ProjectsClient`] to the running Core (Task 24).
-    ///
-    /// Same connection semantics as [`Self::runtime_client`].
-    pub async fn projects_client(&self) -> Result<ProjectsClient> {
-        Ok(clients::projects_client(self.socket_path.clone()).await?)
     }
 
     /// Connect a Tonic [`RepositoriesClient`] to the running Core (Task 18).

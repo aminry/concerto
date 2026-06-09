@@ -813,7 +813,7 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let workarea_handle = workarea_handle.with_scheduler(scheduler_handle.clone());
 
     // Task 320.5: wire the LIVE Linear/Jira issue write-back the coordinated-merge
-    // success path calls (per-project opt-in via `projects.settings_json`).
+    // success path calls (per-workspace opt-in via `workspaces.settings_json`).
     // Keychain-backed tokens (317's `VcsSecretSlot` accessors); mints nothing.
     // Cross-platform (the write-back is pure `reqwest`/rustls); the call site is
     // `#[cfg(unix)]` (the merge loop), so on Windows it is wired but unused until
@@ -828,16 +828,16 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         }
     };
 
-    // Task 310: resolve every project's three-layer settings
+    // Task 310: resolve every workspace's three-layer settings
     // (managed > checked-in > local DB > defaults) and emit one
-    // `ProjectSettingsResolved{project_id, field, value_source}` audit per
+    // `WorkspaceSettingsResolved{workspace_id, field, value_source}` audit per
     // field, mirroring how `load_managed_policy_audited` is called once at
     // boot (`design/03 §3.13`). The per-machine opt-out config + the
-    // checked-in `project_settings.json` / `action_prefs.toml` files live
+    // checked-in `workspace_settings.json` / `action_prefs.toml` files live
     // under `~/.concerto/` + each repo's worktree `.concerto/`. Best-effort:
-    // a resolution failure for one project logs + skips; it never gates boot.
+    // a resolution failure for one workspace logs + skips; it never gates boot.
     let settings_home_concerto = home_dir.join(".concerto");
-    match crate::settings::resolve_and_audit_all_projects(
+    match crate::settings::resolve_and_audit_all_workspaces(
         &persistence,
         config_dir.as_path(),
         &settings_home_concerto,
@@ -845,8 +845,8 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     )
     .await
     {
-        Ok(n) => tracing::debug!(events = n, "project-settings boot resolution complete"),
-        Err(e) => tracing::warn!(error = %e, "project-settings boot resolution failed"),
+        Ok(n) => tracing::debug!(events = n, "workspace-settings boot resolution complete"),
+        Err(e) => tracing::warn!(error = %e, "workspace-settings boot resolution failed"),
     }
 
     // Task 13: spawn the gRPC server as the next supervised actor.

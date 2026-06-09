@@ -94,7 +94,7 @@ async fn make_bare_with_tree() -> (String, TempDir, TempDir) {
     (format!("file://{}", bare.path().display()), bare, work)
 }
 
-async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, TempDir) {
+async fn make_repo_manager() -> (Arc<Persistence>, RepoManager, TempDir) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("concerto.db");
     let persistence = Persistence::open(PersistenceConfig {
@@ -104,14 +104,6 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
     .await
     .expect("open persistence");
     let persistence = Arc::new(persistence);
-    {
-        let mut writer = persistence.writer().await;
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-            .bind(project_id)
-            .execute(&mut *writer)
-            .await
-            .expect("insert project");
-    }
     let repos_root = tmp.path().join("repos");
     let manager = RepoManager::new(Arc::clone(&persistence), repos_root);
     (persistence, manager, tmp)
@@ -122,19 +114,11 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
 /// Returns the cloned repo id + its on-disk path.
 async fn clone_and_cone(
     manager: &RepoManager,
-    project_id: &str,
     url: &str,
     cone: &[ConePath],
 ) -> (RepositoryId, std::path::PathBuf) {
     let repo = manager
-        .add_repository(
-            project_id,
-            "fixture",
-            url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("fixture", url, "main", CloneStrategy::Full, false)
         .await
         .expect("add_repository");
     manager
@@ -154,9 +138,9 @@ async fn clone_and_cone(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn list_paths_in_cone_counts_exact_files_and_nonzero_size() {
-    let (_p, manager, _tmp) = make_repo_manager("p-cone").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_tree().await;
-    let (repo_id, _local) = clone_and_cone(&manager, "p-cone", &url, &["a".to_string()]).await;
+    let (repo_id, _local) = clone_and_cone(&manager, &url, &["a".to_string()]).await;
 
     let stats = manager
         .list_paths_in_cone(&repo_id, &["a".to_string()])
@@ -176,10 +160,10 @@ async fn list_paths_in_cone_counts_exact_files_and_nonzero_size() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn list_paths_in_cone_empty_for_out_of_cone_prefix() {
-    let (_p, manager, _tmp) = make_repo_manager("p-empty").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_tree().await;
     // Cone down to `a` → `b/` collapses to a sparse directory entry.
-    let (repo_id, _local) = clone_and_cone(&manager, "p-empty", &url, &["a".to_string()]).await;
+    let (repo_id, _local) = clone_and_cone(&manager, &url, &["a".to_string()]).await;
 
     // Probing `b` finds no in-cone *file* entries (only the collapsed dir
     // entry, which the index probe skips) → {0, 0}.
@@ -199,7 +183,7 @@ async fn list_paths_in_cone_empty_for_out_of_cone_prefix() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn suggest_cones_unwired_seam_maps_to_unimplemented() {
-    let (_p, manager, _tmp) = make_repo_manager("p-seam").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
     let repo = RepositoryId("does-not-need-to-exist".to_string());
 
     // No ConeSuggester injected (the P3 default) → the FROZEN unwired signal.
@@ -239,7 +223,7 @@ impl ConeSuggester for MockSuggester {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn suggest_cones_delegates_to_injected_suggester() {
-    let (_p, manager, _tmp) = make_repo_manager("p-mock").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
     let manager = manager.with_cone_suggester(Arc::new(MockSuggester {
         canned: vec!["packages/core".to_string(), "apps/web".to_string()],
     }));

@@ -9,8 +9,8 @@
 //! shape, and that the default-empty insert reads back as `"[]"`.
 
 use concerto_persist::{
-    workareas, NewProject, NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
-    PersistenceConfig, ProjectId, RepositoryId, WorkareaId, WorkspaceId,
+    workareas, NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
+    PersistenceConfig, RepositoryId, WorkareaId, WorkspaceId,
 };
 
 async fn fresh_db() -> (tempfile::TempDir, Persistence) {
@@ -25,34 +25,20 @@ async fn fresh_db() -> (tempfile::TempDir, Persistence) {
     (dir, persist)
 }
 
-/// Seed project → repo → workspace → workarea → workarea_repos and return the
+/// Seed repo → workspace → workarea → workarea_repos and return the
 /// (workarea, repo) ids. The junction row is inserted with the default-empty
 /// cone via [`NewWorkareaRepo::empty_cones`].
 async fn seed(persist: &Persistence) -> (WorkareaId, RepositoryId) {
-    let project_id = ProjectId("proj-1".to_string());
     let repo_id = RepositoryId("repo-1".to_string());
     let ws_id = WorkspaceId("ws-1".to_string());
     let wa_id = WorkareaId("wa-1".to_string());
 
     let mut w = persist.writer().await;
 
-    concerto_persist::projects::insert(
-        &mut w,
-        NewProject {
-            id: project_id.clone(),
-            name: "Test".to_string(),
-            icon: None,
-            created_at: 1_700_000_000_000,
-        },
-    )
-    .await
-    .expect("insert project");
-
     concerto_persist::repositories::insert(
         &mut w,
         NewRepository {
             id: repo_id.clone(),
-            project_id: project_id.0.clone(),
             name: "smoke-repo".to_string(),
             url: "file:///tmp/bare.git".to_string(),
             local_path: "/tmp/repos/repo-1".to_string(),
@@ -67,9 +53,9 @@ async fn seed(persist: &Persistence) -> (WorkareaId, RepositoryId) {
         &mut w,
         NewWorkspace {
             id: ws_id.clone(),
-            project_id: project_id.0.clone(),
             name: "WS".to_string(),
             slug: "ws".to_string(),
+            icon: None,
             description: None,
             permission_mode: None,
             created_at: 1_700_000_001_000,

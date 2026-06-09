@@ -2,15 +2,15 @@
 //!
 //! Three focused happy-path / negative cases:
 //!
-//! 1. Discovery walks `<home_dir>/.claude/skills/` and a per-project
-//!    `<repo.local_path>/.claude/skills/`, parses each well-formed
-//!    SKILL.md, and upserts the rows. A malformed SKILL.md is warned +
-//!    skipped (the walk still succeeds; the error message lands in
-//!    `report.errors`).
+//! 1. Discovery walks `<home_dir>/.claude/skills/` and a per-workspace
+//!    `<repo.local_path>/.claude/skills/` (for every repo attached to a
+//!    workspace), parses each well-formed SKILL.md, and upserts the rows.
+//!    A malformed SKILL.md is warned + skipped (the walk still succeeds;
+//!    the error message lands in `report.errors`).
 //! 2. Toggle: disabling a discovered skill flips the `enabled` column;
 //!    a subsequent `list` shows `enabled = false`.
 //! 3. Idempotency: re-running `refresh` does NOT duplicate rows — the
-//!    UNIQUE(scope, project_id, name) key collapses the second insert
+//!    UNIQUE(scope, workspace_id, name) key collapses the second insert
 //!    into an UPDATE.
 //!
 //! The test deliberately overrides `home_dir` to a tempdir so the
@@ -21,15 +21,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use concerto_core::skills::SkillsRegistryHandle;
-use concerto_persist::{Persistence, PersistenceConfig, ProjectId, SkillFilter, SkillScope};
+use concerto_persist::{Persistence, PersistenceConfig, SkillFilter, SkillScope, WorkspaceId};
 use tempfile::TempDir;
 
 struct Fixture {
     _tmp: TempDir,
     home_dir: PathBuf,
-    project_repo_local: PathBuf,
+    workspace_repo_local: PathBuf,
     persistence: Arc<Persistence>,
-    project_id: ProjectId,
+    workspace_id: WorkspaceId,
 }
 
 async fn make_fixture() -> Fixture {
@@ -43,34 +43,39 @@ async fn make_fixture() -> Fixture {
     };
     let persistence = Arc::new(Persistence::open(cfg).await.expect("open persistence"));
 
-    let project_id = ProjectId("proj-test-skills".to_string());
+    let workspace_id = WorkspaceId("ws-test-skills".to_string());
     let repo_local = tmp.path().join("repo");
     tokio::fs::create_dir_all(&repo_local).await.unwrap();
 
-    // Seed a project + repository so the project-scope walk has
-    // something to chew on.
+    // Seed a repository + workspace + junction row so the workspace-scope
+    // walk has something to chew on.
     {
         let mut writer = persistence.writer().await;
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-            .bind(&project_id.0)
-            .bind("test-skills")
-            .bind(0_i64)
-            .execute(&mut *writer)
-            .await
-            .expect("insert project");
         sqlx::query(
-            "INSERT INTO repositories (id, project_id, name, url, local_path,
+            "INSERT INTO repositories (id, name, url, local_path,
                 clone_strategy, default_branch)
-             VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+             VALUES (?, ?, ?, ?, 'full', 'main')",
         )
         .bind("repo-test-skills")
-        .bind(&project_id.0)
         .bind("test-repo")
         .bind("file:///tmp/fake")
         .bind(repo_local.to_string_lossy().into_owned())
         .execute(&mut *writer)
         .await
         .expect("insert repository");
+        sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, ?, ?, 0)")
+            .bind(&workspace_id.0)
+            .bind("test-skills")
+            .bind("test-skills")
+            .execute(&mut *writer)
+            .await
+            .expect("insert workspace");
+        sqlx::query("INSERT INTO workspace_repos (workspace_id, repository_id) VALUES (?, ?)")
+            .bind(&workspace_id.0)
+            .bind("repo-test-skills")
+            .execute(&mut *writer)
+            .await
+            .expect("insert workspace_repos");
     }
 
     let home_dir = tmp.path().join("home");
@@ -79,9 +84,9 @@ async fn make_fixture() -> Fixture {
     Fixture {
         _tmp: tmp,
         home_dir,
-        project_repo_local: repo_local,
+        workspace_repo_local: repo_local,
         persistence,
-        project_id,
+        workspace_id,
     }
 }
 
@@ -94,13 +99,13 @@ async fn write_skill_md(dir: &std::path::Path, name: &str, body: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn discovery_walks_personal_and_project_scopes_and_skips_malformed() {
+async fn discovery_walks_personal_and_workspace_scopes_and_skips_malformed() {
     let fx = make_fixture().await;
 
     let personal_root = fx.home_dir.join(".claude").join("skills");
-    let project_root = fx.project_repo_local.join(".claude").join("skills");
+    let workspace_root = fx.workspace_repo_local.join(".claude").join("skills");
     tokio::fs::create_dir_all(&personal_root).await.unwrap();
-    tokio::fs::create_dir_all(&project_root).await.unwrap();
+    tokio::fs::create_dir_all(&workspace_root).await.unwrap();
 
     // Valid personal-scope skill with full frontmatter.
     write_skill_md(
@@ -109,11 +114,11 @@ async fn discovery_walks_personal_and_project_scopes_and_skips_malformed() {
         "---\nname: personal-skill\ndescription: hello\nslash-command: /personal\ntools:\n  - Read\n  - Edit\n---\n# body\n",
     )
     .await;
-    // Valid project-scope skill (minimal frontmatter).
+    // Valid workspace-scope skill (minimal frontmatter).
     write_skill_md(
-        &project_root,
-        "project-skill",
-        "---\nname: project-skill\ndescription: per-repo\n---\nbody\n",
+        &workspace_root,
+        "workspace-skill",
+        "---\nname: workspace-skill\ndescription: per-repo\n---\nbody\n",
     )
     .await;
     // Malformed frontmatter — no trailing `---`.
@@ -146,7 +151,7 @@ async fn discovery_walks_personal_and_project_scopes_and_skips_malformed() {
         by_name,
         vec![
             (SkillScope::Personal, "personal-skill"),
-            (SkillScope::Project, "project-skill"),
+            (SkillScope::Workspace, "workspace-skill"),
         ]
     );
 
@@ -160,19 +165,19 @@ async fn discovery_walks_personal_and_project_scopes_and_skips_malformed() {
     assert!(personal.enabled, "newly-discovered skill should be enabled");
 
     // Validate scope-filtered list.
-    let only_project = registry
+    let only_workspace = registry
         .list(SkillFilter {
-            scope: Some(SkillScope::Project),
+            scope: Some(SkillScope::Workspace),
             ..Default::default()
         })
         .await
-        .expect("list project");
-    assert_eq!(only_project.len(), 1);
-    assert_eq!(only_project[0].name, "project-skill");
+        .expect("list workspace");
+    assert_eq!(only_workspace.len(), 1);
+    assert_eq!(only_workspace[0].name, "workspace-skill");
     assert_eq!(
-        only_project[0].project_id.as_ref(),
-        Some(&fx.project_id),
-        "project-scope row should carry the project id"
+        only_workspace[0].workspace_id.as_ref(),
+        Some(&fx.workspace_id),
+        "workspace-scope row should carry the workspace id"
     );
 }
 

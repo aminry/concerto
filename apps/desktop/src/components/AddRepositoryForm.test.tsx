@@ -34,7 +34,6 @@ vi.mock("../api/client", async (importActual) => {
 
 import { AddRepositoryForm } from "./AddRepositoryForm";
 import { renderWithClient } from "./test-utils";
-import { useUiStore } from "../state/useUiStore";
 import type { SizeReport } from "../api/repositories";
 
 const BLOBLESS_REPORT: SizeReport = {
@@ -56,12 +55,11 @@ function mockInvoke(opts: {
           return Promise.reject({ kind: "Rpc", message: "could not reach remote" });
         return Promise.resolve(opts.size ?? BLOBLESS_REPORT);
       }
-      if (args.method === "Repositories.ListByProject")
+      if (args.method === "Repositories.ListRepositories")
         return Promise.resolve({ repositories: [] });
       if (args.method === "Repositories.AddRepository")
         return Promise.resolve({
           id: "r1",
-          project_id: "p1",
           name: "api",
           url: "u",
           local_path: "",
@@ -75,7 +73,6 @@ function mockInvoke(opts: {
 
 beforeEach(() => {
   invoke.mockReset();
-  useUiStore.setState({ selectedProjectId: "p1" });
 });
 
 describe("AddRepositoryForm clone-strategy picker", () => {
@@ -124,12 +121,12 @@ describe("AddRepositoryForm clone-strategy picker", () => {
       expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
         method: "Repositories.AddRepository",
         payload: {
-          project_id: "p1",
           name: "api",
           url: "https://example.com/repo.git",
           default_branch: "",
           clone_strategy: "blobless",
           with_sparse: false,
+          local_path: "",
         },
       }),
     );
@@ -156,12 +153,12 @@ describe("AddRepositoryForm clone-strategy picker", () => {
       expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
         method: "Repositories.AddRepository",
         payload: {
-          project_id: "p1",
           name: "api",
           url: "https://example.com/repo.git",
           default_branch: "",
           clone_strategy: "blobless",
           with_sparse: true,
+          local_path: "",
         },
       }),
     );
@@ -190,7 +187,6 @@ describe("AddRepositoryForm clone-strategy picker", () => {
       expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
         method: "Repositories.AddRepository",
         payload: {
-          project_id: "p1",
           name: "api",
           url: "git@private:repo.git",
           default_branch: "",
@@ -198,6 +194,7 @@ describe("AddRepositoryForm clone-strategy picker", () => {
           // Core treats identically to the empty-string default).
           clone_strategy: "full",
           with_sparse: false,
+          local_path: "",
         },
       }),
     );

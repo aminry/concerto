@@ -4,15 +4,15 @@
 # Creates a workspace + workarea, then verifies the on-disk worktree layout
 # (.context/ + a repo subdir whose .git is present).
 #
-# Requires (from core-boot + project-repo-clone):
-#   SMOKE_CLIENT, SOCKET, CORE_DATA_DIR, PROJECT_ID, REPO_ID.
+# Requires (from core-boot + repo-clone):
+#   SMOKE_CLIENT, SOCKET, CORE_DATA_DIR, REPO_ID.
 # Exports (consumed by later checks):
 #   WS_ID    the created workspace id.
 #   WA_ID    the created workarea id.
 #   WT_ROOT  the workarea root directory on disk.
 check_workspace_workarea() {
     echo "Smoke gate v3: creating workspace / workarea..."
-    WS_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" new-workspace --project-id "$PROJECT_ID" --name "wsp" --repo-id "$REPO_ID")
+    WS_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" new-workspace --name "wsp" --repo-id "$REPO_ID")
     # WA_ID is consumed by later sourced checks (echo-session, perm, loop).
     # shellcheck disable=SC2034
     WA_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" new-workarea --workspace-id "$WS_ID")

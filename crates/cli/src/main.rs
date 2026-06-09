@@ -91,11 +91,11 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum WorkspaceCommand {
-    /// List workspaces (optionally filtered to a single project).
+    /// List workspaces (the global registry; there is no project filter).
     Ls {
-        /// Limit to one project id. When omitted, lists across all projects.
-        #[arg(long, value_name = "ID")]
-        project: Option<String>,
+        /// Include archived workspaces in the listing.
+        #[arg(long)]
+        include_archived: bool,
     },
 }
 
@@ -158,9 +158,9 @@ async fn dispatch(cli: Cli) -> Result<(), CommandError> {
             let socket = client::resolve_socket_path(cli.socket)?;
             commands::status::run(&socket, format).await
         }
-        Command::Workspace(WorkspaceCommand::Ls { project }) => {
+        Command::Workspace(WorkspaceCommand::Ls { include_archived }) => {
             let socket = client::resolve_socket_path(cli.socket)?;
-            commands::workspace::run(&socket, project, format).await
+            commands::workspace::run(&socket, include_archived, format).await
         }
         Command::Session(SessionCommand::Ls { workarea }) => {
             let socket = client::resolve_socket_path(cli.socket)?;

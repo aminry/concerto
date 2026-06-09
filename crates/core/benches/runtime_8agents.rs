@@ -136,7 +136,6 @@ async fn seed(core: &CoreUnderTest, slug: &str) -> Seeded {
 
     let (bare_url, bare, work) = make_bare_with_commit().await;
 
-    let project_id = format!("proj-{slug}");
     let workspace_id = format!("ws-{slug}");
     let repo_id = format!("repo-{slug}");
     let repo_name = format!("name-{slug}");
@@ -150,32 +149,23 @@ async fn seed(core: &CoreUnderTest, slug: &str) -> Seeded {
         .connect_with(opts)
         .await
         .expect("open db write pool");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'bench', 0)")
-        .bind(&project_id)
-        .execute(&pool)
-        .await
-        .expect("insert project");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind(&repo_id)
-    .bind(&project_id)
     .bind(&repo_name)
     .bind(&bare_url)
     .bind(local_path.to_string_lossy().to_string())
     .execute(&pool)
     .await
     .expect("insert repository");
-    sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES (?, ?, 'bench', ?, 0)",
-    )
-    .bind(&workspace_id)
-    .bind(&project_id)
-    .bind(slug)
-    .execute(&pool)
-    .await
-    .expect("insert workspace");
+    sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, 'bench', ?, 0)")
+        .bind(&workspace_id)
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .expect("insert workspace");
     sqlx::query("INSERT INTO workspace_repos (workspace_id, repository_id) VALUES (?, ?)")
         .bind(&workspace_id)
         .bind(&repo_id)

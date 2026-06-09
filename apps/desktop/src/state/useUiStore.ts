@@ -3,10 +3,11 @@
 // derived from the Core — just what's local to the user's current
 // window session.
 //
-// Task 25 locks the selection trio (`selectedProjectId`,
-// `selectedWorkspaceId`, `selectedWorkareaId`) as the canonical
-// renderer selection state. Selecting a workarea implicitly pins its
-// parent workspace; selecting a workspace clears the workarea.
+// Task 25 locks the selection pair (`selectedWorkspaceId`,
+// `selectedWorkareaId`) as the canonical renderer selection state.
+// Selecting a workarea implicitly pins its parent workspace; selecting
+// a workspace clears the workarea. (The Project layer was collapsed away,
+// so workspaces are now the top-level sidebar nodes.)
 //
 // Task 46 adds the three-panel layout state — sidebar width, session
 // region height, right-rail collapsed boolean, and active right-rail
@@ -61,7 +62,6 @@ export type LayoutState = typeof LAYOUT_DEFAULTS;
 export type UiStore = {
   selectedWorkspaceId: string | null;
   selectedWorkareaId: string | null;
-  selectedProjectId: string | null;
   /// Active session tab inside the currently selected workarea. Task 26
   /// adds this; Task 26 caps V0.1 at one session per workarea, but the
   /// terminal panel still uses a tab strip so V1.0's multi-session story
@@ -79,18 +79,9 @@ export type UiStore = {
   /// (not in component-local state) so the choice survives a sidebar
   /// re-mount and so Task 26 can drive it from the session terminal.
   expandedWorkspaces: Set<string>;
-  /// Per-project COLLAPSE state for the sidebar tree. The sidebar now
-  /// renders every project as a top-level tree node; projects are
-  /// expanded by default (so all workspaces are visible at a glance),
-  /// so we track the inverse — only the ids the user has explicitly
-  /// collapsed. Absence from the set means "expanded".
-  collapsedProjects: Set<string>;
   /// True while the New Workspace modal is open. The renderer-only
   /// flag keeps the modal state inspectable in dev tools.
   newWorkspaceModalOpen: boolean;
-  /// True while the New Project modal is open. Surfaced by the sidebar
-  /// when the user clicks the "+ Project" affordance.
-  newProjectModalOpen: boolean;
   /// True when Settings (currently just Add Repository) is on screen.
   settingsOpen: boolean;
   /// Task 219 — true when the Connect-to-Core picker is on screen. UI-only;
@@ -114,15 +105,12 @@ export type UiStore = {
   diffViewMode: DiffViewMode;
   setSelectedWorkspace: (id: string | null) => void;
   setSelectedWorkarea: (id: string | null) => void;
-  setSelectedProject: (id: string | null) => void;
   setActiveSession: (id: string | null) => void;
   setSelectedRepo: (id: string | null) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleWorkspaceExpanded: (workspaceId: string) => void;
   setWorkspaceExpanded: (workspaceId: string, expanded: boolean) => void;
-  toggleProjectExpanded: (projectId: string) => void;
   setNewWorkspaceModalOpen: (open: boolean) => void;
-  setNewProjectModalOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
   setConnectCoreOpen: (open: boolean) => void;
   setPairingOpen: (open: boolean) => void;
@@ -198,14 +186,11 @@ const initialLayout = loadLayoutState();
 export const useUiStore = create<UiStore>((set) => ({
   selectedWorkspaceId: null,
   selectedWorkareaId: null,
-  selectedProjectId: null,
   activeSessionId: null,
   selectedRepoId: null,
   sidebarCollapsed: false,
   expandedWorkspaces: new Set<string>(),
-  collapsedProjects: new Set<string>(),
   newWorkspaceModalOpen: false,
-  newProjectModalOpen: false,
   settingsOpen: false,
   connectCoreOpen: false,
   pairingOpen: false,
@@ -228,7 +213,6 @@ export const useUiStore = create<UiStore>((set) => ({
     // rendering a repo id that belonged to the previous workarea; the
     // selector re-auto-selects the new workarea's first repo (Task 322).
     set({ selectedWorkareaId: id, activeSessionId: null, selectedRepoId: null }),
-  setSelectedProject: (id) => set({ selectedProjectId: id }),
   setActiveSession: (id) => set({ activeSessionId: id }),
   setSelectedRepo: (id) => set({ selectedRepoId: id }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
@@ -252,18 +236,7 @@ export const useUiStore = create<UiStore>((set) => ({
       }
       return { expandedWorkspaces: next };
     }),
-  toggleProjectExpanded: (projectId) =>
-    set((state) => {
-      const next = new Set(state.collapsedProjects);
-      if (next.has(projectId)) {
-        next.delete(projectId);
-      } else {
-        next.add(projectId);
-      }
-      return { collapsedProjects: next };
-    }),
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
-  setNewProjectModalOpen: (open) => set({ newProjectModalOpen: open }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setConnectCoreOpen: (open) => set({ connectCoreOpen: open }),
   setPairingOpen: (open) => set({ pairingOpen: open }),

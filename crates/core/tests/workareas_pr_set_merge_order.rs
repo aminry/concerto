@@ -11,9 +11,8 @@ use std::sync::Arc;
 use concerto_core::repo_manager::RepoManager;
 use concerto_core::workspace_manager::WorkareaManager;
 use concerto_persist::{
-    pull_requests, NewProject, NewPullRequest, NewRepository, NewWorkarea, NewWorkspace,
-    Persistence, PersistenceConfig, ProjectId, PullRequestId, RepositoryId, WorkareaId,
-    WorkspaceId,
+    pull_requests, NewPullRequest, NewRepository, NewWorkarea, NewWorkspace, Persistence,
+    PersistenceConfig, PullRequestId, RepositoryId, WorkareaId, WorkspaceId,
 };
 
 struct Ctx {
@@ -35,7 +34,6 @@ async fn setup(repo_ids: &[&str]) -> Ctx {
         .expect("open"),
     );
 
-    let project_id = ProjectId("proj-1".to_string());
     let workspace_id = WorkspaceId("ws-1".to_string());
     let workarea_id = WorkareaId("wa-1".to_string());
     let repos: Vec<RepositoryId> = repo_ids
@@ -45,23 +43,11 @@ async fn setup(repo_ids: &[&str]) -> Ctx {
 
     {
         let mut w = persist.writer().await;
-        concerto_persist::projects::insert(
-            &mut w,
-            NewProject {
-                id: project_id.clone(),
-                name: "Test".into(),
-                icon: None,
-                created_at: 1,
-            },
-        )
-        .await
-        .unwrap();
         for r in &repos {
             concerto_persist::repositories::insert(
                 &mut w,
                 NewRepository {
                     id: r.clone(),
-                    project_id: project_id.0.clone(),
                     name: r.0.clone(),
                     url: format!("https://github.com/acme/{}", r.0),
                     local_path: format!("/tmp/{}", r.0),
@@ -76,9 +62,9 @@ async fn setup(repo_ids: &[&str]) -> Ctx {
             &mut w,
             NewWorkspace {
                 id: workspace_id.clone(),
-                project_id: project_id.0.clone(),
                 name: "WS".into(),
                 slug: "ws".into(),
+                icon: None,
                 description: None,
                 permission_mode: None,
                 created_at: 1,

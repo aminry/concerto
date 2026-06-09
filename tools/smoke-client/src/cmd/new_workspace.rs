@@ -1,19 +1,17 @@
-//! `smoke-client new-workspace --project-id <id> --name <s> --repo-id <id>`
-//! — calls `Workspaces.CreateWorkspace`. V0.1 enforces single-repo
-//! workspaces, so we always pass exactly one repo id.
+//! `smoke-client new-workspace --name <s> --repo-id <id>` — calls
+//! `Workspaces.CreateWorkspace`. Workspaces own a 1..N repo set drawn from
+//! the global registry; the smoke gate attaches exactly one repo with an
+//! empty cone spec (seeded from the repo's cone defaults, D4).
 
 use std::path::Path;
 
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
-use concerto_proto::v1::CreateWorkspaceRequest;
+use concerto_proto::v1::{CreateWorkspaceRequest, WorkspaceRepoSpec};
 
 use super::RPC_TIMEOUT;
 use crate::connect::connect_to_socket;
 
-pub async fn run(socket: &Path, project_id: &str, name: &str, repo_id: &str) -> Result<(), String> {
-    if project_id.is_empty() {
-        return Err("new-workspace: --project-id must be non-empty".to_string());
-    }
+pub async fn run(socket: &Path, name: &str, repo_id: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("new-workspace: --name must be non-empty".to_string());
     }
@@ -27,11 +25,14 @@ pub async fn run(socket: &Path, project_id: &str, name: &str, repo_id: &str) -> 
     let resp = tokio::time::timeout(
         RPC_TIMEOUT,
         client.create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.to_string(),
             name: name.to_string(),
-            repository_ids: vec![repo_id.to_string()],
+            repos: vec![WorkspaceRepoSpec {
+                repository_id: repo_id.to_string(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         }),
     )
     .await

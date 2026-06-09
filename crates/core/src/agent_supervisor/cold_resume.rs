@@ -16,10 +16,10 @@
 //!
 //! ## Auto-resume gating
 //!
-//! Cold resume is OPT-IN per project. Each `projects` row carries a
+//! Cold resume is OPT-IN per workspace. Each `workspaces` row carries a
 //! `settings_json` blob; setting `{"auto_resume_agents": true}` makes
 //! the cold sweep in `adopt_orphans` call [`maybe_auto_resume`] for
-//! every crashed session belonging to that project. The default is
+//! every crashed session belonging to that workspace. The default is
 //! `false` so a hostile or stale `external_session_id` doesn't get
 //! relaunched without explicit user consent.
 //!
@@ -92,7 +92,7 @@ pub async fn cold_resume_session(
     handle.cold_resume_existing(session_id, cwd, &token).await
 }
 
-/// Cold-resume `session_id` IF the project setting
+/// Cold-resume `session_id` IF the workspace setting
 /// `auto_resume_agents` is true. Returns `Ok(true)` when the resume
 /// was attempted (and `start_session` succeeded), `Ok(false)` when the
 /// setting is off (or unreadable) and the session is left in
@@ -110,7 +110,7 @@ pub async fn maybe_auto_resume(
     if !enabled {
         tracing::debug!(
             session = %session_id,
-            "maybe_auto_resume: project setting auto_resume_agents=false; leaving crashed"
+            "maybe_auto_resume: workspace setting auto_resume_agents=false; leaving crashed"
         );
         return Ok(false);
     }
@@ -147,7 +147,7 @@ pub async fn maybe_auto_resume(
     }
 }
 
-/// Read `projects.settings_json.auto_resume_agents` for the project
+/// Read `workspaces.settings_json.auto_resume_agents` for the workspace
 /// that owns `session_id`. Returns `false` on any error or missing
 /// key — the cold path falls back to "leave crashed" on doubt.
 async fn read_auto_resume_for_session(
@@ -157,11 +157,10 @@ async fn read_auto_resume_for_session(
     let persistence = handle.persistence();
     let pool = persistence.readers();
     let row = match sqlx::query_as::<_, (String,)>(
-        "SELECT p.settings_json
+        "SELECT ws.settings_json
          FROM sessions s
          JOIN workareas wa  ON wa.id = s.workarea_id
          JOIN workspaces ws ON ws.id = wa.workspace_id
-         JOIN projects p    ON p.id  = ws.project_id
          WHERE s.id = ?",
     )
     .bind(&session_id.0)
