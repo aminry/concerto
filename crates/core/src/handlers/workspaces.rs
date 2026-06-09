@@ -17,9 +17,8 @@ use concerto_persist::WorkspaceId as PersistWorkspaceId;
 use concerto_proto::v1::workspaces_server::Workspaces as WorkspacesService;
 use concerto_proto::v1::{
     CreateWorkspaceRequest, ListWorkspaceReposResponse, ListWorkspacesRequest,
-    ListWorkspacesResponse, PermissionMode, UpdateWorkspaceRequest,
-    UpdateWorkspaceSettingsRequest, Workspace as ProtoWorkspace, WorkspaceId as ProtoWorkspaceId,
-    WorkspaceRepoEntry,
+    ListWorkspacesResponse, PermissionMode, UpdateWorkspaceRequest, UpdateWorkspaceSettingsRequest,
+    Workspace as ProtoWorkspace, WorkspaceId as ProtoWorkspaceId, WorkspaceRepoEntry,
 };
 use tonic::{Request, Response, Status};
 

@@ -490,10 +490,7 @@ impl WorkspaceManager {
 
     /// List a workspace's declared repos with their per-(workspace, repo)
     /// cone snapshots, position-ordered (for the edit form pre-fill).
-    pub async fn list_workspace_repos(
-        &self,
-        id: &WorkspaceId,
-    ) -> Result<Vec<WorkspaceRepoSpec>> {
+    pub async fn list_workspace_repos(&self, id: &WorkspaceId) -> Result<Vec<WorkspaceRepoSpec>> {
         let pairs =
             concerto_persist::workspaces::list_repo_cones(self.persistence.readers(), id).await?;
         let mut out = Vec::with_capacity(pairs.len());
@@ -501,7 +498,10 @@ impl WorkspaceManager {
             let sparse_cones: Vec<String> = serde_json::from_str(&cones_json).map_err(|e| {
                 Error::Internal(format!("parse sparse_cones for {}: {e}", repo_id.0))
             })?;
-            out.push(WorkspaceRepoSpec { repository_id: repo_id, sparse_cones });
+            out.push(WorkspaceRepoSpec {
+                repository_id: repo_id,
+                sparse_cones,
+            });
         }
         Ok(out)
     }

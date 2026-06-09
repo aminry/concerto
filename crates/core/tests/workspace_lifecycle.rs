@@ -362,7 +362,9 @@ async fn update_workspace_edits_metadata_and_repos() {
 
     // ListWorkspaceRepos returns both, in declaration order.
     let listed: ListWorkspaceReposResponse = wsc
-        .list_workspace_repos(WorkspaceId { value: ws.id.clone() })
+        .list_workspace_repos(WorkspaceId {
+            value: ws.id.clone(),
+        })
         .await
         .expect("list repos")
         .into_inner();
