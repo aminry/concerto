@@ -229,27 +229,31 @@ The hardest phase and the dependency root for all remote features. Heavy Tier-2 
 
 **Phase 3 manual checklist (Tier-3):** sparse+blobless clone a real >10 GB monorepo and confirm <30 s p50 workspace creation; create a multi-repo workspace; run a coordinated PR-set merge against a real GitHub repo with a live webhook; confirm review threads sync; fetch a real Linear and Jira issue.
 
-### Phase 4 — Maestro (08) (~15 tasks)
+### Phase 4 — Maestro (08) (~17 tasks)
 
 Wholly new. Depends on 03/04/05/07/13 (all present after P3) and 14 (`notify_user` stubbed until P5).
 
+> **Phase-4 planning addendum:** the 2026-06-09 planning conversation locked twelve decisions, a migration-number reservation (0015/0016), the cross-task frozen contracts, refined dependencies, and a **machine-consumable task graph** (`tasks/v1.0/PHASE4_DAG.json` + a K=4 wave map) in **`tasks/v1.0/PHASE4_PLANNING.md`** — read it before any Phase-4 task file. It added two inserts (400, 401.5, below) and reconciles `design/08` with the built code (no `concerto-mcp`, no Core↔CLI MCP transport, and no token accounting exist yet — Phase 4 is greenfield over clean seams). **Backend decision:** the CLI backends (Claude/Codex/Gemini) ship live; Direct-API is a frozen Tier-1 seam (so `enterpriseDataPrivacy`+external ⇒ Maestro disabled in V1.0, per `design/08 §3.10`). The `Deps` below are the refined set (PHASE4_PLANNING §6).
+
 | Task | Goal | Deps | Tier | Type |
 |---|---|---|---|---|
-| 401 | `concerto-maestro-mcp` in-process MCP server (distinct surface from `concerto-mcp`) | — | 1 | rust |
-| 402 | Maestro-as-agent: long-lived agent under agent-host, `strict` mode, no fs/shell/net, scratch dir | 401 | 1 | rust |
-| 403 | `maestro_state` table + `chats(kind=maestro)` singleton + daily-summary message tagging | — | 1 | rust |
-| 404 | Per-workarea summary cache (`WorkareaSummary`/`SessionSummary`/`RepoSummary`) + refresh triggers + Haiku fallback summarizer | 402 | 2 | rust |
-| 405 | Read-only tool set (the 11 read tools) | 404 | 1 | rust |
-| 406 | Write tool set (5 tools, each gated by a UI confirmation chip) | 405 | 2 | rust |
-| 407 | Side-channel tools: `notify_user` (stub against 14) + `propose_chip` (to 07) | 405 | 1 | rust |
-| 408 | Deterministic routing pre-parser (`@workarea`, fanout, `@all`/`@idle`/`@blocked`, `/digest`/`/pause`/`/new`) | 402 | 1 | rust |
-| 409 | Digest generation (<5 s p50, Sonnet, ≤600 tokens, grouped + 07 chips) | 404, 408 | 2 | rust |
-| 410 | Daily history condensation (verbatim 24h + condensed older + weekly) | 403 | 1 | rust |
-| 411 | `create_workspace_from_description` (issue parse → multi-repo detect → cone suggest → confirm chips → 03) | 406, 305, 313 | 2 | rust |
-| 412 | Pluggable LLM provider (Claude/Codex/Gemini CLI + Direct API) + daily budget (200K/50K) + inert-on-exhaust | 402 | 2 | rust |
-| 413 | Privacy enforcement (`exclude_from_maestro`, full-chat-access, enterpriseDataPrivacy disables if external) | 404 | 1 | rust |
-| 414 | `Maestro` gRPC service (`SendToMaestro`/`GetDigest`/`SetWorkareaVisibility`) + events | 409 | 1 | rust |
-| 415 | Desktop: Concerto chat top bar + digest rendering + routing UX + confirmation chips | 414, 218 | 2 | web-ts |
+| 400 | Design amendment: Maestro architecture reconciliation (Core↔CLI MCP-stdio transport, Maestro-as-PTY-CLI-session + `AgentKind::Maestro`, strict-mode ReadOnly-auto-approve, Direct-API-deferred-as-seam) — runs first like 200 / 315.0 | — | 3 | doc |
+| 401 | `concerto-maestro-mcp` in-process MCP server (the FIRST MCP server in the codebase; adds `rmcp` + the net-new Core↔CLI transport) + the 16 tool schemas FROZEN | 400 | 1 | rust |
+| 401.5 | Maestro wire-contract freeze: `maestro.proto` + `MaestroHandle` API + `maestro.events` subject + unimplemented `MaestroServer` (BOTH registration sites) — unblocks 415 to start against frozen types | 400 | 1 | rust |
+| 402 | Maestro-as-agent: `AgentKind::Maestro` under agent-host, `strict`+ReadOnly, no fs/shell/net, scratch dir + provider-selection trait frozen (Claude CLI live) | 401 | 1 | rust |
+| 403 | `maestro_state` table (migration 0015) + `chats(kind=maestro)` singleton + budget accessor | — | 1 | rust |
+| 404 | Per-workarea summary cache (`WorkareaSummary`/`SessionSummary`/`RepoSummary`) + refresh triggers + `commits_ahead` helper + Haiku fallback summarizer (agent-independent) | 401 | 2 | rust |
+| 405 | Read-only tool set (the 11 read tools) | 401, 404 | 1 | rust |
+| 406 | Write tool set (5 tools, each gated by a confirmation chip) | 401, 402 | 2 | rust |
+| 407 | Side-channel tools: `notify_user` (stub against 14) + `propose_chip` (Maestro-owned slate) | 401 | 1 | rust |
+| 408 | Deterministic routing pre-parser (`@workarea`, fanout, `@all`/`@idle`/`@blocked`, `/digest`/`/pause`/`/new`) + composer→session resolver | 402 | 1 | rust |
+| 409 | Digest generation (<5 s p50, ≤600 tokens, grouped + chips) + own chip persistence | 404, 408 | 2 | rust |
+| 410 | Daily history condensation (verbatim 24h + condensed older + weekly) + `chat_messages.metadata` (migration 0016) | 403 | 1 | rust |
+| 411 | `create_workspace_from_description` (issue parse → multi-repo detect → cone suggest → confirm chips → 03) + `SuggestCones` RPC + privacy-debt fix | 406, 403, 305, 313 | 2 | rust |
+| 412 | Pluggable LLM provider — Codex/Gemini CLI live + daily budget (200K/50K) + inert-on-exhaust + Direct-API frozen seam | 402, 403 | 2 | rust |
+| 413 | Privacy enforcement (`exclude_from_maestro`, `concerto_chat_full_chat_access`, enterpriseDataPrivacy disables if external) | 404 | 1 | rust |
+| 414 | `Maestro` gRPC impl (fills 401.5's skeleton) + `maestro.events` publishing | 401.5, 409 | 1 | rust |
+| 415 | Desktop: Concerto chat top bar + digest rendering + routing UX + confirmation chips (against 401.5's frozen proto, mocked invoke) | 401.5, 218 | 2 | web-ts |
 
 **Phase 4 manual checklist (Tier-3):** leave for >30 min across active workareas, return, judge digest quality + measure latency; route prompts via `@workarea` and fanout; create a workspace from a real issue link; confirm an excluded workarea leaks only hard facts; confirm budget-exhaust goes inert while routing still works.
 

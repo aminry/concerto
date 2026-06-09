@@ -1,0 +1,150 @@
+# Task 405 — Maestro read tool set: the 11 read tools (`list_*`/`get_*_summary`/`cross_workarea_search`, behind 401's FROZEN schemas)
+
+| Field | Value |
+|---|---|
+| Phase | 4 |
+| Task type | rust |
+| Verification tier | 1 |
+| Size | medium (1–3d) |
+| Depends on | 401, 404 |
+| Touches subsystem(s) | 08 (Maestro), 03 (Workspace/Workarea/Session Mgr), 05 (Scheduler), 13 (VCS) |
+| Smoke gate | unchanged |
+
+## Goal
+Fill the **implementations behind the 11 read tools** of `concerto-maestro-mcp` so the Maestro agent can actually *see* the user's workspace hierarchy, adjacent state, and code. **Today** there is no Maestro code at all — `crates/core/src/maestro/` is created by Task 401, whose `mcp.rs` registers all 16 tools with their **FROZEN input/output JSON schemas** (`PHASE4_PLANNING §4.1`, `design/08 §5.1`) but returns a typed `unimplemented` MCP error from every one until its impl task lands (the 305 seam discipline: a typed `Err`, never `todo!()`, never empty-success). The 11 read tools (`design/08 §5.1`) are: `list_workspaces`, `list_workareas(workspace_id?)`, `list_sessions(workarea_id?)`, `get_workspace_summary(workspace_id)`, `get_workarea_summary(workarea_id)`, `list_recent_activity(since)`, `list_active_schedules()`, `read_inbox_summary()`, `read_pr_set_for_workarea(workarea_id)`, `get_workarea_recent_commits(workarea_id, repo_id?)`, `cross_workarea_search(query)`. **This task** adds `crates/core/src/maestro/tools/read.rs` — the 11 tool-handler functions, each wrapping an **existing** read API (`concerto_persist::workspaces::list_all`, `workareas::list_by_workspace`, `sessions::list_by_workarea`, the `SchedulerHandle`, `pull_requests::list_by_workarea`, a new `gix-wrap` log helper, and a live grep for `cross_workarea_search` — V1.0 = live grep over workarea worktrees, `design/08 R-6`) — plus **one** registration line in `crates/core/src/maestro/tools/mod.rs` (the lead-owned soft seam). It **consumes** (never re-locks) 401's frozen tool schemas (`PHASE4_PLANNING §4.1`) and **consumes** 404's `WorkareaSummary`/`SessionSummary`/`RepoSummary` (`PHASE4_PLANNING §4.4`) — `get_workarea_summary` returns 404's cached `WorkareaSummary` verbatim. These 11 tools classify **`ToolClass::ReadOnly`** (the bucket 402 adds per `D4`) ⇒ auto-approve under strict mode (no confirmation chip). **After this task** the Maestro agent's read path is live: 406 (write tools) + 407 (side-channels) fill the remaining 5 tools behind the *same* frozen registry, and 409's digest reads `get_workarea_summary`. **What stays out of this task:** the real-LLM reasoning that *calls* these tools (402's agent spine), the digest that aggregates them (409), and any privacy blanking (413, which wraps `get_workarea_summary`) — and `read_inbox_summary` returns a typed empty-stub (notifications don't exist until P5/Task 507).
+
+## Inputs to read before starting
+- `tasks/v1.0/PHASE4_PLANNING.md` §4.1 — **AUTHORITATIVE.** The 16 MCP tool schemas are FROZEN by 401; 405 "fills impls behind these frozen schemas; **never** re-shape a tool's schema." Obeys `D2`/`D3` (the in-process `rmcp` server) and `D4` (the 11 read tools classify ReadOnly).
+- `tasks/v1.0/PHASE4_PLANNING.md` §4.4 — **AUTHORITATIVE.** `WorkareaSummary`/`SessionSummary`/`RepoSummary` are FROZEN by 404 (`i64` unix-ms timestamps, the `commits_ahead` helper, hard-fact derivation). `get_workarea_summary` **consumes** this; do not re-derive a different shape.
+- `tasks/v1.0/PHASE4_PLANNING.md` §2 (405/406/407 tool-file split row) + §8.1 (per-task write-sets) — **AUTHORITATIVE.** Read tools → `tools/read.rs`; the only shared seam is the one registration line in `tools/mod.rs` (lead-owned; 406/407 add their own line in a distinct region).
+- `tasks/v1.0/401-maestro-mcp-server.md` → "Public interface this task locks" + "Handoff Notes" — the FROZEN tool-schema registry, the `rmcp` tool-handler shape, and the typed `unimplemented` placeholder 405 replaces. **Read this for the exact handler signature + the tool-result/error type 405 must return.**
+- `tasks/v1.0/404-summary-cache.md` → "Public interface this task locks" + "Handoff Notes" — the `WorkareaSummary` struct + the cache accessor (`get_workarea_summary(WorkareaId)` on the cache handle) `get_workarea_summary` calls; confirm the exact handle/method name and the stale-refresh contract.
+- `design/08_Maestro_Agent.md` §5.1 — the 11 read-tool signatures + their output shapes (`[{id, name, archived, n_workareas, n_repos}]`, `WorkareaSummary`, `[Event]`, `[Schedule]`, `InboxSummary`, `PrSetStatus`, `[Commit]`, `[Hit]`). §3.3 — the summary grain; §7.2 (the `cross_workarea_search` hot path); §8 (tool guardrail: truncate excessive results before the LLM sees them).
+- `crates/persist/src/{workspaces,workareas,sessions,pull_requests,schedules}.rs` — the read APIs to wrap: `workspaces::list_all(pool)`, `workareas::list_by_workspace(pool, &WorkspaceId, include_archived)`, `sessions::list_by_workarea(pool, &WorkareaId)`, `pull_requests::list_by_workarea(pool, &WorkareaId) -> Vec<PullRequest>` (the `state`/`pr_number`/`url`/`merge_order` fields = the PR-set), `schedules::list_by_workarea(pool, &WorkareaId)`.
+- `crates/core/src/scheduler/actor.rs:86` (`SchedulerHandle`) + `:324` (`list_schedules(&self, &WorkareaId)`) — **note: `list_schedules` is per-workarea, there is NO global lister** — `list_active_schedules()` iterates workareas (via `workspaces::list_all` → `workareas::list_by_workspace`) and concats, or adds a thin `schedules::list_all`/`list_active` reader (decide; see Implementation notes).
+- `crates/core/src/workspace_manager/actor.rs:515` (`WorkspaceManagerHandle::list_all() -> Vec<Workspace>`) — the composer-sorted source for `list_workspaces`; `n_workareas`/`n_repos` count via `workareas::list_by_workspace` + `workspace_repos`.
+- `crates/gix-wrap/src/api.rs` — `gix-wrap` has **NO `log`/`recent_commits` helper today** (verified: `clone_*`/`cone_index_stats`/`list_tree`/`list_branches`/`rev_parse_head`/`commit_index`/`diff_*` exist, no commit-log walk). `get_workarea_recent_commits` needs either a new `pub async fn recent_commits(repo_dir, branch, limit) -> Vec<Commit>` gix-wrap helper OR a `gix-wrap::cmd` `git log` shell-out — decide and note (see Implementation notes). `diff.rs::diff_to_main`/`diff_head` already exist (404 owns those for the summary).
+
+## Scope — in
+- **`crates/core/src/maestro/tools/read.rs`** (new) — the 11 read-tool handler functions, each a thin async fn taking the frozen MCP input args (deserialized per 401's schema) + the in-process Core handles (`Arc<Persistence>`, `WorkspaceManagerHandle`, `SchedulerHandle`, `VcsHandle`, the 404 summary-cache handle) and returning the frozen MCP output JSON:
+  - **Hierarchy tools** — `list_workspaces` (→ `WorkspaceManagerHandle::list_all`, map each to `{id, name, archived, n_workareas, n_repos}`); `list_workareas(workspace_id?)` (→ `workareas::list_by_workspace`; `workspace_id` absent ⇒ all workspaces concatenated; map to `{id, workspace_id, composer, branch, status, last_activity}`); `list_sessions(workarea_id?)` (→ `sessions::list_by_workarea`; absent ⇒ across all workareas; map to `{id, workarea_id, agent_kind, status, last_activity}`); `get_workspace_summary(workspace_id)` (counts of active workareas + repo names, no LLM); `get_workarea_summary(workarea_id)` → **return 404's cached `WorkareaSummary`** (call the 404 cache handle's getter; map to the frozen tool-output JSON — consumes `PHASE4_PLANNING §4.4`, does NOT re-derive).
+  - **Adjacent-state tools** — `list_recent_activity(since)` (the `[Event]` feed since the given `i64` ms; source from the existing event/persist history readers the summary cache already consumes — `session.events`/`workarea.events`/`pull_requests` deltas — bounded + sorted desc); `list_active_schedules()` (→ scheduler; see Implementation notes for the per-workarea iteration); `read_inbox_summary()` → **typed empty-stub `InboxSummary { unread: 0, items: [] }`** (notifications are P5/Task 507; this is deliberate debt, NOT a panic and NOT a fake count — see Scope — out); `read_pr_set_for_workarea(workarea_id)` (→ `pull_requests::list_by_workarea`, ordered `(merge_order, pr_number)`, map to `PrSetStatus`); `get_workarea_recent_commits(workarea_id, repo_id?)` (resolve the workarea's worktree dir(s) + branch, → the gix-wrap log helper, map to `[Commit]`; `repo_id` absent ⇒ the workarea's first/primary repo, or each repo).
+  - **`cross_workarea_search(query)`** — V1.0 = **live grep** over every active workarea's worktree (`design/08 R-6`; Tantivy is V2.0). Walk the active workareas → their worktree paths → run a bounded grep (reuse `ripgrep`-as-lib if already a dep, else a `cmd` `git grep`/`grep` shell-out scoped to the worktree) → map matches to `[Hit]` (`{workarea, repo, path, line, snippet}`). **Truncate** the result set before returning (`design/08 §8` tool guardrail) — cap hits + per-snippet length; note the cap in the result.
+- **`crates/core/src/maestro/tools/mod.rs`** (modified) — **one** line wiring `read::register(...)` (or the registry's read-tool fan-in) into the tool registry 401 froze. This is the lead-owned soft seam: 406/407 each add their own line in a distinct region (additive, auto-merges on rebase).
+- **(possibly) `crates/gix-wrap/src/api.rs`** (modified) — a new `pub async fn recent_commits(repo_dir: &Path, branch: &str, limit: usize) -> Result<Vec<Commit>>` (+ a `Commit` struct mirroring `{oid, short_oid, summary, author, committed_at}`) IF you choose the gix-native log path over a `cmd` shell-out. Stays inside the pinned `gix` features (a revwalk is a read path, like `cone_index_stats`/`list_branches` — no `gix-status`/`gix-dir` bump). Decide in Implementation notes.
+- Tests (Tier 1): each of the 11 tools returns the **correct frozen shape** against an in-process fixture — a seeded `Persistence` with 2 workspaces / 3 workareas / sessions + a `pull_requests` row + a `schedules` row, asserting `list_workspaces`/`list_workareas`/`list_sessions`/`get_workspace_summary` counts + ids, `read_pr_set_for_workarea` ordering, `list_active_schedules` non-empty, `read_inbox_summary` = the typed empty stub, `get_workarea_summary` returns the 404 cache entry; `get_workarea_recent_commits` on a `file://` fixture repo returns the planted commits newest-first; **`cross_workarea_search` finds a planted hit** in a fixture worktree and is absent for a non-matching query; the tool-result JSON deserializes against 401's frozen output schema (round-trip).
+
+## Scope — out
+- **The 5 write tools (`route_prompt_to_session`, `fanout_to_sessions`, `create_workspace`, `create_workarea`, `set_workarea_paused`)** — **Task 406** (same frozen registry, `tools/write.rs`, strict ⇒ `MustAsk` chip gate). 405 leaves `tools/write.rs` untouched.
+- **The 2 side-channel tools (`notify_user`, `propose_chip`)** — **Task 407** (`tools/side.rs`). `notify_user` stubs against 14 until P5; `propose_chip` writes the Maestro-owned slate.
+- **The `WorkareaSummary` cache build + refresh triggers + `commits_ahead` helper** — **Task 404** (FROZEN, `PHASE4_PLANNING §4.4`). 405 **reads** the cache via `get_workarea_summary`; it never builds or refreshes it.
+- **The `ToolClass::ReadOnly` bucket + the strict-matrix auto-approve arm** — **Task 402** (`D4`, `security/tool_classes.rs`). 405 only *classifies* its 11 tools ReadOnly via 402's frozen API; it does not modify the permission matrix.
+- **The live inbox / notifications** behind `read_inbox_summary` — **Task 507** (P5 wires `Notifications`). 405 returns the typed empty `InboxSummary` stub (the README "stubbed-until-the-consuming-phase" precedent, like `notify_user`). Deliberate debt → noted in Handoff.
+- **Privacy blanking** (`exclude_from_maestro` → name-only; `concerto_chat_full_chat_access`; `enterpriseDataPrivacy`) — **Task 413** (wraps `get_workarea_summary`/the cache). 405 returns the unblanked cache entry; 413 layers the gate.
+- **Tantivy-indexed cross-workarea search** — **V2.0** (`design/08 R-6`). 405 ships live grep only.
+- **The agent loop that calls these tools + the MCP transport itself** — **Task 401** (transport) + **Task 402** (spawn). 405 is pure tool-impl behind the frozen schemas.
+- **Real-world Tier-3:** *Operator confirms, at the Phase-4 gate, that the live Maestro agent answers cross-workarea queries ("what touched libs/auth today?") correctly over real worktrees and that the digest reads accurate summaries* — the README Phase-4 manual checklist line; 405's CI proves the tool *shapes* on fixtures, not real-LLM tool-selection quality.
+
+## Public interface this task locks
+405 **owns no new cross-task FROZEN contract** — it fills impls behind two contracts owned elsewhere and locks only its file-internal handler surface (which 406/407 do not consume). It explicitly **consumes**:
+
+- **The 16 MCP tool schemas + the `rmcp` handler/result types — consumed as FROZEN by Task 401 (`PHASE4_PLANNING §4.1`).** 405 deserializes each read tool's input args and serializes its output to match 401's registered JSON schema exactly. **Never re-shape a tool's schema.** The 11 read tool names + arg/return shapes (transcribed from `design/08 §5.1`, locked by 401):
+
+```text
+list_workspaces()                                  → [{ id, name, archived, n_workareas, n_repos }]
+list_workareas(workspace_id?)                      → [{ id, workspace_id, composer, branch, status, last_activity }]
+list_sessions(workarea_id?)                        → [{ id, workarea_id, agent_kind, status, last_activity }]
+get_workspace_summary(workspace_id)                → { workspace, n_active_workareas, repos: [...] }
+get_workarea_summary(workarea_id)                  → WorkareaSummary                     (404's type, §4.4)
+list_recent_activity(since)                        → [Event]
+list_active_schedules()                            → [Schedule]
+read_inbox_summary()                               → InboxSummary { unread, items }      (empty stub until P5)
+read_pr_set_for_workarea(workarea_id)              → PrSetStatus
+get_workarea_recent_commits(workarea_id, repo_id?) → [Commit]
+cross_workarea_search(query)                       → [Hit]                               (live grep, R-6)
+```
+
+- **`WorkareaSummary` / `SessionSummary` / `RepoSummary` — consumed as FROZEN by Task 404 (`PHASE4_PLANNING §4.4`, `design/08 §3.3`).** `get_workarea_summary` returns the cache entry as-is (`i64` unix-ms timestamps; `commits_ahead`/`files_changed`/`lines_*` already derived by 404; `pr_state` from `pull_requests.state`; `ci_state` from the opaque `checks.<wa>.<repo>` frames). 405 maps it to the tool-output JSON; it does NOT re-derive any field.
+
+The only surface 405 *adds* (and freezes for later read-tool work) is the optional gix-wrap commit-log helper, if chosen:
+
+```rust
+// crates/gix-wrap/src/api.rs (new, IF gix-native path chosen over a `cmd` shell-out)
+pub struct Commit {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub author: String,
+    pub committed_at: i64, // unix seconds
+}
+pub async fn recent_commits(repo_dir: &Path, branch: &str, limit: usize) -> Result<Vec<Commit>>;
+```
+
+## Implementation notes
+- **The load-bearing rule: 405 is a CONSUMER, not an author, of the tool registry.** 401 froze the schema + the handler-registration shape; 405 supplies the *bodies*. Each read-tool body replaces 401's typed `unimplemented` MCP error with a real result. If a body's data source is genuinely not buildable in P4 (only `read_inbox_summary`), return a **typed empty stub** that still validates against the frozen output schema — never `todo!()`/`unimplemented!()`, never a fabricated count, never empty-success-that-looks-like-an-error.
+- **Reuse, don't reinvent — every tool wraps an existing read API.** Do not add new persist tables, new RPCs, or new caches. The wiring is: `list_*` → the `concerto_persist::{workspaces,workareas,sessions}` readers (composer-sorted via `workareas::list_by_workspace`); `get_workarea_summary` → 404's cache handle; `read_pr_set_for_workarea` → `pull_requests::list_by_workarea`; `list_active_schedules` → the `SchedulerHandle`. The handles already live in-process (the maestro module reaches 03/05/13 + the 404 cache the same way `agent_supervisor`/`suggestions` reach their deps).
+- **`list_active_schedules` has no global lister — decide and note.** `SchedulerHandle::list_schedules` is **per-workarea** (`actor.rs:324`). Either (a) iterate `workspaces::list_all` → `workareas::list_by_workspace` → `list_schedules` and concat (zero new persist surface; preferred for a read tool), or (b) add a thin `concerto_persist::schedules::list_active(pool)` reader. Prefer (a) to keep the write-set inside `tools/read.rs`; if (b), note the added persist file in Handoff (it touches `crates/persist`, widening the write-set — coordinate against 403/410 which own the migrations dir, though a pure reader fn is a soft additive seam).
+- **`get_workarea_recent_commits` needs a new log path — `gix-wrap` has none.** Verified: `crates/gix-wrap/src/api.rs` has `diff_*`/`list_branches`/`rev_parse_head`/`commit_index` but **no commit-log walk**. Prefer a **gix-native `recent_commits`** revwalk (a read path inside the pinned `gix` features — no `gix-status`/`gix-dir` bump, mirroring `cone_index_stats`/`list_tree`) over a `cmd` `git log` shell-out. If gix's revwalk ergonomics fight you, fall back to a `gix-wrap::cmd` `git log --format=...` shell-out (the same `cmd` machinery 304's fsmonitor/maintenance use) — decide, document the basis in the fn doc-comment, and FREEZE the `Commit` shape.
+- **`cross_workarea_search` = live grep + a guardrail cap (`design/08 §8`).** Resolve active workareas → their worktree dirs (from the workarea row) → grep scoped to each worktree. Reuse a grep tool already in the dep tree if present (`ripgrep`/`grep` crate); otherwise a `cmd` `git grep`/`grep -rn` shell-out per worktree. **Cap the total hits and per-snippet length** before returning so a 10MB result never reaches the LLM (the §8 guardrail); surface the truncation in the result. Forward-slash git paths in `Hit.path`.
+- **Cross-platform.** None of these tools touch a PTY/UDS, so no `#[cfg(unix)]` gate is needed on `read.rs` itself (unlike 414's `handlers/maestro.rs`, which gates because the agent supervisor is involved). The gix revwalk + persist reads work on the Win/Linux CI lanes (Task 113); the grep shell-out must use a cross-platform invocation (prefer `git grep` inside the worktree, which ships everywhere `gix`/`git` does, over GNU `grep` flags).
+- **No two-site registration / no proto here.** 405 adds no gRPC service and no proto; the MCP tools are not gRPC. The only registration is the **one** `tools/mod.rs` line. (The two-site `add_core_services` + `connect_bridge.rs` registration is 401.5/414's `MaestroServer`, not this task.)
+- **Regen:** 405 changes no `*.proto`/`*.sql`. If the optional `gix-wrap` `recent_commits` + `Commit` struct are added in `crates/gix-wrap/src/api.rs`, `./scripts/regen-interfaces.sh` will pick up the `Commit` struct in `rust-api.md` (free `pub fn`s like `recent_commits` are NOT captured — same behavior Task 305 noted for `cone_index_stats`); commit the regen. If no gix-wrap struct is added, the regen is a no-op — still run `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` to prove it.
+- **Parallel build hint:** the 11 tools are file-internal-disjoint and fan out three ways (DAG `fanout` = these three sub-parts, all landing in the one `read.rs` + the one `mod.rs` line): **(1) hierarchy-tools** (`list_workspaces`/`list_workareas`/`list_sessions`/`get_workspace_summary`/`get_workarea_summary`) ∥ **(2) adjacent-state-tools** (`list_recent_activity`/`list_active_schedules`/`read_inbox_summary`/`read_pr_set_for_workarea`/`get_workarea_recent_commits`) ∥ **(3) `cross_workarea_search`** (+ the optional gix-wrap `recent_commits` helper, which sub-part 2 also consumes — build that helper first if fanning out). Integrate into the single commit.
+
+## Verification
+**Tier 1.** The `rust` §5.3 command set.
+1. `cargo check --workspace` → clean.
+2. `cargo clippy --workspace --all-targets -- -D warnings` → clean.
+3. `cargo fmt --all -- --check` → clean.
+4. `cargo test -p concerto-core maestro::tools::read` (+ `cross_workarea_search`/`get_workarea_summary`/`read_pr_set`) → proves: each of the 11 tools returns the frozen output shape on the seeded in-process fixture; `list_workspaces`/`list_workareas`/`list_sessions`/`get_workspace_summary` counts + ids; `read_pr_set_for_workarea` ordering `(merge_order, pr_number)`; `list_active_schedules` non-empty; `read_inbox_summary` = the typed empty `{unread:0, items:[]}` stub; `get_workarea_summary` returns the 404 cache entry; `get_workarea_recent_commits` returns planted commits newest-first on a `file://` fixture; **`cross_workarea_search` finds a planted hit** and is empty for a non-matching query; the tool-result JSON round-trips against 401's frozen schema. (If the gix-wrap helper is added: `cargo test -p concerto-gix-wrap recent_commits` too.)
+5. `cargo test --workspace --no-fail-fast` → all pass.
+6. `cargo deny check` → green (no new crates beyond a grep lib if not already present — if a grep dependency is added, **Stop-and-ask** on any `cargo deny` advisory-ignore/SPDX, mirroring 313/401's vetting; prefer `git grep` via the existing `cmd` path to add zero deps).
+7. `./scripts/regen-interfaces.sh && git diff --exit-code docs/interfaces/` → commit the regen (only `rust-api.md`'s `gix-wrap::Commit` struct if the gix path was chosen; otherwise a clean no-op).
+8. `scripts/smoke.sh` → **unchanged** (405 turns on no smoke capability; the maestro-digest smoke check is 409/414's).
+
+**Tier-1 scope + what it does NOT cover.** The 11 read-tool *shapes* are deterministic and fully CI-provable: each returns the correct frozen JSON against a seeded in-process fixture, and `cross_workarea_search` finds a planted hit via live grep. CI does **NOT** cover: real-LLM *tool-selection* quality (does the agent pick `cross_workarea_search` for "what touched libs/auth today?") — that needs 402's live agent and is deferred to the **Phase-4 Tier-3 checklist line** *"route prompts via `@workarea` / answer cross-workarea queries against real worktrees + judge digest quality"*; and the live inbox behind `read_inbox_summary`, deferred to **Task 507** (P5). 405 adds no new Tier-3 line of its own beyond the existing Phase-4 checklist.
+
+## Definition of Done
+- [x] `crates/core/src/maestro/tools/read.rs` implements all 11 read tools behind 401's FROZEN schemas; each replaces 401's typed `unimplemented` with a real result (or, for `read_inbox_summary`, a typed empty `InboxSummary` stub)
+- [x] Each tool wraps an existing read API (`workspaces::list_all` / `workareas::list_by_workspace` / `sessions::list_by_workarea` / `SchedulerHandle` / `pull_requests::list_by_workarea` / the gix-wrap log path / live grep) — no new persist table, RPC, or cache
+- [x] `get_workarea_summary` returns 404's cached `WorkareaSummary` verbatim (consumes `PHASE4_PLANNING §4.4`); the 11 tools classify `ToolClass::ReadOnly` via 402's frozen API ⇒ auto-approve under strict
+- [x] `cross_workarea_search` is live grep over active workarea worktrees (`R-6`), result-capped per the `§8` guardrail; finds a planted hit in the fixture test
+- [x] `read_inbox_summary` returns the typed empty stub (notifications = P5/Task 507) — deliberate debt documented in Handoff
+- [x] One registration line added to `crates/core/src/maestro/tools/mod.rs` (lead-owned seam); `tools/write.rs` + `tools/side.rs` untouched (406/407's)
+- [x] Tests (Tier 1): the 11 tools' shapes on a seeded fixture; PR-set ordering; planted-commit + planted-grep-hit cases; frozen-schema round-trip
+- [x] All Verification commands pass on a clean checkout; smoke unchanged
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code (signature-frozen seams return a typed Err/Status — the `read_inbox_summary` empty stub is a real typed value, NOT the macro — documented in Handoff)
+- [x] No files outside Outputs modified
+- [x] Interfaces regenerated + committed if any schema/contract changed (only `rust-api.md`'s `Commit` struct if the gix-wrap helper was added; otherwise no-op)
+- [x] Single commit with the message below
+
+## Outputs
+- `crates/core/src/maestro/tools/read.rs` (new — the 11 read-tool handler functions wrapping existing read APIs + live-grep `cross_workarea_search`)
+- `crates/core/src/maestro/tools/mod.rs` (modified — one registration line wiring the read tools into 401's frozen registry; lead-owned soft seam)
+- `crates/gix-wrap/src/api.rs` (modified — IF the gix-native path chosen: new `pub async fn recent_commits` + `Commit` struct for `get_workarea_recent_commits`; if a `cmd` `git log` shell-out is chosen instead, this is `crates/gix-wrap/src/cmd.rs` + a thin api wrapper — note in Handoff which)
+- `crates/core/tests/maestro_read_tools.rs` (new — the Tier-1 fixture tests; or co-located `#[cfg(test)]` in `read.rs`)
+- `docs/interfaces/rust-api.md` (regenerated — only if the gix-wrap `Commit` struct was added)
+
+## Commit message
+```
+phase-4: Maestro read tool set (11 read tools)
+
+Fills the impls behind 401's FROZEN read-tool schemas in
+maestro/tools/read.rs: the workspace/workarea/session hierarchy,
+adjacent state (recent activity / schedules / inbox-stub / PR set /
+recent commits), and live-grep cross_workarea_search (R-6). Each wraps
+an existing read API; get_workarea_summary returns 404's cached
+WorkareaSummary; read_inbox_summary is a typed empty stub until P5/507.
+The 11 tools classify ToolClass::ReadOnly (auto-approve under strict).
+Consumes PHASE4_PLANNING §4.1 (tool schemas) + §4.4 (summary cache);
+re-locks nothing. One registration line in tools/mod.rs.
+
+Refs: tasks/v1.0/405-maestro-read-tools.md
+```
+
+## Handoff Notes (filled in when finishing)
+- **Drift from plan:** — (e.g. whether `get_workarea_recent_commits` used the gix-native `recent_commits` revwalk or a `gix-wrap::cmd` `git log` shell-out; whether `list_active_schedules` iterated workareas or added a `schedules::list_active` reader; whether `cross_workarea_search` reused an existing grep dep or `git grep` via `cmd`; whether any handle plumbing into the maestro module diverged from 401's mod.rs skeleton.)
+- **Open questions for next task:** — Task **409** (digest) consumes `get_workarea_summary` + `read_pr_set_for_workarea` + `list_recent_activity` to build the digest; Task **413** wraps `get_workarea_summary` with the privacy gate (`exclude_from_maestro` → name-only); Task **406**/**407** add `tools/write.rs`/`tools/side.rs` lines in `tools/mod.rs` regions distinct from 405's — confirm the registration region is non-overlapping. The FROZEN surfaces 405 builds on: 401's tool registry (§4.1) + 404's `WorkareaSummary` (§4.4).
+- **Deliberate debt:** — `read_inbox_summary` returns a typed empty `InboxSummary { unread: 0, items: [] }` because notifications do not exist until P5; **Task 507** wires the live inbox (the README "stubbed-until-the-consuming-phase" precedent). This is a real typed value, NOT `todo!()`/`unimplemented!()`. Note any result-cap constant chosen for `cross_workarea_search`'s `§8` guardrail.
+- **Smoke-gate state:** — **Unchanged.** 405 touches no `scripts/smoke.d/*` or `scripts/smoke.manifest`; the 11 read tools are CI-provable via the in-process fixture + a `file://` repo for commits/grep. The maestro-digest smoke capability is 409/414's to turn on. Confirm `cargo deny` stayed green (no new crates if `git grep`-via-`cmd` was used).
+```
