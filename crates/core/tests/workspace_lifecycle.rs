@@ -19,7 +19,8 @@
 #![cfg(unix)]
 
 use concerto_proto::v1::{
-    AddRepoRequest, CreateWorkspaceRequest, ListWorkspacesRequest, WorkspaceId, WorkspaceRepoSpec,
+    AddRepoRequest, CreateWorkspaceRequest, ListWorkspaceReposResponse, ListWorkspacesRequest,
+    UpdateWorkspaceRequest, WorkspaceId, WorkspaceRepoSpec,
 };
 use concerto_test_harness::CoreUnderTest;
 use tonic::Code;
@@ -325,7 +326,6 @@ async fn unknown_repo_returns_not_found() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn update_workspace_edits_metadata_and_repos() {
-    use concerto_proto::v1::{ListWorkspaceReposResponse, UpdateWorkspaceRequest};
     let core = CoreUnderTest::spawn().await.expect("spawn core");
     let repo_a = register_repo(&core, "edit-a").await;
     let repo_b = register_repo(&core, "edit-b").await;
