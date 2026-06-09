@@ -28,7 +28,7 @@
 //! `revert_pr` is still a frozen stub (the revert-commit-by-default mechanics
 //! land with the coordinated-merge loop, Task 320).
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 use async_trait::async_trait;
 use concerto_error::{Error, Result};
@@ -398,21 +398,34 @@ fn parse_rfc3339_secs(s: &str) -> Option<i64> {
     Some(days * 86400 + hour * 3600 + min * 60 + sec)
 }
 
-/// Install the process-level **ring** rustls `CryptoProvider` if none is set.
+/// Install the process-level **ring** rustls `CryptoProvider` exactly once.
 ///
 /// The workspace links both rustls crypto backends (iroh's hickory tree pulls
 /// `aws-lc-rs`; octocrab's `rustls-ring` pulls `ring`), so rustls cannot
 /// auto-select a default and `hyper-rustls` panics on the first TLS handshake
 /// under `cargo test --workspace` feature unification. Installing `ring`
-/// explicitly (idempotent — `install_default` returns `Err` if one is already
-/// set, which we ignore) mirrors the relay crate's pattern and keeps the
+/// explicitly (idempotent) mirrors the relay crate's pattern and keeps the
 /// no-openssl / pure-Rust / Windows-lane posture (`ring`, not `aws-lc-rs`).
+///
+/// Guarded by a [`Once`] so concurrent callers all block until the single
+/// install completes — `install_default()` per-call returns `Err` once one is
+/// set (which we'd ignore), but the `Once` also gives a happens-before edge so
+/// every later TLS build observes the installed provider.
 fn ensure_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
+// Debug (`{e:?}`), not Display: octocrab's `Error::Other` Displays as the bare
+// word "Other", hiding the real source chain. This was load-bearing for finding
+// the flake's true cause — the macOS keychain "no native root CA certificates
+// found" / OS error -36 race that the `rustls-webpki-tokio` feature now sidesteps
+// (see the workspace `octocrab` dep). Debug keeps the variant + source for
+// diagnosing future TLS faults.
 fn map_octo_err(e: octocrab::Error) -> Error {
-    Error::Vcs(format!("github: {e}"))
+    Error::Vcs(format!("github: {e:?}"))
 }
 
 // --- REST response projections (local; decoupled from octocrab's models) ---
