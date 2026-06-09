@@ -57,6 +57,11 @@ export function EditWorkspaceModal(): JSX.Element {
   if (!open) return <></>;
 
   const loading = wsQuery.isLoading || reposQuery.isLoading;
+  const loadError = wsQuery.isError
+    ? wsQuery.error
+    : reposQuery.isError
+      ? reposQuery.error
+      : null;
   const ws = wsQuery.data;
   const initial: WorkspaceFormInitial | undefined =
     ws && reposQuery.data
@@ -83,7 +88,11 @@ export function EditWorkspaceModal(): JSX.Element {
 
   return (
     <Dialog open={open} onClose={() => setEditId(null)} title="Edit Workspace">
-      {loading || !initial ? (
+      {loadError ? (
+        <p className="text-xs text-err">
+          Couldn't load workspace: {formatError(loadError)}
+        </p>
+      ) : loading || !initial ? (
         <p className="text-xs text-faint">Loading workspace…</p>
       ) : (
         <WorkspaceForm
