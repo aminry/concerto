@@ -263,8 +263,8 @@ Wholly new. Depends on 03/04/05/07/13 (all present after P3) and 14 (`notify_use
 | 502 | SQLite inbox + chronological feed + dedup window | 501 | 1 | rust |
 | 503 | `PushBackend` trait + `ExpoPushBackend` (BYO Expo creds) + ID-only wakeup payload | 501 | 2 | rust |
 | 504 | Post-wakeup `GetNotification` over E2EE + multi-device fan-out + first-to-approve-wins + active-viewing detection | 503, 209 | 2 | rust |
-| 505 | `ActOnChip`→ResolveApproval/SendMessage + per-project opt-out + prefs | 504 | 1 | rust |
-| 506 | Privacy property test: no PII in WakeupPayload; no body for enterprise-private projects | 503 | 1 | rust |
+| 505 | `ActOnChip`→ResolveApproval/SendMessage + per-workspace opt-out + prefs | 504 | 1 | rust |
+| 506 | Privacy property test: no PII in WakeupPayload; no body for enterprise-private workspaces | 503 | 1 | rust |
 | 507 | `Notifications` gRPC service + `NotificationHandle`; wire Maestro `notify_user` live | 504, 407 | 1 | rust |
 | 508 | `apps/mobile` Expo scaffold + EAS config + shared `packages/` proto-client extraction | — | 2 | rn-mobile |
 | 509 | `ConcertoIroh` native module (Rust→C→JSI iOS / Rust→JNI Android) + XCFramework/.aar + CI | 212, 508 | 2 | rn-mobile |
