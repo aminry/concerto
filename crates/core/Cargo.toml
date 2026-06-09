@@ -177,6 +177,12 @@ ciborium = "0.2"
 # (`hex` itself is declared cross-platform in the main `[dependencies]`
 # block above, added by Task 206; this comment documents the unix cookie
 # consumer.)
+# Task 401: the in-process `rmcp` MCP server (`concerto-maestro-mcp`) backing
+# the `maestro` module. The whole `maestro` module is `#[cfg(unix)]` (it sits
+# over the `cfg(unix)` agent supervisor, lib.rs), so its only direct external
+# dep — `rmcp` — is gated `cfg(unix)` here too; the Windows lane (Task 113)
+# never compiles it. Workspace pin (server + macros + transport-io; no openssl).
+rmcp = { workspace = true }
 
 # Task 310: select the `notify` filesystem-watch backend per target so the
 # managed.json + project_settings.json watchers compile + run a real backend
@@ -246,3 +252,10 @@ concerto-test-harness = { path = "../test-harness" }
 # `assert_cmd::cargo::cargo_bin` in the in-process agent-spawn test so
 # the test doesn't depend on cwd or the binary being on `$PATH`.
 assert_cmd = "2"
+# Task 401: the `maestro/mcp.rs` end-to-end duplex test drives a CLIENT MCP peer
+# over the in-process pipe pair to prove the real stdio framing (list 16 tools,
+# call one → typed error over the wire). The `client` feature (RoleClient +
+# `ClientHandler for ()`) is TEST-ONLY — never in the production graph (the
+# server only links `server`/`macros`/`transport-io`). Adds no new external
+# crate (the client role is internal `rmcp` glue), so `cargo deny` is unchanged.
+rmcp = { workspace = true, features = ["client"] }
