@@ -98,7 +98,7 @@ async fn make_bare_with_tree_on(branch: &str) -> (String, TempDir, TempDir) {
     (format!("file://{}", bare.path().display()), bare, work)
 }
 
-async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, TempDir) {
+async fn make_repo_manager() -> (Arc<Persistence>, RepoManager, TempDir) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("concerto.db");
     let persistence = Persistence::open(PersistenceConfig {
@@ -108,14 +108,6 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
     .await
     .expect("open persistence");
     let persistence = Arc::new(persistence);
-    {
-        let mut writer = persistence.writer().await;
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-            .bind(project_id)
-            .execute(&mut *writer)
-            .await
-            .expect("insert project");
-    }
     let repos_root = tmp.path().join("repos");
     let manager = RepoManager::new(Arc::clone(&persistence), repos_root);
     (persistence, manager, tmp)
@@ -123,20 +115,9 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
 
 /// Clone the fixture (Full) into the manager's repos root. Returns the repo
 /// id + its on-disk clone path.
-async fn clone_fixture(
-    manager: &RepoManager,
-    project_id: &str,
-    url: &str,
-) -> (RepositoryId, PathBuf) {
+async fn clone_fixture(manager: &RepoManager, url: &str) -> (RepositoryId, PathBuf) {
     let repo = manager
-        .add_repository(
-            project_id,
-            "fixture",
-            url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("fixture", url, "main", CloneStrategy::Full, false)
         .await
         .expect("add_repository");
     manager
@@ -153,7 +134,6 @@ async fn clone_fixture(
 #[allow(clippy::too_many_arguments)]
 async fn add_workarea_with_worktree(
     persist: &Arc<Persistence>,
-    project_id: &str,
     clone_dir: &Path,
     worktrees_root: &Path,
     repo_id: &RepositoryId,
@@ -179,9 +159,9 @@ async fn add_workarea_with_worktree(
         &mut writer,
         NewWorkspace {
             id: workspace_id.clone(),
-            project_id: project_id.to_string(),
             name: format!("ws-{composer}"),
             slug: format!("ws-{composer}"),
+            icon: None,
             description: None,
             permission_mode: None,
             created_at: 1,
@@ -226,9 +206,9 @@ async fn add_workarea_with_worktree(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn list_tree_lists_immediate_children_trees_first() {
-    let (_p, manager, _tmp) = make_repo_manager("p-tree").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_tree().await;
-    let (repo_id, _local) = clone_fixture(&manager, "p-tree", &url).await;
+    let (repo_id, _local) = clone_fixture(&manager, &url).await;
 
     // Root listing (empty path + empty ref → HEAD).
     let root = manager
@@ -266,18 +246,11 @@ async fn list_tree_lists_immediate_children_trees_first() {
 /// is a symref to the actually-cloned branch and resolves regardless.
 #[tokio::test(flavor = "multi_thread")]
 async fn list_tree_uses_head_not_stored_default_branch() {
-    let (_p, manager, _tmp) = make_repo_manager("p-head").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
     // Real branch is `master`, but we add the repo with the `"main"` fallback.
     let (url, _bare, _work) = make_bare_with_tree_on("master").await;
     let repo = manager
-        .add_repository(
-            "p-head",
-            "fixture",
-            &url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("fixture", &url, "main", CloneStrategy::Full, false)
         .await
         .expect("add_repository");
     manager
@@ -299,24 +272,18 @@ async fn list_tree_uses_head_not_stored_default_branch() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn set_repo_cone_defaults_persists_and_propagates() {
-    let (persist, manager, tmp) = make_repo_manager("p-prop").await;
+    let (persist, manager, tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_tree().await;
-    let (repo_id, clone_dir) = clone_fixture(&manager, "p-prop", &url).await;
+    let (repo_id, clone_dir) = clone_fixture(&manager, &url).await;
 
     let worktrees = tmp.path().join("worktrees");
-    let wt_bach = add_workarea_with_worktree(
-        &persist, "p-prop", &clone_dir, &worktrees, &repo_id, "bach", false,
-    )
-    .await;
-    let wt_byrd = add_workarea_with_worktree(
-        &persist, "p-prop", &clone_dir, &worktrees, &repo_id, "byrd", false,
-    )
-    .await;
+    let wt_bach =
+        add_workarea_with_worktree(&persist, &clone_dir, &worktrees, &repo_id, "bach", false).await;
+    let wt_byrd =
+        add_workarea_with_worktree(&persist, &clone_dir, &worktrees, &repo_id, "byrd", false).await;
     // An archived workarea must NOT be propagated to / counted.
-    let _wt_arch = add_workarea_with_worktree(
-        &persist, "p-prop", &clone_dir, &worktrees, &repo_id, "arch", true,
-    )
-    .await;
+    let _wt_arch =
+        add_workarea_with_worktree(&persist, &clone_dir, &worktrees, &repo_id, "arch", true).await;
 
     // Set the repo default cone to `a`.
     let updated = manager
@@ -377,9 +344,9 @@ async fn set_repo_cone_defaults_persists_and_propagates() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn set_repo_cone_defaults_rejects_invalid_path_before_persist() {
-    let (persist, manager, _tmp) = make_repo_manager("p-bad").await;
+    let (persist, manager, _tmp) = make_repo_manager().await;
     let (url, _bare, _work) = make_bare_with_tree().await;
-    let (repo_id, _clone_dir) = clone_fixture(&manager, "p-bad", &url).await;
+    let (repo_id, _clone_dir) = clone_fixture(&manager, &url).await;
 
     // First seed a valid default so we can prove the failed call leaves it
     // unchanged (nothing half-applied).

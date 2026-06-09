@@ -766,11 +766,11 @@ impl WorkareaManager {
         // `<reference>/.concerto/.worktreeinclude` WINS over the local-DB
         // `files_to_copy_rules` (`design/03 §3.13`); when absent we fall back to
         // the Task-310 resolver's `files_to_copy_rules()` (which itself layers
-        // checked-in `project_settings.json` > local DB > default).
+        // checked-in `workspace_settings.json` > local DB > default).
         let reference_repo = &repos[0];
         let reference_root = PathBuf::from(&reference_repo.local_path);
         let copy_rules = self
-            .resolve_files_to_copy_rules(reference_repo, &reference_root)
+            .resolve_files_to_copy_rules(&ws_id, reference_repo, &reference_root)
             .await?;
 
         // Allocate composer name with collision retry. The loop body
@@ -975,6 +975,20 @@ impl WorkareaManager {
                     for &idx in &ok_repo_idx {
                         let repo = &repos[idx];
                         let repo_worktree = worktree_root.join(&repo.name);
+                        // Seed the per-(workarea, repo) cone from the
+                        // workspace's per-(workspace, repo) snapshot
+                        // (`workspace_repos.sparse_cones_json`, D6) — NOT from
+                        // `workspaces.settings_json["cone_defaults"]`. No
+                        // attached snapshot (the repo was added to the
+                        // workspace before the snapshot column existed) → the
+                        // empty-cone default.
+                        let sparse_cones_json = concerto_persist::workspaces::get_repo_cones(
+                            self.persistence.readers(),
+                            &ws_id,
+                            &repo.id,
+                        )
+                        .await?
+                        .unwrap_or_else(NewWorkareaRepo::empty_cones);
                         concerto_persist::workareas::insert_workarea_repo(
                             &mut tx,
                             NewWorkareaRepo {
@@ -982,12 +996,7 @@ impl WorkareaManager {
                                 repository_id: repo.id.clone(),
                                 worktree_path: repo_worktree.to_string_lossy().into_owned(),
                                 branch_override: None,
-                                // Task 302: seed the default-empty cone
-                                // (`"[]"`) per repo. The three-layer
-                                // inherited cone resolution + seeding is
-                                // owned by 302/305; this task wires the
-                                // per-repo loop.
-                                sparse_cones_json: NewWorkareaRepo::empty_cones(),
+                                sparse_cones_json,
                             },
                         )
                         .await?;
@@ -1069,9 +1078,9 @@ impl WorkareaManager {
     /// 1. If `<reference_root>/.concerto/.worktreeinclude` exists, its parsed
     ///    rules ARE the rule set — a checked-in, team-shared, targeted file
     ///    that wins over the local DB (`design/03 §3.13`).
-    /// 2. Otherwise the Task-310 [`ProjectSettingsResolver::files_to_copy_rules`]
-    ///    — which itself layers the checked-in `project_settings.json` >
-    ///    local-DB `projects.settings_json` > empty default. We consume the
+    /// 2. Otherwise the Task-310 [`WorkspaceSettingsResolver::files_to_copy_rules`]
+    ///    — which itself layers the checked-in `workspace_settings.json` >
+    ///    local-DB `workspaces.settings_json` > empty default. We consume the
     ///    resolver (per 310's handoff) rather than reading `settings_json` raw,
     ///    so 310 owns the layering + provenance and 309 owns the apply.
     ///
@@ -1079,6 +1088,7 @@ impl WorkareaManager {
     /// per-repo apply loop.
     async fn resolve_files_to_copy_rules(
         &self,
+        workspace_id: &WorkspaceId,
         reference_repo: &Repository,
         reference_root: &Path,
     ) -> Result<Vec<files_to_copy::Rule>> {
@@ -1097,14 +1107,13 @@ impl WorkareaManager {
         }
 
         // (2) Fall back to the Task-310 resolver's `files_to_copy_rules()`
-        // (checked-in project_settings.json > local DB > default).
-        let project_id = concerto_persist::ProjectId(reference_repo.project_id.clone());
+        // (checked-in workspace_settings.json > local DB > default).
         let managed =
             crate::security::managed::load_managed_policy(&self.config_dir).unwrap_or_default();
         let opt_out = crate::settings::OptOutConfig::default();
-        let resolver = crate::settings::build_resolver_for_project(
+        let resolver = crate::settings::build_resolver_for_workspace(
             &self.persistence,
-            &project_id,
+            workspace_id,
             managed,
             &opt_out,
         )
@@ -1114,7 +1123,7 @@ impl WorkareaManager {
             repo = %reference_repo.id,
             source = ?resolved.source,
             rules = resolved.value.len(),
-            "files_to_copy: resolved rule set from project settings"
+            "files_to_copy: resolved rule set from workspace settings"
         );
         Ok(resolved
             .value
@@ -1195,7 +1204,7 @@ impl WorkareaManager {
     /// (`design/03 §3.6`/§7.2).
     ///
     /// Resolves the workarea's reference repo (the first `workarea_repos` row),
-    /// builds the per-project settings resolver (Task 310), reads the resolved
+    /// builds the per-workspace settings resolver (Task 310), reads the resolved
     /// `action_prefs.branch_rename` pref, composes the action prompt via
     /// [`compose_action_prompt`], and asks the [`OneShotLlm`] seam for a
     /// suggestion. Per **D1** the LIVE Phase-3 path is the deterministic
@@ -1217,9 +1226,10 @@ impl WorkareaManager {
         first_message: &str,
     ) -> Result<String> {
         // Workarea must exist.
-        if self.get(id).await?.is_none() {
-            return Err(Error::NotFound(format!("workarea {id} not found")));
-        }
+        let workarea = self
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("workarea {id} not found")))?;
 
         // The reference repo = the first `workarea_repos` row (the §3.10
         // reference-repo rule applied to the workarea's repo set). A workarea
@@ -1232,22 +1242,15 @@ impl WorkareaManager {
             .ok_or_else(|| Error::Internal(format!("workarea {id} has no repos")))?;
         let repo_id = reference.0.clone();
 
-        // Resolve the per-project settings so we can read the repo's resolved
-        // `action_prefs.branch_rename` (Task 310). The project id comes off the
-        // reference repo's row.
-        let repo = concerto_persist::repositories::get(self.persistence.readers(), &repo_id)
-            .await?
-            .ok_or_else(|| {
-                Error::Internal(format!("workarea {id} reference repo {repo_id} not found"))
-            })?;
-        let project_id = concerto_persist::ProjectId(repo.project_id.clone());
-
+        // Resolve the per-workspace settings so we can read the repo's resolved
+        // `action_prefs.branch_rename` (Task 310). The workspace id comes off
+        // the workarea row.
         let managed =
             crate::security::managed::load_managed_policy(&self.config_dir).unwrap_or_default();
         let opt_out = crate::settings::OptOutConfig::default();
-        let resolver = crate::settings::build_resolver_for_project(
+        let resolver = crate::settings::build_resolver_for_workspace(
             &self.persistence,
-            &project_id,
+            &workarea.workspace_id,
             managed,
             &opt_out,
         )
@@ -1303,21 +1306,21 @@ impl WorkareaManager {
     /// live-LLM-quality path is wired in P4 (Task 412) and judged at that gate.
     pub async fn compose_pr(&self, ctx: PrComposeContext) -> Result<(String, String)> {
         // (1) The per-repo `action_prefs.pr_create` pref (Task 310), resolved
-        // via the project settings resolver. The reference repo is `ctx.repository_id`.
-        let repo =
-            concerto_persist::repositories::get(self.persistence.readers(), &ctx.repository_id)
+        // via the workspace settings resolver. The reference repo is
+        // `ctx.repository_id`; the owning workspace comes off the workarea row.
+        let workarea =
+            concerto_persist::workareas::get(self.persistence.readers(), &ctx.workarea_id)
                 .await?
                 .ok_or_else(|| {
-                    Error::Internal(format!("repository {} not found", ctx.repository_id))
+                    Error::NotFound(format!("workarea {} not found", ctx.workarea_id))
                 })?;
-        let project_id = concerto_persist::ProjectId(repo.project_id.clone());
 
         let managed =
             crate::security::managed::load_managed_policy(&self.config_dir).unwrap_or_default();
         let opt_out = crate::settings::OptOutConfig::default();
-        let resolver = crate::settings::build_resolver_for_project(
+        let resolver = crate::settings::build_resolver_for_workspace(
             &self.persistence,
-            &project_id,
+            &workarea.workspace_id,
             managed,
             &opt_out,
         )
@@ -1356,12 +1359,11 @@ impl WorkareaManager {
         };
         let prompt = compose_action_prompt(ActionKind::PrCreate, &pref, &base_prompt);
 
-        // (2) The `pr_compose` opt-out (default ON). Read from the project's
+        // (2) The `pr_compose` opt-out (default ON). Read from the workspace's
         // `settings_json` directly — the Task-310 resolver does not yet expose
-        // a `pr_compose` accessor and the `repositories` table has no
-        // `settings_json` column, so the project layer is the available
+        // a `pr_compose` accessor, so the workspace layer is the available
         // opt-out surface (no migration). FROZEN key `pr_compose`.
-        let compose_enabled = self.pr_compose_enabled(&project_id).await;
+        let compose_enabled = self.pr_compose_enabled(&workarea.workspace_id).await;
 
         // (3) LLM path (under the 2 s budget) when composition is on AND a real
         // provider is wired; else / on failure the deterministic composer (the
@@ -1416,13 +1418,13 @@ impl WorkareaManager {
         Ok((title, body))
     }
 
-    /// Task 321: read the `pr_compose` opt-out from the project's
+    /// Task 321: read the `pr_compose` opt-out from the workspace's
     /// `settings_json` (default **on**; absent / unparseable ⇒ on). FROZEN key
     /// [`pr_compose::PR_COMPOSE_KEY`].
-    async fn pr_compose_enabled(&self, project_id: &concerto_persist::ProjectId) -> bool {
-        let raw = match concerto_persist::projects::get_settings_json(
+    async fn pr_compose_enabled(&self, workspace_id: &WorkspaceId) -> bool {
+        let raw = match concerto_persist::workspaces::get_settings_json(
             self.persistence.readers(),
-            project_id,
+            workspace_id,
         )
         .await
         {
@@ -1989,8 +1991,8 @@ impl WorkareaManager {
         })
     }
 
-    /// Task 320.5: the post-merge issue write-back step. Reads the project's
-    /// opt-in (`projects.settings_json.issue_write_back`, default off); if on,
+    /// Task 320.5: the post-merge issue write-back step. Reads the workspace's
+    /// opt-in (`workspaces.settings_json.issue_write_back`, default off); if on,
     /// resolves the workarea's source issue ref
     /// (`workareas.settings_json.source_issue_ref`) and calls
     /// [`IssueWriteBack::transition_on_merge`] with [`IssueTransition::MergedDone`].
@@ -2063,25 +2065,20 @@ impl WorkareaManager {
         }
     }
 
-    /// Read `projects.settings_json.issue_write_back` (a JSON `bool`, default
-    /// `false`) for the project owning `workarea_id`. The workarea → workspace →
-    /// project walk resolves the owning project; an absent key / missing row ⇒
-    /// `false` (off). No migration — a `settings_json` key (FROZEN).
+    /// Read `workspaces.settings_json.issue_write_back` (a JSON `bool`, default
+    /// `false`) for the workspace owning `workarea_id`. The workarea →
+    /// workspace walk resolves the owning workspace; an absent key / missing
+    /// row ⇒ `false` (off). No migration — a `settings_json` key (FROZEN).
     #[cfg(unix)]
     async fn issue_write_back_opt_in(&self, workarea_id: &WorkareaId) -> Result<bool> {
         let workarea = concerto_persist::workareas::get(self.persistence.readers(), workarea_id)
             .await?
             .ok_or_else(|| Error::NotFound(format!("workarea {workarea_id} not found")))?;
-        let workspace =
-            concerto_persist::workspaces::get(self.persistence.readers(), &workarea.workspace_id)
-                .await?
-                .ok_or_else(|| {
-                    Error::NotFound(format!("workspace {} not found", workarea.workspace_id))
-                })?;
-        let project_id = concerto_persist::ProjectId(workspace.project_id);
-        let raw =
-            concerto_persist::projects::get_settings_json(self.persistence.readers(), &project_id)
-                .await?;
+        let raw = concerto_persist::workspaces::get_settings_json(
+            self.persistence.readers(),
+            &workarea.workspace_id,
+        )
+        .await?;
         let Some(raw) = raw else { return Ok(false) };
         let json: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
         Ok(json

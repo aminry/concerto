@@ -2,6 +2,7 @@
 // workarea (Task 38 surface). V0.1 is read-only; create / pause / delete
 // affordances arrive with the Maestro work in a later phase.
 
+import { formatError } from "../../api/errors";
 import { useUiStore } from "../../state/useUiStore";
 import { useSchedules } from "../../hooks/useSchedules";
 
@@ -22,7 +23,7 @@ export function SchedulerTab(): JSX.Element {
   if (query.isError) {
     return (
       <p className="text-xs text-err p-3">
-        Failed to load schedules: {String(query.error)}
+        Failed to load schedules: {formatError(query.error)}
       </p>
     );
   }

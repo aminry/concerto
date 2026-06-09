@@ -3,6 +3,7 @@
 // the query to the personal scope; project-scope listings need a
 // repository_id, which the right rail does not have wired here yet.
 
+import { formatError } from "../../api/errors";
 import { useMcpServers } from "../../hooks/useMcpServers";
 
 export function McpTab(): JSX.Element {
@@ -14,7 +15,7 @@ export function McpTab(): JSX.Element {
   if (query.isError) {
     return (
       <p className="text-xs text-err p-3">
-        Failed to load MCP servers: {String(query.error)}
+        Failed to load MCP servers: {formatError(query.error)}
       </p>
     );
   }

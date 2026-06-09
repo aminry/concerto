@@ -71,8 +71,8 @@ function pr(repoId: string, prNumber: number, mergeOrder: number, fullName: stri
 }
 
 const repos: Repository[] = [
-  { id: "repo-a", project_id: "p1", name: "api", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
-  { id: "repo-b", project_id: "p1", name: "web", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
+  { id: "repo-a", name: "api", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
+  { id: "repo-b", name: "web", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
 ];
 
 // The PR set: repo-a first (merge_order 0), repo-b second (1).

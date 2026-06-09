@@ -22,6 +22,7 @@ import {
   type StreamEvent,
 } from "../../api/sessions";
 import { errorMessage } from "../../api/client";
+import { formatError } from "../../api/errors";
 import { SessionTab } from "../SessionTab";
 import { SessionTerminal } from "../SessionTerminal";
 import { SessionComposer } from "../SessionComposer";
@@ -139,7 +140,7 @@ export function SessionRegion({ workareaId }: SessionRegionProps): JSX.Element {
           )}
           {sessionsQuery.isError && (
             <span className="self-center px-3 text-xs text-err">
-              {String(sessionsQuery.error)}
+              {formatError(sessionsQuery.error)}
             </span>
           )}
         </div>

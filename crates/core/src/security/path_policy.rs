@@ -5,8 +5,8 @@
 //!
 //! - **Allow-list** = the workarea's `worktree_root` + its `.context/`
 //!   subdirectory + each attached repo's `worktree_path` + any
-//!   per-project `writable_paths` declared in
-//!   `projects.settings_json` + the global `~/concerto/` root.
+//!   per-workspace `writable_paths` declared in
+//!   `workspaces.settings_json` + the global `~/concerto/` root.
 //! - **Deny-list** = a hard floor of paths that are NEVER auto-approved
 //!   regardless of `permission_mode` (`design/12 §3.7`): `~/.ssh`,
 //!   `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.netrc`, `~/.docker/config.json`.
@@ -88,7 +88,7 @@ impl AllowList {
     /// 2. `<worktree_root>/.context/` (the per-workarea scratchpad
     ///    locked by `design/03 §3.10`).
     /// 3. Each `repo.worktree_path`.
-    /// 4. Any `writable_paths` array values from `project_settings_json`
+    /// 4. Any `writable_paths` array values from `workspace_settings_json`
     ///    (see [`extract_writable_paths`]).
     /// 5. `<home>/concerto/` — the global Concerto data root; every
     ///    workarea, log, and checkpoint lives under it, so an agent
@@ -99,7 +99,7 @@ impl AllowList {
     pub fn for_workarea(
         workarea: &Workarea,
         repos: &[Repository],
-        project_settings_json: Option<&str>,
+        workspace_settings_json: Option<&str>,
         home: &Path,
     ) -> Self {
         let mut roots: Vec<AllowRoot> = Vec::new();
@@ -109,7 +109,7 @@ impl AllowList {
         for r in repos {
             roots.push(canonicalize_or_clean(Path::new(&r.local_path)));
         }
-        if let Some(settings) = project_settings_json {
+        if let Some(settings) = workspace_settings_json {
             for p in extract_writable_paths(settings) {
                 roots.push(canonicalize_or_clean(&p));
             }
@@ -256,17 +256,13 @@ pub async fn for_workarea_from_db(
             repos.push(r);
         }
     }
-    // Find the owning workspace to look up the project's settings_json.
-    let workspace = concerto_persist::workspaces::get(pool, &workarea.workspace_id)
-        .await?
-        .ok_or_else(|| Error::NotFound(format!("workspace {} not found", workarea.workspace_id)))?;
-    let project_settings_json = concerto_persist::projects::get_settings_json(
-        pool,
-        &concerto_persist::ProjectId(workspace.project_id.clone()),
-    )
-    .await?;
+    // Look up the owning workspace's settings_json (the writable-paths
+    // layer; there is no Project layer after the collapse).
+    let workspace_settings_json =
+        concerto_persist::workspaces::get_settings_json(pool, &workarea.workspace_id).await?;
 
-    let allow = AllowList::for_workarea(&workarea, &repos, project_settings_json.as_deref(), home);
+    let allow =
+        AllowList::for_workarea(&workarea, &repos, workspace_settings_json.as_deref(), home);
     let deny = DenyList::v0_1_default(home);
     Ok((allow, deny))
 }
@@ -305,10 +301,10 @@ fn starts_with_path(candidate: &Path, prefix: &Path) -> bool {
     candidate.starts_with(prefix)
 }
 
-/// Pull the `writable_paths` string array out of a project's
+/// Pull the `writable_paths` string array out of a workspace's
 /// `settings_json` blob. Returns an empty vec on malformed JSON or
-/// absent key — V0.1 treats project settings as advisory; never crash
-/// the resolver because a project's settings JSON has a typo.
+/// absent key — V0.1 treats workspace settings as advisory; never crash
+/// the resolver because a workspace's settings JSON has a typo.
 fn extract_writable_paths(settings_json: &str) -> Vec<PathBuf> {
     let parsed: serde_json::Value = match serde_json::from_str(settings_json) {
         Ok(v) => v,

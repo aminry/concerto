@@ -6,9 +6,8 @@
 //! subcommand dispatcher covering the Phase 2 happy path:
 //!
 //!   * `caps` — `Runtime.GetServerCapabilities`.
-//!   * `add-project` — direct sqlx insert (V0.1 has no Projects.Create
-//!     RPC; see `cmd/add_project.rs`).
-//!   * `add-repo` — `Repositories.AddRepository`.
+//!   * `add-repo` — `Repositories.AddRepository` (global registry; no
+//!     project scoping after the Project→Workspace collapse).
 //!   * `clone` — `Repositories.Clone` (streaming, drained to EOS).
 //!   * `new-workspace` — `Workspaces.CreateWorkspace`.
 //!   * `new-workarea` — `Workareas.CreateWorkarea`.
@@ -51,8 +50,8 @@ use clap::{Parser, Subcommand};
     about = "End-to-end RPC client for the Concerto Core smoke gate."
 )]
 struct Cli {
-    /// Path to the Core's UDS socket. Required by every subcommand
-    /// except `add-project` (which talks to SQLite directly).
+    /// Path to the Core's UDS socket. Required by every gRPC subcommand
+    /// (all of them except `list-audit`, which reads the JSONL log file).
     ///
     /// Default mirrors `RuntimeConfig::default_for_user` —
     /// `$CONCERTO_CONFIG_DIR/core.sock` or `~/.concerto/core.sock`.
@@ -67,19 +66,15 @@ struct Cli {
 enum Command {
     /// Call `Runtime.GetServerCapabilities` and print one-line JSON.
     Caps,
-    /// Insert a `projects` row directly via sqlx (V0.1 workaround —
-    /// no `Projects.CreateProject` RPC exists yet). Prints the id.
-    AddProject {
-        /// Human-readable project name.
-        #[arg(long)]
-        name: String,
-    },
     /// Call `Repositories.AddRepository` and print the new repo id.
+    /// Repositories are a global registry — no `--project-id`. `name` is
+    /// globally unique; pass a distinct `--name` per repo.
     AddRepo {
         #[arg(long)]
-        project_id: String,
-        #[arg(long)]
         url: String,
+        /// Globally-unique repo name (default `smoke-repo`).
+        #[arg(long, default_value = "")]
+        name: String,
         /// Task 301 clone strategy: `full | blobless | treeless` (empty →
         /// full). The `sparse-cone-clone` smoke check passes `blobless`.
         #[arg(long, default_value = "")]
@@ -108,8 +103,6 @@ enum Command {
     },
     /// Call `Workspaces.CreateWorkspace` and print the workspace id.
     NewWorkspace {
-        #[arg(long)]
-        project_id: String,
         #[arg(long)]
         name: String,
         #[arg(long)]
@@ -156,8 +149,6 @@ enum Command {
     /// and reconnects again to force a gap. Prints `OK` on success.
     StreamsReplayProbe {
         #[arg(long)]
-        project_id: String,
-        #[arg(long)]
         repo_id: String,
     },
     /// Task 203: probe the `Files` service over the live UDS Core. Uploads
@@ -203,12 +194,12 @@ enum Command {
     /// Call `Skills.RefreshMarketplaces` then `Skills.ListSkills`.
     /// Prints one skill name per line.
     ListSkills {
-        /// Optional scope filter: `personal | project | plugin | enterprise`.
+        /// Optional scope filter: `personal | workspace | plugin | enterprise`.
         #[arg(long)]
         scope: Option<String>,
-        /// Optional project id filter (only meaningful for project scope).
+        /// Optional workspace id filter (only meaningful for workspace scope).
         #[arg(long)]
-        project_id: Option<String>,
+        workspace_id: Option<String>,
     },
     /// Call `Sessions.ListMcpServers`. Prints one server name per line.
     ListMcp {
@@ -259,7 +250,7 @@ fn main() -> ExitCode {
 }
 
 /// Resolve `--socket` for subcommands that need a Core connection.
-/// `add-project` is the lone exception (it touches SQLite directly).
+/// `list-audit` is the lone exception (it reads the JSONL log file).
 fn require_socket(socket: Option<PathBuf>) -> Result<PathBuf, String> {
     socket.ok_or_else(|| "missing --socket <path> (required for gRPC subcommands)".to_string())
 }
@@ -270,15 +261,14 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
             let socket = require_socket(cli.socket)?;
             cmd::caps::run(&socket).await
         }
-        Command::AddProject { name } => cmd::add_project::run(&name).await,
         Command::AddRepo {
-            project_id,
             url,
+            name,
             clone_strategy,
             with_sparse,
         } => {
             let socket = require_socket(cli.socket)?;
-            cmd::add_repo::run(&socket, &project_id, &url, &clone_strategy, with_sparse).await
+            cmd::add_repo::run(&socket, &url, &name, &clone_strategy, with_sparse).await
         }
         Command::Clone { repo_id } => {
             let socket = require_socket(cli.socket)?;
@@ -292,13 +282,9 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
             let socket = require_socket(cli.socket)?;
             cmd::set_cones::run(&socket, &workarea, &repo, &cone).await
         }
-        Command::NewWorkspace {
-            project_id,
-            name,
-            repo_id,
-        } => {
+        Command::NewWorkspace { name, repo_id } => {
             let socket = require_socket(cli.socket)?;
-            cmd::new_workspace::run(&socket, &project_id, &name, &repo_id).await
+            cmd::new_workspace::run(&socket, &name, &repo_id).await
         }
         Command::NewWorkarea { workspace_id } => {
             let socket = require_socket(cli.socket)?;
@@ -326,12 +312,9 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
             let socket = require_socket(cli.socket)?;
             cmd::stop_session::run(&socket, &session_id).await
         }
-        Command::StreamsReplayProbe {
-            project_id,
-            repo_id,
-        } => {
+        Command::StreamsReplayProbe { repo_id } => {
             let socket = require_socket(cli.socket)?;
-            cmd::streams_replay_probe::run(&socket, &project_id, &repo_id).await
+            cmd::streams_replay_probe::run(&socket, &repo_id).await
         }
         Command::FilesTransferProbe { workarea_id } => {
             let socket = require_socket(cli.socket)?;
@@ -357,9 +340,12 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
             let socket = require_socket(cli.socket)?;
             cmd::list_loops::run(&socket, &workarea).await
         }
-        Command::ListSkills { scope, project_id } => {
+        Command::ListSkills {
+            scope,
+            workspace_id,
+        } => {
             let socket = require_socket(cli.socket)?;
-            cmd::list_skills::run(&socket, scope.as_deref(), project_id.as_deref()).await
+            cmd::list_skills::run(&socket, scope.as_deref(), workspace_id.as_deref()).await
         }
         Command::ListMcp {
             scope,

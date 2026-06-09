@@ -63,7 +63,6 @@ async fn make_bare_with_commit() -> (String, TempDir, TempDir) {
 /// directly. Then clone the repo into `<data>/repos/<repo_id>/` so the
 /// workarea-creation path finds an existing clone.
 struct Seeded {
-    project_id: String,
     workspace_id: String,
     workspace_slug: String,
     repo_id: String,
@@ -78,7 +77,6 @@ async fn seed(core: &CoreUnderTest, slug: &str) -> Seeded {
 
     let (bare_url, bare, work) = make_bare_with_commit().await;
 
-    let project_id = format!("proj-{slug}");
     let workspace_id = format!("ws-{slug}");
     let repo_id = format!("repo-{slug}");
     let repo_name = format!("name-{slug}");
@@ -92,32 +90,23 @@ async fn seed(core: &CoreUnderTest, slug: &str) -> Seeded {
         .connect_with(opts)
         .await
         .expect("open db write pool");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-        .bind(&project_id)
-        .execute(&pool)
-        .await
-        .expect("insert project");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind(&repo_id)
-    .bind(&project_id)
     .bind(&repo_name)
     .bind(&bare_url)
     .bind(local_path.to_string_lossy().to_string())
     .execute(&pool)
     .await
     .expect("insert repository");
-    sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES (?, ?, 'test', ?, 0)",
-    )
-    .bind(&workspace_id)
-    .bind(&project_id)
-    .bind(slug)
-    .execute(&pool)
-    .await
-    .expect("insert workspace");
+    sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, 'test', ?, 0)")
+        .bind(&workspace_id)
+        .bind(slug)
+        .execute(&pool)
+        .await
+        .expect("insert workspace");
     sqlx::query("INSERT INTO workspace_repos (workspace_id, repository_id) VALUES (?, ?)")
         .bind(&workspace_id)
         .bind(&repo_id)
@@ -147,7 +136,6 @@ async fn seed(core: &CoreUnderTest, slug: &str) -> Seeded {
     );
 
     Seeded {
-        project_id,
         workspace_id,
         workspace_slug: slug.to_string(),
         repo_id,
@@ -284,7 +272,7 @@ struct SeededMulti {
 async fn seed_multi(core: &CoreUnderTest, slug: &str) -> SeededMulti {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    let project_id = format!("proj-{slug}");
+    let _project_id = format!("proj-{slug}");
     let workspace_id = format!("ws-{slug}");
 
     let opts = SqliteConnectOptions::new()
@@ -295,20 +283,12 @@ async fn seed_multi(core: &CoreUnderTest, slug: &str) -> SeededMulti {
         .connect_with(opts)
         .await
         .expect("open db write pool");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-        .bind(&project_id)
+    sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, 'test', ?, 0)")
+        .bind(&workspace_id)
+        .bind(slug)
         .execute(&pool)
         .await
-        .expect("insert project");
-    sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES (?, ?, 'test', ?, 0)",
-    )
-    .bind(&workspace_id)
-    .bind(&project_id)
-    .bind(slug)
-    .execute(&pool)
-    .await
-    .expect("insert workspace");
+        .expect("insert workspace");
 
     let mut bares = Vec::new();
     let mut works = Vec::new();
@@ -321,11 +301,10 @@ async fn seed_multi(core: &CoreUnderTest, slug: &str) -> SeededMulti {
         let local_path = core.data_dir.join("repos").join(&repo_id);
 
         sqlx::query(
-            "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-             VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+            "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+             VALUES (?, ?, ?, ?, 'full', 'main')",
         )
         .bind(&repo_id)
-        .bind(&project_id)
         .bind(&repo_name)
         .bind(&bare_url)
         .bind(local_path.to_string_lossy().to_string())
@@ -437,7 +416,7 @@ async fn multi_repo_workarea_lays_out_one_worktree_per_repo() {
 async fn seed_multi_one_broken(core: &CoreUnderTest, slug: &str) -> SeededMulti {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    let project_id = format!("proj-{slug}");
+    let _project_id = format!("proj-{slug}");
     let workspace_id = format!("ws-{slug}");
 
     let opts = SqliteConnectOptions::new()
@@ -448,20 +427,12 @@ async fn seed_multi_one_broken(core: &CoreUnderTest, slug: &str) -> SeededMulti 
         .connect_with(opts)
         .await
         .expect("open db write pool");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-        .bind(&project_id)
+    sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, 'test', ?, 0)")
+        .bind(&workspace_id)
+        .bind(slug)
         .execute(&pool)
         .await
-        .expect("insert project");
-    sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES (?, ?, 'test', ?, 0)",
-    )
-    .bind(&workspace_id)
-    .bind(&project_id)
-    .bind(slug)
-    .execute(&pool)
-    .await
-    .expect("insert workspace");
+        .expect("insert workspace");
 
     let mut bares = Vec::new();
     let mut works = Vec::new();
@@ -473,11 +444,10 @@ async fn seed_multi_one_broken(core: &CoreUnderTest, slug: &str) -> SeededMulti 
         let local_path = core.data_dir.join("repos").join(&repo_id);
 
         sqlx::query(
-            "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-             VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+            "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+             VALUES (?, ?, ?, ?, 'full', 'main')",
         )
         .bind(&repo_id)
-        .bind(&project_id)
         .bind(&repo_name)
         .bind(&bare_url)
         .bind(local_path.to_string_lossy().to_string())
@@ -690,7 +660,7 @@ async fn archive_sets_status_and_timestamp() {
     assert_eq!(shown.workareas.len(), 1);
 
     // Suppress dead-code warning on unused fields of `Seeded`.
-    let _ = (&s.project_id, &s.repo_id);
+    let _ = &s.repo_id;
 
     core.shutdown().await.expect("shutdown");
 }

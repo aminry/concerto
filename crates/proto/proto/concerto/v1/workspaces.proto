@@ -6,11 +6,7 @@
 // `WorkspaceId`, `CreateWorkspaceRequest`, `ListWorkspacesRequest`, and
 // `ListWorkspacesResponse` messages.
 //
-// V0.1 enforces single-repo workspaces in `CreateWorkspaceRequest`
-// (`repository_ids.len() == 1`); the schema permits N repos via the
-// `workspace_repos` junction table.
-//
-// Field numbers in this file are FROZEN as of Task 19.
+// Field numbers re-locked 2026-06-08 (Project→Workspace collapse).
 
 syntax = "proto3";
 
@@ -22,9 +18,9 @@ import "concerto/v1/common.proto";
 
 message Workspace {
   string id = 1;
-  string project_id = 2;
-  string name = 3;
-  string slug = 4;
+  string name = 2;
+  string slug = 3;
+  optional string icon = 4;
   optional string description = 5;
   optional PermissionMode permission_mode = 6;
   google.protobuf.Timestamp created_at = 7;
@@ -37,27 +33,30 @@ message WorkspaceId {
   string value = 1;
 }
 
+// One repository's checkout config within a CreateWorkspace call. The repo
+// must already exist in the registry (added via Repositories.AddRepository
+// for new URL/local repos). `sparse_cones` empty = full working tree;
+// non-empty = sparse cone over those repo-root-relative directories.
+message WorkspaceRepoSpec {
+  string repository_id = 1;
+  repeated string sparse_cones = 2;
+}
+
 // Inputs for `Workspaces.CreateWorkspace`. The server assigns the id and
 // derives the slug from `name` per the algorithm locked in Task 19:
 // lowercase, whitespace → `-`, strip non `[a-z0-9-]`, max 64 chars, append
-// `-N` on collisions within the project.
-//
-// V0.1 enforces `repository_ids.len() == 1` and returns
-// `INVALID_ARGUMENT` + `ConcertoError{code="workspace.v0_single_repo_only"}`
-// otherwise.
+// `-N` on collisions.
 message CreateWorkspaceRequest {
-  string project_id = 1;
-  string name = 2;
-  repeated string repository_ids = 3;
-  optional PermissionMode permission_mode = 4;
-  optional string description = 5;
+  string name = 1;
+  repeated WorkspaceRepoSpec repos = 2;
+  optional PermissionMode permission_mode = 3;
+  optional string description = 4;
+  optional string icon = 5;
 }
 
-// Inputs for `Workspaces.ListWorkspaces`. V0.1 scopes the listing to one
-// project; pagination + archived-filter knobs land at higher field
-// numbers when the UI needs them.
+// Inputs for `Workspaces.ListWorkspaces`.
 message ListWorkspacesRequest {
-  string project_id = 1;
+  bool include_archived = 1;
 }
 
 message ListWorkspacesResponse {
@@ -71,10 +70,10 @@ message ListWorkspacesResponse {
 // higher numbers without inventing a new RPC every time. Field numbers
 // here are FROZEN as of Task 32.
 //
-// `permission_mode` is optional: omitted means "no change"; setting it
-// to `PERMISSION_MODE_UNSPECIFIED` is rejected as `INVALID_ARGUMENT`
-// (callers wanting "inherit from project" should omit the field, not
-// send `UNSPECIFIED`).
+// `permission_mode` is optional: omitted means no change; to clear an
+// override and fall back to the workspace default, send the field absent.
+// Setting it to `PERMISSION_MODE_UNSPECIFIED` is rejected as
+// `INVALID_ARGUMENT`.
 message WorkspaceSettings {
   optional PermissionMode permission_mode = 1;
 }

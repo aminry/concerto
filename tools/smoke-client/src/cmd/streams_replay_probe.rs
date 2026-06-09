@@ -1,4 +1,4 @@
-//! `smoke-client streams-replay-probe --project-id <p> --repo-id <r>` —
+//! `smoke-client streams-replay-probe --repo-id <r>` —
 //! end-to-end probe of the Task 202 `Streams.Subscribe` reconnect path
 //! over the live UDS Core. Self-contained and deterministic:
 //!
@@ -23,7 +23,9 @@ use std::time::Duration;
 use concerto_proto::v1::event::Body as EventBody;
 use concerto_proto::v1::streams_client::StreamsClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
-use concerto_proto::v1::{AckOffsetRequest, CreateWorkspaceRequest, Event, SubscribeRequest};
+use concerto_proto::v1::{
+    AckOffsetRequest, CreateWorkspaceRequest, Event, SubscribeRequest, WorkspaceRepoSpec,
+};
 use futures::StreamExt;
 use tonic::transport::Channel;
 
@@ -32,7 +34,7 @@ use crate::connect::connect_to_socket;
 
 const SUBJECT: &str = "workspace.events";
 
-pub async fn run(socket: &Path, project_id: &str, repo_id: &str) -> Result<(), String> {
+pub async fn run(socket: &Path, repo_id: &str) -> Result<(), String> {
     let channel = connect_to_socket(socket).await?;
     let mut streams = StreamsClient::new(channel.clone());
     let mut workspaces = WorkspacesClient::new(channel);
@@ -42,13 +44,7 @@ pub async fn run(socket: &Path, project_id: &str, repo_id: &str) -> Result<(), S
 
     // 2. Create two workspaces → offsets 0, 1.
     for i in 0..2 {
-        create_workspace(
-            &mut workspaces,
-            project_id,
-            repo_id,
-            &format!("replay-probe-{i}"),
-        )
-        .await?;
+        create_workspace(&mut workspaces, repo_id, &format!("replay-probe-{i}")).await?;
     }
 
     // 3. Drain the two live workspace events; assert offsets 0, 1.
@@ -130,18 +126,20 @@ async fn subscribe(
 
 async fn create_workspace(
     client: &mut WorkspacesClient<Channel>,
-    project_id: &str,
     repo_id: &str,
     name: &str,
 ) -> Result<(), String> {
     tokio::time::timeout(
         RPC_TIMEOUT,
         client.create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.to_string(),
             name: name.to_string(),
-            repository_ids: vec![repo_id.to_string()],
+            repos: vec![WorkspaceRepoSpec {
+                repository_id: repo_id.to_string(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         }),
     )
     .await

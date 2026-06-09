@@ -6,16 +6,19 @@
 
 ## 1. Purpose & scope
 
-This sub-system owns the **three-level hierarchy** that organizes user work in Concerto:
+This sub-system owns the **three-level hierarchy** that organizes user work in Concerto, layered over a **global Repository registry**:
 
 ```
-Project
-  └── Workspace            (logical workstream; 1..N repos)
-        └── Workarea       (worktree + branch; "bach", "mozart")
-              └── Session  (an agent run — Claude / Codex / Gemini)
+Repository registry         (global; cloned .git shared across all workspaces)
+  ▲ declared by
+Workspace                   (logical workstream; declares 1..N repos directly)
+  └── Workarea              (worktree + branch; "bach", "mozart")
+        └── Session         (an agent run — Claude / Codex / Gemini)
 ```
 
-- **Workspace** — a unit of work the user is doing. Defines which repos are involved. No on-disk artifact of its own; it is a logical container.
+After the Project→Workspace collapse, there is no Project layer: the **Workspace is top-level** and declares its repos directly from the global registry (see `02_Repository_Manager.md` for the registry). Everything the former Project owned — shared settings/scripts, permission/deliberation defaults, the icon — now lives on the Workspace (`workspaces.settings_json` + `workspaces.icon`).
+
+- **Workspace** — a unit of work the user is doing. Declares which repos are involved (selected from the global registry). No on-disk artifact of its own; it is a logical container. Owns the shared settings, scripts, and permission/deliberation defaults formerly held by the Project.
 - **Workarea** — a specific attempt at the workspace's task. Has a composer name, a branch name applied across all the workspace's repos, and worktrees on disk. Many workareas per workspace are supported (parallel approaches).
 - **Session** — a specific agent run on a workarea. One LLM context, one chat thread. Multiple sessions per workarea (multi-agent: Claude alongside Codex) are supported.
 
@@ -29,7 +32,7 @@ It owns:
 - **Branch-name management** — workarea's `branch_name` applied across repos; rename hook after first message.
 - **Per-workarea PR set** — implicit set of PRs (one per repo with commits in this workarea). Merge ordering, coordinated merge/revert.
 - **Workarea status FSM** — `created | active | running | awaiting | finished | paused | crashed | archived`.
-- **Permission-mode inheritance** — `project → workspace → workarea → session`.
+- **Permission-mode inheritance** — `session → workarea → workspace → global default (normal)`, clamped by `managed.json`.
 
 It does **not** own: agent execution (04 owns sessions as agent processes), git internals (02), GitHub API (13), the diff rendering (clients do that using diff data 02 + 13 produce).
 
@@ -78,9 +81,9 @@ Workspace status is simpler: `active | archived`. A workspace archives when all 
 
 **Choice:** Creating a workspace is a **logical** operation:
 
-1. Pick name + slug (e.g., "Idempotency keys" → `idempotency-keys`).
-2. Pick which repos from the project belong (1..N — single-repo workspaces are workspaces with `len(workspace_repos) == 1`).
-3. Set permission-mode defaults if user wants (else inherit from project).
+1. Pick name + slug (e.g., "Idempotency keys" → `idempotency-keys`; slug is globally unique).
+2. Declare which repos from the **global registry** belong (1..N — single-repo workspaces are workspaces with `len(workspace_repos) == 1`). Each repo is attached with a `position` (the first by position is the reference repo) and a `sparse_cones` snapshot seeded from the repo's `cone_defaults_json`.
+3. Set permission-mode defaults if user wants (else inherit from the workspace's `settings_json.default_permission_mode`, then the global default `normal`).
 4. Persist `workspaces` + `workspace_repos` rows.
 
 **No worktree on disk yet.** The first workarea materializes the worktrees.
@@ -93,10 +96,10 @@ Workspace status is simpler: `active | archived`. A workspace archives when all 
 2. Compute `branch_name` (initially `concerto/<composer>` placeholder; renamed via §3.6).
 3. Create `worktree_root` directory at `<workspace.slug>/<composer>/`.
 4. For each repo in `workspace_repos`:
-   - Repo Mgr (02): ensure the repo's `.git` is cloned (with the project's clone_strategy).
+   - Repo Mgr (02): ensure the repo's `.git` is cloned (with the repository's own `clone_strategy`).
    - Create the workarea-side worktree: `git worktree add <worktree_root>/<repo.name> -b <branch_name>`.
-   - Set sparse cones if `workarea_repos.sparse_cones_json` is non-empty (inherits from `workspace_repos` defaults, which inherit from `repositories.cone_defaults_json`).
-   - Apply files-to-copy patterns from the project's settings.
+   - Set sparse cones: `workarea_repos.sparse_cones_json` is a snapshot seeded from `workspace_repos.sparse_cones_json` at workarea-create time (which was itself snapshotted from `repositories.cone_defaults_json` when the repo was attached to the workspace).
+   - Apply files-to-copy patterns from the workspace's settings.
 5. Create `.context/` skeleton (`PROMPT.md`, `todos.md`, `scratch/`) at the workarea root.
 6. Persist `workareas` + `workarea_repos` rows.
 7. Run setup script if configured — once per workarea, with `CONCERTO_WORKAREA_ROOT` env var pointing at the workarea root (so the setup script can iterate repos with `for d in */; do (cd "$d" && <setup>); done`).
@@ -120,7 +123,7 @@ Multiple sessions on the same workarea are fine. They share files (the worktrees
 
 **Choice:** A fixed list of ~500 composer names. Each `workareas.composer_name` is unique **within the workspace** (different workspaces can each have their own "bach"). When the pool is exhausted within one workspace, append `-2`, `-3`, etc.
 
-The list ships with the binary; user can override per project via `concerto.json` (`naming_pool: [...]`).
+The list ships with the binary; user can override per workspace via the workspace's `settings_json` (`naming_pool: [...]`).
 
 Workspaces themselves get **user-supplied names**, not composers (e.g., "Idempotency keys for payments").
 
@@ -154,7 +157,7 @@ Restore reverses (1) and (3) but does not silently reuse old permission modes �
 1. `sessions.permission_mode` (set at session start; can be changed mid-session per session)
 2. `workareas.permission_mode` (set when workarea is created; can be changed)
 3. `workspaces.permission_mode` (workspace default; can be changed)
-4. `projects.settings_json.default_permission_mode`
+4. `workspaces.settings_json.default_permission_mode`
 5. Global default: `normal`
 
 Same chain for `bypass_destructive_guard`.
@@ -175,7 +178,7 @@ Coordinated revert: each member in reverse merge_order via `git revert` PRs (or 
 
 ### 3.10 Files-to-copy (with optional symlink mode)
 
-**Choice:** Patterns from project settings (`projects.settings_json.files_to_copy_rules`, optionally overridden by a checked-in `.worktreeinclude` file at the project's reference repo root — see §3.13) are matched against the project's reference worktree (the user can designate one repo's main worktree as the "reference," default: first listed repo) and **either copied or symlinked** into each repo's worktree in the new workarea at workarea-create time.
+**Choice:** Patterns from workspace settings (`workspaces.settings_json.files_to_copy_rules`, optionally overridden by a checked-in `.worktreeinclude` file at the workspace's reference repo root — see §3.13) are matched against the workspace's reference worktree (the **reference repo is the first repo by `position`** in `workspace_repos`) and **either copied or symlinked** into each repo's worktree in the new workarea at workarea-create time.
 
 Each rule has a `mode`:
 
@@ -211,7 +214,7 @@ Resolution order: includes apply in declaration order; `exclude` rules win over 
 
 If the same pattern matches in multiple source repos (rare), copies/symlinks happen per repo (each repo's `.env` goes into that repo's worktree).
 
-**Symlink safety.** Symlinks are created with paths relative to the workarea worktree so workareas remain movable. If the source file is deleted post-link, the broken link surfaces a per-workarea warning chip ("symlink to `<path>` is broken") but does not block the workarea. Symlinks never traverse outside the project root — paths that would escape are rejected with an error at workarea create.
+**Symlink safety.** Symlinks are created with paths relative to the workarea worktree so workareas remain movable. If the source file is deleted post-link, the broken link surfaces a per-workarea warning chip ("symlink to `<path>` is broken") but does not block the workarea. Symlinks never traverse outside the workarea root — paths that would escape are rejected with an error at workarea create.
 
 ### 3.11 Workarea-level vs session-level scopes — what lives where
 
@@ -223,41 +226,41 @@ If the same pattern matches in multiple source repos (rare), copies/symlinks hap
 
 A workarea outlives any single session (sessions come and go). A workspace outlives any single workarea (workareas come and go).
 
-### 3.13 Project / Repository Settings — precedence and override semantics
+### 3.13 Workspace / Repository Settings — precedence and override semantics
 
-**The problem.** A team wants `scripts.setup` checked in so every developer runs the same setup; a single developer wants to override it for a one-off local quirk; the org wants to disable `yolo` mode regardless of project. Concerto's answer is a three-layer precedence stack.
+**The problem.** A team wants `scripts.setup` checked in so every developer runs the same setup; a single developer wants to override it for a one-off local quirk; the org wants to disable `yolo` mode regardless of workspace. Concerto's answer is a three-layer precedence stack, resolved by the **`WorkspaceSettingsResolver`**.
 
 **Three places where settings can live:**
 
 | Layer | Where | Scope | Travels with |
 |---|---|---|---|
-| **Checked-in** | `<project_root>/.concerto/project_settings.json` plus per-repo `<repo_root>/.concerto/action_prefs.toml` and `<repo_root>/.worktreeinclude` | Project / repo | The git history (team-shared) |
-| **Local DB** | `projects.settings_json` / `repositories.action_prefs_json` rows in SQLite | Project / repo | The user's machine only |
-| **Managed** | `~/.concerto/managed.json` | All projects on the machine | The org via MDM |
+| **Checked-in** | `.concerto/workspace_settings.json` at the workspace's **reference repo root** (first repo by `position`) plus per-repo `<repo_root>/.concerto/action_prefs.toml` and `<repo_root>/.worktreeinclude` | Workspace / repo | The git history (team-shared) |
+| **Local DB** | `workspaces.settings_json` / `repositories.action_prefs_json` rows in SQLite | Workspace / repo | The user's machine only |
+| **Managed** | `~/.concerto/managed.json` | All workspaces on the machine | The org via MDM |
 
 **Precedence (highest wins):**
 
 ```
-managed.json  >  checked-in files  >  local DB rows  >  global defaults
+managed.json  >  checked-in .concerto/workspace_settings.json  >  workspaces.settings_json (DB)  >  global defaults
 ```
 
-When a higher layer sets a field, the matching control in Settings → Project is rendered **read-only with a small lock icon** and a tooltip naming the source (`"Locked by .concerto/project_settings.json"` / `"Locked by org policy"`). The user can still see the effective value.
+When a higher layer sets a field, the matching control in Settings → Workspace is rendered **read-only with a small lock icon** and a tooltip naming the source (`"Locked by .concerto/workspace_settings.json"` / `"Locked by org policy"`). The user can still see the effective value.
 
-**Per-field, not per-file.** A project may have `scripts` checked in but `files_to_copy_rules` only locally — only `scripts` is locked. Each field is resolved independently.
+**Per-field, not per-file.** A workspace may have `scripts` checked in but `files_to_copy_rules` only locally — only `scripts` is locked. Each field is resolved independently.
 
 **Live reload.** The Core watches the checked-in files via `notify`-rs and re-resolves within ~500ms of save. Removing a field from a higher layer (deleting the line) immediately re-enables the corresponding control without a restart.
 
-**Personal-script escape hatch.** A field listed in the per-machine `~/.concerto/concerto.json[project_id].opt_out_of_checked_in_fields` is ignored even if checked in. Used rarely (e.g., a developer with a different local shell who can't run the team's setup script). The opt-out is surfaced in Settings → Project → Overrides with a "your machine only — not shared with team" banner. Expressed as positive opt-out rather than implicit fallthrough, so the divergence is always visible.
+**Personal-script escape hatch.** A field listed in the per-machine `~/.concerto/concerto.json[workspace_id].opt_out_of_checked_in_fields` is ignored even if checked in. Used rarely (e.g., a developer with a different local shell who can't run the team's setup script). The opt-out is surfaced in Settings → Workspace → Overrides with a "your machine only — not shared with team" banner. Expressed as positive opt-out rather than implicit fallthrough, so the divergence is always visible.
 
-**Audit.** Resolved-effective values are logged once per Core start: `ProjectSettingsResolved{project_id, field, value_source}` per field. Useful when "why does this work on my machine but not yours" investigations begin.
+**Audit.** Resolved-effective values are logged once per Core start: `WorkspaceSettingsResolved{workspace_id, field, value_source}` per field. Useful when "why does this work on my machine but not yours" investigations begin.
 
 **File schemas.**
 
-`project_settings.json` (checked-in; superset of the local-DB row):
+`workspace_settings.json` (checked-in; superset of the local-DB row):
 
 ```jsonc
 {
-  "$schema": "https://concerto.build/schemas/project_settings.json",
+  "$schema": "https://concerto.build/schemas/workspace_settings.json",
   "scripts": { "setup": "...", "setup_workarea": "...", "run": "...", "archive": "..." },
   "run_script_mode": "concurrent",
   "enterprise_data_privacy": false,
@@ -273,7 +276,7 @@ When a higher layer sets a field, the matching control in Settings → Project i
 
 Per-repo `.concerto/action_prefs.toml` — checked-in; see `04 §3.13`.
 
-The published JSON schema (`https://concerto.build/schemas/project_settings.json`) drives editor autocomplete in VS Code / JetBrains.
+The published JSON schema (`https://concerto.build/schemas/workspace_settings.json`) drives editor autocomplete in VS Code / JetBrains.
 
 ### 3.14 Exclude from Maestro — per workarea
 
@@ -287,7 +290,7 @@ The flag is stored in `workareas.settings_json.exclude_from_maestro`.
 
 Primary tables (defined in `09_Persistence.md §4.1, §4.2, §4.5`):
 
-- `workspaces`, `workspace_repos`
+- `repositories` (global registry — `02`), `workspaces`, `workspace_repos` (with `position` + `sparse_cones_json` snapshot)
 - `workareas`, `workarea_repos`
 - `sessions`, `chats`, `chat_messages`
 - `checkpoints` (per (workarea, repo))
@@ -315,11 +318,11 @@ pub struct WorkareaContext {
     pub sessions: Vec<SessionId>,
     pub last_diff_hash_per_repo: HashMap<RepositoryId, String>,
 
-    // Run-script state per repo (some projects run a dev server per repo)
+    // Run-script state per repo (some workspaces run a dev server per repo)
     pub run_script_procs: HashMap<RepositoryId, Pid>,
     pub allocated_run_ports: HashMap<RepositoryId, u16>,
 
-    /// Effective permission mode after inheritance from workspace + project.
+    /// Effective permission mode after inheritance from workarea → workspace → default.
     pub permission_mode: PermissionMode,
     pub bypass_destructive_guard: bool,
 }
@@ -358,9 +361,9 @@ pub struct WorkspaceManagerHandle { /* opaque */ }
 impl WorkspaceManagerHandle {
     // Workspaces (logical)
     pub async fn create_workspace(&self, req: CreateWorkspace) -> Result<WorkspaceId>;
-    pub async fn list_workspaces(&self, project: ProjectId) -> Result<Vec<WorkspaceSummary>>;
+    pub async fn list_workspaces(&self, include_archived: bool) -> Result<Vec<WorkspaceSummary>>;
     pub async fn get_workspace(&self, id: WorkspaceId) -> Result<Workspace>;
-    pub async fn update_workspace_repos(&self, id: WorkspaceId, repos: Vec<RepositoryId>) -> Result<()>;
+    pub async fn update_workspace_repos(&self, id: WorkspaceId, repos: Vec<WorkspaceRepoSpec>) -> Result<()>;
     pub async fn archive_workspace(&self, id: WorkspaceId) -> Result<()>;
     pub async fn restore_workspace(&self, id: WorkspaceId) -> Result<()>;
 
@@ -443,9 +446,10 @@ flowchart TB
 ### 6.1 Workspace creation in detail (multi-repo)
 
 ```
-1. Validate request: project exists; repos all belong to project; slug valid + unique
+1. Validate request: each repo exists in the global registry; slug valid + globally unique
 2. Persist workspaces row (no on-disk action yet)
-3. Persist workspace_repos rows for each chosen repo
+3. Persist workspace_repos rows for each declared repo (assign position;
+   snapshot sparse_cones from the repo's cone_defaults_json)
 4. Emit workspace.events: created
 ```
 
@@ -459,10 +463,10 @@ No worktrees yet. The user can review the workspace, edit the repo list, change 
 3. Initial branch_name = "concerto/<composer>" (placeholder; rename hook applies after first message)
 4. Create worktree_root directory: ~/concerto/workspaces/<slug>/<composer>/
 5. For each repo in workspace_repos:
-     a. Repo Mgr: ensure repo's .git is cloned (sparse + blobless per project settings)
+     a. Repo Mgr: ensure repo's .git is cloned (sparse + blobless per the repository's clone_strategy)
      b. Repo Mgr: git worktree add <worktree_root>/<repo.name> -b <branch_name>
-     c. Repo Mgr: apply sparse cones if any
-     d. Files-to-copy resolver: apply patterns into this repo's worktree
+     c. Repo Mgr: apply sparse cones (snapshot from workspace_repos.sparse_cones_json) if any
+     d. Files-to-copy resolver: apply the workspace's patterns into this repo's worktree
      e. Persist workarea_repos row
 6. Create .context/ skeleton
 7. Persist workareas row
@@ -668,7 +672,7 @@ Consumers:
 | # | Question | Decision | Where in doc |
 |---|---|---|---|
 | R-1 | Per-repo branch override | **V2.0.** Schema field `workarea_repos.branch_override` already exists; UI hidden in V1.0. Every repo in a workarea uses the same `branch_name`. | §3 (4.1 schema); UI gated |
-| R-2 | Sparse cones inheritance chain | **Three-layer:** `repositories.cone_defaults_json` → `workspace_repos.cone_defaults_json` (in `settings_json`) → `workarea_repos.sparse_cones_json`. Workspace defaults are optional. | §3.3, §4 |
+| R-2 | Sparse cones inheritance chain | **Three-layer, snapshot semantics:** `repositories.cone_defaults_json` → (snapshot at attach) `workspace_repos.sparse_cones_json` → (snapshot at workarea create) `workarea_repos.sparse_cones_json`. Editing repo defaults does not retroactively change existing workspaces. The `workspace_repos.sparse_cones_json` snapshot is written at workspace/workarea create time (shipped); editing or resetting a workspace's per-repo cone snapshot after creation is a planned follow-up UI, not yet wired. | §3.3, §4 |
 | R-3 | Workspace export/import | **V2.0.** Tarball + manifest format TBD. `concerto backup` is the V1.0 substitute for personal-machine migration. | (deferred) |
 | R-4 | Keep `.context/` after workarea archive | **Keep.** Disk is cheap; restore is lossless. Hard-delete only via V1.5+ explicit "delete" action. | §3.7 |
 | R-5 | "Branch already merged remotely" on workarea archive | **V1.0 nothing automatic; V1.5 prompt** to delete remote merged branches. | §3.7 |

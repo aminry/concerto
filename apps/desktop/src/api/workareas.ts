@@ -16,10 +16,11 @@
 // repo (306 §6.2). The workspace's declared repos therefore ARE the
 // workarea's repos. The per-repo diff RPC `GetWorkareaRepoDiff(workarea_id,
 // repository_id)` already accepts any of those repository ids. So the
-// honest, FROZEN-respecting repo source for a workarea is the project's
-// repos via `Repositories.ListByProject` — see `useWorkareaRepos`. This
-// replaces the V0.1 `repositories[0]` hack with the full list; it does not
-// invent a wire shape. (Recorded as drift in the 322 Handoff.)
+// honest, FROZEN-respecting repo source for a workarea is the global
+// repository registry via `Repositories.ListRepositories` — see
+// `useWorkareaRepos`. This replaces the V0.1 `repositories[0]` hack with
+// the full list; it does not invent a wire shape. (Recorded as drift in the
+// 322 Handoff.)
 
 import { callRpc } from "./client";
 import { setCones } from "./cones";

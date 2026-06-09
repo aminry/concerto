@@ -38,9 +38,8 @@ use concerto_core::workspace_manager::{
 use concerto_error::{Error, Result};
 use concerto_keychain::SecretValue;
 use concerto_persist::{
-    pull_requests, NewProject, NewPullRequest, NewRepository, NewWorkarea, NewWorkspace,
-    Persistence, PersistenceConfig, ProjectId, PullRequestId, RepositoryId, WorkareaId,
-    WorkspaceId,
+    pull_requests, NewPullRequest, NewRepository, NewWorkarea, NewWorkspace, Persistence,
+    PersistenceConfig, PullRequestId, RepositoryId, WorkareaId, WorkspaceId,
 };
 use concerto_vcs::provider::{
     MergeMethod, MergeReport as ProviderMergeReport, RevertReport as ProviderRevertReport,
@@ -143,7 +142,7 @@ struct Ctx {
     persist: Arc<Persistence>,
     manager: WorkareaManager,
     workarea_id: WorkareaId,
-    project_id: ProjectId,
+    workspace_id: WorkspaceId,
     repo: RepositoryId,
 }
 
@@ -158,29 +157,16 @@ async fn setup() -> Ctx {
         .expect("open"),
     );
 
-    let project_id = ProjectId("proj-1".to_string());
     let workspace_id = WorkspaceId("ws-1".to_string());
     let workarea_id = WorkareaId("wa-1".to_string());
     let repo = RepositoryId("repo-a".to_string());
 
     {
         let mut w = persist.writer().await;
-        concerto_persist::projects::insert(
-            &mut w,
-            NewProject {
-                id: project_id.clone(),
-                name: "Test".into(),
-                icon: None,
-                created_at: 1,
-            },
-        )
-        .await
-        .unwrap();
         concerto_persist::repositories::insert(
             &mut w,
             NewRepository {
                 id: repo.clone(),
-                project_id: project_id.0.clone(),
                 name: repo.0.clone(),
                 url: format!("https://github.com/acme/{}", repo.0),
                 local_path: format!("/tmp/{}", repo.0),
@@ -194,9 +180,9 @@ async fn setup() -> Ctx {
             &mut w,
             NewWorkspace {
                 id: workspace_id.clone(),
-                project_id: project_id.0.clone(),
                 name: "WS".into(),
                 slug: "ws".into(),
+                icon: None,
                 description: None,
                 permission_mode: None,
                 created_at: 1,
@@ -234,16 +220,16 @@ async fn setup() -> Ctx {
         persist,
         manager,
         workarea_id,
-        project_id,
+        workspace_id,
         repo,
     }
 }
 
-/// Stamp `projects.settings_json.issue_write_back`.
+/// Stamp `workspaces.settings_json.issue_write_back`.
 async fn set_opt_in(ctx: &Ctx, on: bool) {
     let payload = serde_json::json!({ "issue_write_back": on }).to_string();
     let mut w = ctx.persist.writer().await;
-    concerto_persist::projects::set_settings_json(&mut w, &ctx.project_id, &payload)
+    concerto_persist::workspaces::set_settings_json(&mut w, &ctx.workspace_id, &payload)
         .await
         .unwrap();
 }

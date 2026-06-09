@@ -266,9 +266,8 @@ There is no time-box. If the user puts a workarea in `yolo`, it stays there unti
 2. **Schedule-level** (05) — each scheduled task carries its own `permission_mode` independent of the workarea setting.
 3. **Session-level** — `sessions.permission_mode` set per session.
 4. **Workarea-level** — `workareas.permission_mode`. Inherits from workspace if NULL.
-5. **Workspace-level** — `workspaces.permission_mode`. Inherits from project if NULL.
-6. **Project-level** — `projects.settings_json.default_permission_mode`.
-7. **Global default** — `normal`.
+5. **Workspace-level** — `workspaces.permission_mode`. Inherits from the workspace default (`settings_json.default_permission_mode`) if NULL.
+6. **Global default** — `normal`.
 
 **Always-on guarantees regardless of mode:**
 
@@ -317,7 +316,7 @@ impl PermissionResolver {
 }
 ```
 
-The PermissionResolver is constructed per session from the effective inheritance chain (`session → workarea → workspace → project → managed`). If the user changes mode mid-session at any layer, the running session's resolver is updated atomically via a config event.
+The PermissionResolver is constructed per session from the effective inheritance chain (`session → workarea → workspace → managed`). If the user changes mode mid-session at any layer, the running session's resolver is updated atomically via a config event.
 
 ### 3.11 Concerto preamble: system prompt prepended to every session
 
@@ -411,9 +410,8 @@ ALTER TABLE sessions ADD COLUMN personality       TEXT;                         
 1. **Schedule-level** — `schedule_runs.deliberation_mode` / `.reasoning_level` / `.personality` (05).
 2. **Session-level** — explicit user choice.
 3. **Workarea-level** — `workareas.settings_json.default_deliberation_mode` / `.default_reasoning_level` / `.default_personality`.
-4. **Workspace-level** — same fields on `workspaces.settings_json`.
-5. **Project-level** — same fields on `projects.settings_json` (`03 §3.13` precedence).
-6. **Global default** — `normal` / `medium` / `default`.
+4. **Workspace-level** — same fields on `workspaces.settings_json` (`03 §3.13` precedence).
+5. **Global default** — `normal` / `medium` / `default`.
 
 **Capping via `managed.json`.** Same pattern as `max_permission_mode`: `managed.json` can cap `max_reasoning_level` (e.g., to `medium` for cost reasons), pin `allowed_personalities`, and force `default_deliberation_mode = plan` for new sessions.
 
@@ -435,7 +433,7 @@ ALTER TABLE sessions ADD COLUMN personality       TEXT;                         
 | `conflict_resolve` | Agent invoked to resolve a merge conflict (`03 §3.9` coordinated merge) | Added to the conflict-resolution turn |
 | `branch_rename` | One-shot agent call for branch-name suggestion (§2 V1.0) | Added to the rename prompt |
 | `commit_message` | User clicks "Commit" with agent-drafted message | Added to the commit-message prompt |
-| `digest_summary` | Maestro generates a workspace digest (`08 §3.6`) | Added to the digest LLM call's system prompt for this project's workareas |
+| `digest_summary` | Maestro generates a workspace digest (`08 §3.6`) | Added to the digest LLM call's system prompt for this workspace's workareas |
 
 **Where they live.** On the `repositories` row (so the prefs travel with the repo, not the user's personal store):
 
@@ -694,7 +692,7 @@ For each `sessions` row with `status IN ('running','awaiting','starting')` that 
 
 The reason cold resume is **not automatic**: a user may have closed their machine deliberately. Resuming an agent (which spends tokens, makes tool calls) without consent is a footgun. Users have repeatedly asked for this conservative behavior.
 
-A user setting under Repository Settings → Agents — "Auto-resume agents on Core start" — opts into automatic cold resume per project. Off by default.
+A user setting under Repository Settings → Agents — "Auto-resume agents on Core start" — opts into automatic cold resume per workspace. Off by default.
 
 ### 6.5 Multi-device approval coordination
 

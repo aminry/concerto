@@ -2,9 +2,10 @@
 //!
 //! Coverage:
 //!
-//! - Inheritance chain table-driven: project → workspace → workarea →
-//!   session — assert the resolver returns the right effective mode +
-//!   source at every level.
+//! - Inheritance chain table-driven: workspace settings default →
+//!   workspace → workarea → session — assert the resolver returns the
+//!   right effective mode + source at every level. There is no Project
+//!   layer after the Project→Workspace collapse.
 //! - Entry ceremony: wrong acknowledgement is rejected with
 //!   `FAILED_PRECONDITION`; the correct string is accepted.
 //! - `managed.json` cap: place `{"max_permission_mode": "auto"}` under
@@ -29,7 +30,7 @@ use concerto_persist::{Persistence, PersistenceConfig, SessionId};
 use concerto_proto::v1::{
     CreateWorkareaRequest, CreateWorkspaceRequest, PermissionMode as ProtoPermissionMode,
     SetWorkareaBypassDestructiveGuardRequest, UpdateWorkareaPermissionModeRequest,
-    UpdateWorkspaceSettingsRequest, WorkspaceSettings,
+    UpdateWorkspaceSettingsRequest, WorkspaceRepoSpec, WorkspaceSettings,
 };
 use concerto_test_harness::CoreUnderTest;
 use tempfile::TempDir;
@@ -88,21 +89,23 @@ async fn make_persistence() -> (TempDir, Arc<Persistence>) {
     (tmp, p)
 }
 
-/// Seed a single (project, workspace, workarea, session) chain with the
-/// supplied modes. `mode_*` strings are SQL form (`strict|normal|auto|
-/// yolo`), or `None` to leave the column NULL.
+/// Seed a single (workspace, workarea, session) chain with the supplied
+/// modes. `mode_*` strings are SQL form (`strict|normal|auto|yolo`), or
+/// `None` to leave the column NULL. `workspace_default_mode` is written
+/// into `workspaces.settings_json.default_permission_mode` (the terminal
+/// fallback after the workspace `permission_mode` column).
 async fn seed_chain(
     persistence: &Persistence,
-    project_default_mode: Option<&str>,
+    workspace_default_mode: Option<&str>,
     workspace_mode: Option<&str>,
     workarea_mode: Option<&str>,
     session_mode: &str,
 ) -> SessionId {
     use sqlx::Connection;
     let mut writer = persistence.writer().await;
-    // Project settings_json: build a tiny JSON with the
+    // Workspace settings_json: build a tiny JSON with the
     // default_permission_mode key when supplied.
-    let project_settings = match project_default_mode {
+    let workspace_settings = match workspace_default_mode {
         Some(m) => format!(r#"{{"default_permission_mode":"{m}"}}"#),
         None => "{}".to_string(),
     };
@@ -111,19 +114,13 @@ async fn seed_chain(
         .execute(&mut *tx)
         .await
         .expect("defer FKs");
-    sqlx::query("INSERT INTO projects (id, name, created_at, settings_json) VALUES (?, 'p', 0, ?)")
-        .bind("proj")
-        .bind(&project_settings)
-        .execute(&mut *tx)
-        .await
-        .expect("insert project");
     sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, permission_mode, created_at)
-         VALUES (?, ?, 'w', 'w', ?, 0)",
+        "INSERT INTO workspaces (id, name, slug, permission_mode, settings_json, created_at)
+         VALUES (?, 'w', 'w', ?, ?, 0)",
     )
     .bind("ws")
-    .bind("proj")
     .bind(workspace_mode)
+    .bind(&workspace_settings)
     .execute(&mut *tx)
     .await
     .expect("insert workspace");
@@ -212,23 +209,33 @@ async fn resolver_applies_managed_cap() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn resolver_reads_project_default_when_others_null() {
-    // For this test we walk via the agent-supervisor-style resolver
-    // (which permits NULL session.permission_mode by virtue of not
-    // requiring a session row). The public resolver still works against
-    // sessions, so we use a `normal` session — but project has
-    // `default_permission_mode = "auto"` and everything else NULL. The
-    // session's `normal` will win as the source, but the resolved mode
-    // matches the session row's value. Real "project chain" coverage
-    // lands in the ceremony / cap gRPC tests below where a fresh
-    // workarea is created and the resolver-for-new-session walks one
-    // level up.
+async fn resolver_reads_workspace_default_when_others_null() {
+    // The session row always carries a non-NULL mode (schema default), so
+    // the session value wins as the source here; the resolved mode still
+    // matches the session row. The real workspace-default terminal
+    // fallback (when session/workarea/workspace columns are all NULL) is
+    // asserted by the unit test
+    // `agent_supervisor::actor::tests::resolve_for_new_session_uses_workspace_settings_default_terminal_fallback`,
+    // which exercises the supervisor-style resolver that runs before any
+    // session row exists.
     let (tmp, p) = make_persistence().await;
     let sid = seed_chain(&p, Some("auto"), None, None, "normal").await;
     let r = resolve_effective_mode(&p, tmp.path(), &sid).await.unwrap();
     assert_eq!(r.mode, PermissionMode::Normal);
     assert_eq!(r.source, ModeSource::Session);
 }
+
+// NOTE: the `workspaces.settings_json.default_permission_mode` terminal
+// fallback (when session/workarea/workspace `permission_mode` columns are all
+// NULL → `ModeSource::Workspace`) is NOT reachable through
+// `resolve_effective_mode`: `sessions.permission_mode` is NOT NULL in the
+// schema, so a live session always supplies a value and the walk terminates at
+// the session. That fallback rung lives in the Agent Supervisor's
+// `resolve_for_new_session` (no session row yet); it is covered directly by the
+// unit test
+// `agent_supervisor::actor::tests::resolve_for_new_session_uses_workspace_settings_default_terminal_fallback`.
+// The key collapse invariant — there is no `ModeSource::Project` — is a
+// compile-time guarantee (the variant was removed).
 
 // ---------- gRPC ceremony + managed-cap tests --------------------------
 
@@ -239,7 +246,6 @@ async fn seed_via_grpc(core: &CoreUnderTest, slug: &str) -> (String, String) {
 
     let (bare_url, _bare, _work) = make_bare_with_commit().await;
 
-    let project_id = format!("proj-{slug}");
     let repo_id = format!("repo-{slug}");
     let repo_name = format!("name-{slug}");
     let local_path = core.data_dir.join("repos").join(&repo_id);
@@ -251,17 +257,11 @@ async fn seed_via_grpc(core: &CoreUnderTest, slug: &str) -> (String, String) {
         .connect_with(opts)
         .await
         .expect("open db");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'p', 0)")
-        .bind(&project_id)
-        .execute(&pool)
-        .await
-        .expect("insert project");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind(&repo_id)
-    .bind(&project_id)
     .bind(&repo_name)
     .bind(&bare_url)
     .bind(local_path.to_string_lossy().to_string())
@@ -286,11 +286,14 @@ async fn seed_via_grpc(core: &CoreUnderTest, slug: &str) -> (String, String) {
     let mut wsc = core.workspaces_client().await.expect("workspaces");
     let ws = wsc
         .create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.clone(),
             name: format!("ws-{slug}"),
-            repository_ids: vec![repo_id.clone()],
+            repos: vec![WorkspaceRepoSpec {
+                repository_id: repo_id.clone(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         })
         .await
         .expect("CreateWorkspace")

@@ -12,7 +12,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use concerto_proto::v1::projects_client::ProjectsClient;
 use concerto_proto::v1::repositories_client::RepositoriesClient;
 use concerto_proto::v1::runtime_client::RuntimeClient;
 use concerto_proto::v1::schedules_client::SchedulesClient;
@@ -22,13 +21,13 @@ use concerto_proto::v1::streams_client::StreamsClient;
 use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
-    AddRepoRequest, CreateProjectRequest, CreateSessionRequest, CreateWorkareaRequest,
-    CreateWorkspaceRequest, EstimateConeSizeRequest, EstimateRepoSizeRequest, GetDiffRequest,
-    ListProjectsRequest, ListRepositoriesRequest, ListSchedulesRequest, ListSessionsRequest,
-    ListSkillsRequest, ListTreeRequest, ListWorkareasRequest, ListWorkspacesRequest,
-    McpScopeRequest, PermissionMode, ResizeSessionRequest, SendMessageRequest,
-    SessionId as ProtoSessionId, SetConesRequest, SetRepoConeDefaultsRequest, StopSessionRequest,
-    SubscribeRequest, WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
+    AddRepoRequest, CreateSessionRequest, CreateWorkareaRequest, CreateWorkspaceRequest,
+    EstimateConeSizeRequest, EstimateRepoSizeRequest, GetDiffRequest, ListRepositoriesRequest,
+    ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListTreeRequest,
+    ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest, PermissionMode,
+    ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest,
+    SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest,
+    WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId, WorkspaceRepoSpec,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -50,16 +49,10 @@ fn normalize_permission_mode(v: i32) -> Option<i32> {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct ListWorkspacesPayload {
-    project_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateProjectPayload {
-    name: String,
     #[serde(default)]
-    icon: Option<String>,
+    include_archived: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,10 +100,19 @@ struct ResizeSessionPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct WorkspaceRepoSpecPayload {
+    repository_id: String,
+    #[serde(default)]
+    sparse_cones: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CreateWorkspacePayload {
     name: String,
-    project_id: String,
-    repository_ids: Vec<String>,
+    #[serde(default)]
+    repos: Vec<WorkspaceRepoSpecPayload>,
+    #[serde(default)]
+    icon: Option<String>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
@@ -139,8 +141,8 @@ struct GetWorkareaRepoDiffPayload {
 
 #[derive(Debug, Deserialize)]
 struct AddRepositoryPayload {
-    project_id: String,
     name: String,
+    #[serde(default)]
     url: String,
     #[serde(default)]
     default_branch: String,
@@ -151,11 +153,10 @@ struct AddRepositoryPayload {
     clone_strategy: String,
     #[serde(default)]
     with_sparse: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListRepositoriesPayload {
-    project_id: String,
+    // When set, the backend ADOPTS an existing on-disk git repo in place
+    // (non-destructive) instead of cloning `url`. Exactly one of url/local_path.
+    #[serde(default)]
+    local_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,7 +195,7 @@ struct SetRepoConeDefaultsPayload {
     repository_id: String,
     // `[]` clears the repo default.
     #[serde(default)]
-    cone_paths: Vec<String>,
+    cone_defaults: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,7 +208,7 @@ struct ListSkillsPayload {
     #[serde(default)]
     scope: Option<String>,
     #[serde(default)]
-    project_id: Option<String>,
+    workspace_id: Option<String>,
     #[serde(default)]
     enabled_only: Option<bool>,
 }
@@ -256,26 +257,6 @@ where
                 })
             })
         }
-        "Projects.ListProjects" => {
-            let mut client = ProjectsClient::new(channel);
-            client
-                .list_projects(ListProjectsRequest {})
-                .await
-                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
-        }
-        "Projects.CreateProject" => {
-            let req: CreateProjectPayload = serde_json::from_value(payload).map_err(|e| {
-                CoreClientError::Rpc(format!("invalid payload for CreateProject: {e}"))
-            })?;
-            let mut client = ProjectsClient::new(channel);
-            client
-                .create_project(CreateProjectRequest {
-                    name: req.name,
-                    icon: req.icon,
-                })
-                .await
-                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
-        }
         "Workspaces.ListWorkspaces" => {
             let req: ListWorkspacesPayload = serde_json::from_value(payload).map_err(|e| {
                 CoreClientError::Rpc(format!("invalid payload for ListWorkspaces: {e}"))
@@ -283,7 +264,7 @@ where
             let mut client = WorkspacesClient::new(channel);
             client
                 .list_workspaces(ListWorkspacesRequest {
-                    project_id: req.project_id,
+                    include_archived: req.include_archived,
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
@@ -354,11 +335,18 @@ where
             let mut client = WorkspacesClient::new(channel);
             client
                 .create_workspace(CreateWorkspaceRequest {
-                    project_id: req.project_id,
                     name: req.name,
-                    repository_ids: req.repository_ids,
+                    repos: req
+                        .repos
+                        .into_iter()
+                        .map(|r| WorkspaceRepoSpec {
+                            repository_id: r.repository_id,
+                            sparse_cones: r.sparse_cones,
+                        })
+                        .collect(),
                     permission_mode: req.permission_mode.and_then(normalize_permission_mode),
                     description: req.description,
+                    icon: req.icon,
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
@@ -370,7 +358,6 @@ where
             let mut client = RepositoriesClient::new(channel);
             client
                 .add_repository(AddRepoRequest {
-                    project_id: req.project_id,
                     name: req.name,
                     url: req.url,
                     default_branch: req.default_branch,
@@ -380,6 +367,9 @@ where
                     // them and the serde defaults preserve V0.1 behavior.
                     clone_strategy: req.clone_strategy,
                     with_sparse: req.with_sparse,
+                    // When set, ADOPT an existing on-disk git repo in place
+                    // (non-destructive); else `url` clones.
+                    local_path: req.local_path,
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
@@ -441,20 +431,15 @@ where
             client
                 .set_repo_cone_defaults(SetRepoConeDefaultsRequest {
                     repository_id: req.repository_id,
-                    cone_paths: req.cone_paths,
+                    cone_defaults: req.cone_defaults,
                 })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }
-        "Repositories.ListByProject" => {
-            let req: ListRepositoriesPayload = serde_json::from_value(payload).map_err(|e| {
-                CoreClientError::Rpc(format!("invalid payload for ListByProject: {e}"))
-            })?;
+        "Repositories.ListRepositories" => {
             let mut client = RepositoriesClient::new(channel);
             client
-                .list_by_project(ListRepositoriesRequest {
-                    project_id: req.project_id,
-                })
+                .list_repositories(ListRepositoriesRequest {})
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }
@@ -565,7 +550,7 @@ where
             client
                 .list_skills(ListSkillsRequest {
                     scope: req.scope,
-                    project_id: req.project_id,
+                    workspace_id: req.workspace_id,
                     enabled_only: req.enabled_only,
                 })
                 .await

@@ -107,7 +107,7 @@ pub async fn adopt_orphans(handle: &AgentSupervisorHandle) -> Result<usize> {
     // ones the hot pass never visited. For each: read `final-info.json`
     // if present (host wrote it before dying), then either mark
     // `finished`/`crashed` per the exit code or mark `crashed`
-    // unconditionally. If the project setting `auto_resume_agents` is
+    // unconditionally. If the workspace setting `auto_resume_agents` is
     // true AND the row has an `external_session_id`, fire cold resume.
     let cold = match find_cold_candidates(handle).await {
         Ok(v) => v,
@@ -167,7 +167,7 @@ async fn find_cold_candidates(handle: &AgentSupervisorHandle) -> Result<Vec<Sess
 /// present, then either marks the row finished/crashed per the
 /// recorded exit code (host died after writing the file) or marks it
 /// crashed unconditionally (host vanished without writing — most
-/// likely reboot). Optionally auto-resumes per the project setting.
+/// likely reboot). Optionally auto-resumes per the workspace setting.
 ///
 /// Returns `Ok(true)` iff cold resume was attempted AND succeeded;
 /// `Ok(false)` for "left in terminal state per final-info" or

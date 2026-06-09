@@ -43,8 +43,8 @@ import { renderWithClient } from "../test-utils";
 import { useUiStore } from "../../state/useUiStore";
 
 const repos = [
-  { id: "repo-a", project_id: "p1", name: "api", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
-  { id: "repo-b", project_id: "p1", name: "web", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
+  { id: "repo-a", name: "api", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
+  { id: "repo-b", name: "web", url: "", local_path: "", clone_strategy: "full", default_branch: "main" },
 ];
 
 const workarea = {
@@ -62,7 +62,7 @@ function mockInvoke(): void {
     switch (args.method) {
       case "Workareas.GetWorkarea":
         return Promise.resolve(workarea);
-      case "Repositories.ListByProject":
+      case "Repositories.ListRepositories":
         return Promise.resolve({ repositories: repos });
       case "Workareas.GetWorkareaRepoDiff":
         return Promise.resolve({ files: [] });
@@ -82,7 +82,6 @@ beforeEach(() => {
   mockInvoke();
   useUiStore.setState({
     selectedWorkareaId: "wa-1",
-    selectedProjectId: "p1",
     selectedRepoId: null,
   });
 });

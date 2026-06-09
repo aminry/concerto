@@ -10,7 +10,6 @@
 //! misbehaving Core surfaces in the smoke gate quickly. The streaming
 //! `stream-session-io` subcommand takes its timeout from the caller.
 
-pub mod add_project;
 pub mod add_repo;
 pub mod caps;
 pub mod clone;

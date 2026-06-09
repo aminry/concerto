@@ -1,14 +1,14 @@
 # shellcheck shell=bash
-# Capability: project-repo-clone.
+# Capability: repo-clone.
 #
-# Creates a seeded bare git repo, then a project, a repo pointing at it, and
-# clones it through the Repo Manager.
+# Creates a seeded bare git repo, then a repo in the global registry pointing
+# at it, and clones it through the Repo Manager. Repositories are a global
+# registry after the Project→Workspace collapse, so there is no project step.
 #
 # Requires (from core-boot):
 #   CONCERTO_HOME, SMOKE_CLIENT, SOCKET.
 # Exports (consumed by later checks):
 #   BARE       path to the seeded bare repo.
-#   PROJECT_ID the created project id.
 #   REPO_ID    the created repo id.
 check_project_repo_clone() {
     echo "Smoke gate v3: creating bare test repo..."
@@ -26,9 +26,8 @@ check_project_repo_clone() {
     git -C "$TMP" -c user.email=smoke@test -c user.name=Smoke commit -m "seed" --quiet
     git -C "$TMP" push --quiet origin main
 
-    echo "Smoke gate v3: creating project / repo and cloning..."
-    PROJECT_ID=$("${SMOKE_CLIENT[@]}" add-project --name "smoke")
-    REPO_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" add-repo --project-id "$PROJECT_ID" --url "file://$BARE")
+    echo "Smoke gate v3: registering repo and cloning..."
+    REPO_ID=$("${SMOKE_CLIENT[@]}" --socket "$SOCKET" add-repo --url "file://$BARE")
     if ! "${SMOKE_CLIENT[@]}" --socket "$SOCKET" clone --repo-id "$REPO_ID"; then
         echo "FAIL project-repo-clone"
         fail "clone"

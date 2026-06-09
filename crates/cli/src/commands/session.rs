@@ -3,19 +3,17 @@
 //! The frozen `Sessions.ListSessions` RPC takes a `workarea_id`. With
 //! `--workarea` it lists that workarea's sessions directly. Without it, we
 //! walk the read-only resource tree
-//! (`Projects.ListProjects` → `Workspaces.ListWorkspaces` →
-//! `Workareas.ListWorkareas` → `Sessions.ListSessions`) and union the result,
-//! giving a useful global `session ls` without a new RPC.
+//! (`Workspaces.ListWorkspaces` → `Workareas.ListWorkareas` →
+//! `Sessions.ListSessions`) and union the result, giving a useful global
+//! `session ls` without a new RPC.
 
 use std::path::Path;
 
-use concerto_proto::v1::projects_client::ProjectsClient;
 use concerto_proto::v1::sessions_client::SessionsClient;
 use concerto_proto::v1::workareas_client::WorkareasClient;
 use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
-    ListProjectsRequest, ListSessionsRequest, ListWorkareasRequest, ListWorkspacesRequest,
-    PermissionMode,
+    ListSessionsRequest, ListWorkareasRequest, ListWorkspacesRequest, PermissionMode,
 };
 use serde::Serialize;
 use tonic::transport::Channel;
@@ -77,25 +75,17 @@ pub async fn run(
     render(&rows, format)
 }
 
-/// Walk projects → workspaces → workareas to enumerate every workarea id.
+/// Walk workspaces → workareas to enumerate every workarea id.
 async fn discover_all_workareas(channel: &Channel) -> Result<Vec<String>, CommandError> {
-    let mut projects = ProjectsClient::new(channel.clone());
-    let project_resp = call(
-        "Projects.ListProjects",
-        projects.list_projects(ListProjectsRequest {}),
+    let mut workspaces = WorkspacesClient::new(channel.clone());
+    let ws_resp = call(
+        "Workspaces.ListWorkspaces",
+        workspaces.list_workspaces(ListWorkspacesRequest {
+            include_archived: true,
+        }),
     )
     .await?;
-
-    let mut workspaces = WorkspacesClient::new(channel.clone());
-    let mut workspace_ids = Vec::new();
-    for p in project_resp.projects {
-        let ws_resp = call(
-            "Workspaces.ListWorkspaces",
-            workspaces.list_workspaces(ListWorkspacesRequest { project_id: p.id }),
-        )
-        .await?;
-        workspace_ids.extend(ws_resp.workspaces.into_iter().map(|w| w.id));
-    }
+    let workspace_ids: Vec<String> = ws_resp.workspaces.into_iter().map(|w| w.id).collect();
 
     let mut workareas = WorkareasClient::new(channel.clone());
     let mut workarea_ids = Vec::new();

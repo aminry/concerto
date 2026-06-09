@@ -67,37 +67,12 @@ async fn make_bare_with_commit() -> (String, TempDir, TempDir) {
 }
 
 /// Insert a `projects` row directly into the Core's SQLite file.
-///
-/// The `Projects` gRPC service doesn't exist yet (V0.1 ships
-/// `Repositories` first per Task 18); the FK `repositories.project_id`
-/// requires a matching row, so we plant one with a writable SqlitePool
-/// dialed at the Core's DB file.
-async fn insert_project(db_path: &Path, project_id: &str) {
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-    let opts = SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(false);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(opts)
-        .await
-        .expect("open db write pool");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-        .bind(project_id)
-        .execute(&pool)
-        .await
-        .expect("insert project");
-    pool.close().await;
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn add_repository_and_clone_file_url() {
     let core = CoreUnderTest::spawn().await.expect("spawn core");
 
-    // Seed a `projects` row directly — the Projects service isn't
-    // shipped yet (V0.1 ordering, Task 18 < Task 19).
-    let project_id = "test-project-uuid".to_string();
-    insert_project(&core.db_path, &project_id).await;
+    // Repositories are a global registry — no project seeding needed.
 
     // Build a fixture bare repo + one commit.
     let (url, _bare, _work) = make_bare_with_commit().await;
@@ -106,7 +81,6 @@ async fn add_repository_and_clone_file_url() {
     let mut client = core.repositories_client().await.expect("client");
     let repo = client
         .add_repository(AddRepoRequest {
-            project_id: project_id.clone(),
             name: "fixture".to_string(),
             url: url.clone(),
             default_branch: "main".to_string(),
@@ -191,13 +165,11 @@ async fn add_repository_and_clone_file_url() {
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_clones_of_same_repo_serialize() {
     let core = CoreUnderTest::spawn().await.expect("spawn core");
-    insert_project(&core.db_path, "p2").await;
     let (url, _bare, _work) = make_bare_with_commit().await;
 
     let mut client = core.repositories_client().await.expect("client");
     let repo = client
         .add_repository(AddRepoRequest {
-            project_id: "p2".to_string(),
             name: "fixture2".to_string(),
             url,
             default_branch: "main".to_string(),

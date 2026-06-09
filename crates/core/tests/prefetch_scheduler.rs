@@ -86,7 +86,7 @@ async fn make_bare_with_commit() -> (String, TempDir, TempDir) {
     (format!("file://{}", bare.path().display()), bare, work)
 }
 
-async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, TempDir) {
+async fn make_repo_manager() -> (Arc<Persistence>, RepoManager, TempDir) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("concerto.db");
     let persistence = Persistence::open(PersistenceConfig {
@@ -96,25 +96,16 @@ async fn make_repo_manager(project_id: &str) -> (Arc<Persistence>, RepoManager, 
     .await
     .expect("open persistence");
     let persistence = Arc::new(persistence);
-    {
-        let mut writer = persistence.writer().await;
-        sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-            .bind(project_id)
-            .execute(&mut *writer)
-            .await
-            .expect("insert project");
-    }
     let repos_root = tmp.path().join("repos");
     let manager = RepoManager::new(Arc::clone(&persistence), repos_root);
     (persistence, manager, tmp)
 }
 
 /// Add + blobless-clone a fixture repo; returns its id + local path. The
-/// `name` must be unique within `project_id` (a `(project_id, name)` UNIQUE
-/// constraint), so callers adding several repos pass distinct names.
+/// `name` must be globally unique (a `(name)` UNIQUE constraint on the
+/// global registry), so callers adding several repos pass distinct names.
 async fn add_blobless_clone_named(
     manager: &RepoManager,
-    project_id: &str,
     name: &str,
 ) -> (concerto_persist::RepositoryId, std::path::PathBuf) {
     let (url, _bare, _work) = make_bare_with_commit().await;
@@ -123,14 +114,7 @@ async fn add_blobless_clone_named(
     std::mem::forget(_bare);
     std::mem::forget(_work);
     let repo = manager
-        .add_repository(
-            project_id,
-            name,
-            &url,
-            "main",
-            CloneStrategy::Blobless,
-            false,
-        )
+        .add_repository(name, &url, "main", CloneStrategy::Blobless, false)
         .await
         .expect("add_repository");
     manager
@@ -144,9 +128,8 @@ async fn add_blobless_clone_named(
 /// Convenience: a single-repo blobless clone with the default name.
 async fn add_blobless_clone(
     manager: &RepoManager,
-    project_id: &str,
 ) -> (concerto_persist::RepositoryId, std::path::PathBuf) {
-    add_blobless_clone_named(manager, project_id, "fixture").await
+    add_blobless_clone_named(manager, "fixture").await
 }
 
 // --- signal builders -------------------------------------------------------
@@ -207,8 +190,8 @@ fn below_threshold_skips() {
 /// 301's `size_bytes` written at clone time.
 #[tokio::test(flavor = "multi_thread")]
 async fn prewarm_records_cursor_and_preserves_size() {
-    let (_p, manager, _tmp) = make_repo_manager("p-prewarm").await;
-    let (id, path) = add_blobless_clone(&manager, "p-prewarm").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
+    let (id, path) = add_blobless_clone(&manager).await;
     let head = concerto_gix_wrap::rev_parse_head(&path)
         .await
         .expect("head");
@@ -246,8 +229,8 @@ async fn prewarm_records_cursor_and_preserves_size() {
 /// Cancellation stops a prewarm promptly and does NOT advance the cursor.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancel_stops_prewarm_and_leaves_cursor_unset() {
-    let (_p, manager, _tmp) = make_repo_manager("p-cancel").await;
-    let (id, path) = add_blobless_clone(&manager, "p-cancel").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
+    let (id, path) = add_blobless_clone(&manager).await;
     let head = concerto_gix_wrap::rev_parse_head(&path)
         .await
         .expect("head");
@@ -288,12 +271,11 @@ async fn cancel_stops_prewarm_and_leaves_cursor_unset() {
 async fn global_concurrency_constant_is_two_and_jobs_drain() {
     assert_eq!(GLOBAL_PREWARM_CONCURRENCY, 2);
 
-    let (_p, manager, _tmp) = make_repo_manager("p-conc").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
     let mut handles: Vec<PrewarmHandle> = Vec::new();
     let mut heads = Vec::new();
     for i in 0..3 {
-        let (id, path) =
-            add_blobless_clone_named(&manager, "p-conc", &format!("fixture-{i}")).await;
+        let (id, path) = add_blobless_clone_named(&manager, &format!("fixture-{i}")).await;
         let head = concerto_gix_wrap::rev_parse_head(&path)
             .await
             .expect("head");
@@ -364,10 +346,10 @@ async fn bandwidth_limiter_is_consulted() {
 /// returns a handle (default ON). A non-blobless repo returns None.
 #[tokio::test(flavor = "multi_thread")]
 async fn worktree_create_trigger_prewarms_blobless_only() {
-    let (_p, manager, _tmp) = make_repo_manager("p-eager").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
 
     // Blobless → a handle is returned.
-    let (blobless_id, _path) = add_blobless_clone(&manager, "p-eager").await;
+    let (blobless_id, _path) = add_blobless_clone(&manager).await;
     let handle = manager
         .prewarm_on_worktree_create(&blobless_id, &[])
         .await
@@ -379,14 +361,7 @@ async fn worktree_create_trigger_prewarms_blobless_only() {
     std::mem::forget(_bare);
     std::mem::forget(_work);
     let full = manager
-        .add_repository(
-            "p-eager",
-            "full-fixture",
-            &url,
-            "main",
-            CloneStrategy::Full,
-            false,
-        )
+        .add_repository("full-fixture", &url, "main", CloneStrategy::Full, false)
         .await
         .expect("add full");
     manager
@@ -427,8 +402,8 @@ async fn scheduler_flip_cancels_in_flight() {
 
     // Simulate an enqueued in-flight job and the scheduler's flip-to-active
     // cancellation: a handle whose token is fired when the signal flips.
-    let (_p, manager, _tmp) = make_repo_manager("p-flip").await;
-    let (id, path) = add_blobless_clone(&manager, "p-flip").await;
+    let (_p, manager, _tmp) = make_repo_manager().await;
+    let (id, path) = add_blobless_clone(&manager).await;
     let head = concerto_gix_wrap::rev_parse_head(&path)
         .await
         .expect("head");

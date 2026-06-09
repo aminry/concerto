@@ -83,8 +83,6 @@ struct ConnectBlob {
     core_noise_pub: String,
     workarea_id: String,
     #[allow(dead_code)]
-    project_id: String,
-    #[allow(dead_code)]
     repo_id: String,
 }
 

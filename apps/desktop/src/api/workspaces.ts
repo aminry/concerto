@@ -4,11 +4,15 @@ import { callRpc } from "./client";
 
 // Mirrors `concerto.v1.Workspace`. Per the proto serde shim,
 // timestamps land as `[seconds, nanos]` tuples or null.
+//
+// The Project layer was collapsed away: a Workspace is now a top-level
+// node over the global Repository registry (no `project_id`), and carries
+// an optional `icon`.
 export type Workspace = {
   id: string;
-  project_id: string;
   name: string;
   slug: string;
+  icon?: string | null;
   description?: string | null;
   // The proto's `PermissionMode` enum serializes as its integer
   // ordinal under prost-serde. UI code that needs to display it
@@ -22,12 +26,14 @@ export type ListWorkspacesResponse = {
   workspaces: Workspace[];
 };
 
-export async function listWorkspaces(
-  projectId: string,
-): Promise<ListWorkspacesResponse> {
-  return callRpc<{ project_id: string }, ListWorkspacesResponse>(
+/// `Workspaces.ListWorkspaces` — lists ALL workspaces (global registry).
+/// `includeArchived` toggles archived rows; defaults to false.
+export async function listWorkspaces(opts?: {
+  includeArchived?: boolean;
+}): Promise<ListWorkspacesResponse> {
+  return callRpc<{ include_archived: boolean }, ListWorkspacesResponse>(
     "Workspaces.ListWorkspaces",
-    { project_id: projectId },
+    { include_archived: opts?.includeArchived ?? false },
   );
 }
 
@@ -35,27 +41,37 @@ export async function getWorkspace(id: string): Promise<Workspace> {
   return callRpc<{ id: string }, Workspace>("Workspaces.GetWorkspace", { id });
 }
 
+/// One repository's checkout config within a CreateWorkspace call. `sparseCones`
+/// empty ⇒ full working tree; non-empty ⇒ a sparse cone of those directories.
+export type WorkspaceRepoSpec = {
+  repositoryId: string;
+  sparseCones: string[];
+};
+
 export async function createWorkspace(input: {
-  projectId: string;
   name: string;
-  repositoryIds: string[];
+  icon?: string;
   description?: string;
   permissionMode?: number;
+  repos: WorkspaceRepoSpec[];
 }): Promise<Workspace> {
   return callRpc<
     {
-      project_id: string;
       name: string;
-      repository_ids: string[];
+      icon?: string;
       description?: string;
       permission_mode?: number;
+      repos: { repository_id: string; sparse_cones: string[] }[];
     },
     Workspace
   >("Workspaces.CreateWorkspace", {
-    project_id: input.projectId,
     name: input.name,
-    repository_ids: input.repositoryIds,
+    icon: input.icon,
     description: input.description,
     permission_mode: input.permissionMode,
+    repos: input.repos.map((r) => ({
+      repository_id: r.repositoryId,
+      sparse_cones: r.sparseCones,
+    })),
   });
 }

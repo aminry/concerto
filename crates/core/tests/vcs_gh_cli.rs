@@ -22,8 +22,8 @@ use std::sync::Arc;
 use concerto_core::vcs::{gh_cli, VcsHandle};
 use concerto_error::Error;
 use concerto_persist::{
-    NewProject, NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence,
-    PersistenceConfig, ProjectId, RepositoryId, WorkareaId, WorkspaceId,
+    NewRepository, NewWorkarea, NewWorkareaRepo, NewWorkspace, Persistence, PersistenceConfig,
+    RepositoryId, WorkareaId, WorkspaceId,
 };
 use tempfile::TempDir;
 
@@ -52,27 +52,14 @@ async fn make_persistence(tmp: &TempDir) -> Arc<Persistence> {
 /// Seed the foreign keys needed for a `pull_requests` row: project,
 /// repository, workspace, workspace_repos, workarea, workarea_repos.
 async fn seed_workarea(persist: &Persistence) -> (WorkareaId, RepositoryId) {
-    let project_id = ProjectId(format!("proj-{}", uuid::Uuid::now_v7()));
     let repo_id = RepositoryId(format!("repo-{}", uuid::Uuid::now_v7()));
     let workspace_id = WorkspaceId(format!("ws-{}", uuid::Uuid::now_v7()));
     let workarea_id = WorkareaId(format!("wa-{}", uuid::Uuid::now_v7()));
     let mut writer = persist.writer().await;
-    concerto_persist::projects::insert(
-        &mut writer,
-        NewProject {
-            id: project_id.clone(),
-            name: "vcs-test".into(),
-            icon: None,
-            created_at: 1,
-        },
-    )
-    .await
-    .unwrap();
     concerto_persist::repositories::insert(
         &mut writer,
         NewRepository {
             id: repo_id.clone(),
-            project_id: project_id.0.clone(),
             name: "repo".into(),
             url: "https://github.com/owner/repo".into(),
             local_path: "/tmp/repo".into(),
@@ -86,9 +73,9 @@ async fn seed_workarea(persist: &Persistence) -> (WorkareaId, RepositoryId) {
         &mut writer,
         NewWorkspace {
             id: workspace_id.clone(),
-            project_id: project_id.0.clone(),
             name: "vcs-ws".into(),
             slug: "vcs-ws".into(),
+            icon: None,
             description: None,
             permission_mode: None,
             created_at: 1,
@@ -99,7 +86,9 @@ async fn seed_workarea(persist: &Persistence) -> (WorkareaId, RepositoryId) {
     concerto_persist::workspaces::update_repos(
         &mut writer,
         &workspace_id,
-        std::slice::from_ref(&repo_id),
+        &[concerto_persist::WorkspaceRepoCones::empty_cones(
+            repo_id.clone(),
+        )],
     )
     .await
     .unwrap();

@@ -8,7 +8,7 @@
 
 Persistence is the single source of durable state for the Core. Every other sub-system reads and writes through it. It owns:
 
-- **SQLite database** (`~/.concerto/concerto.db`) — projects, repositories, workspaces, workspace_repos, workareas, workarea_repos, sessions, chat messages, checkpoints, todos, schedules, skills, suggestion-learning counters, devices, audit metadata, settings.
+- **SQLite database** (`~/.concerto/concerto.db`) — repositories (a global registry), workspaces, workspace_repos, workareas, workarea_repos, sessions, chat messages, checkpoints, todos, schedules, skills, suggestion-learning counters, devices, audit metadata, settings.
 - **Schema migrations** — forward-only, ordered, idempotent.
 - **Connection pooling** — one writer, many readers, WAL.
 - **Secret store wrapper** — typed access to the OS keychain via `keyring-rs`.
@@ -34,7 +34,7 @@ It does **not** own: any business logic; what to store, when to migrate; encrypt
 
 ### 3.1 Schema philosophy: normalize relations, JSON-blob the agent's own stuff
 
-**Choice:** Tables for entities Concerto reasons about (projects, workspaces, sessions, devices, schedules, todos, PRs). Schema columns for the fields we filter/sort/join on. JSON columns (SQLite's typed `JSON1` extension) for opaque agent-state and configurations we never query into.
+**Choice:** Tables for entities Concerto reasons about (repositories, workspaces, sessions, devices, schedules, todos, PRs). Schema columns for the fields we filter/sort/join on. JSON columns (SQLite's typed `JSON1` extension) for opaque agent-state and configurations we never query into.
 
 Examples:
 - `chat_messages.content` — JSON blob (agent text + tool calls + structured metadata). Never SQL-queried internally.
@@ -69,7 +69,7 @@ WAL is mandatory; `PRAGMA journal_mode = WAL`, `PRAGMA synchronous = NORMAL`, `P
 mod workspaces {
     pub async fn insert(tx: &mut Writer, w: NewWorkspace) -> Result<WorkspaceId>;
     pub async fn get(r: &Reader, id: WorkspaceId) -> Result<Option<Workspace>>;
-    pub async fn list_by_project(r: &Reader, p: ProjectId) -> Result<Vec<Workspace>>;
+    pub async fn list_all(r: &Reader, include_archived: bool) -> Result<Vec<Workspace>>;
     pub async fn archive(tx: &mut Writer, id: WorkspaceId) -> Result<()>;
     pub async fn update_status(tx: &mut Writer, id: WorkspaceId, s: Status) -> Result<()>;
 }
@@ -130,7 +130,7 @@ For SOC2 / enterprise-buyer conversations, this table is the authoritative answe
 | User's name / email | **Never stored.** No accounts. | n/a | n/a | n/a |
 | Device name (user-supplied at pairing, e.g. "Amin's iPhone") | `devices.name` (SQLite) | Yes (filesystem ACL) | No | No |
 | Device public-key fingerprint | `devices.id` (SQLite); `identity.pub` on disk | Yes | No (relay sees Iroh endpoint IDs, not device fingerprints) | No |
-| Workspace / project / repo names | SQLite | Yes | No (encrypted payload) | No |
+| Workspace / repo names | SQLite | Yes | No (encrypted payload) | No |
 | Chat messages, prompts, agent output | `chat_messages.content_json` (SQLite, JSON blob) | Yes | No | No (never in push payload per `14 §3.2`) |
 | File paths, code content | Worktrees on disk | Yes | No | No |
 | Provider API tokens (Anthropic, OpenAI, Gemini) | OS keychain | Yes (with OS auth prompt where applicable) | No | No |
@@ -160,33 +160,64 @@ Keychain entries never appear in SQLite. SQLite stores references like `provider
 
 The full SQLite schema. Annotated with which sub-system reads/writes each table.
 
-### 4.1 Core entities — the 3-level hierarchy
+### 4.1 Core entities — the 3-level hierarchy over a global repo registry
 
-Concerto organizes work in three nested levels (see `03_Workspace_Session_Manager.md` for the model):
+Concerto organizes work in three nested levels (see `03_Workspace_Session_Manager.md` for the model) over a **global Repository registry**:
 
 ```
-Project
-  └── Workspace           (logical workstream; 1..N repos)
-        └── Workarea      (a worktree + branch attempt; on-disk)
-              └── Session (an agent run on the workarea; one chat)
+Repository registry      (global; a cloned .git shared across all workspaces)
+  ▲ selected by
+Workspace                (logical workstream; declares 1..N repos directly)
+  └── Workarea           (a worktree + branch attempt; on-disk)
+        └── Session      (an agent run on the workarea; one chat)
 ```
+
+After the Project→Workspace collapse (2026-06-08), there is **no `projects` table**. Repositories and workspaces are both top-level. Everything the former Project owned — shared settings/scripts, permission/deliberation defaults, the icon — moved onto the **Workspace** (`workspaces.settings_json` + `workspaces.icon`). Repo ownership became a global registry that workspaces select from via `workspace_repos`.
 
 ```sql
--- Projects (top-level grouping; may include multiple repositories)
-CREATE TABLE projects (
-    id              TEXT PRIMARY KEY,                  -- UUIDv7
-    name            TEXT NOT NULL,
-    icon            TEXT,
-    created_at      INTEGER NOT NULL,                  -- unix epoch ms
-    archived_at     INTEGER,
-    settings_json   TEXT NOT NULL DEFAULT '{}'         -- see schema below
+-- Repositories: a GLOBAL registry. A repo's clone lives at ~/concerto/repos/<id>/.git
+-- and is shared (one .git, many worktrees) across every workspace/workarea that
+-- includes it. Not scoped to any project. `clone_strategy` is a per-repository
+-- property; `cone_defaults_json` is the repo's editable default sparse cone, the
+-- least-specific layer of the cone-inheritance chain (02 §3.2).
+CREATE TABLE repositories (
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,                    -- short name used in folder paths (e.g. "marketplace-api")
+    url                 TEXT NOT NULL,                    -- e.g. git@github.com:coupang/marketplace.git
+    local_path          TEXT NOT NULL,                    -- ~/concerto/repos/<id>/
+    clone_strategy      TEXT NOT NULL,                    -- full | blobless | treeless (per-repository)
+    default_branch      TEXT NOT NULL,
+    cone_defaults_json  TEXT NOT NULL DEFAULT '[]',       -- editable repo default cone; seeds workspace_repos at attach
+    fs_monitor_pid      INTEGER,
+    last_fetch_at       INTEGER,
+    UNIQUE(url),                                          -- global uniqueness
+    UNIQUE(name)                                          -- global uniqueness
 );
--- settings_json schema for projects:
+
+-- Workspaces (LOGICAL workstream — no own worktree). Top-level entity after the
+-- Project→Workspace collapse. Declares 1..N repos via workspace_repos.
+-- settings_json absorbs the former project settings (scripts, files_to_copy_rules,
+-- default_permission_mode, deliberation defaults, writable_paths_outside_worktree,
+-- enterprise_data_privacy). `slug` is GLOBALLY unique.
+CREATE TABLE workspaces (
+    id                          TEXT PRIMARY KEY,
+    name                        TEXT NOT NULL,            -- user-supplied, e.g. "Idempotency keys for payments"
+    slug                        TEXT NOT NULL,            -- filesystem-safe derivation of name
+    icon                        TEXT,                     -- moved from the former projects.icon
+    description                 TEXT,
+    permission_mode             TEXT,                     -- inherits from settings_json default if NULL
+    bypass_destructive_guard    INTEGER,                  -- inherits from settings_json default if NULL
+    settings_json               TEXT NOT NULL DEFAULT '{}', -- workspace defaults; absorbs the former project settings
+    created_at                  INTEGER NOT NULL,
+    archived_at                 INTEGER,
+    UNIQUE(slug)
+);
+-- settings_json schema for workspaces (absorbs the former project schema):
 --   {
 --     "scripts": { "setup": "...", "setup_workarea": "...", "run": "...", "archive": "..." },
 --     "run_script_mode": "concurrent" | "nonconcurrent",
 --     "enterprise_data_privacy": bool,
---     "default_permission_mode": "strict" | "normal" | "auto" | "yolo",         -- new workspaces inherit
+--     "default_permission_mode": "strict" | "normal" | "auto" | "yolo",         -- new workareas inherit
 --     "default_bypass_destructive_guard": bool,
 --     "default_deliberation_mode": "plan" | "normal" | "fast",                   -- see 04 §3.12
 --     "default_reasoning_level":   "minimal" | "low" | "medium" | "high",        -- see 04 §3.12
@@ -195,47 +226,25 @@ CREATE TABLE projects (
 --     "writable_paths_outside_worktree": [ "<path>", ... ],
 --     "concerto_chat_full_chat_access": bool
 --   }
--- A checked-in <project_root>/.concerto/project_settings.json mirrors this schema
--- and takes precedence over this row per 03 §3.13.
+-- A checked-in .concerto/workspace_settings.json at the workspace's reference repo
+-- root (the first repo by position) mirrors this schema and takes precedence over
+-- this row per 03 §3.13.
 
--- Repositories within a project. A repo's clone lives at ~/concerto/repos/<id>/.git
--- and is shared (one .git, many worktrees) across all workareas that include it.
-CREATE TABLE repositories (
-    id                  TEXT PRIMARY KEY,
-    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name                TEXT NOT NULL,                    -- short name used in folder paths (e.g. "marketplace-api")
-    url                 TEXT NOT NULL,                    -- e.g. git@github.com:coupang/marketplace.git
-    local_path          TEXT NOT NULL,                    -- ~/concerto/repos/<id>/
-    clone_strategy      TEXT NOT NULL,                    -- full | blobless | treeless
-    default_branch      TEXT NOT NULL,
-    cone_defaults_json  TEXT NOT NULL DEFAULT '[]',       -- default cones inherited by new workareas
-    fs_monitor_pid      INTEGER,
-    last_fetch_at       INTEGER,
-    UNIQUE(project_id, url),
-    UNIQUE(project_id, name)
-);
-
--- Workspaces (LOGICAL workstream — no own worktree). 1..N repos.
-CREATE TABLE workspaces (
-    id                          TEXT PRIMARY KEY,
-    project_id                  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name                        TEXT NOT NULL,            -- user-supplied, e.g. "Idempotency keys for payments"
-    slug                        TEXT NOT NULL,            -- filesystem-safe derivation of name
-    description                 TEXT,
-    permission_mode             TEXT,                     -- inherits from project if NULL
-    bypass_destructive_guard    INTEGER,                  -- inherits from project if NULL
-    settings_json               TEXT NOT NULL DEFAULT '{}', -- workspace-level defaults inherited by workareas
-    created_at                  INTEGER NOT NULL,
-    archived_at                 INTEGER,
-    UNIQUE(project_id, slug)
-);
-
--- Which repos this workspace touches. Defines the set every workarea works with.
+-- Which repos this workspace declares. Defines the set every workarea works with.
+-- `position` is the per-workspace 0-based ordinal (the first by position is the
+-- reference repo, 03 §3.10/§3.13). `sparse_cones_json` is the per-(workspace, repo)
+-- sparse-cone SNAPSHOT, seeded from the repo's cone_defaults_json when the repo is
+-- attached; editing repo defaults later does NOT retroactively change existing
+-- workspaces (snapshot semantics, 02 §3.2).
 CREATE TABLE workspace_repos (
-    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    repository_id   TEXT NOT NULL REFERENCES repositories(id),
+    workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    repository_id     TEXT NOT NULL REFERENCES repositories(id),
+    position          INTEGER NOT NULL DEFAULT 0,
+    sparse_cones_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (workspace_id, repository_id)
 );
+
+CREATE INDEX idx_workspace_repos_position ON workspace_repos(workspace_id, position);
 
 -- Workareas: a specific attempt at the workspace's task. Worktrees on disk.
 -- One workspace → 1..N workareas (e.g. bach / mozart for two approaches).
@@ -352,7 +361,6 @@ CREATE TABLE tool_approvals (
 CREATE TABLE schedules (
     id                          TEXT PRIMARY KEY,
     kind                        TEXT NOT NULL,                  -- loop | scheduled_task
-    project_id                  TEXT REFERENCES projects(id),
     workspace_id                TEXT REFERENCES workspaces(id), -- optional scope
     workarea_id                 TEXT REFERENCES workareas(id),  -- required for /loop; optional for scheduled_task
     name                        TEXT NOT NULL,
@@ -407,8 +415,8 @@ The audit log table itself lives outside SQLite (§3.5). SQLite carries device +
 ```sql
 CREATE TABLE skills_index (
     id              TEXT PRIMARY KEY,
-    scope           TEXT NOT NULL,                     -- personal | project | plugin | enterprise
-    project_id      TEXT REFERENCES projects(id),
+    scope           TEXT NOT NULL,                     -- personal | workspace | plugin | enterprise
+    workspace_id    TEXT REFERENCES workspaces(id),    -- set when scope = 'workspace'
     name            TEXT NOT NULL,
     description     TEXT,
     path            TEXT NOT NULL,
@@ -420,14 +428,14 @@ CREATE TABLE skills_index (
 );
 
 CREATE TABLE suggestion_learn (
-    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     trigger         TEXT NOT NULL,                     -- "context_window_50", "tests_failed"
     prompt_hash     TEXT NOT NULL,                     -- BLAKE2b of normalized prompt
     prompt_text     TEXT NOT NULL,
     accept_count    INTEGER NOT NULL DEFAULT 0,
     dismiss_count   INTEGER NOT NULL DEFAULT 0,
     last_seen_at    INTEGER NOT NULL,
-    PRIMARY KEY (project_id, trigger, prompt_hash)
+    PRIMARY KEY (workspace_id, trigger, prompt_hash)
 );
 
 CREATE TABLE todos (

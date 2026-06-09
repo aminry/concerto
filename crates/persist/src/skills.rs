@@ -6,8 +6,8 @@
 //! CREATE TABLE skills_index (
 //!     id              TEXT PRIMARY KEY,
 //!     scope           TEXT NOT NULL CHECK (scope IN
-//!                       ('personal','project','plugin','enterprise')),
-//!     project_id      TEXT REFERENCES projects(id) ON DELETE CASCADE,
+//!                       ('personal','workspace','plugin','enterprise')),
+//!     workspace_id    TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
 //!     name            TEXT NOT NULL,
 //!     slash_command   TEXT,
 //!     description     TEXT,
@@ -15,12 +15,12 @@
 //!     source_path     TEXT NOT NULL,
 //!     enabled         INTEGER NOT NULL DEFAULT 1,
 //!     discovered_at   INTEGER NOT NULL,
-//!     UNIQUE(scope, project_id, name)
+//!     UNIQUE(scope, workspace_id, name)
 //! );
 //! ```
 //!
-//! V0.1 ships discovery (personal + project scopes) and per-(scope,
-//! project, name) enable/disable. Marketplace install, sandbox try, and
+//! V0.1 ships discovery (personal + workspace scopes) and per-(scope,
+//! workspace, name) enable/disable. Marketplace install, sandbox try, and
 //! invocation tracking are V1.0 per `tasks/39 §"Scope — out"`; the
 //! columns that surface those (`marketplace_id`, `pinned_version`,
 //! `visibility`, `last_used_at`, `invocation_count`, `kind`) arrive
@@ -29,32 +29,32 @@
 use concerto_error::{Error, Result};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
-use crate::api::{NewSkill, ProjectId, SkillFilter, SkillId, SkillRow, SkillScope};
+use crate::api::{NewSkill, SkillFilter, SkillId, SkillRow, SkillScope, WorkspaceId};
 
 /// Insert or update a `skills_index` row keyed on
-/// `(scope, project_id, name)`. The `enabled` column is preserved across
+/// `(scope, workspace_id, name)`. The `enabled` column is preserved across
 /// upserts so a user's toggle survives re-discovery; everything else is
 /// overwritten with the freshly-discovered values. Returns the id of the
 /// row that now matches the key (which may be the existing id when the
 /// row already existed, not the caller-supplied one).
 pub async fn upsert(conn: &mut SqliteConnection, s: NewSkill) -> Result<SkillId> {
     // SQLite's ON CONFLICT requires the conflict target to honor NULL ==
-    // NULL semantics, but UNIQUE(scope, project_id, name) treats NULL
-    // project_id as distinct. We work around that by SELECT-then-INSERT-
+    // NULL semantics, but UNIQUE(scope, workspace_id, name) treats NULL
+    // workspace_id as distinct. We work around that by SELECT-then-INSERT-
     // or-UPDATE — keeps the upsert race-tolerant inside the single-
     // writer guarantee of `WriterGuard`.
     let scope_str = s.scope.as_sql_str();
-    let project_id_str = s.project_id.as_ref().map(|p| p.0.as_str());
+    let workspace_id_str = s.workspace_id.as_ref().map(|w| w.0.as_str());
 
     let existing = sqlx::query(
         "SELECT id FROM skills_index
            WHERE scope = ?
-             AND (project_id IS ? OR project_id = ?)
+             AND (workspace_id IS ? OR workspace_id = ?)
              AND name = ?",
     )
     .bind(scope_str)
-    .bind(project_id_str)
-    .bind(project_id_str)
+    .bind(workspace_id_str)
+    .bind(workspace_id_str)
     .bind(&s.name)
     .fetch_optional(&mut *conn)
     .await
@@ -84,13 +84,13 @@ pub async fn upsert(conn: &mut SqliteConnection, s: NewSkill) -> Result<SkillId>
     } else {
         sqlx::query(
             "INSERT INTO skills_index (
-                id, scope, project_id, name, slash_command, description,
+                id, scope, workspace_id, name, slash_command, description,
                 tools_json, source_path, enabled, discovered_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
         )
         .bind(&s.id.0)
         .bind(scope_str)
-        .bind(project_id_str)
+        .bind(workspace_id_str)
         .bind(&s.name)
         .bind(&s.slash_command)
         .bind(&s.description)
@@ -110,7 +110,7 @@ pub async fn upsert(conn: &mut SqliteConnection, s: NewSkill) -> Result<SkillId>
 /// unknown.
 pub async fn get(pool: &SqlitePool, id: &SkillId) -> Result<Option<SkillRow>> {
     let row = sqlx::query(
-        "SELECT id, scope, project_id, name, slash_command, description,
+        "SELECT id, scope, workspace_id, name, slash_command, description,
                 tools_json, source_path, enabled, discovered_at
            FROM skills_index WHERE id = ?",
     )
@@ -127,15 +127,15 @@ pub async fn list(pool: &SqlitePool, filter: &SkillFilter) -> Result<Vec<SkillRo
     // Build a dynamic SQL string with the WHERE clauses we actually
     // need. The set is small and bounded so the cost is negligible.
     let mut sql = String::from(
-        "SELECT id, scope, project_id, name, slash_command, description,
+        "SELECT id, scope, workspace_id, name, slash_command, description,
                 tools_json, source_path, enabled, discovered_at
            FROM skills_index WHERE 1=1",
     );
     if filter.scope.is_some() {
         sql.push_str(" AND scope = ?");
     }
-    if filter.project_id.is_some() {
-        sql.push_str(" AND project_id = ?");
+    if filter.workspace_id.is_some() {
+        sql.push_str(" AND workspace_id = ?");
     }
     if filter.enabled_only {
         sql.push_str(" AND enabled = 1");
@@ -146,8 +146,8 @@ pub async fn list(pool: &SqlitePool, filter: &SkillFilter) -> Result<Vec<SkillRo
     if let Some(scope) = filter.scope {
         q = q.bind(scope.as_sql_str());
     }
-    if let Some(project_id) = filter.project_id.as_ref() {
-        q = q.bind(project_id.0.clone());
+    if let Some(workspace_id) = filter.workspace_id.as_ref() {
+        q = q.bind(workspace_id.0.clone());
     }
     let rows = q
         .fetch_all(pool)
@@ -179,7 +179,9 @@ fn row_to_skill(row: sqlx::sqlite::SqliteRow) -> Result<SkillRow> {
     Ok(SkillRow {
         id: SkillId(row.get::<String, _>("id")),
         scope,
-        project_id: row.get::<Option<String>, _>("project_id").map(ProjectId),
+        workspace_id: row
+            .get::<Option<String>, _>("workspace_id")
+            .map(WorkspaceId),
         name: row.get::<String, _>("name"),
         slash_command: row.get::<Option<String>, _>("slash_command"),
         description: row.get::<Option<String>, _>("description"),

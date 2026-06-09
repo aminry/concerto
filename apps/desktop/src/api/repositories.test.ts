@@ -62,7 +62,6 @@ describe("estimateRepoSize binding", () => {
 describe("addRepository strategy passthrough", () => {
   const repo = {
     id: "r1",
-    project_id: "p1",
     name: "api",
     url: "u",
     local_path: "",
@@ -70,11 +69,10 @@ describe("addRepository strategy passthrough", () => {
     default_branch: "main",
   };
 
-  it("sends clone_strategy + with_sparse for Blobless + Sparse", async () => {
+  it("sends clone_strategy + with_sparse for Blobless + Sparse (no project_id)", async () => {
     invoke.mockResolvedValueOnce(repo);
 
     await addRepository({
-      projectId: "p1",
       name: "api",
       url: "u",
       cloneStrategy: "blobless",
@@ -84,12 +82,12 @@ describe("addRepository strategy passthrough", () => {
     expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
       method: "Repositories.AddRepository",
       payload: {
-        project_id: "p1",
         name: "api",
         url: "u",
         default_branch: "",
         clone_strategy: "blobless",
         with_sparse: true,
+        local_path: "",
       },
     });
   });
@@ -97,17 +95,35 @@ describe("addRepository strategy passthrough", () => {
   it("defaults to Full (empty clone_strategy, with_sparse=false) when omitted", async () => {
     invoke.mockResolvedValueOnce(repo);
 
-    await addRepository({ projectId: "p1", name: "api", url: "u" });
+    await addRepository({ name: "api", url: "u" });
 
     expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
       method: "Repositories.AddRepository",
       payload: {
-        project_id: "p1",
         name: "api",
         url: "u",
         default_branch: "",
         clone_strategy: "",
         with_sparse: false,
+        local_path: "",
+      },
+    });
+  });
+
+  it("adopts a local folder (local_path set, url empty)", async () => {
+    invoke.mockResolvedValueOnce({ ...repo, local_path: "/tmp/api" });
+
+    await addRepository({ name: "api", localPath: "/tmp/api" });
+
+    expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
+      method: "Repositories.AddRepository",
+      payload: {
+        name: "api",
+        url: "",
+        default_branch: "",
+        clone_strategy: "",
+        with_sparse: false,
+        local_path: "/tmp/api",
       },
     });
   });

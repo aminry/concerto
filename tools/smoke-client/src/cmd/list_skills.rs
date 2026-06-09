@@ -1,4 +1,4 @@
-//! `smoke-client list-skills [--scope <s>] [--project-id <s>]`
+//! `smoke-client list-skills [--scope <s>] [--workspace-id <s>]`
 //!
 //! Calls `Skills.RefreshMarketplaces` (to pick up filesystem changes
 //! that may have happened after Core boot — the smoke gate writes a
@@ -17,7 +17,7 @@ use crate::connect::connect_to_socket;
 pub async fn run(
     socket: &Path,
     scope: Option<&str>,
-    project_id: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Result<(), String> {
     let channel = connect_to_socket(socket).await?;
     let mut client = SkillsClient::new(channel);
@@ -27,7 +27,7 @@ pub async fn run(
     tokio::time::timeout(
         RPC_TIMEOUT,
         client.refresh_marketplaces(RefreshMarketplacesRequest {
-            project_id: project_id.map(|s| s.to_string()),
+            workspace_id: workspace_id.map(|s| s.to_string()),
         }),
     )
     .await
@@ -38,7 +38,7 @@ pub async fn run(
         RPC_TIMEOUT,
         client.list_skills(ListSkillsRequest {
             scope: scope.map(|s| s.to_string()),
-            project_id: project_id.map(|s| s.to_string()),
+            workspace_id: workspace_id.map(|s| s.to_string()),
             enabled_only: None,
         }),
     )

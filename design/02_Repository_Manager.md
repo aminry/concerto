@@ -73,7 +73,7 @@ Sparse cones are per **(workarea, repo)** — each repo in each workarea has its
 - Different workareas of the same workspace can use different cones for the same repo (rare but supported).
 - Cones are stored in `workarea_repos.sparse_cones_json` (09 §4.1).
 
-**Default cones inheritance:** A new workarea inherits the **workspace's** per-repo cone defaults (from `workspace_repos.cone_defaults_json` in `settings_json`, if present); workspace defaults inherit from the **repository's** `cone_defaults_json` (09 §4.1). User can override per-(workarea, repo) at create time.
+**Default cones inheritance (snapshot semantics):** the chain is `repositories.cone_defaults_json` → `workspace_repos.sparse_cones_json` → `workarea_repos.sparse_cones_json` (09 §4.1). When a repo is attached to a workspace, the repo's editable `cone_defaults_json` is **snapshotted** into `workspace_repos.sparse_cones_json`; when a workarea is created, the workspace's per-repo snapshot is in turn snapshotted into `workarea_repos.sparse_cones_json`. Editing a repo's defaults later does **not** retroactively change existing workspaces — `SetRepoConeDefaults` (§5.1) re-applies to existing *workareas* of the repo but the workspace snapshot is the stable layer. User can override per-(workarea, repo) at create time.
 
 **Plan-mode suggestion:** When workarea creation comes from an issue (Linear, GitHub), the Repo Mgr exposes a `suggest_cones(repo, issue_text)` interface per repo. This delegates to the Maestro Agent (08) — *not* implemented here. The Repo Mgr just publishes the interface.
 
@@ -97,20 +97,26 @@ Pre-fetch is rate-limited and pausable. The Tray surfaces "syncing" status when 
 
 `git`'s built-in fsmonitor daemon (`git fsmonitor--daemon start`) needs to be running per repo. The Repo Mgr:
 
-1. On project init, sets `core.fsmonitor = true` and starts the daemon.
+1. On repository add, sets `core.fsmonitor = true` and starts the daemon.
 2. Tracks the daemon PID in `repositories.fs_monitor_pid`.
 3. On Core start, checks if daemons are alive; restarts if not.
 4. On Core graceful shutdown: leaves daemons running (they're independent).
 
 ### 3.5 Repo-size auto-recommendation
 
-On project add, the Repo Mgr does a `git ls-remote --heads` and an estimated-size probe (HEAD of default branch + `git rev-list --objects --count`). Heuristic:
+On repository add **by URL**, the Repo Mgr does a `git ls-remote --heads` and an estimated-size probe (HEAD of default branch + `git rev-list --objects --count`). Heuristic:
 
 - `< 1 GB` → recommend Full clone
 - `1–10 GB` → recommend Blobless, full files on disk
 - `> 10 GB` → recommend Blobless + Sparse (with cone picker)
 
-The user sees the recommendation in the New Project dialog (15) and can override.
+The user sees the recommendation in the New Workspace dialog's add-repo flow (15) and can override.
+
+**Add-repo has three sources** (`Repositories.AddRepository`, §5.2):
+
+1. **Pick an existing registry repo** — the repo is already cloned at `~/concerto/repos/<id>/.git`; no clone needed.
+2. **Add by URL** — clone into the shared pool; the size→strategy recommendation above runs.
+3. **Add a local folder** — adopt an existing local git repo **in place** (non-destructive: Concerto registers the on-disk path and applies its config without moving or re-cloning). The caller supplies `local_path` instead of `url`.
 
 ---
 
@@ -153,14 +159,25 @@ The `concerto-state.json` is durable repo-scoped state that doesn't belong in SQ
 pub struct RepoManagerHandle { /* opaque */ }
 
 impl RepoManagerHandle {
-    pub async fn add_project_repository(
+    // Add a repository to the GLOBAL registry. `source` is one of:
+    //   - Url(GitUrl)        → clone into the shared pool
+    //   - LocalPath(PathBuf) → adopt an existing on-disk git repo in place
+    // (Picking an already-registered repo needs no add call.)
+    pub async fn add_repository(
         &self,
-        project_id: ProjectId,
-        url: GitUrl,
+        name: String,
+        source: AddRepoSource,
         strategy: CloneStrategy,
     ) -> Result<RepositoryId>;
 
     pub async fn clone(&self, repo: RepositoryId, progress: ProgressTx) -> Result<()>;
+
+    pub async fn list_repositories(&self) -> Result<Vec<Repository>>;   // global registry
+
+    // Set the repo's editable default cone (repositories.cone_defaults_json) and
+    // re-apply it to every existing workarea of the repo. Workspace snapshots are
+    // unaffected (snapshot semantics, §3.2).
+    pub async fn set_repo_cone_defaults(&self, repo: RepositoryId, cone_defaults: Vec<ConePath>) -> Result<Repository>;
 
     pub async fn fetch(&self, repo: RepositoryId) -> Result<FetchReport>;
 
@@ -193,11 +210,16 @@ impl RepoManagerHandle {
 
 ```proto
 service Repositories {
+  // AddRepoRequest carries either `url` (clone into the shared pool) or
+  // `local_path` (adopt an existing on-disk git repo in place). No project_id.
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);  // streaming progress
-  rpc Fetch(FetchRequest) returns (FetchReport);
-  rpc EstimateConeSize(EstimateRequest) returns (ConeStats);
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListRepositoriesResponse);  // global; was ListByProject
+  rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
+  rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
+  // Set the repo's editable default cone + re-apply to existing workareas.
+  rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (Repository);
 }
 ```
 
@@ -270,9 +292,9 @@ sequenceDiagram
     participant RepoMgr as Repo Mgr
     participant Sh as shell git
     participant DB as Persistence (09)
-    User->>DT: Add Project (URL)
+    User->>DT: Add repository (URL)
     DT->>API: AddRepository
-    API->>RepoMgr: add_project_repository
+    API->>RepoMgr: add_repository (source = Url)
     RepoMgr->>RepoMgr: estimate size (ls-remote)
     RepoMgr-->>API: SizeReport (recommend blobless+sparse)
     API-->>DT: confirmation w/ recommendation

@@ -14,7 +14,7 @@ It owns:
 - **React renderer** — Vite-built SPA, the entire visible UI.
 - **Dual transport to Core** — UDS connection for co-located mode (peer-UID auth, no pairing — `12 §3.4`); Iroh QUIC connection for split-host mode (device-cert auth, QR pairing — `12 §3.3`). Same gRPC client code; transport is selected per paired Core.
 - **Connected-Core registry** — local store (OS keychain + config file) listing every Core this Desktop has paired with, the wire it uses for each, and which one is currently active. UI affordance to switch.
-- **Three-panel layout** — projects + workspaces + workareas tree sidebar (3 nested levels), workarea center, context-rail (PRD §8.2.1, extended for the 3-level model).
+- **Three-panel layout** — a flat workspaces → workareas → sessions tree sidebar (no Project node), workarea center, context-rail (PRD §8.2.1, for the 3-level model).
 - **Monaco diff viewer** — custom decoration layer for inline comments + review threads.
 - **xterm.js terminal** — agent's PTY output rendered.
 - **Tray sidecar** — separate `concerto-tray` Tauri app (per `01 §3.5`) — own doc section here.
@@ -116,7 +116,7 @@ The Rust shell holds the single gRPC connection to the active Core; maintains al
 
 **Choice:** Server (Core) is the source of truth for everything domain. Zustand stores hold only:
 
-- Currently selected project / workspace IDs.
+- Currently selected workspace / workarea IDs.
 - Sidebar collapse state.
 - Diff-viewer view mode (split / unified / by-commit).
 - Composer draft text per workspace.
@@ -134,31 +134,31 @@ No Redux. The client is a thin renderer; complexity belongs in the Core.
 ├────────────────────┬────────────────────────────────────────────┬───────────────┤
 │  Sidebar (tree)    │  Center — workarea view                     │  Right rail  │
 │                    │                                             │              │
-│  ▾ Project A       │  ┌─ Session tabs ──────────────────────────┐│ Schedules    │
-│   ▾ Workspace 1    │  │ ● Claude  ◐ Codex  + new session       ││ Skills       │
-│     ● bach  ←sel  │  ├─ Sub-tabs within selected session ─────┤│ Todos        │
-│       ─ Claude     │  │ Chat   Terminal                         ││ Files        │
-│       ─ Codex      │  │ (chat content)                          ││ MCP          │
-│     ○ mozart        │  └─────────────────────────────────────────┘│              │
-│   ▸ Workspace 2    │  ┌─ Code & PRs panel ──────────────────────┐│              │
-│  ▾ Project B       │  │ Repo tabs ─ Level 1                     ││              │
-│   ▾ Workspace 3    │  │ ● repo-1 (3 files)  ○ repo-2 (1 file)   ││              │
-│     ● gershwin        │  ├─ Within selected repo ─ Level 2 tabs ──┤│              │
-│   + new workspace  │  │ Diff   Checks   PR                      ││              │
+│  ▾ Workspace 1     │  ┌─ Session tabs ──────────────────────────┐│ Schedules    │
+│     ● bach  ←sel  │  │ ● Claude  ◐ Codex  + new session       ││ Skills       │
+│       ─ Claude     │  ├─ Sub-tabs within selected session ─────┤│ Todos        │
+│       ─ Codex      │  │ Chat   Terminal                         ││ Files        │
+│     ○ mozart        │  │ (chat content)                          ││ MCP          │
+│  ▸ Workspace 2     │  └─────────────────────────────────────────┘│              │
+│  ▾ Workspace 3     │  ┌─ Code & PRs panel ──────────────────────┐│              │
+│     ● gershwin        │  │ Repo tabs ─ Level 1                     ││              │
+│  + new workspace   │  │ ● repo-1 (3 files)  ○ repo-2 (1 file)   ││              │
+│                    │  ├─ Within selected repo ─ Level 2 tabs ──┤│              │
+│                    │  │ Diff   Checks   PR                      ││              │
 │                    │  │ [content...]                            ││              │
-│  + new project     │  │ [ Create PR ]  [ Merge PR ]             ││              │
+│                    │  │ [ Create PR ]  [ Merge PR ]             ││              │
 │                    │  └─────────────────────────────────────────┘│              │
 ├────────────────────┴────────────────────────────────────────────┴───────────────┤
 │  Status bar — connection / unread counts / current permission mode               │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Sidebar tree** (3 levels nested, each row expandable):
+**Sidebar tree** (flat workspace list — no Project node after the Project→Workspace collapse; each row expandable):
 
-- **Project** (root) — name + project icon; expand to show its workspaces.
-- **Workspace** (level 2) — user-chosen name (e.g., "Idempotency keys") + count of active workareas; expand to show workareas.
-- **Workarea** (level 3) — composer name + branch chip + status dot (green/amber/blue/grey). Selecting a workarea activates the center panel for that workarea.
-- Optional fourth-level expand shows the workarea's sessions; selecting one focuses it in the center session-tabs.
+- **Workspace** (root, level 1) — user-chosen name (e.g., "Idempotency keys") + optional icon + count of active workareas; expand to show workareas.
+- **Workarea** (level 2) — composer name + branch chip + status dot (green/amber/blue/grey). Selecting a workarea activates the center panel for that workarea.
+- Optional third-level expand shows the workarea's sessions; selecting one focuses it in the center session-tabs.
+- `+ new workspace` opens `NewWorkspaceModal` (§3.4.1), the primary creation flow.
 
 The sidebar is resizable + collapsible (icon-only mode).
 
@@ -173,17 +173,29 @@ The sidebar is resizable + collapsible (icon-only mode).
 
 The user can swap region positions (sessions on bottom, Code & PRs on top) or change to side-by-side (sessions left, Code & PRs right) via View → Layout. Default is sessions-on-top because chat is what the user looks at most.
 
-**When a workspace is selected** (not a workarea) — the center panel shows a workspace summary view: list of workareas with status dots, PR set status across workareas, "+ new workarea" button.
-
-**When a project is selected** — the center panel shows the project home: recent activity, list of workspaces, "Add repository", "New workspace" buttons.
+**When a workspace is selected** (not a workarea) — the center panel shows a workspace summary view: the workspace's repo list (with per-repo full/sparse status), list of workareas with status dots, PR set status across workareas, "Add repository", "+ new workarea" buttons.
 
 **Right rail**: tab strip vertically (Scheduler / Skill Explorer / Todos / Files / MCP); collapsible. Tabs are scoped:
-- Scheduler / Skill Explorer / MCP are global-ish (per project or per user).
+- Scheduler / Skill Explorer / MCP are global-ish (per workspace or per user).
 - Todos / Files / MCP for a selected workarea are scoped to that workarea.
 
 **Top bar**: Concerto chat collapsed by default; click to overlay (per `08 §3.6`).
 
 Layout state (sidebar width, region heights, collapse state, default view) persists per user in `localStorage`.
+
+#### 3.4.1 NewWorkspaceModal — the primary creation flow
+
+`+ new workspace` (Cmd+N) opens **`NewWorkspaceModal`**, the primary creation surface after the Project→Workspace collapse (it replaces the former `NewProjectModal` / "+ Project" flow). The modal:
+
+1. **Name** — user types a workspace name; the slug is derived live (globally unique; collisions get `-N`).
+2. **Repos — a three-source picker** (declare 1..N repos from the global registry, `02 §3.5`):
+   - **Pick existing** — choose one or more already-registered repos.
+   - **Add by URL** — clone into the shared pool; the size→strategy recommendation (`02 §3.5`) is shown inline (`Repositories.EstimateRepoSize` → `Repositories.AddRepository`).
+   - **Add local folder** — adopt an existing local git repo **in place** (non-destructive); a native folder picker supplies `local_path`.
+3. **Per-repo checkout** — for each declared repo, a **full vs sparse** choice. Sparse opens the cone picker (`Repositories.ListTree` lazy tree browse, seeded from the repo's `cone_defaults`); the chosen cones become the repo's `sparse_cones` in the `WorkspaceRepoSpec`. Repo order in the list is the `position` (the first is the reference repo).
+4. **Options** — optional icon, description, permission-mode default.
+
+On confirm, the modal calls `Workspaces.CreateWorkspace { name, repos: [WorkspaceRepoSpec{repository_id, sparse_cones}], permission_mode, description, icon }`. No worktree is materialized yet — the first workarea does that (`03 §3.2`).
 
 ### 3.5 Monaco diff viewer with custom decorations
 
@@ -259,7 +271,7 @@ concerto://diff/<workarea_id>/<repository_id>?file=...&line=...
 concerto://slash/<command>?workarea=...                 (sends a slash command to the workarea's active session)
 
 # Async plan handoff (creates workspace + workarea + attaches a plan)
-concerto://async?plan=<base64-url-encoded markdown>&repo=<project_id_or_repo_url>&title=...
+concerto://async?plan=<base64-url-encoded markdown>&repo=<repository_id_or_repo_url>&title=...
 ```
 
 **The async-plan flow.** External tools (cloud agents, ChatGPT, code-review bots, an iOS shortcut) can produce a markdown plan and hand it off to Concerto without going through Concerto's UI. The URL carries:
@@ -267,7 +279,7 @@ concerto://async?plan=<base64-url-encoded markdown>&repo=<project_id_or_repo_url
 | Param | Required | Meaning |
 |---|---|---|
 | `plan` | yes | Base64-URL-encoded markdown. Capped at 64 KB (URL practical limit). Anything larger should write to a Gist/Drive and link in the body. |
-| `repo` | no | A `project_id` or git URL the workspace should be created against. If absent, Concerto opens a picker pre-populated with the first project. If the given URL doesn't match a known project, Concerto offers to add it as a new project (with the standard repo-add flow). |
+| `repo` | no | A `repository_id` or git URL the workspace should be created against. If absent, Concerto opens the `NewWorkspaceModal` repo picker (§3.4.1). If the given URL doesn't match a registered repo, Concerto offers to add it to the registry (the standard add-by-URL flow). |
 | `title` | no | Workspace title. Defaults to the first H1 in the plan, or "Async plan — <timestamp>". |
 | `agent` | no | `claude` (default) / `codex` / `gemini` — initial session kind. |
 | `deliberation` | no | `plan` (default) / `normal` / `fast` — initial session deliberation mode (`04 §3.12`). |
@@ -275,10 +287,10 @@ concerto://async?plan=<base64-url-encoded markdown>&repo=<project_id_or_repo_url
 **What happens on receive.**
 
 1. Tauri deep-link handler reads the URL.
-2. Renderer decodes the plan, shows a confirmation modal with the plan preview and the target project/repo. Cmd+Enter accepts.
+2. Renderer decodes the plan, shows a confirmation modal with the plan preview and the target workspace/repo. Cmd+Enter accepts.
 3. On confirm: create workspace + first workarea via standard `03` flow. The plan is written to `.context/plan.md` in the workarea.
 4. The initial session starts in the requested deliberation mode, with its preamble extended by `"A plan has been attached at .context/plan.md. Read it before proposing changes."`.
-5. Audit log records `AsyncPlanReceived{source_hint, bytes, project_id}`.
+5. Audit log records `AsyncPlanReceived{source_hint, bytes, workspace_id}`.
 
 **Safety.** The plan is treated as untrusted user input. Concerto never executes it directly; the agent reads it as context. If `managed.json.allow_async_plans = false`, the deep link is rejected with an audit entry. The confirmation modal is non-skippable in V1.0 (no "always trust this source" affordance).
 
@@ -458,18 +470,17 @@ When everything passes, the screen writes `~/.concerto/setup_complete` (a stamp 
 
 ```
 Sidebar
-├── Projects (active)
-│   ├── Project A
-│   │   ├── Workspace 1
-│   │   └── + new workspace
-│   └── + new project
+├── Workspaces (active)
+│   ├── Workspace 1
+│   ├── Workspace 2
+│   └── + new workspace
 │
 └── ▼ History (47 archived)            ← click to expand drawer
-    ├── filter: [ project ▾ ] [ workarea/workspace ▾ ] [ last 30d ▾ ]
+    ├── filter: [ workspace ▾ ] [ workarea/workspace ▾ ] [ last 30d ▾ ]
     ├── search: [ ___________ ]
-    ├── 2026-05-14  Project A / Login refactor / bach    [ Restore ] [ Open snapshot ▸ ]
-    ├── 2026-05-12  Project A / Idempotency / mozart       [ Restore ] [ Open snapshot ▸ ]
-    ├── 2026-05-09  Project B / Audit log fix / gershwin     [ Restore ] [ Open snapshot ▸ ]
+    ├── 2026-05-14  Login refactor / bach        [ Restore ] [ Open snapshot ▸ ]
+    ├── 2026-05-12  Idempotency / mozart           [ Restore ] [ Open snapshot ▸ ]
+    ├── 2026-05-09  Audit log fix / gershwin         [ Restore ] [ Open snapshot ▸ ]
     └── ... pagination at 50 ...
 ```
 

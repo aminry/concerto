@@ -173,8 +173,8 @@ async fn git(args: &[&str], cwd: &Path) {
 
 /// Seed a project + one repository directly in SQLite (mirrors
 /// `streams_reconnect.rs::seed_project_repo`) so `CreateWorkspace` has a
-/// valid project + repo to reference. Returns `(project_id, repo_id)`.
-async fn seed_project_repo(db_path: &Path, repos_root: &Path, slug: &str) -> (String, String) {
+/// valid repo to reference. Returns `repo_id`.
+async fn seed_project_repo(db_path: &Path, repos_root: &Path, slug: &str) -> String {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tempfile::TempDir;
 
@@ -191,7 +191,6 @@ async fn seed_project_repo(db_path: &Path, repos_root: &Path, slug: &str) -> (St
     git(&["remote", "add", "origin", bare_url.as_str()], work.path()).await;
     git(&["push", "-u", "origin", "main"], work.path()).await;
 
-    let project_id = format!("proj-{slug}");
     let repo_id = format!("repo-{slug}");
     let local_path = repos_root.join(&repo_id);
 
@@ -203,17 +202,11 @@ async fn seed_project_repo(db_path: &Path, repos_root: &Path, slug: &str) -> (St
         .connect_with(opts)
         .await
         .expect("open db write pool");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-        .bind(&project_id)
-        .execute(&pool)
-        .await
-        .expect("insert project");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind(&repo_id)
-    .bind(&project_id)
     .bind(format!("name-{slug}"))
     .bind(&bare_url)
     .bind(local_path.to_string_lossy().to_string())
@@ -224,7 +217,7 @@ async fn seed_project_repo(db_path: &Path, repos_root: &Path, slug: &str) -> (St
 
     std::mem::forget(bare);
     std::mem::forget(work);
-    (project_id, repo_id)
+    repo_id
 }
 
 /// Boot a full in-process Core with the Connect-Web bridge bound to
@@ -320,7 +313,7 @@ async fn connect_web_bridge_serves_grpc_web() {
     // Seed a project + repo so CreateWorkspace has something to reference.
     let db_path = data_dir.join("concerto.db");
     let repos_root = data_dir.join("repos");
-    let (project_id, repo_id) = seed_project_repo(&db_path, &repos_root, "cw-bridge").await;
+    let repo_id = seed_project_repo(&db_path, &repos_root, "cw-bridge").await;
 
     // ---- (b) server-streaming: subscribe to workspace.events, then create
     // a workspace over gRPC-Web and read the streamed event.
@@ -390,11 +383,14 @@ async fn connect_web_bridge_serves_grpc_web() {
         &base,
         "/concerto.v1.Workspaces/CreateWorkspace",
         &CreateWorkspaceRequest {
-            project_id: project_id.clone(),
             name: "bridge-ws".to_string(),
-            repository_ids: vec![repo_id.clone()],
+            repos: vec![concerto_proto::v1::WorkspaceRepoSpec {
+                repository_id: repo_id.clone(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         },
     )
     .await;

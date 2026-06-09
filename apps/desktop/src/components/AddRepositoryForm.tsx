@@ -4,20 +4,21 @@
 //   1. User submits { name, url } → call `Repositories.AddRepository`.
 //   2. Kick off `clone_repository(repository_id)`; subscribe to
 //      `concerto/clone-progress/<id>` events; render a `<Progress>` bar.
-//   3. On `done: true` (or stream end), invalidate the
-//      `["repositories", projectId]` query so the list refreshes.
+//   3. On `done: true` (or stream end), invalidate the `["repositories"]`
+//      query so the list refreshes.
 //
 // We deliberately do not block the form during clone — the user can
 // add another repo while the previous one is still cloning.
+//
+// Repositories are a GLOBAL registry (the Project layer was collapsed
+// away): the form is no longer project-scoped.
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { useUiStore } from "../state/useUiStore";
 import {
   addRepository,
   listRepositories,
-  type Repository,
 } from "../api/repositories";
 import {
   cloneRepository,
@@ -43,7 +44,6 @@ type CloneState = {
 };
 
 export function AddRepositoryForm(): JSX.Element {
-  const projectId = useUiStore((s) => s.selectedProjectId);
   const queryClient = useQueryClient();
 
   const [url, setUrl] = useState("");
@@ -67,12 +67,8 @@ export function AddRepositoryForm(): JSX.Element {
   setClonesRef.current = setClones;
 
   const reposQuery = useQuery({
-    queryKey: ["repositories", projectId] as const,
-    queryFn: async () => {
-      if (!projectId) return { repositories: [] as Repository[] };
-      return listRepositories(projectId);
-    },
-    enabled: !!projectId,
+    queryKey: ["repositories"] as const,
+    queryFn: () => listRepositories(),
   });
 
   // Tear down clone-progress listeners when the component unmounts.
@@ -88,14 +84,12 @@ export function AddRepositoryForm(): JSX.Element {
 
   const mutation = useMutation({
     mutationFn: async () => {
-      if (!projectId) throw new Error("no project selected");
       const trimmedUrl = url.trim();
       const trimmedName = name.trim();
       if (!trimmedUrl) throw new Error("url is required");
       if (!trimmedName) throw new Error("name is required");
       const wire = cloneStrategy.wire;
       const repo = await addRepository({
-        projectId,
         name: trimmedName,
         url: trimmedUrl,
         defaultBranch: defaultBranch.trim() || undefined,
@@ -111,7 +105,7 @@ export function AddRepositoryForm(): JSX.Element {
       setErrorMsg(null);
       cloneStrategy.reset();
       void queryClient.invalidateQueries({
-        queryKey: ["repositories", projectId],
+        queryKey: ["repositories"],
       });
 
       setClonesRef.current((prev) => [
@@ -146,7 +140,7 @@ export function AddRepositoryForm(): JSX.Element {
             ),
           );
           void queryClient.invalidateQueries({
-            queryKey: ["repositories", projectId],
+            queryKey: ["repositories"],
           });
           // A Blobless+Sparse clone lands with an empty worktree — surface
           // the "Choose directories for the sparse checkout" step right away.
@@ -169,7 +163,7 @@ export function AddRepositoryForm(): JSX.Element {
 
   function onSubmit(e: React.FormEvent): void {
     e.preventDefault();
-    if (mutation.isPending || !projectId) return;
+    if (mutation.isPending) return;
     setErrorMsg(null);
     mutation.mutate();
   }
@@ -214,17 +208,11 @@ export function AddRepositoryForm(): JSX.Element {
           />
         </div>
         {errorMsg && <p className="text-xs text-err">{errorMsg}</p>}
-        {!projectId && (
-          <p className="text-xs text-warn">
-            No project selected. Create one from the sidebar's
-            “+ New Project” button.
-          </p>
-        )}
         <div className="flex justify-end">
           <Button
             type="submit"
             variant="primary"
-            disabled={mutation.isPending || !projectId || !url || !name}
+            disabled={mutation.isPending || !url || !name}
           >
             {mutation.isPending ? "Adding…" : "Add + Clone"}
           </Button>
@@ -298,7 +286,7 @@ export function AddRepositoryForm(): JSX.Element {
             open
             onClose={() => setConeDialogRepoId(null)}
             repository={dialogRepo}
-            invalidateKey={["repositories", projectId]}
+            invalidateKey={["repositories"]}
           />
         );
       })()}

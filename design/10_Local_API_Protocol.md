@@ -251,24 +251,43 @@ service Runtime {
 }
 
 service Repositories {
+  // Repositories are a GLOBAL registry (no project_id). AddRepository takes
+  // either `url` (clone into the shared pool) or `local_path` (adopt an
+  // existing on-disk git repo in place). ListRepositories is unscoped
+  // (replaces the old ListByProject). SetRepoConeDefaults edits the repo's
+  // default sparse cone and re-applies it to existing workareas.
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
-  rpc Fetch(FetchRequest) returns (FetchReport);
-  rpc EstimateConeSize(EstimateRequest) returns (ConeStats);
+  rpc ListRepositories(ListRepositoriesRequest) returns (ListRepositoriesResponse);
+  rpc EstimateRepoSize(EstimateRepoSizeRequest) returns (SizeReport);
+  rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
   rpc PrewarmBlobs(PrewarmRequest) returns (stream PrewarmProgress);
-  rpc UpdateRepoSettings(UpdateRepoSettings) returns (Repository);
+  rpc ListTree(ListTreeRequest) returns (ListTreeResponse);
+  rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (Repository);
 }
 
 service Workspaces {
-  // Workspaces are logical workstreams; no own worktree (see 03).
+  // Workspaces are logical workstreams; no own worktree (see 03). Top-level
+  // after the Project→Workspace collapse. CreateWorkspace declares its repos
+  // inline as WorkspaceRepoSpec{ repository_id, sparse_cones } from the global
+  // registry. ListWorkspaces is unscoped (all workspaces; include_archived).
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
   rpc GetWorkspace(WorkspaceId) returns (Workspace);
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
-  rpc UpdateWorkspaceRepos(UpdateWorkspaceReposRequest) returns (Workspace);
   rpc UpdateWorkspaceSettings(UpdateWorkspaceSettingsRequest) returns (Workspace);
   rpc ArchiveWorkspace(WorkspaceId) returns (google.protobuf.Empty);
   rpc RestoreWorkspace(WorkspaceId) returns (Workspace);
 }
+
+// CreateWorkspaceRequest (see workspaces.proto) — repos declared inline:
+//   message CreateWorkspaceRequest {
+//     string name = 1;
+//     repeated WorkspaceRepoSpec repos = 2;   // { repository_id, sparse_cones }
+//     optional PermissionMode permission_mode = 3;
+//     optional string description = 4;
+//     optional string icon = 5;
+//   }
+//   message ListWorkspacesRequest { bool include_archived = 1; }
 
 service Workareas {
   // Workareas are on-disk attempts. One workspace → 1..N workareas. (see 03)

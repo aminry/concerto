@@ -54,8 +54,8 @@ async fn git(args: &[&str], cwd: &Path) {
 
 /// Seed a project + one repository directly in SQLite (mirrors the
 /// `sessions_grpc` seed) so `CreateWorkspace` has a valid project + repo
-/// to reference. Returns `(project_id, repo_id)`.
-async fn seed_project_repo(core: &CoreUnderTest, slug: &str) -> (String, String) {
+/// to reference. Returns `repo_id`.
+async fn seed_project_repo(core: &CoreUnderTest, slug: &str) -> String {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tempfile::TempDir;
 
@@ -74,7 +74,6 @@ async fn seed_project_repo(core: &CoreUnderTest, slug: &str) -> (String, String)
     git(&["remote", "add", "origin", bare_url.as_str()], work.path()).await;
     git(&["push", "-u", "origin", "main"], work.path()).await;
 
-    let project_id = format!("proj-{slug}");
     let repo_id = format!("repo-{slug}");
     let local_path = core.data_dir.join("repos").join(&repo_id);
 
@@ -86,17 +85,11 @@ async fn seed_project_repo(core: &CoreUnderTest, slug: &str) -> (String, String)
         .connect_with(opts)
         .await
         .expect("open db write pool");
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, 'test', 0)")
-        .bind(&project_id)
-        .execute(&pool)
-        .await
-        .expect("insert project");
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind(&repo_id)
-    .bind(&project_id)
     .bind(format!("name-{slug}"))
     .bind(&bare_url)
     .bind(local_path.to_string_lossy().to_string())
@@ -111,7 +104,7 @@ async fn seed_project_repo(core: &CoreUnderTest, slug: &str) -> (String, String)
     std::mem::forget(bare);
     std::mem::forget(work);
 
-    (project_id, repo_id)
+    repo_id
 }
 
 /// Read the next `Event` from a subscribe stream within `budget`, or
@@ -135,7 +128,7 @@ fn is_workspace(ev: &Event) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn since_offset_replays_exactly_the_gap() {
     let core = CoreUnderTest::spawn().await.expect("spawn core");
-    let (project_id, repo_id) = seed_project_repo(&core, "replay").await;
+    let repo_id = seed_project_repo(&core, "replay").await;
 
     let mut ws = core.workspaces_client().await.expect("workspaces client");
 
@@ -157,11 +150,14 @@ async fn since_offset_replays_exactly_the_gap() {
 
     for i in 0..3 {
         ws.create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.clone(),
             name: format!("ws-{i}"),
-            repository_ids: vec![repo_id.clone()],
+            repos: vec![concerto_proto::v1::WorkspaceRepoSpec {
+                repository_id: repo_id.clone(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         })
         .await
         .expect("CreateWorkspace");
@@ -210,7 +206,7 @@ async fn since_offset_replays_exactly_the_gap() {
 #[tokio::test(flavor = "multi_thread")]
 async fn two_subscribers_agree_on_offsets() {
     let core = CoreUnderTest::spawn().await.expect("spawn core");
-    let (project_id, repo_id) = seed_project_repo(&core, "agree").await;
+    let repo_id = seed_project_repo(&core, "agree").await;
 
     let mut ws = core.workspaces_client().await.expect("workspaces client");
 
@@ -240,11 +236,14 @@ async fn two_subscribers_agree_on_offsets() {
 
     for i in 0..3 {
         ws.create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.clone(),
             name: format!("agree-{i}"),
-            repository_ids: vec![repo_id.clone()],
+            repos: vec![concerto_proto::v1::WorkspaceRepoSpec {
+                repository_id: repo_id.clone(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         })
         .await
         .expect("CreateWorkspace");
@@ -280,7 +279,7 @@ async fn two_subscribers_agree_on_offsets() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ack_prunes_then_old_since_offset_yields_gap_detected() {
     let core = CoreUnderTest::spawn().await.expect("spawn core");
-    let (project_id, repo_id) = seed_project_repo(&core, "gap").await;
+    let repo_id = seed_project_repo(&core, "gap").await;
 
     let mut ws = core.workspaces_client().await.expect("workspaces client");
     let mut streams = core.streams_client().await.expect("streams client");
@@ -298,11 +297,14 @@ async fn ack_prunes_then_old_since_offset_yields_gap_detected() {
 
     for i in 0..3 {
         ws.create_workspace(CreateWorkspaceRequest {
-            project_id: project_id.clone(),
             name: format!("gap-{i}"),
-            repository_ids: vec![repo_id.clone()],
+            repos: vec![concerto_proto::v1::WorkspaceRepoSpec {
+                repository_id: repo_id.clone(),
+                sparse_cones: vec![],
+            }],
             permission_mode: None,
             description: None,
+            icon: None,
         })
         .await
         .expect("CreateWorkspace");
@@ -357,11 +359,14 @@ async fn ack_prunes_then_old_since_offset_yields_gap_detected() {
     // gap is delivered live on the same stream (the stream did not
     // terminate).
     ws.create_workspace(CreateWorkspaceRequest {
-        project_id: project_id.clone(),
         name: "gap-live".to_string(),
-        repository_ids: vec![repo_id.clone()],
+        repos: vec![concerto_proto::v1::WorkspaceRepoSpec {
+            repository_id: repo_id.clone(),
+            sparse_cones: vec![],
+        }],
         permission_mode: None,
         description: None,
+        icon: None,
     })
     .await
     .expect("CreateWorkspace live");

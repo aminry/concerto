@@ -21,7 +21,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useUiStore } from "../state/useUiStore";
 import { createWorkarea } from "../api/workareas";
-import { listRepositories, type Repository } from "../api/repositories";
+import { listRepositories } from "../api/repositories";
 import { formatError } from "../api/errors";
 import { ConePicker, coneSelections } from "./ConePicker";
 import { WorkspaceSummary } from "./WorkspaceSummary";
@@ -30,7 +30,6 @@ import { Dialog } from "./ui/dialog";
 
 export function WorkspaceDetail(): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId);
-  const projectId = useUiStore((s) => s.selectedProjectId);
   const setWorkspaceExpanded = useUiStore((s) => s.setWorkspaceExpanded);
   const queryClient = useQueryClient();
 
@@ -39,12 +38,9 @@ export function WorkspaceDetail(): JSX.Element {
   const [coneValues, setConeValues] = useState<Record<string, string>>({});
 
   const reposQuery = useQuery({
-    queryKey: ["repositories", projectId] as const,
-    queryFn: async () => {
-      if (!projectId) return { repositories: [] as Repository[] };
-      return listRepositories(projectId);
-    },
-    enabled: coneModalOpen && !!projectId,
+    queryKey: ["repositories"] as const,
+    queryFn: () => listRepositories(),
+    enabled: coneModalOpen,
   });
   const repos = reposQuery.data?.repositories ?? [];
 

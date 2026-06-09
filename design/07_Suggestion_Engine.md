@@ -11,7 +11,7 @@ The Suggestion Engine generates **one-tap chips** that appear beneath the compos
 It owns:
 
 - **Rule engine** — deterministic triggers from agent events + workspace state.
-- **Learning store** — per-(project × trigger × prompt-hash) frequency-and-recency counters.
+- **Learning store** — per-(workspace × trigger × prompt-hash) frequency-and-recency counters.
 - **Org-shared rules (V2.0)** — `org-suggestions.toml` distributed via managed settings.
 - **Chip composition** — the prompt text, the action kind, the ordering.
 - **Best-practice auto-prompts** — the warning-styled chips (context-window full, branch stale, destructive command, etc.).
@@ -29,7 +29,7 @@ It does **not** own: the agent's tool-approval flow (04 owns; chips can target i
 | **V0.1** | Deterministic rule set only (§3.2.1 from PRD). No learning. No org-shared. Bundled `suggestions.toml`. |
 | **V1.0** | + per-user learning (frequency + recency counters; optional embedding-similarity collapse). + best-practice auto-prompts with severity styling. + top-3 chip extraction for push. + per-user reset / disable. + chip outcome events. |
 | **V1.5** | + optional **LLM-ranked mode** (§3.11) where a user-chosen LLM scores chip candidates. Provider-agnostic — Claude / Codex / Gemini CLIs or direct API. |
-| **V2.0** | + org-shared `org-suggestions.toml` via managed settings + per-project override UI. + smart-suppression (chip the user dismissed 3× in 7d stops appearing for that trigger). |
+| **V2.0** | + org-shared `org-suggestions.toml` via managed settings + per-workspace override UI. + smart-suppression (chip the user dismissed 3× in 7d stops appearing for that trigger). |
 
 ---
 
@@ -117,10 +117,10 @@ Each rule is registered with the triggers it cares about; the Engine maintains a
 
 ### 3.4 Learning model: simple frequency-and-recency
 
-**Choice:** No LLMs. No vector embeddings as a hard dependency (optional, see §3.6). Just per-(project × trigger × prompt-hash) counters in `suggestion_learn` (09 §4.5):
+**Choice:** No LLMs. No vector embeddings as a hard dependency (optional, see §3.6). Just per-(workspace × trigger × prompt-hash) counters in `suggestion_learn` (09 §4.5):
 
 ```
-score(prompt | project, trigger) =
+score(prompt | workspace, trigger) =
     accept_count / (accept_count + dismiss_count + 1)
         × recency_weight(last_seen_at)
 
@@ -130,7 +130,7 @@ recency_weight(t) = exp(-Δt / 14d)
 When the user types a custom prompt after a trigger fires (and Concerto didn't propose it), the Engine:
 
 1. Hashes the prompt (BLAKE2b of normalized text).
-2. Bumps `(project, trigger, prompt_hash)`.
+2. Bumps `(workspace, trigger, prompt_hash)`.
 
 After 5 occurrences of the same hash, the prompt is promoted to a learned chip and shown in the chip slate for that trigger.
 
@@ -175,7 +175,7 @@ Different kinds serve different purposes; the chip slate may mix them.
 
 ### 3.10 Suppression
 
-When a user dismisses a chip (taps "More" past it, or explicitly hides it), the dismissal is recorded. After **3 dismissals in 7 days** for the same (project × trigger × prompt_hash), the rule is auto-suppressed for that project for 30 days. Surfaced in Settings → Suggestions → Suppressed (manual unsupress allowed).
+When a user dismisses a chip (taps "More" past it, or explicitly hides it), the dismissal is recorded. After **3 dismissals in 7 days** for the same (workspace × trigger × prompt_hash), the rule is auto-suppressed for that workspace for 30 days. Surfaced in Settings → Suggestions → Suppressed (manual unsupress allowed).
 
 ### 3.11 LLM-ranked mode (V1.5) — pluggable provider
 
@@ -226,17 +226,17 @@ Primary table: `suggestion_learn` (09 §4.5). Plus:
 
 ```sql
 CREATE TABLE suggestion_suppressions (
-    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     trigger         TEXT NOT NULL,
     prompt_hash     TEXT NOT NULL,
     suppressed_at   INTEGER NOT NULL,
     expires_at      INTEGER NOT NULL,                  -- 30 days
-    PRIMARY KEY (project_id, trigger, prompt_hash)
+    PRIMARY KEY (workspace_id, trigger, prompt_hash)
 );
 
 CREATE TABLE suggestion_events (
     id              TEXT PRIMARY KEY,                  -- ULID
-    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     workarea_id     TEXT NOT NULL REFERENCES workareas(id) ON DELETE CASCADE,
     session_id      TEXT REFERENCES sessions(id),     -- which session the trigger fired in (NULL for workarea-state triggers)
     trigger         TEXT NOT NULL,
@@ -258,7 +258,7 @@ pub struct SuggestionState {
     rules: Vec<CompiledRule>,              // from suggestions.toml + org-suggestions.toml
     org_rules: Vec<CompiledRule>,          // V2.0
     workspace_contexts: HashMap<WorkspaceId, ChipSlate>,
-    suppressions: HashMap<(ProjectId, String, [u8; 32]), Instant>,
+    suppressions: HashMap<(WorkspaceId, String, [u8; 32]), Instant>,
     enabled: bool,
 }
 
@@ -365,7 +365,7 @@ compose(workspace) -> ChipSlate:
     for rule in rules:
         if rule.matches(current_state):
             candidates.push((rule.priority, Chip::from_rule(rule)))
-    for (trigger, learned) in learning_store.top_n(workspace.project, 5):
+    for (trigger, learned) in learning_store.top_n(workspace.id, 5):
         candidates.push((LEARNED_BASE_PRIORITY + learned.score * 10, Chip::from_learned(learned)))
     candidates.sort_by_priority_desc()
     # warning chips always pin to the top
@@ -431,7 +431,7 @@ sequenceDiagram
     Note over User: 1st-4th time agent asks "Should I add tests?"<br/>user types "use kotlinx-serialization, not Jackson"
     User->>DT: types prompt
     DT->>Eng: record_typed_over(trigger="agent_asks_proceed", hash=H)
-    Eng->>DB: bump (project, trigger, H).accept_count to 4
+    Eng->>DB: bump (workspace, trigger, H).accept_count to 4
     Note over User: 5th time same scenario
     Eng->>Eng: top_n includes H since count >= 5
     Eng->>Eng: chip slate now includes "use kotlinx-serialization..."
@@ -509,14 +509,14 @@ Consumers:
 
 | # | Question | Decision | Where in doc |
 |---|---|---|---|
-| R-1 | Learning threshold (occurrences before promotion) | **Configurable per project; default 5.** Beta data may tune. | §3.4 |
-| R-2 | Learned suggestions on project deletion | **Drop.** Project-scoped data goes with the project. | §3.4 |
-| R-3 | Org-shared vs user rules precedence | **Org-shared rules apply first; user can override per-project (V2.0 UI).** | §3.1 |
+| R-1 | Learning threshold (occurrences before promotion) | **Configurable per workspace; default 5.** Beta data may tune. | §3.4 |
+| R-2 | Learned suggestions on workspace deletion | **Drop.** Workspace-scoped data goes with the workspace (workspaces are archived; the learned rows are dropped on deletion). | §3.4 |
+| R-3 | Org-shared vs user rules precedence | **Org-shared rules apply first; user can override per-workspace (V2.0 UI).** | §3.1 |
 | R-4 | LLM-ranked mode (V1.5) | **Pluggable LLM provider** (Claude CLI / Codex CLI / Gemini CLI / direct API). User picks in Settings → Suggestion Engine → Ranking. Defaults to cheapest model available; daily budget cap; 1.5s timeout fallback to frequency ranker; `enterpriseDataPrivacy` disables external backends. | §3.11 (new) |
 | R-5 | Multi-language prompt support | **Out of scope V1.0** — user types whatever language. | (deferred) |
 | R-6 | Chips during voice-input mode (mobile) | **Show chips.** Voice + chips are complementary. | (cross-ref `16`) |
 | R-7 | Two rules emit same chip text | **Dedup by text; merge priority; emit once.** | §3.1 |
-| R-8 | Culturally biased best-practice triggers | **Per-project opt-out per rule.** V1.5 may add multi-workflow variants if data shows demand. | §3.2, §3.7 |
+| R-8 | Culturally biased best-practice triggers | **Per-workspace opt-out per rule.** V1.5 may add multi-workflow variants if data shows demand. | §3.2, §3.7 |
 | R-9 | Chip cap per turn | **4 visible + overflow** in "More ▾". | §3.1 |
 | R-10 | Rule packs per language/framework | **V2.0.** Universal pack ships V1.0; framework packs add value once ecosystem stabilizes. | (V2.0) |
 

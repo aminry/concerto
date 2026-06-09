@@ -12,6 +12,7 @@
 //   - crashed  → red
 //   - created | paused | archived → grey
 
+import { formatError } from "../api/errors";
 import { useWorkareas } from "../hooks/useWorkareas";
 import { useUiStore } from "../state/useUiStore";
 import { StatusDot } from "./ui/status-dot";
@@ -19,21 +20,14 @@ import { workareaStatusToDot } from "../lib/workareaStatus";
 
 export type WorkareaListProps = {
   workspaceId: string;
-  /// Parent project of this workspace. Selecting a workarea pins it so the
-  /// repo-scoped surfaces (`CodePrRegion`, `WorkspaceDetail`, …) that read
-  /// `selectedProjectId` resolve against the right project, even when the
-  /// user reaches the workarea inside a non-active project's subtree.
-  projectId?: string;
 };
 
 export function WorkareaList({
   workspaceId,
-  projectId,
 }: WorkareaListProps): JSX.Element {
   const query = useWorkareas(workspaceId);
   const selectedWorkareaId = useUiStore((s) => s.selectedWorkareaId);
   const setSelectedWorkarea = useUiStore((s) => s.setSelectedWorkarea);
-  const setSelectedProject = useUiStore((s) => s.setSelectedProject);
 
   if (query.isLoading) {
     return <p className="text-xs text-faint">Loading workareas…</p>;
@@ -41,7 +35,7 @@ export function WorkareaList({
   if (query.isError) {
     return (
       <p className="text-xs text-err">
-        Failed: {String(query.error)}
+        Failed: {formatError(query.error)}
       </p>
     );
   }
@@ -62,7 +56,6 @@ export function WorkareaList({
               type="button"
               className={buttonClass}
               onClick={() => {
-                if (projectId) setSelectedProject(projectId);
                 setSelectedWorkarea(wa.id);
               }}
             >

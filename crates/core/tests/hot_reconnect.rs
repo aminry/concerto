@@ -80,36 +80,25 @@ async fn make_persistence() -> (TempDir, Arc<Persistence>, PathBuf) {
 async fn seed_workarea(persistence: &Persistence) -> WorkareaId {
     let mut writer = persistence.writer().await;
     let now: i64 = 0;
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
-        .bind("proj-1")
-        .bind("test-project")
-        .bind(now)
-        .execute(&mut *writer)
-        .await
-        .unwrap();
     sqlx::query(
-        "INSERT INTO repositories (id, project_id, name, url, local_path, clone_strategy, default_branch)
-         VALUES (?, ?, ?, ?, ?, 'full', 'main')",
+        "INSERT INTO repositories (id, name, url, local_path, clone_strategy, default_branch)
+         VALUES (?, ?, ?, ?, 'full', 'main')",
     )
     .bind("repo-1")
-    .bind("proj-1")
     .bind("repo-name")
     .bind("file:///tmp/fake")
     .bind("/tmp/fake")
     .execute(&mut *writer)
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO workspaces (id, project_id, name, slug, created_at) VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind("ws-1")
-    .bind("proj-1")
-    .bind("ws-1")
-    .bind("ws-1")
-    .bind(now)
-    .execute(&mut *writer)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO workspaces (id, name, slug, created_at) VALUES (?, ?, ?, ?)")
+        .bind("ws-1")
+        .bind("ws-1")
+        .bind("ws-1")
+        .bind(now)
+        .execute(&mut *writer)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO workspace_repos (workspace_id, repository_id) VALUES (?, ?)")
         .bind("ws-1")
         .bind("repo-1")

@@ -51,9 +51,13 @@ export function SparseConeDialog({
 
   const mutation = useMutation({
     mutationFn: () => setRepoConeDefaults(repository.id, selected),
-    onSuccess: (res) => {
-      const n = res.workareas_updated;
-      setSavedNote(`Updated ${n} workarea${n === 1 ? "" : "s"}.`);
+    onSuccess: (repo) => {
+      const n = repo.cone_defaults?.length ?? 0;
+      setSavedNote(
+        n === 0
+          ? "Cleared the default cone."
+          : `Saved ${n} director${n === 1 ? "y" : "ies"} as the default.`,
+      );
       if (invalidateKey) {
         void queryClient.invalidateQueries({ queryKey: invalidateKey });
       }
