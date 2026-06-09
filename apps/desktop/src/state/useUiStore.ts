@@ -82,6 +82,10 @@ export type UiStore = {
   /// True while the New Workspace modal is open. The renderer-only
   /// flag keeps the modal state inspectable in dev tools.
   newWorkspaceModalOpen: boolean;
+  /// Workspace currently being edited (gear button), or null. Drives the
+  /// EditWorkspaceModal. UI-only.
+  editWorkspaceId: string | null;
+  setEditWorkspaceId: (id: string | null) => void;
   /// True when Settings (currently just Add Repository) is on screen.
   settingsOpen: boolean;
   /// Task 219 — true when the Connect-to-Core picker is on screen. UI-only;
@@ -191,6 +195,7 @@ export const useUiStore = create<UiStore>((set) => ({
   sidebarCollapsed: false,
   expandedWorkspaces: new Set<string>(),
   newWorkspaceModalOpen: false,
+  editWorkspaceId: null,
   settingsOpen: false,
   connectCoreOpen: false,
   pairingOpen: false,
@@ -237,6 +242,7 @@ export const useUiStore = create<UiStore>((set) => ({
       return { expandedWorkspaces: next };
     }),
   setNewWorkspaceModalOpen: (open) => set({ newWorkspaceModalOpen: open }),
+  setEditWorkspaceId: (id) => set({ editWorkspaceId: id }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setConnectCoreOpen: (open) => set({ connectCoreOpen: open }),
   setPairingOpen: (open) => set({ pairingOpen: open }),
