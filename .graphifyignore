@@ -1,0 +1,21 @@
+# graphify scope control — keep the knowledge graph limited to the source that
+# matters (crates/, apps/, design/) so full rebuilds (post-checkout hook,
+# `graphify update`) don't silently expand to the whole repo.
+#
+# Whitelist form (gitignore syntax, as documented in the graphify README):
+# ignore everything, then re-include only the three source trees. This is
+# self-maintaining — any new top-level folder is excluded by default, and it
+# does not depend on the root .gitignore (which graphify shadows once a
+# .graphifyignore exists in the same directory).
+#
+# Build/VCS noise (target/, node_modules/, dist/, .git/) is also handled by
+# graphify's built-in skip list, independent of these rules.
+
+*
+
+!crates/
+!crates/**
+!apps/
+!apps/**
+!design/
+!design/**
