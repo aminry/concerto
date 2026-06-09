@@ -221,7 +221,7 @@ The hardest phase and the dependency root for all remote features. Heavy Tier-2 
 | 318 | Scheduler `wait_for_check_runs` primitive (poll + backoff + webhook), consumed by PR-set merge | 315 | 1 | rust |
 | 319 | PR-set semantics: implicit per-workarea, `merge_order`, `GetPrSet` | 308, 313 | 1 | rust |
 | 320 | Coordinated merge loop (merge → wait_for_check_runs → continue/pause-on-fail) + coordinated revert | 318, 319 | 2 | rust |
-| 320.5 | Linear/Jira issue write-back on coordinated-merge completion (per-project opt-in; reuses 317's seam; added 2026-06-05 per decision D5) | 317, 320 | 2 | rust |
+| 320.5 | Linear/Jira issue write-back on coordinated-merge completion (per-workspace opt-in; reuses 317's seam; added 2026-06-05 per decision D5) | 317, 320 | 2 | rust |
 | 321 | LLM-composed PR title/body (on by default, 2s deterministic fallback) | 313, 312, 310 | 1 | rust |
 | 322 | Desktop: multi-repo session UI + sparse-cone picker | 302, 306, 218 | 2 | web-ts |
 | 323 | Desktop: parallel workareas + multi-agent session tabs UI | 308, 218 | 2 | web-ts |
