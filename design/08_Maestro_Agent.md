@@ -44,25 +44,35 @@ It does **not** own: writing code (no edit/shell tools); modifying workareas dir
 
 ### 3.1 The Maestro is itself an agent process
 
-**Choice:** The Maestro runs as a long-lived agent process supervised by 04 — same `concerto-agent-host` machinery as workarea sessions, but:
+**Choice:** The Maestro runs as a long-lived **PTY-CLI session** under the Agent Supervisor (04) — concretely, a session spawned through the existing `AgentSupervisorHandle::start_session(StartSessionRequest{ workarea_id, agent_kind, echo_text, cwd, permission_mode, resume_session_id }) -> SessionId` (built signature: `crates/core/src/agent_supervisor/actor.rs:368`, struct at `:94`), under a **new `AgentKind::Maestro`** variant. It reuses the same `concerto-agent-host` machinery (PTY + CBOR-over-UDS, §3.6 of `04`) as workarea sessions, but:
 
-- The agent CLI is invoked with **our** tool set (via Claude Code's tool-config or MCP), not the default.
-- Working directory is `~/concerto/maestro/` (a scratch dir; not a worktree).
+- The agent CLI is invoked with **our** tool set served by the in-process `concerto-maestro-mcp` server (§3.2) — dialed via the CLI's own `--mcp-config` + `--strict-mcp-config`, not the default tools.
+- Working directory is `cwd = ~/concerto/maestro/` (a scratch dir created at spawn; **not** a worktree, **no** edit-mutex — the Maestro has no file-edit tools).
 - The agent has no file-edit, no shell, no network — a strictly restricted toolset.
-- Permission mode is always `strict` (every Maestro tool call is intercepted by 04's PermissionResolver, except those classified as `ReadOnly`).
+- `permission_mode = "strict"` (every Maestro write tool call is intercepted by 04's PermissionResolver; the read tools are classified `ToolClass::ReadOnly` and auto-approve under strict — see `04 §3.10`).
+- **Tool calls ride MCP, not PTY-scrape.** The Maestro uses a **no-op / structured parser pack** — its tool calls arrive over the `concerto-maestro-mcp` transport, so it does **not** reuse the fragile `ClaudeCodePack` terminal-regex scraper for tool-call extraction.
 
 **Why "an agent" rather than a custom orchestrator:**
 - Reuses 04's lifecycle, host-survival, cold-resume, token tracking.
 - Stays close to the underlying agent's reasoning loop — natural language in, structured tool calls out.
 - Same UI patterns (chips, voice, attachments).
 
-### 3.2 Tool definitions: MCP server hosted in-Core
+> **Built-state reconciliation (2026-06-09).** `AgentKind` on `main` is `{Echo, Claude, Codex, Gemini}` with **no `Maestro` arm** (`crates/core/src/agent_supervisor/actor.rs:66`); `resolve_agent_bin` (`actor.rs:1818`) hardcodes `("claude", ["--dangerously-skip-permissions"])` and passes **no** `--mcp-config`/`--strict-mcp-config`/model/preamble/permission-mode. The `sessions.agent_kind` CHECK already accepts `'maestro'` (schema pre-provisioned). **Task 402** adds the `AgentKind::Maestro` variant (`as_db_kind`/`from_db_kind`/`resolve_agent_bin` spawn arm/parser-pack match/`parse_agent_kind`) + the scratch-cwd + strict-mode spawn — **FROZEN by Task 402** (PHASE4_PLANNING §4.8). This doc only pins the shape; it writes no code, adds no proto/Rust-api/SQL, and reserves no migration — `scripts/regen-interfaces.sh` produces an **empty diff** for this commit (do not expect a `docs/interfaces/` change from a doc-only reconciliation).
 
-**Choice:** Concerto ships a built-in MCP server, `concerto-maestro-mcp`, that exposes the Maestro tools (§5.1) over the MCP wire protocol. When the Maestro agent spawns, the supervisor configures it with only this MCP server (no filesystem, no shell). The agent calls the tools via standard MCP semantics.
+### 3.2 Tool definitions: net-new in-process MCP server + Core↔CLI MCP-stdio transport
+
+**Choice:** Concerto hosts a built-in, **in-process `rmcp` stdio MCP server** named `concerto-maestro-mcp` (module `crates/core/src/maestro/mcp.rs` — the **first** MCP *server* in the codebase) that exposes the Maestro tools (§5.1) over the MCP wire protocol. When the Maestro agent spawns, the supervisor configures the CLI to dial **only** this server via the **CLI's own `--mcp-config`** (pointing at the stdio endpoint) **+ `--strict-mcp-config`** (so ONLY the 16 Maestro tools are visible — no filesystem, no shell, no other MCP servers). The agent calls the tools via standard MCP semantics.
 
 **Why MCP:** it's the contract the agent CLIs already speak. We don't invent a new tool-calling shape; we leverage what's there.
 
-The Concerto MCP server is the **same binary as the Core** running an in-process MCP transport (stdio over a pipe to the agent host). No separate process.
+The `concerto-maestro-mcp` server runs **in-process inside the Core** (same binary, no separate process). It is reached by an `rmcp` **stdio MCP transport** — a **net-new** mechanism with no precedent in the codebase.
+
+> **Built-state reconciliation (2026-06-09).** This transport **does not exist yet**, and the prior design language above ("in-process MCP transport, stdio over a pipe to the agent host") conflated two unrelated things. To be precise:
+> - The existing `concerto-agent-host` is **PTY + CBOR-over-UDS *terminal* multiplexing** (`04 §3.6`/§3.9) — it is **NOT** an MCP transport. The Maestro's MCP stdio transport is a separate, net-new channel the CLI opens directly to the in-process `rmcp` server; the agent-host PTY stream and the MCP stdio stream are distinct.
+> - The only MCP code on `main` today is **read-only config *discovery*** — `crates/core/src/agent_supervisor/mcp.rs:54` (`McpServer`) / `:73` (`McpScope`) / `:162` (list servers) parse `~/.claude/mcp.json`-style config files; there is **no MCP server** and `rmcp` is not in the workspace. Do **not** mistake `agent_supervisor/mcp.rs` for "the existing MCP server to wire up."
+> - `rmcp` is a **net-new workspace dependency**; adding it is a `cargo deny` operator **Stop-and-ask** (the Task 313 octocrab/RUSTSEC precedent).
+>
+> **FROZEN by Task 401** (PHASE4_PLANNING §4.1): the `rmcp` add, the `crates/core/src/maestro/mcp.rs` module, the transport, and the 16 frozen tool schemas. The 16-tool split (11 read / 5 write / 2 side-channel, §5.1) is correct as written — this section only makes concrete **how** the tools reach the agent, not which tools exist.
 
 ### 3.3 Reading state — summaries by default, at the workarea grain
 
@@ -197,6 +207,8 @@ The output is rendered above the standard chat composer. Chips come from 07.
 
 Target: < 5s p50 (PRD §22.3) — measured from `GetDigest` RPC to UI render.
 
+> **Built-state reconciliation (2026-06-09).** The `generate_digest()` block above is **pseudo-code over not-yet-built seams**, not a built API. `next_step_chips`, `compute_deltas`, and `LLM.complete(..., model=sonnet)` have no implementation on `main`. The **live V1.0** summarizer/digest path is the deterministic fallback `DeterministicOneShot` via the FROZEN `OneShotLlm` seam (Task 312; `ActionKind::DigestSummary`); the real-LLM digest is **Task 412**'s separate provider seam, judged for quality + latency at the Phase-4 Tier-3 gate. The Maestro's digest **chips** are persisted on the digest's `chat_messages` row (Task 409), **not** left in 07's volatile ~60s suggestion buffer. A future reader should not mistake this pseudo-code for a built signature.
+
 ### 3.7 Maestro chat history — daily condensation
 
 **Choice:** The Maestro's chat grows continuously. To keep token cost bounded:
@@ -249,6 +261,10 @@ When the budget is exceeded:
 
 For enterprise with on-prem LLMs (Bedrock with VPC, Vertex, Azure AI Foundry, local): use the **Direct API** backend with the appropriate base URL.
 
+**V1.0 backend scope (PHASE4_PLANNING D1).** Of the four backends above, the **three CLI backends — Claude / Codex / Gemini — ship LIVE** in V1.0, reusing the existing `concerto-agent-host` PTY machinery + the `AgentKind::Maestro` spawn (§3.1). The **Direct API backend ships as a FROZEN, unwired Tier-1 seam** — a native function-call loop with no precedent in the codebase — that returns a typed `unimplemented` (never `todo!()`/`unimplemented!()`, never empty-success) until a fast-follow wires it. Consequence (recorded in §3.10): with `enterpriseDataPrivacy=true` and an external model, Maestro is **disabled**, so for V1.0 such orgs get **routing only** (deterministic, zero-token) and **never an external-model digest**; on-prem Direct-API Maestro (Bedrock-VPC / Vertex / Azure AI Foundry) is a **Tier-3 gate / fast-follow**, outside V1.0's automatable bar. The daily budget is **cumulative across backends** but is owned/wired by Tasks 403 (the `maestro_state` counters, migration 0015) and 412 (the counting + inert-on-exhaust), not by this design edit.
+
+> **Built-state reconciliation (2026-06-09).** There is **zero** Maestro provider abstraction and **zero** token accounting on `main` (`AgentEvent::ContextUsage{pct}` is wired-but-never-emitted and is **not** the budget carrier). The interactive-agent provider-selection seam (which CLI + model + Maestro preamble + `--mcp-config` + strict mode + scratch cwd to launch) is **FROZEN by Task 402 with Claude CLI live**, and **extended by Task 412** (Codex/Gemini live + the `DirectApiProvider` frozen-unwired arm + the daily budget) — PHASE4_PLANNING §4.3. This seam is distinct from the one-shot `OneShotLlm` (§3.6) used for summaries/digests.
+
 ### 3.10 `enterpriseDataPrivacy` interaction
 
 When `managed.json.enterpriseDataPrivacy = true`:
@@ -257,6 +273,8 @@ When `managed.json.enterpriseDataPrivacy = true`:
 - If the Maestro's model is **on-prem** (Bedrock with VPC, Vertex, Azure AI Foundry, local LLM): Maestro works normally.
 
 Routing still works in all modes (deterministic, no LLM).
+
+> **Built-state reconciliation (2026-06-09).** Because the on-prem path requires the **Direct API backend**, and Direct-API is a **frozen-unwired Tier-1 seam in V1.0** (§3.9, PHASE4_PLANNING D1), the *only* live consequence in V1.0 is the disabled branch: `enterpriseDataPrivacy=true` + an external CLI model ⇒ **Maestro disabled ⇒ routing-only** (deterministic, no external-model digest). The "works normally on-prem" branch is a **fast-follow + Phase-4 Tier-3 gate** item once Direct-API is wired (the operator confirms at the gate that `enterpriseDataPrivacy=true` truly yields routing-only / no external-model digest). The disabled-by-policy behavior is enforced by **Task 413** (the `WorkspaceSettingsResolver::enterprise_data_privacy()` gate before any external summary/digest).
 
 ---
 
@@ -329,9 +347,15 @@ notify_user(text, severity)                            → goes through 14
 propose_chip(chip)                                     → adds to current slate
 ```
 
-**16 tools total.** Read-only for most; mutations (route, create, pause, propose_chip) surface as confirmation chips before executing for any **user-visible** side effect.
+**16 tools total**, classified for 04's strict-mode permission matrix (`04 §3.10`):
 
-The `concerto-maestro-mcp` server runs in-process (same Core binary, stdio transport to the Maestro agent host). It is **not** the same as `concerto-mcp` — that server is for **workarea sessions** and exposes workarea-introspection tools (see `04 §3.11`). The Maestro never sees `concerto-mcp`; workarea sessions never see `concerto-maestro-mcp`. Two distinct tool surfaces, two distinct roles.
+- **11 read tools → `ToolClass::ReadOnly`** (auto-approve under strict): `list_workspaces`, `list_workareas`, `list_sessions`, `get_workspace_summary`, `get_workarea_summary`, `list_recent_activity`, `list_active_schedules`, `read_inbox_summary`, `read_pr_set_for_workarea`, `get_workarea_recent_commits`, `cross_workarea_search`.
+- **5 write tools + `propose_chip` → `MustAsk` under strict** (surfaced as the existing `AwaitingApproval`/`ResolveApproval` confirmation chip, carrying `urgent`/`destructive_label`): `route_prompt_to_session`, `fanout_to_sessions`, `create_workspace`, `create_workarea`, `set_workarea_paused`, and `propose_chip`. **No bypass** of the write-tool confirmation (R-2).
+- `notify_user` is a side-channel that **routes to 14** (not a confirmation chip).
+
+(The matching `ToolClass::ReadOnly` rule + the 11-read/5-write classification live in `04 §3.10`; keep the tool names identical across the two docs. The new permission class is **FROZEN by Task 402** — PHASE4_PLANNING §4.8.)
+
+The `concerto-maestro-mcp` server runs **in-process** (same Core binary) over the net-new `rmcp` **stdio MCP transport** (§3.2 — distinct from the agent-host PTY/CBOR-over-UDS stream). It is **not** the same as `concerto-mcp` — that server is for **workarea sessions** and exposes workarea-introspection tools (see `04 §3.6`/§3.11). The Maestro never sees `concerto-mcp`; workarea sessions never see `concerto-maestro-mcp`. Two distinct tool surfaces, two distinct roles — but the **same net-new CLI-dialed `--mcp-config` + `--strict-mcp-config` stdio transport** mechanism (neither server exists on `main` today; `concerto-maestro-mcp` is the **first** instance, FROZEN by Task 401).
 
 ### 5.2 Public Rust API (Core-side)
 
