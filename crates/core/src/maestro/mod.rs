@@ -56,6 +56,19 @@ pub mod tools;
 // ===========================================================================
 pub mod handle;
 
+// ===========================================================================
+// Task 402 region — DISTINCT additive zone (do NOT merge with 401's `pub mod
+// mcp;`/`pub mod tools;` above, nor with 404/408/410's future lines). Keeping
+// the 402 additions in their own block lets the concurrent siblings (401.5,
+// 404, 410) auto-merge on rebase per PHASE4_PLANNING §8.1.
+//
+// The Maestro provider-selection seam (which CLI binary + model + preamble +
+// `--mcp-config` + strict + scratch cwd to launch). FROZEN by 402 (Claude
+// live), extended by 412 (Codex/Gemini live + the Direct-API frozen-unwired
+// arm). See PHASE4_PLANNING §4.3 / D1/D5.
+pub mod provider;
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
@@ -64,3 +77,108 @@ pub use tools::{all_tools, dispatch, ToolDescriptor, ToolKind};
 
 // Task 401.5 — re-export the frozen handle surface (additive).
 pub use handle::{MaestroHandle, MaestroStateView};
+
+// Task 402 re-exports (distinct region — see above).
+pub use provider::{
+    ClaudeCliProvider, DirectApiProvider, MaestroLaunchContext, MaestroLaunchSpec, MaestroProvider,
+    MAESTRO_PERMISSION_MODE, MAESTRO_PREAMBLE,
+};
+
+// ===========================================================================
+// Task 402 — the Maestro spawn-config constructor + the scratch-cwd convention
+// (PHASE4_PLANNING §4.8 / §2). The boot-time call site + the
+// `enterpriseDataPrivacy`-disabled gate are Task 414's; here we freeze the
+// pure constructor + the scratch-dir convention so 414 just calls it.
+// ===========================================================================
+
+use std::path::{Path, PathBuf};
+
+use concerto_error::{Error, Result};
+
+use crate::agent_supervisor::{AgentKind, StartSessionRequest};
+use concerto_persist::WorkareaId;
+
+/// The Maestro scratch working directory relative to the user's home:
+/// `~/concerto/maestro/`. A scratch dir, NOT a worktree — the Maestro has no
+/// file-edit tools, so there is no edit-mutex (PHASE4_PLANNING §2 / D4).
+pub const MAESTRO_SCRATCH_SUBDIR: &str = "concerto/maestro";
+
+/// Resolve the Maestro scratch directory (`~/concerto/maestro/`) from the
+/// user's home directory. Mirrors `ensure_claude_trusts_dir`'s `home::home_dir`
+/// resolution so the path is consistent across the supervisor and the provider.
+pub fn maestro_scratch_dir() -> Result<PathBuf> {
+    let home = home::home_dir().ok_or_else(|| {
+        Error::Internal("cannot resolve home dir for the Maestro scratch cwd".into())
+    })?;
+    Ok(home.join(MAESTRO_SCRATCH_SUBDIR))
+}
+
+/// Create the Maestro scratch directory (idempotent) and return its path. Call
+/// before spawning the Maestro session so the CLI's cwd exists. The directory
+/// is created with the platform default permissions; it holds only the CLI's
+/// transient session state (no user repo data).
+pub fn ensure_maestro_scratch_dir() -> Result<PathBuf> {
+    let dir = maestro_scratch_dir()?;
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+    Ok(dir)
+}
+
+/// Build the [`StartSessionRequest`] that spawns the long-lived Maestro session
+/// under the Agent Supervisor (PHASE4_PLANNING §4.8). Pure: it constructs the
+/// request (`agent_kind = Maestro`, `permission_mode = "strict"`, `cwd =
+/// scratch_dir`) without touching the supervisor — Task 414 calls this at boot
+/// (gated on `maestro_state.enabled` + the `enterpriseDataPrivacy` policy) and
+/// hands the result to `start_session`, reusing host-survival / cold-resume
+/// verbatim.
+///
+/// `workarea_id` is the placeholder workarea the Maestro singleton is recorded
+/// against; `scratch_cwd` is [`ensure_maestro_scratch_dir`]'s result.
+pub fn maestro_start_request(workarea_id: WorkareaId, scratch_cwd: PathBuf) -> StartSessionRequest {
+    StartSessionRequest {
+        workarea_id,
+        agent_kind: AgentKind::Maestro,
+        echo_text: None,
+        cwd: scratch_cwd,
+        // The Maestro ALWAYS runs strict: reads auto-approve via
+        // ToolClass::ReadOnly, writes/propose_chip surface as confirmation
+        // chips (Task 402's permission matrix).
+        permission_mode: Some(provider::MAESTRO_PERMISSION_MODE.to_string()),
+        // First spawn — no cold-resume token. Cold-resume after a Core restart
+        // is the supervisor's `cold_resume_session` path (found via the
+        // chats(kind='maestro') singleton), unchanged by this task.
+        resume_session_id: None,
+    }
+}
+
+/// Pre-seed Claude's folder-trust record for the Maestro scratch dir so the
+/// CLI's interactive "trust this folder?" dialog never blocks the strict
+/// Maestro session. Delegates to the supervisor's
+/// [`crate::agent_supervisor::ensure_claude_trusts_dir`] (the same trust-preseed
+/// pattern used for workarea sessions). Idempotent.
+pub fn ensure_maestro_scratch_trusted(scratch_cwd: &Path) -> Result<()> {
+    crate::agent_supervisor::ensure_claude_trusts_dir(scratch_cwd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scratch_subdir_is_concerto_maestro() {
+        assert_eq!(MAESTRO_SCRATCH_SUBDIR, "concerto/maestro");
+        // The resolved path ends with the scratch subdir under $HOME.
+        let dir = maestro_scratch_dir().expect("home dir resolves in test env");
+        assert!(dir.ends_with("concerto/maestro"));
+    }
+
+    #[test]
+    fn maestro_start_request_is_strict_maestro_in_scratch_cwd() {
+        let scratch = PathBuf::from("/home/user/concerto/maestro");
+        let req = maestro_start_request(WorkareaId("wa-maestro".into()), scratch.clone());
+        assert_eq!(req.agent_kind, AgentKind::Maestro);
+        assert_eq!(req.permission_mode.as_deref(), Some("strict"));
+        assert_eq!(req.cwd, scratch);
+        assert!(req.resume_session_id.is_none());
+        assert!(req.echo_text.is_none());
+    }
+}

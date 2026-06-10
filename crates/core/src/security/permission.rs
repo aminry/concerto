@@ -353,6 +353,13 @@ pub enum ToolClass {
     Safe,
     Restricted,
     Dangerous,
+    /// Task 402 (PHASE4_PLANNING §4.8 / D4): read-only Maestro tools that
+    /// **auto-approve under `strict`** — the one loosening of the
+    /// `(Strict, _) ⇒ MustAsk` rule (design/08 §3.2/§3.10's "strict but reads
+    /// auto-approved"). Distinct from [`ToolClass::Safe`], whose `strict`
+    /// behaviour stays `MustAsk` so existing PTY-session semantics are
+    /// unchanged. Only the 11 Maestro read tools classify `ReadOnly`.
+    ReadOnly,
 }
 
 /// One of the four resolver verdicts. Mirrors the wire enum in
@@ -448,16 +455,23 @@ impl PermissionResolver {
     pub fn decide(&self, tool: &str) -> Decision {
         let class = self.classify(tool);
         match (self.mode, class) {
+            // Task 402 (D4): the ONLY strict-mode loosening — read-only Maestro
+            // tools auto-approve under strict. MUST stay ABOVE the catch-all
+            // `(Strict, _)` below so it wins; every other class (Safe /
+            // Restricted / Dangerous) keeps the unchanged strict `MustAsk`.
+            (PermissionMode::Strict, ToolClass::ReadOnly) => Decision::AutoApprove,
             (PermissionMode::Strict, _) => Decision::MustAsk,
             (PermissionMode::Normal, ToolClass::Safe) => Decision::AutoApprove,
             (PermissionMode::Normal, _) => Decision::MustAsk,
-            (PermissionMode::Auto, ToolClass::Safe | ToolClass::Restricted) => {
-                Decision::AutoApprove
-            }
+            (
+                PermissionMode::Auto,
+                ToolClass::Safe | ToolClass::Restricted | ToolClass::ReadOnly,
+            ) => Decision::AutoApprove,
             (PermissionMode::Auto, ToolClass::Dangerous) => Decision::MustAsk,
-            (PermissionMode::Yolo, ToolClass::Safe | ToolClass::Restricted) => {
-                Decision::AutoApprove
-            }
+            (
+                PermissionMode::Yolo,
+                ToolClass::Safe | ToolClass::Restricted | ToolClass::ReadOnly,
+            ) => Decision::AutoApprove,
             (PermissionMode::Yolo, ToolClass::Dangerous) => {
                 if self.bypass_destructive_guard {
                     Decision::AutoApprove
@@ -592,6 +606,67 @@ mod tests {
         assert_eq!(r.decide("Read"), Decision::MustAsk);
         assert_eq!(r.decide("Write"), Decision::MustAsk);
         assert_eq!(r.decide("Delete"), Decision::MustAsk);
+    }
+
+    /// Task 402 (D4): under `strict`, the 11 Maestro read tools auto-approve
+    /// (the `ReadOnly` loosening); the 5 write tools + `propose_chip` /
+    /// `notify_user` still `MustAsk`; and — the no-regression guard — the
+    /// existing `Safe`/`Restricted`/`Dangerous` classes still `MustAsk`.
+    #[test]
+    fn decide_matrix_strict_maestro_read_only_auto_approves_writes_must_ask() {
+        let r = PermissionResolver::new(PermissionMode::Strict, false);
+
+        // The 11 ReadOnly Maestro tools auto-approve under strict.
+        const READ_TOOLS: [&str; 11] = [
+            "list_workspaces",
+            "list_workareas",
+            "list_sessions",
+            "get_workspace_summary",
+            "get_workarea_summary",
+            "list_recent_activity",
+            "list_active_schedules",
+            "read_inbox_summary",
+            "read_pr_set_for_workarea",
+            "get_workarea_recent_commits",
+            "cross_workarea_search",
+        ];
+        for tool in READ_TOOLS {
+            assert_eq!(
+                r.decide(tool),
+                Decision::AutoApprove,
+                "{tool} (ReadOnly) must auto-approve under strict"
+            );
+        }
+
+        // The 5 write tools + the 2 side-channels stay MustAsk under strict
+        // (Restricted fallthrough ⇒ the confirmation-chip flow).
+        const MUST_ASK_TOOLS: [&str; 7] = [
+            "route_prompt_to_session",
+            "fanout_to_sessions",
+            "create_workspace",
+            "create_workarea",
+            "set_workarea_paused",
+            "propose_chip",
+            "notify_user",
+        ];
+        for tool in MUST_ASK_TOOLS {
+            assert_eq!(
+                r.decide(tool),
+                Decision::MustAsk,
+                "{tool} must still MustAsk under strict"
+            );
+        }
+
+        // No-regression: the existing Safe/Restricted/Dangerous PTY-session
+        // classes are UNCHANGED under strict — still MustAsk.
+        assert_eq!(r.classify("Read"), ToolClass::Safe);
+        assert_eq!(r.decide("Read"), Decision::MustAsk);
+        assert_eq!(r.classify("Write"), ToolClass::Restricted);
+        assert_eq!(r.decide("Write"), Decision::MustAsk);
+        assert_eq!(r.classify("Delete"), ToolClass::Dangerous);
+        assert_eq!(r.decide("Delete"), Decision::MustAsk);
+        // An unknown tool name (Restricted fallthrough) still MustAsk too.
+        assert_eq!(r.decide("Mystery"), Decision::MustAsk);
     }
 
     #[test]
