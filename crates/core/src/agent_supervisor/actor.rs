@@ -48,9 +48,11 @@ use crate::agent_supervisor::bridge::{
 };
 use crate::agent_supervisor::events::{AgentEvent, MessageRole};
 use crate::agent_supervisor::parsers::{
-    claude_code::ClaudeCodePack, echo::EchoPack, MsgRole, ParseEvent, ParserPack,
+    claude_code::ClaudeCodePack, echo::EchoPack, maestro::MaestroPack, MsgRole, ParseEvent,
+    ParserPack,
 };
 use crate::agent_supervisor::spawn::{spawn_host, wait_for_socket, SOCKET_POLL_BUDGET};
+use crate::maestro::MaestroProvider;
 use crate::security::{is_destructive, Decision, DestructiveMatch, PermissionResolver};
 use crate::supervisor::{Actor, ActorContext};
 
@@ -68,6 +70,14 @@ pub enum AgentKind {
     Claude,
     Codex,
     Gemini,
+    /// Task 402 (PHASE4_PLANNING §4.8): the long-lived Maestro orchestration
+    /// agent. Runs as a strict-mode PTY-CLI session whose tools are served by
+    /// the in-process `concerto-maestro-mcp` server (Task 401), dialed via the
+    /// CLI's `--mcp-config` + `--strict-mcp-config`. Uses the no-op/structured
+    /// [`MaestroPack`](crate::agent_supervisor::parsers::maestro::MaestroPack)
+    /// parser (its tool calls ride MCP, not the PTY scrape) and a scratch cwd
+    /// (`~/concerto/maestro/`), NOT a worktree.
+    Maestro,
 }
 
 impl AgentKind {
@@ -85,6 +95,28 @@ impl AgentKind {
             AgentKind::Claude => "claude",
             AgentKind::Codex => "codex",
             AgentKind::Gemini => "gemini",
+            // Task 402: the `sessions.agent_kind` CHECK set already admits
+            // `'maestro'` (pre-provisioned by migration 0001/Phase-4 schema),
+            // so no migration is needed for this round-trip.
+            AgentKind::Maestro => "maestro",
+        }
+    }
+
+    /// Cold-resume inverse of [`as_db_kind`](Self::as_db_kind): map a stored
+    /// `sessions.agent_kind` string back to the in-process [`AgentKind`].
+    ///
+    /// V0.1's `echo` path is stored as `claude`, so a cold-resumed echo test
+    /// row maps to `Claude` — fine, because the wrapped CLI is `claude` either
+    /// way. Unknown strings return `None` (the caller surfaces a typed error).
+    /// Task 402 adds the `"maestro"` arm so the Maestro singleton survives a
+    /// Core restart via `cold_resume_session`.
+    pub fn from_db_kind(s: &str) -> Option<AgentKind> {
+        match s {
+            "claude" => Some(AgentKind::Claude),
+            "codex" => Some(AgentKind::Codex),
+            "gemini" => Some(AgentKind::Gemini),
+            "maestro" => Some(AgentKind::Maestro),
+            _ => None,
         }
     }
 }
@@ -374,7 +406,10 @@ impl AgentSupervisorHandle {
                     req.agent_kind
                 )));
             }
-            AgentKind::Echo | AgentKind::Claude => {}
+            // Task 402: the Maestro spawns through the same spine as Claude
+            // (its binary/model/mcp-config come from the MaestroProvider seam
+            // via `resolve_agent_bin`). Allow it through here.
+            AgentKind::Echo | AgentKind::Claude | AgentKind::Maestro => {}
         }
 
         // Validate the workarea exists. The Workarea Manager is
@@ -517,7 +552,10 @@ impl AgentSupervisorHandle {
         // record Claude writes when the user clicks "Yes, I trust" so the
         // dialog never appears. The workarea is a git worktree of the
         // user's own repo, trusted by construction.
-        if matches!(req.agent_kind, AgentKind::Claude) {
+        // Task 402: the Maestro's live backend is the Claude CLI too, so its
+        // scratch cwd (`~/concerto/maestro/`) needs the same folder-trust
+        // pre-seed (it runs strict, never `--dangerously-skip-permissions`).
+        if matches!(req.agent_kind, AgentKind::Claude | AgentKind::Maestro) {
             if let Err(e) = ensure_claude_trusts_dir(&req.cwd) {
                 tracing::warn!(
                     error = %e,
@@ -629,6 +667,10 @@ impl AgentSupervisorHandle {
         let parser: Arc<dyn ParserPack> = match req.agent_kind {
             AgentKind::Echo => Arc::new(EchoPack::new()),
             AgentKind::Claude => Arc::new(ClaudeCodePack::new()),
+            // Task 402: the Maestro's tool calls ride the MCP channel, NOT the
+            // PTY scrape — use the no-op/structured MaestroPack, never the
+            // fragile ClaudeCodePack scraper.
+            AgentKind::Maestro => Arc::new(MaestroPack::new()),
             AgentKind::Codex | AgentKind::Gemini => unreachable!("rejected above"),
         };
         let pending_approvals: Arc<Mutex<PendingApprovals>> =
@@ -1245,16 +1287,16 @@ impl AgentSupervisorHandle {
         // will be `claude`. Tests that use Echo explicitly invoke this
         // path via the supervisor handle and don't go through the DB
         // round-trip.
-        let agent_kind = match row.agent_kind.as_str() {
-            "claude" => AgentKind::Claude,
-            "codex" => AgentKind::Codex,
-            "gemini" => AgentKind::Gemini,
-            other => {
-                return Err(Error::Validation(format!(
-                    "agent.unsupported: cannot cold-resume agent_kind {other:?}"
-                )))
-            }
-        };
+        // Task 402: `from_db_kind` maps the stored string back to the
+        // in-process kind (incl. the `"maestro"` arm so the Maestro singleton
+        // survives a Core restart, found via the chats(kind='maestro') row,
+        // Task 403's bootstrap).
+        let agent_kind = AgentKind::from_db_kind(row.agent_kind.as_str()).ok_or_else(|| {
+            Error::Validation(format!(
+                "agent.unsupported: cannot cold-resume agent_kind {:?}",
+                row.agent_kind
+            ))
+        })?;
         let (agent_bin, agent_args) = resolve_agent_bin(&StartSessionRequest {
             workarea_id: workarea_id.clone(),
             agent_kind: agent_kind.clone(),
@@ -1357,6 +1399,9 @@ impl AgentSupervisorHandle {
         let parser: Arc<dyn ParserPack> = match agent_kind {
             AgentKind::Echo => Arc::new(EchoPack::new()),
             AgentKind::Claude => Arc::new(ClaudeCodePack::new()),
+            // Task 402: the Maestro uses the no-op/structured MaestroPack on
+            // cold-resume too (tool calls ride MCP, not the PTY scrape).
+            AgentKind::Maestro => Arc::new(MaestroPack::new()),
             AgentKind::Codex | AgentKind::Gemini => unreachable!("rejected above"),
         };
         let pending_approvals: Arc<Mutex<PendingApprovals>> =
@@ -1838,6 +1883,27 @@ fn resolve_agent_bin(req: &StartSessionRequest) -> Result<(String, Vec<String>)>
             "claude".to_string(),
             vec!["--dangerously-skip-permissions".to_string()],
         )),
+        AgentKind::Maestro => {
+            // Task 402: delegate to the frozen `MaestroProvider` seam. The LIVE
+            // `ClaudeCliProvider` resolves (bin, model, preamble) from the
+            // managed policy and dials 401's `concerto-maestro-mcp` stdio
+            // endpoint via `--mcp-config` + `--strict-mcp-config`. NO
+            // `--dangerously-skip-permissions`: the Maestro runs strict and
+            // every tool call is gated by the PermissionResolver. 412 extends
+            // this seam (Codex/Gemini live + the Direct-API frozen arm).
+            let managed = crate::security::managed::ManagedPolicy::default();
+            // 401's MCP-config endpoint lives in the Maestro scratch dir (the
+            // session's cwd); 414 writes the concrete `.mcp.json` at boot.
+            let mcp_config_path = req.cwd.join(".mcp.json");
+            let ctx = crate::maestro::MaestroLaunchContext::new(
+                managed,
+                req.cwd.clone(),
+                mcp_config_path,
+            );
+            let provider = crate::maestro::ClaudeCliProvider::new();
+            let spec = provider.resolve_launch(&ctx)?;
+            Ok((spec.bin, spec.args))
+        }
         AgentKind::Codex | AgentKind::Gemini => Err(Error::Validation(
             "agent.not_implemented: codex/gemini deferred to Phase 3".to_string(),
         )),
@@ -1853,7 +1919,7 @@ fn resolve_agent_bin(req: &StartSessionRequest) -> Result<(String, Vec<String>)>
 /// exactly what Claude itself records when the user clicks "Yes, I trust
 /// this folder". The write is atomic (temp file + rename) so a crash mid
 /// write can't corrupt the user's config.
-fn ensure_claude_trusts_dir(cwd: &Path) -> Result<()> {
+pub(crate) fn ensure_claude_trusts_dir(cwd: &Path) -> Result<()> {
     let home = home::home_dir()
         .ok_or_else(|| Error::Internal("cannot resolve home dir for ~/.claude.json".into()))?;
     let config_path = home.join(".claude.json");
@@ -2625,6 +2691,10 @@ pub async fn adopt_resume_session(
     // practice only the claude pack ever runs here in V0.1.
     let parser: Arc<dyn ParserPack> = match row.agent_kind.as_str() {
         "claude" => Arc::new(ClaudeCodePack::new()),
+        // Task 402: explicit Maestro arm (belt-and-suspenders — the `_ =>`
+        // already falls to EchoPack, but the Maestro's MCP-not-PTY tool channel
+        // is honest about using the dedicated no-op/structured MaestroPack).
+        "maestro" => Arc::new(MaestroPack::new()),
         _ => Arc::new(EchoPack::new()),
     };
 
@@ -2725,11 +2795,65 @@ pub async fn adopt_resume_session(
 #[cfg(test)]
 mod tests {
     use super::resolve_for_new_session;
+    use super::{resolve_agent_bin, AgentKind, StartSessionRequest};
     use crate::security::{ModeSource, PermissionMode};
     use concerto_persist::{Persistence, PersistenceConfig, WorkareaId};
     use sqlx::Connection;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    /// Task 402: the `AgentKind::Maestro` DB round-trip — `as_db_kind()`
+    /// emits `"maestro"` and `from_db_kind("maestro")` (the cold-resume arm)
+    /// maps back to `Maestro`. The handler's `parse_agent_kind("maestro")`
+    /// half is covered by its own test in `handlers/sessions.rs`.
+    #[test]
+    fn agent_kind_maestro_db_string_round_trips() {
+        assert_eq!(AgentKind::Maestro.as_db_kind(), "maestro");
+        assert_eq!(AgentKind::from_db_kind("maestro"), Some(AgentKind::Maestro));
+
+        // The other kinds are unchanged (as_db_kind + from_db_kind).
+        assert_eq!(AgentKind::Echo.as_db_kind(), "claude");
+        assert_eq!(AgentKind::Claude.as_db_kind(), "claude");
+        assert_eq!(AgentKind::from_db_kind("claude"), Some(AgentKind::Claude));
+        assert_eq!(AgentKind::Codex.as_db_kind(), "codex");
+        assert_eq!(AgentKind::from_db_kind("codex"), Some(AgentKind::Codex));
+        assert_eq!(AgentKind::Gemini.as_db_kind(), "gemini");
+        assert_eq!(AgentKind::from_db_kind("gemini"), Some(AgentKind::Gemini));
+        assert_eq!(AgentKind::from_db_kind("nonsense"), None);
+    }
+
+    /// Task 402: the `resolve_agent_bin` Maestro arm delegates to the LIVE
+    /// `ClaudeCliProvider` and emits `--mcp-config` / `--strict-mcp-config` /
+    /// the model, omits `--dangerously-skip-permissions`, and is rooted at the
+    /// scratch cwd.
+    #[test]
+    fn resolve_agent_bin_maestro_emits_mcp_strict_no_skip_permissions() {
+        let scratch = PathBuf::from("/home/user/concerto/maestro");
+        let req = StartSessionRequest {
+            workarea_id: WorkareaId("wa-maestro".into()),
+            agent_kind: AgentKind::Maestro,
+            echo_text: None,
+            cwd: scratch.clone(),
+            permission_mode: Some("strict".to_string()),
+            resume_session_id: None,
+        };
+        let (bin, args) = resolve_agent_bin(&req).expect("maestro arm resolves");
+        assert_eq!(bin, crate::maestro::provider::DEFAULT_CLAUDE_BIN);
+        assert!(args.iter().any(|a| a == "--mcp-config"));
+        assert!(args.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(args
+            .iter()
+            .any(|a| a == crate::maestro::provider::DEFAULT_MAESTRO_MODEL));
+        assert!(
+            !args.iter().any(|a| a == "--dangerously-skip-permissions"),
+            "the Maestro NEVER skips permissions (strict mode)"
+        );
+        // The mcp-config endpoint is under the scratch cwd.
+        assert!(args
+            .iter()
+            .any(|a| a == &scratch.join(".mcp.json").to_string_lossy().into_owned()));
+    }
 
     async fn make_persistence() -> (TempDir, Arc<Persistence>) {
         let tmp = TempDir::new().unwrap();

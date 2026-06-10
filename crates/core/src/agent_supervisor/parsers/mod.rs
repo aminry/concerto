@@ -25,6 +25,9 @@ use crate::security::Decision;
 
 pub mod claude_code;
 pub mod echo;
+// Task 402: the Maestro's structured/no-op pack (its tool calls ride the
+// MCP channel, not the PTY scrape — so it is NOT `ClaudeCodePack`).
+pub mod maestro;
 
 /// Locked trait for per-CLI parser packs.
 ///
