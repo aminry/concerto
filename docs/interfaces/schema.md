@@ -405,3 +405,6 @@ CREATE TABLE maestro_state (
 );
 ```
 
+## `crates/persist/migrations/0016_chat_messages_metadata.sql`
+
+
