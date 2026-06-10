@@ -73,6 +73,18 @@ pub mod provider;
 // --- Task 410 (daily condensation, §3.7) — distinct additive region. -------
 pub mod condense;
 
+// ===========================================================================
+// Task 408 region — DISTINCT additive zone (PHASE4_PLANNING §4.7 / §8.1). Kept
+// in its OWN clearly-labeled block so it auto-merges against 401's `pub mod
+// mcp;`/`pub mod tools;`, the 401.5/402/404 lines above, AND task 410's
+// in-flight `pub mod condense;` soft-seam line.
+//
+// The deterministic, zero-LLM routing pre-parser + composer→workarea→session
+// resolver (`pre_parse(&str) -> ParseOutcome`, design/08 §3.5/§6.3). FROZEN by
+// 408; 409 (`/digest`) + 414 (`SendToMaestro` pre-parse) consume the grammar.
+pub mod routing;
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
@@ -86,6 +98,13 @@ pub use handle::{MaestroHandle, MaestroStateView};
 pub use provider::{
     ClaudeCliProvider, DirectApiProvider, MaestroLaunchContext, MaestroLaunchSpec, MaestroProvider,
     MAESTRO_PERMISSION_MODE, MAESTRO_PREAMBLE,
+};
+
+// Task 408 re-exports (distinct region — see the `pub mod routing;` block
+// above). The FROZEN routing grammar + resolver surface 409/414 consume.
+pub use routing::{
+    pre_parse, DispatchResult, ParseOutcome, ResolvedRoute, Router, RoutingError, RoutingTarget,
+    SlashDirective, WorkareaRef,
 };
 
 // ===========================================================================
