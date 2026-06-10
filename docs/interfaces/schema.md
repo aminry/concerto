@@ -392,3 +392,16 @@ CREATE INDEX idx_webhook_deliveries_received_at ON webhook_deliveries (received_
 ## `crates/persist/migrations/0014_pull_requests_merge_order.sql`
 
 
+## `crates/persist/migrations/0015_maestro_state.sql`
+
+```sql
+CREATE TABLE maestro_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton
+    daily_in_today  INTEGER NOT NULL DEFAULT 0,
+    daily_out_today INTEGER NOT NULL DEFAULT 0,
+    budget_resets_at INTEGER NOT NULL,
+    last_digest_at  INTEGER,
+    enabled         INTEGER NOT NULL DEFAULT 1
+);
+```
+
