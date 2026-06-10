@@ -144,6 +144,27 @@ pub const RING_SESSION_IO_BYTE_CAP: usize = 1024 * 1024;
 /// to the event-count ring so a healthy subscriber never lags.
 const LIVE_BROADCAST_CAP: usize = 1024;
 
+/// One `maestro.events` event (Task 401.5 — the FROZEN carrier seam type).
+///
+/// `maestro.events` is **unscoped** (unlike `checks.<wa>.<repo>`): a single
+/// global Maestro stream, so this carries only the opaque JSON `frame` — no
+/// scope segment to filter on. Mirrors [`concerto_vcs::VcsEvent`]'s opaque-frame
+/// shape minus the scope fields. The streams layer wraps `frame` into the
+/// non-oneof `Event.checks_opaque = 17` field (PHASE4_PLANNING §4.2 / D7 — NO
+/// new `body` oneof arm).
+///
+/// **Production is Task 414's**: 401.5 only freezes the type + the
+/// `Option<broadcast::Sender<MaestroEvent>>` field + the
+/// [`StreamsHandler::with_maestro_events`] setter; until 414 wires a sender the
+/// `maestro.events` subject parses but yields no events.
+#[derive(Debug, Clone)]
+pub struct MaestroEvent {
+    /// The opaque frame (deterministic JSON; Task 414 builds the five
+    /// `maestro.message`/`routing_executed`/`digest_generated`/
+    /// `budget_exhausted`/`disabled_by_policy` shapes — design/08 §5.4).
+    pub frame: Vec<u8>,
+}
+
 /// Parsed subject — V0.1 catalog only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject {
@@ -184,6 +205,17 @@ pub enum Subject {
     /// PR-set variants. `None` ⇒ every workarea; `Some(wa)` ⇒ that workarea only.
     /// Task 324 parses these frames.
     PrSetEvents(Option<String>),
+    /// Task 401.5 — `maestro.events`. The Maestro lifecycle events
+    /// (`maestro.message` / `routing_executed` / `digest_generated` /
+    /// `budget_exhausted` / `disabled_by_policy`, design/08 §5.4) carried as
+    /// an opaque frame on the non-oneof `Event.checks_opaque = 17` field
+    /// (PHASE4_PLANNING §4.2 / D7 — NO new `body` oneof arm; oneof frozen
+    /// through field 16). Unscoped (a single global Maestro stream, unlike
+    /// `checks.<wa>.<repo>`). Producer wired via
+    /// [`StreamsHandler::with_maestro_events`] by Task 414; `None` ⇒ the
+    /// subject is valid but yields no events. Count-bounded like every
+    /// non-`session.io` subject.
+    MaestroEvents,
 }
 
 /// How a [`SubjectBuffer`] bounds its ring: by event count (most
@@ -432,6 +464,13 @@ pub struct StreamsHandler {
     /// `Event.checks_opaque`. When `None`, the `checks.*` subject is valid but
     /// produces no events (the honest "no VCS attached" answer).
     vcs_events: Option<broadcast::Sender<VcsEvent>>,
+    /// Optional Maestro event source (Task 401.5). The Maestro actor's
+    /// `maestro.events` broadcast, wired via [`Self::with_maestro_events`].
+    /// Each [`MaestroEvent`] carries an opaque frame; the `maestro.events`
+    /// subject (unscoped) wraps it into `Event.checks_opaque`. **Producer is
+    /// Task 414's** — `None` in 401.5, so the subject is valid but produces no
+    /// events (the honest "Maestro not running" answer).
+    maestro_events: Option<broadcast::Sender<MaestroEvent>>,
     /// Per-subject ring-buffer + offset + ack state, keyed by the
     /// canonical subject string. Replaces the V0.1 bare offset map; the
     /// offset counter now lives inside each [`SubjectBuffer`].
@@ -453,6 +492,7 @@ impl StreamsHandler {
             suggestions: None,
             transport_events: None,
             vcs_events: None,
+            maestro_events: None,
             buffers: Arc::new(Mutex::new(HashMap::new())),
             next_subscriber_id: Arc::new(AtomicU64::new(0)),
         }
@@ -484,6 +524,15 @@ impl StreamsHandler {
     /// chaining.
     pub fn with_vcs_events(mut self, vcs_events: broadcast::Sender<VcsEvent>) -> Self {
         self.vcs_events = Some(vcs_events);
+        self
+    }
+
+    /// Attach the Maestro actor's `maestro.events` broadcast (Task 401.5) so
+    /// the `maestro.events` subject has a producer. **Wired by Task 414** from
+    /// the real Maestro actor; in 401.5 nothing calls this (the subject parses
+    /// but yields no events). Returns `self` for chaining.
+    pub fn with_maestro_events(mut self, maestro_events: broadcast::Sender<MaestroEvent>) -> Self {
+        self.maestro_events = Some(maestro_events);
         self
     }
 
@@ -623,6 +672,25 @@ impl StreamsHandler {
                     })
                 });
                 Ok((Vec::new(), Box::pin(live)))
+            }
+            Subject::MaestroEvents => {
+                // Task 401.5: wrap each Maestro event's opaque frame into a
+                // body-LESS Event carrying ONLY `checks_opaque` (the
+                // opaque-frame discipline; NO new oneof arm — D7). When no
+                // Maestro producer is attached (the 401.5 default; 414 wires
+                // one), the subject is valid but yields nothing.
+                match &self.maestro_events {
+                    Some(tx) => {
+                        let rx = tx.subscribe();
+                        let live = BroadcastStream::new(rx)
+                            .filter_map(|item| item.ok().map(map_maestro_event));
+                        Ok((Vec::new(), Box::pin(live)))
+                    }
+                    None => {
+                        let empty = futures::stream::pending::<Event>();
+                        Ok((Vec::new(), Box::pin(empty)))
+                    }
+                }
             }
         }
     }
@@ -991,6 +1059,9 @@ pub fn parse_subject(s: &str) -> Result<Subject, Status> {
         "workarea.events" => Ok(Subject::WorkareaEvents),
         // Task 216: the transport lifecycle subject (`design/11 §5.3`).
         "transport.events" => Ok(Subject::TransportEvents),
+        // Task 401.5: the Maestro lifecycle subject (`design/08 §5.4`). Bare,
+        // unscoped string (a single global Maestro stream).
+        "maestro.events" => Ok(Subject::MaestroEvents),
         _ => Err(invalid_subject(s)),
     }
 }
@@ -1205,6 +1276,21 @@ fn map_transport_event(ev: TransportTelemetry) -> Event {
 /// `offset` is left 0; the per-subject pump stamps it (the pump tolerates a
 /// `body`-less Event since offset/at are separate fields).
 fn map_vcs_event(ev: VcsEvent) -> Event {
+    Event {
+        offset: 0,
+        at: Some(now_ts()),
+        body: None,
+        checks_opaque: Some(ev.frame),
+    }
+}
+
+/// Map a Task-401.5 [`MaestroEvent`] into a wire [`Event`] for the
+/// `maestro.events` subject. Like `map_vcs_event`, the event carries ONLY the
+/// non-oneof `Event.checks_opaque = 17` field (the `body` oneof is left `None`
+/// — PHASE4_PLANNING §4.2 / D7: NO new oneof arm). The opaque frame is the
+/// FROZEN JSON Task 414's Maestro actor builds (design/08 §5.4). `offset` is
+/// left 0; the per-subject pump stamps it.
+fn map_maestro_event(ev: MaestroEvent) -> Event {
     Event {
         offset: 0,
         at: Some(now_ts()),
@@ -1492,6 +1578,47 @@ mod tests {
             },
             other => panic!("expected Transport body, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_maestro_events_ok() {
+        // Task 401.5: the Maestro lifecycle subject (`design/08 §5.4`) parses
+        // to the unscoped MaestroEvents subject.
+        assert_eq!(
+            parse_subject("maestro.events").unwrap(),
+            Subject::MaestroEvents
+        );
+    }
+
+    #[test]
+    fn parse_maestro_events_negative_forms_error() {
+        // Task 401.5: only the bare `maestro.events` parses; any trailing
+        // segment (it is unscoped) or typo is INVALID_ARGUMENT.
+        for bad in [
+            "maestro.bad",
+            "maestro.events.",
+            "maestro.events.wa-1",
+            "maestro",
+        ] {
+            let e = parse_subject(bad).unwrap_err();
+            assert_eq!(
+                e.code(),
+                tonic::Code::InvalidArgument,
+                "expected INVALID_ARGUMENT for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_maestro_event_carries_only_checks_opaque() {
+        // Task 401.5: a Maestro event maps to a body-LESS Event carrying ONLY
+        // the non-oneof `checks_opaque = 17` field (no new oneof arm — D7).
+        let frame = br#"{"kind":"digest_generated"}"#.to_vec();
+        let ev = map_maestro_event(MaestroEvent {
+            frame: frame.clone(),
+        });
+        assert!(ev.body.is_none(), "no oneof body");
+        assert_eq!(ev.checks_opaque, Some(frame));
     }
 
     #[test]

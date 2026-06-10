@@ -896,6 +896,11 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     Some(factory_skills_handle.clone()),
                     #[cfg(unix)]
                     Some(factory_suggestions_handle.clone()),
+                    // Task 401.5 soft seam: no real Maestro handle yet (414's
+                    // job). `None` keeps the `Maestro` service a frozen
+                    // unimplemented seam at both registration sites.
+                    #[cfg(unix)]
+                    None,
                     Some(factory_vcs_handle.clone()),
                     factory_pairing.clone(),
                     factory_device_manager.clone(),
@@ -936,6 +941,9 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
             skills_registry: Some(skills_handle.clone()),
             #[cfg(unix)]
             suggestions: Some(suggestions_handle.clone()),
+            // Task 401.5 soft seam: `None` until 414 threads a real handle.
+            #[cfg(unix)]
+            maestro: None,
             vcs: Some(vcs_handle.clone()),
             pairing: pairing_coordinator.clone(),
             device_manager: device_manager.clone(),

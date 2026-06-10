@@ -174,6 +174,12 @@ pub struct BridgeServices {
     pub skills_registry: Option<SkillsRegistryHandle>,
     #[cfg(unix)]
     pub suggestions: Option<SuggestionEngineHandle>,
+    /// Optional Maestro handle (Task 401.5 — frozen seam; 414 supplies the real
+    /// one). `#[cfg(unix)]` (over the agent supervisor, like `suggestions`).
+    /// `None` in 401.5; the bridge serves the `Maestro` service returning
+    /// `Status::unimplemented`.
+    #[cfg(unix)]
+    pub maestro: Option<crate::maestro::MaestroHandle>,
     pub vcs: Option<VcsHandle>,
 }
 
@@ -243,6 +249,8 @@ async fn build_and_serve(
         skills_registry,
         #[cfg(unix)]
         suggestions,
+        #[cfg(unix)]
+        maestro,
         vcs,
     } = services;
 
@@ -288,10 +296,12 @@ async fn build_and_serve(
     // Unix-only supervisor handles; same `#[cfg(unix)]` gating as `run_uds`.
     #[cfg(unix)]
     {
+        use crate::handlers::maestro::MaestroHandler;
         use crate::handlers::schedules::SchedulesHandler;
         use crate::handlers::sessions::SessionsHandler;
         use crate::handlers::streams::StreamsHandler;
         use crate::handlers::suggestions::SuggestionsHandler;
+        use concerto_proto::v1::maestro_server::MaestroServer;
         use concerto_proto::v1::schedules_server::SchedulesServer;
         use concerto_proto::v1::sessions_server::SessionsServer;
         use concerto_proto::v1::streams_server::StreamsServer;
@@ -326,6 +336,12 @@ async fn build_and_serve(
             let suggestions_service = SuggestionsServer::new(SuggestionsHandler::new(suggestions));
             builder = builder.add_service(suggestions_service);
         }
+        // Task 401.5 (D8 site 2 of 2 — the easiest-to-miss one): register the
+        // `Maestro` service on the Connect-Web front door too, so 415's
+        // mocked-then-live invoke can dial it. Handler returns
+        // `Status::unimplemented` until Task 414 threads a real handle.
+        let maestro_service = MaestroServer::new(MaestroHandler::new(maestro));
+        builder = builder.add_service(maestro_service);
     }
     #[cfg(not(unix))]
     {
