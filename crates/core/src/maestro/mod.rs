@@ -70,6 +70,9 @@ pub mod handle;
 pub mod provider;
 // ===========================================================================
 
+// --- Task 410 (daily condensation, §3.7) — distinct additive region. -------
+pub mod condense;
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------

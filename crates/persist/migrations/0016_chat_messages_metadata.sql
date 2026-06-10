@@ -1,0 +1,25 @@
+-- 0016_chat_messages_metadata.sql — Maestro daily-condensation carrier (Task 410).
+--
+-- Adds a single nullable free-text `metadata` column to `chat_messages` per
+-- `design/08 §3.7/§4.1` and PHASE4_PLANNING §3 / §1 (D12). This is the carrier
+-- for the daily-condensation pass: a one-paragraph daily summary is stored as a
+-- normal `chat_messages` row (its text in `content_json`) and *classified* by
+-- this column carrying `{"role_extra":"daily_summary"}`. The tag lives HERE,
+-- never folded into `content_json` (D12).
+--
+-- Column:
+--
+--   * `metadata` is `TEXT` (nullable JSON text). Existing rows back-fill to
+--     `NULL`; ordinary chat rows leave it `NULL`. Only the daily-summary rows
+--     written by `insert_daily_summary` carry the JSON tag.
+--
+-- This migration is purely ADDITIVE: a single `ALTER TABLE ... ADD COLUMN`.
+-- It does NOT widen the `role` CHECK, does NOT `DROP`+recreate the table (which
+-- would cascade-delete child rows under `foreign_keys=ON`), and adds NO index
+-- (the column is a free-text tag, not a query key — `list_daily_summaries`
+-- filters it with `json_extract`, a full scan of the maestro chat which is tiny
+-- relative to the verbatim history). The forward-only idempotency guard
+-- (`migrations_are_idempotent_across_reopens`) stays green because this only
+-- adds a nullable column.
+
+ALTER TABLE chat_messages ADD COLUMN metadata TEXT;

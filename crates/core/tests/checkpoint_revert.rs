@@ -400,6 +400,7 @@ async fn two_turns_create_two_monotonic_refs_and_revert_resets_branch() {
                 created_at: cp1.created_at + 100,
                 parent_id: None,
                 superseded_by: None,
+                metadata: None,
             },
         )
         .await
