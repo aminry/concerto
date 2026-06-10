@@ -117,6 +117,55 @@ export async function resizeSession(
   >("Sessions.ResizeSession", { session_id: sessionId, rows, cols });
 }
 
+/// Task 33: the four legal user-initiated values for a pending tool-approval
+/// gate. Mirrors `concerto.v1.ApprovalDecision` (sessions.proto:96) — the
+/// `auto_*` resolver values are server-written and never sent by a client.
+/// prost-serde serializes a proto enum as its integer tag on the wire.
+export const ApprovalDecision = {
+  UNSPECIFIED: 0,
+  APPROVE: 1,
+  APPROVE_ONCE: 2,
+  DENY: 3,
+} as const;
+
+export type ApprovalDecisionValue =
+  (typeof ApprovalDecision)[keyof typeof ApprovalDecision];
+
+/// Mirrors `concerto.v1.AwaitingApproval` (streams.proto:286, Task 33/43).
+/// Surfaced on `session.events.<sid>` as the `awaiting_approval` oneof variant
+/// when an agent pauses for a write-tool gate. `urgent`/`destructive_label`
+/// (fields 5/6, FROZEN at Task 43) drive the red-urgent rendering. Task 415's
+/// Maestro confirmation chip renders this exact shape.
+export type AwaitingApproval = {
+  approval_id: string;
+  tool: string;
+  summary: string;
+  payload_json: string;
+  urgent?: boolean;
+  destructive_label?: string | null;
+};
+
+/// Resolve a pending tool-approval gate via `Sessions.ResolveApproval`
+/// (Task 33). The server validates the approval is still pending
+/// (first-write-wins), persists the decision, and injects the matching
+/// accept/deny bytes into the agent's stdin. Task 415's Maestro write-tool
+/// confirmation chip resolves through this same path — no new RPC, no bypass
+/// (design/08 R-2).
+export async function resolveApproval(
+  sessionId: string,
+  approvalId: string,
+  decision: ApprovalDecisionValue,
+): Promise<void> {
+  await callRpc<
+    { session_id: string; approval_id: string; decision: number },
+    null
+  >("Sessions.ResolveApproval", {
+    session_id: sessionId,
+    approval_id: approvalId,
+    decision,
+  });
+}
+
 /// Shape of an `Event` frame emitted under `concerto/session.io.<sid>`.
 /// Prost-serde's oneof representation puts the variant under `body`
 /// keyed by the proto field name. `session_io` carries
