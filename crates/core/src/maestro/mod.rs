@@ -45,8 +45,22 @@
 pub mod mcp;
 pub mod tools;
 
+// ===========================================================================
+// Task 401.5 — wire-contract freeze (additive region; PHASE4_PLANNING §4.2).
+//
+// Added by 401.5 in its OWN distinct region so it auto-merges against 401's
+// `pub mod mcp;`/`pub mod tools;` above and the sibling 402/404/410 soft-seam
+// lines. `handle` carries the FROZEN `MaestroHandle` Core-side API surface
+// (design/08 §5.2) — an opaque struct whose five async signatures return a
+// typed `"unimplemented:"`-prefixed `Err` until Task 414 supplies the actor.
+// ===========================================================================
+pub mod handle;
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
 pub use mcp::{serve_maestro_mcp, MaestroMcpServer, McpServerHandle, SERVER_NAME};
 pub use tools::{all_tools, dispatch, ToolDescriptor, ToolKind};
+
+// Task 401.5 — re-export the frozen handle surface (additive).
+pub use handle::{MaestroHandle, MaestroStateView};

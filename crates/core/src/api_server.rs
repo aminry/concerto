@@ -94,6 +94,12 @@ pub struct ApiServerActor {
     /// subject.
     #[cfg(unix)]
     suggestions: Option<SuggestionEngineHandle>,
+    /// Optional Maestro handle (Task 401.5 — frozen seam; 414 supplies the
+    /// real one). `#[cfg(unix)]` (over the agent supervisor, like
+    /// `suggestions`). `None` in 401.5; the `Maestro` service is served but
+    /// returns `Status::unimplemented`.
+    #[cfg(unix)]
+    maestro: Option<crate::maestro::MaestroHandle>,
     /// Optional VCS Provider handle. When `Some`, the gRPC `Vcs`
     /// service is registered (Task 45). The handle is cheap to clone
     /// and lazily resolves the `gh` binary path on first use.
@@ -139,6 +145,8 @@ impl ApiServerActor {
             skills_registry: None,
             #[cfg(unix)]
             suggestions: None,
+            #[cfg(unix)]
+            maestro: None,
             vcs: None,
             pairing: None,
             device_manager: None,
@@ -169,6 +177,8 @@ impl ApiServerActor {
             skills_registry: None,
             #[cfg(unix)]
             suggestions: None,
+            #[cfg(unix)]
+            maestro: None,
             vcs: None,
             pairing: None,
             device_manager: None,
@@ -194,6 +204,7 @@ impl ApiServerActor {
         #[cfg(unix)] scheduler: Option<SchedulerHandle>,
         skills_registry: Option<SkillsRegistryHandle>,
         #[cfg(unix)] suggestions: Option<SuggestionEngineHandle>,
+        #[cfg(unix)] maestro: Option<crate::maestro::MaestroHandle>,
         vcs: Option<VcsHandle>,
         pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
         device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
@@ -213,6 +224,8 @@ impl ApiServerActor {
             skills_registry,
             #[cfg(unix)]
             suggestions,
+            #[cfg(unix)]
+            maestro,
             vcs,
             pairing,
             device_manager,
@@ -254,6 +267,7 @@ impl Actor for ApiServerActor {
                     scheduler: self.scheduler.clone(),
                     skills_registry: self.skills_registry.clone(),
                     suggestions: self.suggestions.clone(),
+                    maestro: self.maestro.clone(),
                     vcs: self.vcs.clone(),
                 };
                 let (listener, bound) = crate::connect_bridge::bind(&bridge_cfg).await?;
@@ -278,6 +292,7 @@ impl Actor for ApiServerActor {
                 self.scheduler,
                 self.skills_registry,
                 self.suggestions,
+                self.maestro,
                 self.vcs,
                 self.pairing,
                 self.device_manager,
@@ -342,6 +357,7 @@ async fn run_uds(
     scheduler: Option<SchedulerHandle>,
     skills_registry: Option<SkillsRegistryHandle>,
     suggestions: Option<SuggestionEngineHandle>,
+    maestro: Option<crate::maestro::MaestroHandle>,
     vcs: Option<VcsHandle>,
     pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
@@ -449,6 +465,7 @@ async fn run_uds(
         scheduler,
         skills_registry,
         suggestions,
+        maestro,
         vcs,
         pairing,
         device_manager,
@@ -512,6 +529,13 @@ pub struct CoreServiceSet {
     pub skills_registry: Option<SkillsRegistryHandle>,
     #[cfg(unix)]
     pub suggestions: Option<SuggestionEngineHandle>,
+    /// The live Maestro handle (Task 401.5 — frozen seam; 414 threads the real
+    /// one). `#[cfg(unix)]` because `MaestroHandle` lives in the `#[cfg(unix)]`
+    /// `maestro` module (over the agent supervisor, like `suggestions`).
+    /// `None` everywhere in 401.5 ⇒ the `Maestro` service is registered but
+    /// returns `Status::unimplemented`.
+    #[cfg(unix)]
+    pub maestro: Option<crate::maestro::MaestroHandle>,
     pub vcs: Option<VcsHandle>,
     pub pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     pub device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
@@ -546,6 +570,8 @@ impl CoreServiceSet {
             skills_registry: None,
             #[cfg(unix)]
             suggestions: None,
+            #[cfg(unix)]
+            maestro: None,
             vcs: None,
             pairing: None,
             device_manager: None,
@@ -601,6 +627,8 @@ where
         skills_registry,
         #[cfg(unix)]
         suggestions,
+        #[cfg(unix)]
+        maestro,
         vcs,
         pairing,
         device_manager,
@@ -644,10 +672,12 @@ where
     // absent (the Iroh server serves the cross-platform subset).
     #[cfg(unix)]
     {
+        use crate::handlers::maestro::MaestroHandler;
         use crate::handlers::schedules::SchedulesHandler;
         use crate::handlers::sessions::SessionsHandler;
         use crate::handlers::streams::StreamsHandler;
         use crate::handlers::suggestions::SuggestionsHandler;
+        use concerto_proto::v1::maestro_server::MaestroServer;
         use concerto_proto::v1::schedules_server::SchedulesServer;
         use concerto_proto::v1::sessions_server::SessionsServer;
         use concerto_proto::v1::streams_server::StreamsServer;
@@ -689,6 +719,13 @@ where
             let suggestions_service = SuggestionsServer::new(SuggestionsHandler::new(suggestions));
             builder = builder.add_service(suggestions_service);
         }
+        // Task 401.5 (D8 site 1 of 2): the `Maestro` service is ALWAYS
+        // registered (so 415 can dial it), with a possibly-`None` handle. The
+        // handler returns `Status::unimplemented` until Task 414 threads a real
+        // `MaestroHandle` here (the `maestro: None` → `Some(handle)` flip). The
+        // second site is `connect_bridge::build_and_serve`.
+        let maestro_service = MaestroServer::new(MaestroHandler::new(maestro));
+        builder = builder.add_service(maestro_service);
     }
     if let Some(skills_registry) = skills_registry {
         let skills_service = SkillsServer::new(SkillsHandler::new(skills_registry));

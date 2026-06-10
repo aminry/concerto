@@ -319,6 +319,93 @@ message FileEntry {
 }
 ```
 
+## `crates/proto/proto/concerto/v1/maestro.proto`
+
+- package: `concerto.v1`
+
+### service `Maestro`
+
+```proto
+service Maestro {
+  // Send the user's chat input to the Maestro. V1.0 is text-only
+  // (design/08 R-9); `attachments` is a frozen-but-empty seam.
+  rpc SendToMaestro(MaestroMessageRequest) returns (google.protobuf.Empty);
+  // The digest rendered above the chat composer (design/08 §3.6). Task 414
+  // wires the live handle; Task 409 generates the digest content.
+  rpc GetDigest(GetDigestRequest) returns (Digest);
+  // Per-workarea Maestro visibility toggle (design/08 §3.3). Task 413
+  // enforces the summary blanking this drives.
+  rpc SetWorkareaVisibility(VisibilityRequest) returns (google.protobuf.Empty);
+}
+```
+
+### message `MaestroMessageRequest`
+
+```proto
+message MaestroMessageRequest {
+  string text = 1;
+  repeated MaestroAttachment attachments = 2;
+}
+```
+
+### message `MaestroAttachment`
+
+```proto
+message MaestroAttachment {
+  string kind = 1;   // e.g. "diff" | "commit_url" (V1.5)
+  string ref = 2;    // opaque reference resolved by the consumer
+}
+```
+
+### message `GetDigestRequest`
+
+```proto
+message GetDigestRequest {}
+```
+
+### message `Digest`
+
+```proto
+message Digest {
+  string text = 1;
+  repeated MaestroChip chips = 2;
+  int64 generated_at_ms = 3;   // unix epoch ms (no google.protobuf.Timestamp)
+  bool stale = 4;              // R-7: last-good digest shown with a stale badge when inert
+}
+```
+
+### message `MaestroChip`
+
+```proto
+message MaestroChip {
+  string rule_id = 1;
+  string workarea_id = 2;
+  string title = 3;
+  int32 priority = 4;
+  int64 created_at_ms = 5;
+  string action = 6;
+}
+```
+
+### message `VisibilityRequest`
+
+```proto
+message VisibilityRequest {
+  string workarea_id = 1;
+  MaestroVisibility visibility = 2;
+}
+```
+
+### enum `MaestroVisibility`
+
+```proto
+enum MaestroVisibility {
+  MAESTRO_VISIBILITY_UNSPECIFIED = 0;
+  MAESTRO_VISIBILITY_FULL = 1;
+  MAESTRO_VISIBILITY_HARD_FACTS_ONLY = 2;
+}
+```
+
 ## `crates/proto/proto/concerto/v1/repositories.proto`
 
 - package: `concerto.v1`
