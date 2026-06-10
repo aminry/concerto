@@ -64,7 +64,16 @@
 //!   in-cone file count + recorded-size sum as a [`api::ConeStats`]. Reads
 //!   the index, NOT the filesystem; counts file entries under the cone
 //!   prefixes, skipping sparse-collapsed directory entries.
+//!
+//! Task 404 adds the per-branch ahead-count primitive the Maestro summary
+//! cache reports as `RepoSummary.commits_ahead`; signature frozen:
+//!
+//! - [`ahead::commits_ahead`] — `git rev-list --count <base>..HEAD`, the
+//!   count of commits on the worktree's `HEAD` not reachable from `base`
+//!   (strictly-ahead; `base` passed through verbatim). Returns `0` (not an
+//!   error) for a zero/empty count.
 
+pub mod ahead;
 pub mod api;
 pub mod cmd;
 pub mod diff;
@@ -85,6 +94,8 @@ pub use sparse::{
 };
 // Task 29 hot-path surface — status + diff against HEAD / a branch.
 pub use diff::{diff_head, diff_to_main, DiffHunk, DiffKind, DiffPayload, FileDiff};
+// Task 404 ahead-count surface — commits on HEAD not on the base.
+pub use ahead::commits_ahead;
 pub use status::{status, StatusEntry, StatusReport, StatusState};
 
 #[cfg(test)]
