@@ -43,6 +43,7 @@
 // (Intentionally only `mcp` + `tools` in 401 — the MCP surface.)
 // ===========================================================================
 pub mod mcp;
+pub mod summary; // Task 404 — WorkareaSummary cache (§4.4)
 pub mod tools;
 
 // ===========================================================================
