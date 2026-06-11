@@ -1,0 +1,25 @@
+[package]
+name = "concerto-maestro-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Stdio↔UDS relay that the Claude CLI spawns to reach the Concerto Maestro MCP server."
+publish = false
+
+[lib]
+name = "concerto_maestro_bridge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "concerto-maestro-bridge"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util", "net"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+tempfile = "3"
