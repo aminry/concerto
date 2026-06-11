@@ -1,32 +1,48 @@
-//! gRPC `Maestro` service handler (Task 401.5 — wire-contract freeze).
+//! gRPC `Maestro` service handler (Task 401.5 froze the surface; Task 414 fills
+//! the live impl).
 //!
-//! The surface is FROZEN here; the **impl is deferred to Task 414**. Every RPC
-//! returns a typed `Status::unimplemented` (the `UpsertProjectMcp`/305 seam
-//! discipline — NEVER `todo!()`/`unimplemented!()`, NEVER empty-success: an
-//! empty-success `GetDigest` would let Task 415 build against a lie). 414 wires
-//! the real [`MaestroHandle`] into [`MaestroHandler::handle`] and replaces the
-//! bodies; the registration at BOTH front-door sites (`add_core_services` +
-//! `connect_bridge::build_and_serve`, D8) already exists.
+//! The handler is the **thin gRPC adapter** over the in-process
+//! [`MaestroHandle`] (design/08 §5.2): every RPC delegates to the handle; the
+//! only logic here is request validation, `Status` mapping, and shaping the
+//! unary reply. The routing/digest/visibility business logic lives behind the
+//! handle (which stitches 408's `pre_parse`, 409's `generate_digest`, 413's
+//! visibility toggle) — see [`crate::maestro::handle`].
+//!
+//! ## The inert seams (typed `Status`, never the macro — 305/313 discipline)
+//!
+//! - **Policy-disabled at boot** (`enterpriseDataPrivacy` + external model, D1):
+//!   `boot.rs` never constructs the handle, so `self.handle` is `None` and every
+//!   RPC returns `Status::failed_precondition("maestro.disabled_by_policy")` —
+//!   NOT `unimplemented!()`, NOT empty-success (an empty-success `GetDigest`
+//!   would let 415 build against a lie).
+//! - **Budget-exhausted at run time** (412's tripwire flips the handle inert):
+//!   the handle returns a typed `Error::Policy("maestro.budget_exhausted")`,
+//!   which `error_to_status` maps to `FailedPrecondition` — the UI shows the
+//!   last-good digest stale (R-7) rather than a 500. 412 wires the counter; the
+//!   path is exercised by the test double until then.
 //!
 //! `#[cfg(unix)]`-gated because the Maestro sits over the `#[cfg(unix)]` agent
 //! supervisor (mirrors `sessions`/`streams`/`suggestions`).
 
 use concerto_proto::v1::maestro_server::Maestro as MaestroService;
-use concerto_proto::v1::{Digest, GetDigestRequest, MaestroMessageRequest, VisibilityRequest};
+use concerto_proto::v1::{
+    Digest, GetDigestRequest, MaestroMessageRequest, MaestroVisibility, VisibilityRequest,
+};
 use tonic::{Request, Response, Status};
 
+use crate::error_map::error_to_status;
 use crate::maestro::MaestroHandle;
+use concerto_persist::WorkareaId;
 
-/// Implements the generated `Maestro` service trait.
-///
-/// Holds an `Option<MaestroHandle>` so Task 414 can thread a live handle
-/// through `boot.rs`/`CoreServiceSet`/`BridgeServices`; until then it is always
-/// `None` and every RPC returns `Status::unimplemented`.
+/// The `Status` a policy-disabled (handle un-constructed at boot) RPC returns.
+/// FROZEN string — 415 keys off the `maestro.disabled_by_policy` message.
+const DISABLED_BY_POLICY: &str = "maestro.disabled_by_policy";
+
+/// Implements the generated `Maestro` service trait. Holds an
+/// `Option<MaestroHandle>`: `Some` when the boot gate is open (the live
+/// service), `None` when the Maestro is disabled by policy (the inert seam).
 #[derive(Clone)]
 pub struct MaestroHandler {
-    /// The live Maestro handle (Task 414). `None` in 401.5 — the surface is
-    /// frozen but unwired, so every RPC returns `UNIMPLEMENTED`.
-    #[allow(dead_code)]
     handle: Option<MaestroHandle>,
 }
 
@@ -34,35 +50,73 @@ impl MaestroHandler {
     pub fn new(handle: Option<MaestroHandle>) -> Self {
         Self { handle }
     }
+
+    /// The live handle, or the typed policy-disabled `Status` when the boot gate
+    /// left it `None`. The inert reply is `failed_precondition`, NEVER
+    /// `unimplemented` — the disabled Maestro is a real, documented state.
+    ///
+    /// `Status` is a large `Err` variant (the `tonic` type); boxing it here would
+    /// fight the `?` ergonomics at every RPC, so we follow the handler-wide
+    /// precedent (`sessions`/`streams`/`workareas`) and allow the lint.
+    #[allow(clippy::result_large_err)]
+    fn handle(&self) -> Result<&MaestroHandle, Status> {
+        self.handle
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition(DISABLED_BY_POLICY))
+    }
 }
 
 #[async_trait::async_trait]
 impl MaestroService for MaestroHandler {
+    #[tracing::instrument(skip_all, name = "Maestro::SendToMaestro")]
     async fn send_to_maestro(
         &self,
-        _request: Request<MaestroMessageRequest>,
+        request: Request<MaestroMessageRequest>,
     ) -> Result<Response<()>, Status> {
-        Err(Status::unimplemented(
-            "maestro.send_to_maestro: not implemented until Task 414",
-        ))
+        let handle = self.handle()?;
+        let req = request.into_inner();
+        // The handle runs 408's `pre_parse` → routes / handles slash / forwards
+        // freeform, emitting the matching `maestro.events`. The dispatch outcome
+        // rides `maestro.events`, not this unary reply (which is `Empty`).
+        handle
+            .send_to_maestro(req.text, req.attachments)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
     }
 
+    #[tracing::instrument(skip_all, name = "Maestro::GetDigest")]
     async fn get_digest(
         &self,
         _request: Request<GetDigestRequest>,
     ) -> Result<Response<Digest>, Status> {
-        Err(Status::unimplemented(
-            "maestro.get_digest: not implemented until Task 414",
-        ))
+        let handle = self.handle()?;
+        // 409's digest path (force-refresh-stale-60s summaries then compose,
+        // `<5s p50`), mapped onto the proto `Digest` 401.5 froze + chips; the
+        // handle emits `maestro.digest_generated`.
+        let digest = handle.get_digest().await.map_err(error_to_status)?;
+        Ok(Response::new(digest))
     }
 
+    #[tracing::instrument(skip_all, name = "Maestro::SetWorkareaVisibility")]
     async fn set_workarea_visibility(
         &self,
-        _request: Request<VisibilityRequest>,
+        request: Request<VisibilityRequest>,
     ) -> Result<Response<()>, Status> {
-        Err(Status::unimplemented(
-            "maestro.set_workarea_visibility: not implemented until Task 414",
-        ))
+        let handle = self.handle()?;
+        let req = request.into_inner();
+        if req.workarea_id.is_empty() {
+            return Err(Status::invalid_argument("workarea_id is required"));
+        }
+        let visibility =
+            MaestroVisibility::try_from(req.visibility).unwrap_or(MaestroVisibility::Unspecified);
+        // 413's `exclude_from_maestro` toggle behind the handle; typed
+        // `error_to_status` on failure (Unspecified ⇒ validation error).
+        handle
+            .set_workarea_visibility(WorkareaId(req.workarea_id), visibility)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
     }
 }
 
@@ -70,33 +124,39 @@ impl MaestroService for MaestroHandler {
 mod tests {
     use super::*;
 
+    /// A policy-disabled handler (no handle constructed at boot) returns
+    /// `failed_precondition("maestro.disabled_by_policy")` for every RPC — NOT
+    /// `unimplemented`, NOT empty-success.
     #[tokio::test]
-    async fn send_to_maestro_returns_unimplemented() {
-        let h = MaestroHandler::new(None);
-        let err = h
-            .send_to_maestro(Request::new(MaestroMessageRequest::default()))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-    }
-
-    #[tokio::test]
-    async fn get_digest_returns_unimplemented() {
+    async fn policy_disabled_get_digest_is_failed_precondition_not_unimplemented() {
         let h = MaestroHandler::new(None);
         let err = h
             .get_digest(Request::new(GetDigestRequest::default()))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.message(), DISABLED_BY_POLICY);
     }
 
     #[tokio::test]
-    async fn set_workarea_visibility_returns_unimplemented() {
+    async fn policy_disabled_send_to_maestro_is_failed_precondition() {
+        let h = MaestroHandler::new(None);
+        let err = h
+            .send_to_maestro(Request::new(MaestroMessageRequest::default()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.message(), DISABLED_BY_POLICY);
+    }
+
+    #[tokio::test]
+    async fn policy_disabled_set_visibility_is_failed_precondition() {
         let h = MaestroHandler::new(None);
         let err = h
             .set_workarea_visibility(Request::new(VisibilityRequest::default()))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.message(), DISABLED_BY_POLICY);
     }
 }

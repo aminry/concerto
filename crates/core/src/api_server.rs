@@ -708,6 +708,12 @@ where
             if let Some(vcs) = vcs.as_ref() {
                 handler = handler.with_vcs_events(vcs.checks_sender());
             }
+            // Task 414: wire the live Maestro's `maestro.events` producer so the
+            // `maestro.events` subject streams real events. `None` (Maestro
+            // disabled) leaves the subject valid-but-empty.
+            if let Some(maestro) = maestro.as_ref() {
+                handler = handler.with_maestro_events(maestro.events_sender());
+            }
             let streams_service = StreamsServer::new(handler);
             builder = builder.add_service(streams_service);
         }

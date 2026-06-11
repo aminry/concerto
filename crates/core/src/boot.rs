@@ -47,6 +47,33 @@ fn iroh_listener_enabled() -> bool {
     }
 }
 
+/// Classify a managed-policy `default_model` as **external** (off-box public
+/// provider) for the Maestro D1 privacy gate (`design/08 §3.10`). Conservative:
+/// an empty/unset model is treated as local (the CLI default, which passes the
+/// gate). A model whose name signals the public Anthropic/OpenAI/Google APIs is
+/// external; the on-prem markers (Bedrock-VPC / Vertex / Azure-Foundry / local)
+/// are NOT. This is the V1.0 heuristic over the parsed-but-otherwise-unread
+/// `default_model`; the richer on-prem locality classification (412's
+/// `MaestroProvider`) supersedes it when it lands.
+#[cfg(unix)]
+fn is_external_maestro_model(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    if m.is_empty() {
+        return false;
+    }
+    // On-prem / local markers re-enable the Maestro under enterprise privacy.
+    const ONPREM_MARKERS: &[&str] = &[
+        "bedrock", "vpc", "vertex", "azure", "foundry", "local", "onprem", "on-prem", "ollama",
+    ];
+    if ONPREM_MARKERS.iter().any(|marker| m.contains(marker)) {
+        return false;
+    }
+    // Public-provider markers ⇒ external (the disabled case under privacy).
+    const EXTERNAL_MARKERS: &[&str] =
+        &["claude", "gpt", "openai", "anthropic", "gemini", "o1", "o3"];
+    EXTERNAL_MARKERS.iter().any(|marker| m.contains(marker))
+}
+
 /// The live Iroh-transport seam a booted Core exposes (Task 217.5). Held by
 /// [`RunningCore`] when the listener is enabled so the split-host smoke driver
 /// (Task 220) + the Tier-2 loopback test can dial the endpoint, drive a pairing,
@@ -849,6 +876,99 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         Err(e) => tracing::warn!(error = %e, "workspace-settings boot resolution failed"),
     }
 
+    // Task 414: construct the live Maestro handle, gated on the Maestro being
+    // enabled (403's `maestro_state.enabled`, §4.6) AND a managed-policy model
+    // permission (D1: `enterpriseDataPrivacy=true` + an external `default_model`
+    // ⇒ the Maestro LLM is disabled, design/08 §3.10). When the gate is closed
+    // the handle is left `None` (no spawn, logged) and the service replies
+    // `disabled_by_policy`; the `maestro.events` subject stays valid-but-empty.
+    //
+    // The CLI backends (Claude/Codex/Gemini, D1) are local and pass the gate;
+    // the disabled case is Direct-API + external under enterprise privacy (and
+    // Direct-API is itself a frozen-unwired seam per 412). The handle stitches
+    // 408's routing, 409's digest over a fresh 404 summary cache, 413's
+    // visibility toggle, and 414's `maestro.events` producer.
+    #[cfg(unix)]
+    let maestro_handle: Option<crate::maestro::MaestroHandle> = {
+        // Bootstrap the `maestro_state` singleton + the `chats(kind='maestro')`
+        // row (403) so `GetDigest` has a persistence anchor (409's D11 chips).
+        {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let mut w = persistence.writer().await;
+            if let Err(e) =
+                concerto_persist::maestro_state::ensure_initialized(&mut w, now_ms).await
+            {
+                tracing::warn!(error = %e, "maestro_state init failed; Maestro disabled");
+            }
+            if let Err(e) = concerto_persist::maestro_state::ensure_maestro_chat(
+                &mut w,
+                &uuid::Uuid::now_v7().to_string(),
+                now_ms,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "maestro chat bootstrap failed");
+            }
+        }
+
+        let enabled = concerto_persist::maestro_state::get(persistence.readers())
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.enabled)
+            .unwrap_or(false);
+
+        // The managed-policy model gate (D1). `default_model` is the org's
+        // chosen Maestro model; under `enterpriseDataPrivacy` an external model
+        // disables the LLM (the on-prem/local case re-enables it — Tier-3). In
+        // V1.0 the practical external case is Direct-API, which is unwired (412),
+        // so a CLI default passes. A model whose name signals a public provider
+        // under privacy is the disabled case.
+        let managed =
+            crate::security::managed::load_managed_policy(config_dir.as_path()).unwrap_or_default();
+        let privacy = managed.enterprise_data_privacy().unwrap_or(false);
+        let model_external = managed
+            .default_model()
+            .map(is_external_maestro_model)
+            .unwrap_or(false);
+        let disabled_by_policy =
+            crate::maestro::PrivacyPolicy::maestro_disabled_by_policy(privacy, model_external);
+
+        if !enabled {
+            tracing::info!(
+                target: "concerto::maestro",
+                reason = "disabled",
+                "maestro disabled at boot (maestro_state.enabled = false)"
+            );
+            None
+        } else if disabled_by_policy {
+            tracing::info!(
+                target: "concerto::maestro",
+                reason = "enterprise_data_privacy",
+                "maestro disabled at boot (enterpriseDataPrivacy + external default_model — D1)"
+            );
+            None
+        } else {
+            let summary_cache = Arc::new(tokio::sync::Mutex::new(
+                crate::maestro::summary::SummaryCache::with_system_clock(),
+            ));
+            let oneshot = crate::maestro::digest::default_oneshot();
+            let events = crate::maestro::MaestroEventSender::new();
+            tracing::info!(target: "concerto::maestro", "maestro enabled at boot");
+            Some(crate::maestro::MaestroHandle::new(
+                Arc::clone(&persistence),
+                workarea_handle.clone(),
+                agent_supervisor_handle.clone(),
+                summary_cache,
+                oneshot,
+                events,
+            ))
+        }
+    };
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
     // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`
@@ -873,6 +993,8 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let factory_skills_handle = skills_handle.clone();
     #[cfg(unix)]
     let factory_suggestions_handle = suggestions_handle.clone();
+    #[cfg(unix)]
+    let factory_maestro_handle = maestro_handle.clone();
     let factory_vcs_handle = vcs_handle.clone();
     let factory_pairing = pairing_coordinator.clone();
     let factory_device_manager = device_manager.clone();
@@ -896,11 +1018,12 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     Some(factory_skills_handle.clone()),
                     #[cfg(unix)]
                     Some(factory_suggestions_handle.clone()),
-                    // Task 401.5 soft seam: no real Maestro handle yet (414's
-                    // job). `None` keeps the `Maestro` service a frozen
-                    // unimplemented seam at both registration sites.
+                    // Task 414: the live Maestro handle (or `None` when the boot
+                    // gate is closed — disabled / disabled-by-policy). Threaded
+                    // through `with_managers` → `run_uds`/`add_core_services`
+                    // AND the bridge `BridgeServices` (D8 two-site serve).
                     #[cfg(unix)]
-                    None,
+                    factory_maestro_handle.clone(),
                     Some(factory_vcs_handle.clone()),
                     factory_pairing.clone(),
                     factory_device_manager.clone(),
@@ -941,9 +1064,10 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
             skills_registry: Some(skills_handle.clone()),
             #[cfg(unix)]
             suggestions: Some(suggestions_handle.clone()),
-            // Task 401.5 soft seam: `None` until 414 threads a real handle.
+            // Task 414: the live Maestro handle on the Iroh serve path (or
+            // `None` when the boot gate is closed).
             #[cfg(unix)]
-            maestro: None,
+            maestro: maestro_handle.clone(),
             vcs: Some(vcs_handle.clone()),
             pairing: pairing_coordinator.clone(),
             device_manager: device_manager.clone(),

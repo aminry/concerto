@@ -325,6 +325,12 @@ async fn build_and_serve(
             if let Some(suggestions) = suggestions.clone() {
                 handler = handler.with_suggestions(suggestions);
             }
+            // Task 414: wire the live Maestro's `maestro.events` producer on the
+            // Connect-Web bridge too (D8 — the easiest-to-miss second site).
+            // `None` (Maestro disabled) leaves the subject valid-but-empty.
+            if let Some(maestro) = maestro.as_ref() {
+                handler = handler.with_maestro_events(maestro.events_sender());
+            }
             let streams_service = StreamsServer::new(handler);
             builder = builder.add_service(streams_service);
         }
