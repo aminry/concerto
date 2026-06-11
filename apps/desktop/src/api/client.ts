@@ -48,6 +48,11 @@ export type RpcMethod =
   | "Sessions.StopSession"
   | "Sessions.DeleteSession"
   | "Sessions.ResizeSession"
+  // Task 33 — resolve a pending tool-approval gate (`AwaitingApproval` →
+  // `ResolveApprovalRequest`). The renderer surfaces the gate and sends the
+  // user's decision back; Task 415's Maestro write-tool confirmation chip
+  // reuses this exact path (no new RPC). Matches the Rust shell dispatch arm.
+  | "Sessions.ResolveApproval"
   | "Sessions.ListMcpServers"
   | "Schedules.ListSchedules"
   | "Skills.ListSkills"
@@ -67,7 +72,19 @@ export type RpcMethod =
   | "Workareas.SetMergeOrder"
   | "Workareas.GetWorkareaMergePlan"
   | "Workareas.RevertWorkareaPrSet"
-  | "Workareas.MergeWorkareaPrSet";
+  | "Workareas.MergeWorkareaPrSet"
+  // Task 415 — the Maestro chat surface (the always-present "Concerto chat"
+  // top bar). These strings are the renderer↔shell contract for the
+  // `service Maestro` FROZEN by Task 401.5 (`maestro.proto`:
+  // SendToMaestro / GetDigest / SetWorkareaVisibility). They are listed here
+  // as a pure additive TS type so `src/api/maestro.ts` can call `callRpc`;
+  // the matching Rust shell dispatch arm in `src-tauri/src/commands.rs` is
+  // Task 414's work (it fills 401.5's `Status::unimplemented` handler and
+  // wires live data). Until 414 lands the renderer drives these against a
+  // mocked `invoke` double (the Tier-2 spine — see `maestro.test.ts`).
+  | "Maestro.SendToMaestro"
+  | "Maestro.GetDigest"
+  | "Maestro.SetWorkareaVisibility";
 
 export async function callRpc<TRequest, TResponse>(
   method: RpcMethod,
