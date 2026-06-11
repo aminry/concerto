@@ -41,6 +41,15 @@ export type RpcMethod =
   // strings match the Rust shell dispatch table exactly.
   | "Repositories.ListTree"
   | "Repositories.SetRepoConeDefaults"
+  // Task 418 — plan-mode cone suggestion (Task 411's FROZEN
+  // `Repositories.SuggestCones` RPC: `SuggestConesRequest{repository_id,
+  // issue_text}` → `SuggestConesResponse{cone_paths}`). Backs the
+  // create-workspace-from-description front door (design/08 §3.8). The string
+  // matches the Rust shell dispatch table (`<Service>.<Rpc>`) exactly; 411's
+  // arm is merged. This arm is kept in its OWN Task-418 region, disjoint from
+  // the `Maestro.*` block below (Task 417's territory), so a later rebase
+  // auto-merges.
+  | "Repositories.SuggestCones"
   | "Sessions.ListSessions"
   | "Sessions.GetSession"
   | "Sessions.CreateSession"

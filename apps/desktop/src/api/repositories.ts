@@ -120,6 +120,30 @@ export async function setRepoConeDefaults(
   );
 }
 
+/// `Repositories.SuggestCones` (Task 411 backend, design/08 §3.8) — the
+/// plan-mode cone suggestion the create-workspace-from-description flow calls:
+/// given an added `repositoryId` and the parsed issue/description `issueText`,
+/// the Repo Mgr delegates to the injected Maestro-backed `ConeSuggester` and
+/// returns a suggested sparse cone (forward-slash, repo-root-relative directory
+/// prefixes — the same shape `SetCones`/the cone picker consume). The suggested
+/// set SEEDS the existing `ConePicker` so the user edits from a smart default;
+/// it is never applied silently (R-2). When the Core was built without an
+/// injected suggester the RPC returns UNIMPLEMENTED — surfaced as a
+/// `CoreClientError` the caller falls back from (empty picker, manual entry).
+export async function suggestCones(
+  repositoryId: string,
+  issueText: string,
+): Promise<string[]> {
+  const res = await callRpc<
+    { repository_id: string; issue_text: string },
+    { cone_paths: string[] }
+  >("Repositories.SuggestCones", {
+    repository_id: repositoryId,
+    issue_text: issueText,
+  });
+  return res.cone_paths ?? [];
+}
+
 /// The user-selectable clone strategies (Task 301). Treeless is omitted by
 /// design — it is never offered in the UI (design/02 §12 R-1). "Blobless +
 /// Sparse" is `cloneStrategy: "blobless"` + `withSparse: true`, so the two
