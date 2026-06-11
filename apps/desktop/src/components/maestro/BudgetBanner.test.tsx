@@ -15,7 +15,12 @@ const enabled = (used: number): MaestroState => ({
   enabled: true,
   daily_in_today: used,
   daily_out_today: 0,
+  in_cap: 200000,
+  out_cap: 50000,
   last_digest_at_ms: null,
+  inert: false,
+  inert_reason: "",
+  maestro_session_id: "",
 });
 
 describe("computeBannerLevel", () => {

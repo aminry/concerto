@@ -93,6 +93,14 @@ export type RpcMethod =
   // mocked `invoke` double (the Tier-2 spine — see `maestro.test.ts`).
   | "Maestro.SendToMaestro"
   | "Maestro.GetDigest"
+  // Task 416 — the additive `Maestro.GetState` read-model RPC (the live
+  // budget counters/caps + inert state + the Maestro singleton session id).
+  // Task 417's binding consumes it to feed `<BudgetBanner>`/`<DigestPanel>`
+  // and to discover the session whose write-tool `AwaitingApproval` frames
+  // become confirmation chips. Kept in the Maestro region so a rebase against
+  // sibling task 418 (which appends `Repositories.SuggestCones` in the
+  // Repositories region) auto-merges.
+  | "Maestro.GetState"
   | "Maestro.SetWorkareaVisibility";
 
 export async function callRpc<TRequest, TResponse>(

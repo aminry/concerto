@@ -32,6 +32,13 @@ export type Workarea = {
   // (Task 307 widened the set with `finished` + `partial`.)
   status: string;
   permission_mode?: number | null;
+  // Task 311: the derived `workareas.settings_json.exclude_from_maestro`
+  // privacy projection (`workareas.proto`, `optional bool
+  // exclude_from_maestro = 11`; absent/false/malformed ⇒ false). Maestro
+  // (Task 413) reads it to blank an excluded workarea's chat summaries. Task
+  // 417 surfaces it so the per-workarea visibility toggle can reflect current
+  // state (a "private" badge) — `true` ⇔ `MaestroVisibility.HARD_FACTS_ONLY`.
+  exclude_from_maestro?: boolean | null;
   created_at?: [number, number] | null;
   last_activity_at?: [number, number] | null;
   archived_at?: [number, number] | null;
