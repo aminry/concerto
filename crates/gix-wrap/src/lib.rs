@@ -72,11 +72,26 @@
 //!   count of commits on the worktree's `HEAD` not reachable from `base`
 //!   (strictly-ahead; `base` passed through verbatim). Returns `0` (not an
 //!   error) for a zero/empty count.
+//!
+//! Task 405 adds the two git primitives the Maestro read tools
+//! `get_workarea_recent_commits` / `cross_workarea_search` need; signatures
+//! frozen:
+//!
+//! - [`log::recent_commits`] — `git log --max-count=<limit> --format=…
+//!   <branch>`, the `limit` most-recent commits (newest first) as
+//!   [`log::Commit`] (`{oid, short_oid, summary, author, committed_at}`). An
+//!   empty/unknown ref surfaces as `Err`, not a silent empty list.
+//! - [`log::grep`] — `git grep -n -I --fixed-strings -e <query>` scoped to a
+//!   worktree, the V1.0 live-grep cross-workarea search (`design/08 R-6`).
+//!   Returns up to `max_hits` [`log::GrepHit`] (`{path, line, snippet}`),
+//!   per-snippet capped ([`log::MAX_SNIPPET_LEN`], the `design/08 §8`
+//!   guardrail); a no-match search is `Ok(vec![])`, not an `Err`.
 
 pub mod ahead;
 pub mod api;
 pub mod cmd;
 pub mod diff;
+pub mod log;
 pub mod sparse;
 pub mod status;
 
@@ -96,6 +111,8 @@ pub use sparse::{
 pub use diff::{diff_head, diff_to_main, DiffHunk, DiffKind, DiffPayload, FileDiff};
 // Task 404 ahead-count surface — commits on HEAD not on the base.
 pub use ahead::commits_ahead;
+// Task 405 recent-commits + cross-worktree grep surface.
+pub use log::{grep, recent_commits, Commit, GrepHit, MAX_SNIPPET_LEN};
 pub use status::{status, StatusEntry, StatusReport, StatusState};
 
 #[cfg(test)]
