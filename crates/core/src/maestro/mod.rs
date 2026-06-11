@@ -108,6 +108,19 @@ pub use routing::{
 };
 
 // ===========================================================================
+// Task 412 region — DISTINCT additive zone (do NOT merge with 402's `pub use`
+// above, nor with 408/410's future lines). The live Codex/Gemini providers, the
+// `MaestroBackend` enum, the `select_provider` auto-pick + `disabled_by_policy`
+// outcome, and the typed Direct-API marker helpers. See PHASE4_PLANNING §4.3.
+// ===========================================================================
+pub use provider::{
+    direct_api_unimplemented, is_direct_api_unimplemented, select_provider, CodexCliProvider,
+    GeminiCliProvider, MaestroBackend, ProviderSelection, DEFAULT_CODEX_BIN, DEFAULT_GEMINI_BIN,
+    DIRECT_API_UNIMPLEMENTED_MARKER,
+};
+// ===========================================================================
+
+// ===========================================================================
 // Task 402 — the Maestro spawn-config constructor + the scratch-cwd convention
 // (PHASE4_PLANNING §4.8 / §2). The boot-time call site + the
 // `enterpriseDataPrivacy`-disabled gate are Task 414's; here we freeze the
