@@ -601,6 +601,23 @@ message SetRepoConeDefaultsRequest {
 }
 ```
 
+### message `SuggestConesRequest`
+
+```proto
+message SuggestConesRequest {
+  string repository_id = 1;
+  string issue_text = 2;
+}
+```
+
+### message `SuggestConesResponse`
+
+```proto
+message SuggestConesResponse {
+  repeated string cone_paths = 1;
+}
+```
+
 ### service `Repositories`
 
 ```proto
@@ -614,6 +631,7 @@ service Repositories {
   rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
   rpc ListTree(ListTreeRequest) returns (ListTreeResponse);
   rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (Repository);
+  rpc SuggestCones(SuggestConesRequest) returns (SuggestConesResponse);
 }
 ```
 
@@ -1737,6 +1755,10 @@ message FetchIssueByUrlRequest {
   // A full issue URL (e.g. `https://linear.app/acme/issue/ENG-123/...`,
   // `https://acme.atlassian.net/browse/PROJ-45`, or a github.com issue URL).
   string url = 1;
+  // Workspace scope for the enterprise_data_privacy resolver (Task 411, D10).
+  // Empty ⇒ the Core-wide ManagedPolicy floor. Additive; existing callers
+  // (which sent only `url`) keep working — they get the managed floor.
+  string workspace_id = 2;
 }
 ```
 

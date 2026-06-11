@@ -74,6 +74,94 @@ impl SessionMessageSink for AgentSupervisorSink {
     }
 }
 
+/// Resolves the effective `enterprise_data_privacy` for a `FetchIssueByUrl`
+/// call (Task 411, D10 fix). A workspace scope resolves through the per-workspace
+/// three-layer settings resolver; an empty scope falls back to the Core-wide
+/// `ManagedPolicy` floor.
+///
+/// Decoupled as a trait so the cross-platform `Vcs` handler does not depend on
+/// the boot-time `Persistence`/`ManagedPolicy`/opt-out inputs directly: `boot.rs`
+/// builds the live [`CorePrivacyResolver`] and injects it via
+/// [`VcsHandler::with_privacy_resolver`]; tests inject a deterministic stub. When
+/// no resolver is wired the handler falls back to `false` (the documented
+/// pre-resolver default), preserving the prior behavior on Cores that don't wire
+/// it.
+#[async_trait]
+pub trait EnterprisePrivacyResolver: Send + Sync + 'static {
+    /// Resolve `enterprise_data_privacy` for `workspace_id`. An empty
+    /// `workspace_id` ⇒ the Core-wide managed floor. Never errors — a
+    /// resolution failure for one workspace falls back to the managed floor
+    /// (a privacy-forcing managed policy still blocks; an absent one defaults
+    /// to `false`).
+    async fn enterprise_data_privacy(&self, workspace_id: &str) -> bool;
+}
+
+/// The live [`EnterprisePrivacyResolver`] (Task 411, D10). Built at boot from
+/// the same managed-policy / opt-out / persistence inputs the
+/// `resolve_and_audit_all_workspaces` boot step loads, it resolves
+/// `enterprise_data_privacy` per workspace via the FROZEN
+/// [`crate::settings::build_resolver_for_workspace`] factory and falls back to
+/// the Core-wide [`ManagedPolicy`] floor when no workspace scope is supplied.
+#[derive(Clone)]
+pub struct CorePrivacyResolver {
+    persistence: Arc<concerto_persist::Persistence>,
+    managed: crate::security::managed::ManagedPolicy,
+    opt_out: Arc<crate::settings::workspace_file::OptOutConfig>,
+}
+
+impl CorePrivacyResolver {
+    /// Build the resolver from the boot inputs (the managed policy loaded from
+    /// `config_dir`, the per-machine opt-out config, and a persistence clone).
+    pub fn new(
+        persistence: Arc<concerto_persist::Persistence>,
+        managed: crate::security::managed::ManagedPolicy,
+        opt_out: crate::settings::workspace_file::OptOutConfig,
+    ) -> Self {
+        Self {
+            persistence,
+            managed,
+            opt_out: Arc::new(opt_out),
+        }
+    }
+
+    /// The Core-wide managed floor (the empty-scope fallback): `enterprise_data
+    /// _privacy` from the managed policy, defaulting to `false` when unset.
+    fn managed_floor(&self) -> bool {
+        self.managed.enterprise_data_privacy().unwrap_or(false)
+    }
+}
+
+#[async_trait]
+impl EnterprisePrivacyResolver for CorePrivacyResolver {
+    async fn enterprise_data_privacy(&self, workspace_id: &str) -> bool {
+        if workspace_id.is_empty() {
+            return self.managed_floor();
+        }
+        let ws = concerto_persist::WorkspaceId(workspace_id.to_string());
+        match crate::settings::build_resolver_for_workspace(
+            &self.persistence,
+            &ws,
+            self.managed.clone(),
+            &self.opt_out,
+        )
+        .await
+        {
+            Ok(resolver) => resolver.enterprise_data_privacy().value,
+            // A resolution failure (e.g. an unknown workspace) falls back to the
+            // managed floor rather than silently allowing — a privacy-forcing
+            // managed policy still blocks.
+            Err(e) => {
+                tracing::warn!(
+                    workspace_id,
+                    error = %e,
+                    "enterprise_data_privacy resolution failed; using managed floor"
+                );
+                self.managed_floor()
+            }
+        }
+    }
+}
+
 /// Implements the generated `Vcs` service trait.
 #[derive(Clone)]
 pub struct VcsHandler {
@@ -81,6 +169,11 @@ pub struct VcsHandler {
     /// Optional "Send to agent" sink (Task 316). `None` on non-unix targets
     /// (no agent supervisor) → `SendThreadToAgent` returns `UNIMPLEMENTED`.
     session_sink: Option<Arc<dyn SessionMessageSink>>,
+    /// The `enterprise_data_privacy` resolver the `FetchIssueByUrl` D10 path
+    /// consults (Task 411). `None` ⇒ the pre-resolver default (`false`),
+    /// preserving prior behavior on a Core that does not wire it; `boot.rs`
+    /// injects the live [`CorePrivacyResolver`].
+    privacy_resolver: Option<Arc<dyn EnterprisePrivacyResolver>>,
 }
 
 impl VcsHandler {
@@ -88,6 +181,7 @@ impl VcsHandler {
         Self {
             vcs,
             session_sink: None,
+            privacy_resolver: None,
         }
     }
 
@@ -96,6 +190,25 @@ impl VcsHandler {
     pub fn with_session_sink(mut self, sink: Arc<dyn SessionMessageSink>) -> Self {
         self.session_sink = Some(sink);
         self
+    }
+
+    /// Attach the `enterprise_data_privacy` resolver the `FetchIssueByUrl` D10
+    /// fix consults (Task 411). Cross-platform; wired in `boot.rs` from the
+    /// managed policy + persistence + opt-out config. Returns `self` for
+    /// chaining.
+    pub fn with_privacy_resolver(mut self, resolver: Arc<dyn EnterprisePrivacyResolver>) -> Self {
+        self.privacy_resolver = Some(resolver);
+        self
+    }
+
+    /// Resolve the effective `enterprise_data_privacy` for `workspace_id`,
+    /// honoring the injected resolver (or `false` when none is wired — the
+    /// documented pre-resolver default).
+    async fn resolve_privacy(&self, workspace_id: &str) -> bool {
+        match &self.privacy_resolver {
+            Some(resolver) => resolver.enterprise_data_privacy(workspace_id).await,
+            None => false,
+        }
     }
 }
 
@@ -245,12 +358,18 @@ impl VcsService for VcsHandler {
             return Err(Status::invalid_argument("url is required"));
         }
 
+        // Task 411 (D10 fix): resolve the effective `enterprise_data_privacy`
+        // BEFORE any token read or outbound call. A `workspace_id` scope routes
+        // through the per-workspace three-layer settings resolver; an empty
+        // scope falls back to the Core-wide `ManagedPolicy` floor (so a managed
+        // privacy-forcing Core still blocks Linear/Jira even when no workspace
+        // is supplied). The GitHub arm is never privacy-gated (the user's own
+        // repo host). Replaces the prior hardcoded `false`.
+        let enterprise_data_privacy = self.resolve_privacy(&req.workspace_id).await;
+
         // Resolve the GitHub PAT (existing slot) + the Linear/Jira OAuth tokens
         // (313's `VcsSecretSlot` keychain accessor). Tokens are wrapped in
-        // `SecretValue` end-to-end and never logged. The `enterprise_data_privacy`
-        // gate is consulted before any external-tracker call; without task 310's
-        // resolver in this build, an external-tracker fetch is allowed by default
-        // (the privacy floor is enforced once the resolver lands — see Handoff).
+        // `SecretValue` end-to-end and never logged.
         let secrets = Secrets::new();
         let github_pat = secrets
             .get(SecretKind::GithubPat)
@@ -279,8 +398,10 @@ impl VcsService for VcsHandler {
             jira_refresh: None,
             linear_base: None,
             jira_base: None,
-            // No task-310 resolver wired here yet (see Handoff "Open questions").
-            enterprise_data_privacy: false,
+            // Task 411 (D10): the resolved per-workspace / managed-floor value
+            // (the hardcoded `false` is gone). Linear/Jira are refused under
+            // privacy; GitHub is never gated.
+            enterprise_data_privacy,
         };
 
         let issue = self
