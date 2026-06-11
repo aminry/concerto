@@ -41,15 +41,25 @@
 //! this code; no stub is needed at a call site because nothing outside the
 //! `cfg(unix)` module references it (the Windows lane simply omits `maestro`).
 
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer, RunningService};
+use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::transport::IntoTransport;
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
+use tokio::net::UnixListener;
+use tokio::sync::Mutex;
 
-use super::tools;
+use concerto_persist::Persistence;
+
+use super::summary::SummaryCache;
+use super::tools::{self, ToolKind};
 
 /// The MCP server name the Maestro CLI dials. FROZEN (design/08 §3.2): the CLI's
 /// `--mcp-config` references this server by name and `--strict-mcp-config`
@@ -64,17 +74,42 @@ pub const SERVER_NAME: &str = "concerto-maestro-mcp";
 /// here and thread them into the `tools::dispatch` arms they fill.
 #[derive(Clone, Default)]
 pub struct MaestroMcpServer {
-    // Soft seam: 405/406/407 add cheap-clone Core subsystem handles here
-    // (e.g. `workspace_manager`, `scheduler`, `vcs`, `notifications`) and pass
-    // them into their `tools::dispatch` arm. Intentionally empty in 401.
-    _private: (),
+    // The read-tool Core handles. `None` keeps the server handle-less (the
+    // Task 401 registration/handshake tests build it via `new()`/`default()`
+    // and only exercise registration + the typed-unimplemented seam); `Some`
+    // (built via [`with_read_handles`]) routes the 11 read tools to the live
+    // `tools::read::dispatch_read`. Write/side-channel tools keep the frozen
+    // typed-unimplemented seam regardless (Milestone 2).
+    handles: Option<ReadHandles>,
+}
+
+/// The cheap-clone Core handles the 11 read tools query: the persistence the
+/// reads run against and the Task 404 `WorkareaSummary` cache (which also owns
+/// the injected [`super::summary::Clock`] this server sources `now_ms` from).
+#[derive(Clone)]
+struct ReadHandles {
+    persist: Arc<Persistence>,
+    cache: Arc<Mutex<SummaryCache>>,
 }
 
 impl MaestroMcpServer {
-    /// Construct the server with no wired subsystem handles (Task 401). 405/406/407
-    /// add a richer constructor as they thread Core handles in.
+    /// Construct the server with no wired subsystem handles (Task 401). The
+    /// registration/handshake tests use this; every tool returns the typed
+    /// unimplemented error. Live read-tool routing needs [`with_read_handles`].
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct the server with the read-tool Core handles wired in (Milestone
+    /// 1): the 11 `ToolKind::ReadOnly` tools route to the live
+    /// [`tools::read::dispatch_read`] against `persist` + the 404 summary
+    /// `cache`. Write/side-channel tools still return the frozen
+    /// typed-unimplemented error (Milestone 2). The handles are cheap `Arc`
+    /// clones, so cloning the server per accepted connection is cheap.
+    pub fn with_read_handles(persist: Arc<Persistence>, cache: Arc<Mutex<SummaryCache>>) -> Self {
+        Self {
+            handles: Some(ReadHandles { persist, cache }),
+        }
     }
 
     /// The full set of registered tools, as `rmcp` [`Tool`]s, built from the
@@ -121,8 +156,49 @@ impl ServerHandler for MaestroMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch_tool(request)
+        match tools::class_of(&request.name) {
+            // The 11 read tools route to the live, Core-handle-bearing
+            // `read::dispatch_read` (Milestone 1). If the server was built
+            // handle-less (`new()`/`default()`), the read handles are not wired
+            // and we return a typed internal error rather than panicking.
+            Some(ToolKind::ReadOnly) => {
+                let h = self.handles.as_ref().ok_or_else(|| {
+                    McpError::internal_error("maestro read handles not wired", None)
+                })?;
+                // Source `now_ms` from the cache's injected clock (the
+                // synthetic-clock seam, summary.rs §10) so the whole maestro
+                // read path shares one clock — `SystemClock` in prod, a
+                // `ManualClock` in tests.
+                let cache = h.cache.lock().await;
+                let now_ms = cache.now_ms();
+                let value = tools::read::dispatch_read(
+                    &request.name,
+                    request.arguments,
+                    &h.persist,
+                    &cache,
+                    now_ms,
+                )
+                .await?;
+                Ok(value_to_call_result(value))
+            }
+            // Write + side-channel tools keep the frozen typed-unimplemented
+            // seam (Milestone 2 fills them); unknown names map to invalid_params
+            // via the same `dispatch_tool` path.
+            Some(ToolKind::Write) | Some(ToolKind::SideChannel) | None => {
+                self.dispatch_tool(request)
+            }
+        }
     }
+}
+
+/// Wrap a read tool's frozen output JSON into a successful [`CallToolResult`].
+///
+/// Uses `CallToolResult::structured`, which places the JSON both as the
+/// machine-readable `structured_content` (matched against the tool's frozen
+/// output schema) and as a text `Content` rendering for agents that read the
+/// unstructured content. `is_error` is `Some(false)` — never a typed error.
+fn value_to_call_result(value: serde_json::Value) -> CallToolResult {
+    CallToolResult::structured(value)
 }
 
 /// A live `concerto-maestro-mcp` server bound to one transport. Keep it alive
@@ -165,6 +241,51 @@ where
         .await
         .map_err(|e| McpError::internal_error(format!("maestro mcp serve failed: {e}"), None))?;
     Ok(McpServerHandle { running })
+}
+
+/// Bind `socket` (mode `0600`) and serve the Maestro MCP over every accepted
+/// connection, each on its own task with a fresh clone of `template` (the
+/// `Arc` handles make the clone cheap).
+///
+/// This is the Core end of the CLI bridge (Task 1): the bridge dials this UDS
+/// and speaks newline-delimited JSON-RPC (the MCP stdio framing) over it; each
+/// accepted connection is one MCP session. The loop runs until aborted — boot
+/// (the spawn site) holds the `JoinHandle` and drops/aborts it on shutdown.
+///
+/// A stale socket left by a crashed prior run is removed before bind; the `0600`
+/// mode keeps the session owner-only (the bridge runs as the same user).
+pub async fn serve_maestro_mcp_listener(
+    socket: PathBuf,
+    template: MaestroMcpServer,
+) -> std::io::Result<()> {
+    // Clear a stale socket from a prior run so `bind` does not fail with
+    // EADDRINUSE on a leftover path.
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+
+    loop {
+        let (conn, _) = listener.accept().await?;
+        let server = template.clone();
+        tokio::spawn(async move {
+            let (r, w) = conn.into_split();
+            match server
+                .serve(AsyncRwTransport::<RoleServer, _, _>::new(r, w))
+                .await
+            {
+                Ok(running) => {
+                    // Drive this MCP session to completion (peer closed,
+                    // cancelled, or errored) before the task ends.
+                    let _ = running.waiting().await;
+                }
+                Err(e) => tracing::warn!(
+                    target: "concerto::maestro",
+                    error = %e,
+                    "maestro mcp serve failed for accepted connection"
+                ),
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -247,8 +368,14 @@ mod tests {
             let listed = client.list_all_tools().await.expect("list tools");
             assert_eq!(listed.len(), 18, "client sees all 18 frozen tools");
 
+            // `serve_maestro_mcp` builds a HANDLE-LESS server, so a WRITE tool
+            // keeps the frozen typed-unimplemented seam (Milestone 2 fills it).
+            // (Read tools now route to the live `dispatch_read` when handles are
+            // wired — see `call_tool_list_workspaces_returns_live_data`; over a
+            // handle-less server they return the "read handles not wired" guard,
+            // which is still a typed error, never a panic or empty success.)
             let result = client
-                .call_tool(CallToolRequestParams::new("list_workspaces"))
+                .call_tool(CallToolRequestParams::new("create_workspace"))
                 .await;
             let err = result.expect_err("call returns a typed error, not Ok");
             // The error propagates as an rmcp ServiceError carrying the McpError.
@@ -273,5 +400,242 @@ mod tests {
             .expect("server task did not panic")
             .expect("server started");
         server_handle.cancel_token().cancel();
+    }
+
+    // -- Milestone 1: live read-tool routing -------------------------------
+
+    /// A fresh on-disk `Persistence` seeded with one workspace, mirroring the
+    /// `tools/read.rs` test fixture (`Persistence::open` + `workspaces::insert`).
+    /// The tempdir is returned so the caller keeps the DB alive for the test.
+    async fn fresh_persist_with_workspace(
+        id: &str,
+        name: &str,
+    ) -> (tempfile::TempDir, Persistence) {
+        use concerto_persist::{NewWorkspace, PersistenceConfig, WorkspaceId};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let persist = Persistence::open(PersistenceConfig {
+            db_path: dir.path().join("test.db"),
+            max_readers: 2,
+        })
+        .await
+        .expect("open persistence");
+
+        let mut w = persist.writer().await;
+        concerto_persist::workspaces::insert(
+            &mut w,
+            NewWorkspace {
+                id: WorkspaceId(id.into()),
+                name: name.into(),
+                slug: id.into(),
+                icon: None,
+                description: None,
+                permission_mode: None,
+                created_at: 1,
+            },
+        )
+        .await
+        .expect("insert workspace");
+        drop(w);
+
+        (dir, persist)
+    }
+
+    fn system_clock_cache() -> Arc<Mutex<SummaryCache>> {
+        Arc::new(Mutex::new(SummaryCache::with_system_clock()))
+    }
+
+    /// A handle-bearing server routes `list_workspaces` to the live
+    /// `dispatch_read` over the in-memory transport pair: the result is a
+    /// SUCCESS (`is_error != Some(true)`) carrying the seeded workspace id —
+    /// NOT the frozen typed-unimplemented error.
+    #[tokio::test]
+    async fn call_tool_list_workspaces_returns_live_data() {
+        use std::time::Duration;
+
+        let (_dir, persist) = fresh_persist_with_workspace("ws-real", "Real").await;
+        let server =
+            MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
+
+        let (server_io, client_io) = tokio::io::duplex(8192);
+        let (sr, sw) = tokio::io::split(server_io);
+        let (cr, cw) = tokio::io::split(client_io);
+
+        let server_task = tokio::spawn(async move {
+            server
+                .serve(AsyncRwTransport::<RoleServer, _, _>::new(sr, sw))
+                .await
+                .expect("server connects")
+                .waiting()
+                .await
+                .ok();
+        });
+
+        let body = async {
+            let client = ()
+                .serve(AsyncRwTransport::<rmcp::RoleClient, _, _>::new(cr, cw))
+                .await
+                .expect("client connects");
+
+            let result = client
+                .call_tool(CallToolRequestParams::new("list_workspaces"))
+                .await
+                .expect("list_workspaces returns Ok, not a typed error");
+
+            assert_ne!(
+                result.is_error,
+                Some(true),
+                "live read tool must be a success, not an error"
+            );
+            // The seeded workspace id crosses the wire in both the structured
+            // content and the text rendering.
+            let serialized = serde_json::to_string(&result).expect("serialize result");
+            assert!(
+                serialized.contains("ws-real"),
+                "result must mention the seeded workspace id, got: {serialized}"
+            );
+
+            client.cancel().await.ok();
+        };
+
+        tokio::time::timeout(Duration::from_secs(20), body)
+            .await
+            .expect("round-trip finishes under the guard");
+        server_task.abort();
+    }
+
+    /// The routing decision table: read tools classify `ReadOnly` (→ live
+    /// `dispatch_read`), write/side tools keep their classes (→ frozen seam),
+    /// and an unknown name is `None` (→ `invalid_params` via `dispatch_tool`).
+    #[test]
+    fn class_of_drives_read_vs_frozen_routing() {
+        assert_eq!(tools::class_of("list_workspaces"), Some(ToolKind::ReadOnly));
+        assert_eq!(
+            tools::class_of("cross_workarea_search"),
+            Some(ToolKind::ReadOnly)
+        );
+        assert_eq!(tools::class_of("create_workspace"), Some(ToolKind::Write));
+        assert_eq!(tools::class_of("notify_user"), Some(ToolKind::SideChannel));
+        assert_eq!(tools::class_of("not_a_real_tool"), None);
+    }
+
+    /// A write tool stays the frozen typed-unimplemented error even on a
+    /// handle-bearing server (Milestone 2 fills it, not this task).
+    #[tokio::test]
+    async fn write_tool_stays_typed_unimplemented_on_live_server() {
+        let (_dir, persist) = fresh_persist_with_workspace("ws-w", "W").await;
+        let server =
+            MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
+        let err = server
+            .dispatch_tool(CallToolRequestParams::new("create_workspace"))
+            .expect_err("write tool keeps the frozen seam");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert!(err.message.contains("Task 406"));
+    }
+
+    // -- Milestone 1: the UDS accept loop ----------------------------------
+
+    /// The full socket path: bind the listener, dial it with a raw `UnixStream`
+    /// (as the Task 1 bridge does), run an MCP client over it, and assert
+    /// `list_workspaces` returns the seeded workspace — proving
+    /// socket → accept → fresh server clone → `dispatch_read`.
+    #[tokio::test]
+    async fn listener_serves_live_read_over_socket() {
+        use std::time::Duration;
+        use tokio::net::UnixStream;
+
+        let (_dir, persist) = fresh_persist_with_workspace("ws-socket", "Socketed").await;
+        let template =
+            MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
+
+        let sockdir = tempfile::tempdir().expect("sockdir");
+        let socket = sockdir.path().join("maestro-mcp.sock");
+
+        let listener_task =
+            tokio::spawn(serve_maestro_mcp_listener(socket.clone(), template));
+
+        // Wait for the socket to appear (bind happens inside the spawned task).
+        let bound = async {
+            loop {
+                if socket.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), bound)
+            .await
+            .expect("listener binds the socket");
+
+        // 0600 perms on the socket.
+        let mode = std::fs::metadata(&socket)
+            .expect("stat socket")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "socket must be owner-only (0600)");
+
+        let body = async {
+            let stream = UnixStream::connect(&socket).await.expect("dial socket");
+            let (r, w) = stream.into_split();
+            let client = ()
+                .serve(AsyncRwTransport::<rmcp::RoleClient, _, _>::new(r, w))
+                .await
+                .expect("client connects over socket");
+
+            let result = client
+                .call_tool(CallToolRequestParams::new("list_workspaces"))
+                .await
+                .expect("list_workspaces over socket returns Ok");
+            assert_ne!(result.is_error, Some(true));
+            let serialized = serde_json::to_string(&result).expect("serialize");
+            assert!(
+                serialized.contains("ws-socket"),
+                "socket round-trip must surface the seeded workspace, got: {serialized}"
+            );
+
+            client.cancel().await.ok();
+        };
+
+        tokio::time::timeout(Duration::from_secs(20), body)
+            .await
+            .expect("socket round-trip finishes under the guard");
+
+        listener_task.abort();
+    }
+
+    /// The listener removes a stale socket left by a prior run and still binds
+    /// + sets 0600 (the lighter bind/perms guard).
+    #[tokio::test]
+    async fn listener_binds_over_stale_socket_with_0600() {
+        use std::os::unix::fs::FileTypeExt;
+        use std::time::Duration;
+
+        let template = MaestroMcpServer::new();
+        let sockdir = tempfile::tempdir().expect("sockdir");
+        let socket = sockdir.path().join("stale.sock");
+        // Leave a stale regular file at the path; bind must clear it first.
+        std::fs::write(&socket, b"stale").expect("write stale file");
+
+        let listener_task =
+            tokio::spawn(serve_maestro_mcp_listener(socket.clone(), template));
+
+        let bound = async {
+            loop {
+                if let Ok(meta) = std::fs::metadata(&socket) {
+                    // A bound UDS is a socket, not a regular file.
+                    if meta.file_type().is_socket() {
+                        break meta;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        let meta = tokio::time::timeout(Duration::from_secs(5), bound)
+            .await
+            .expect("listener rebinds over the stale socket");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+
+        listener_task.abort();
     }
 }

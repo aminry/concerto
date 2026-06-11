@@ -585,6 +585,14 @@ pub fn all_tools() -> Vec<ToolDescriptor> {
     ]
 }
 
+/// The permission [`ToolKind`] of a registered tool by name, or `None` if the
+/// name is not in the frozen 18-tool registry. The MCP server (`super::mcp`)
+/// uses this to route the 11 read tools to the live [`read::dispatch_read`]
+/// while write/side-channel tools keep the frozen typed-unimplemented seam.
+pub fn class_of(name: &str) -> Option<ToolKind> {
+    all_tools().iter().find(|d| d.name == name).map(|d| d.class)
+}
+
 /// Dispatch a tool call by name. In Task 401 every arm returns the typed
 /// `unimplemented` MCP error (the 305 seam discipline) — 405/406/407 replace
 /// each arm with a live implementation behind the same frozen schema. An
