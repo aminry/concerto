@@ -113,14 +113,31 @@ pub mod routing;
 pub mod privacy;
 // ===========================================================================
 
+// ===========================================================================
+// Task 414 region — DISTINCT additive zone (PHASE4_PLANNING §4.2 / §8.1 / D7).
+// Kept in its OWN clearly-labeled block so it auto-merges against the lines
+// above AND task 411's in-flight `pub mod cone_suggester;` soft-seam line.
+//
+// The five Maestro stream events + their opaque-JSON wire frame
+// (`{"kind": ...}` on `Event.checks_opaque = 17`, NO new oneof arm) the live
+// service publishes on `maestro.events`. FROZEN by 414; consumed by 415.
+pub mod events;
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
 pub use mcp::{serve_maestro_mcp, MaestroMcpServer, McpServerHandle, SERVER_NAME};
 pub use tools::{all_tools, dispatch, ToolDescriptor, ToolKind};
 
-// Task 401.5 — re-export the frozen handle surface (additive).
-pub use handle::{MaestroHandle, MaestroStateView};
+// Task 401.5 — re-export the frozen handle surface (additive). Task 414 adds
+// the live `SendOutcome`/`InertReason` companions the handler + 412 consume.
+pub use handle::{InertReason, MaestroHandle, MaestroStateView, SendOutcome};
+
+// Task 414 — re-export the FROZEN Maestro events surface (distinct region; see
+// the `pub mod events;` block above). The domain event enum + its producer the
+// live service publishes on `maestro.events`.
+pub use events::{MaestroEvent, MaestroEventSender};
 
 // Task 402 re-exports (distinct region — see above).
 pub use provider::{
