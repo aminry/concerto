@@ -336,6 +336,12 @@ service Maestro {
   // Per-workarea Maestro visibility toggle (design/08 §3.3). Task 413
   // enforces the summary blanking this drives.
   rpc SetWorkareaVisibility(VisibilityRequest) returns (google.protobuf.Empty);
+  // Read the live Maestro state (budget counters + caps, enabled/inert,
+  // last-digest cursor, and the live Maestro session id) so the Desktop can
+  // render the budget meter (80% amber / 100% red) and subscribe to the
+  // Maestro session's write-tool approvals (Task 417). Task 416: ADDITIVE
+  // GetState — existing field numbers above are unchanged.
+  rpc GetState(GetStateRequest) returns (MaestroState);
 }
 ```
 
@@ -403,6 +409,28 @@ enum MaestroVisibility {
   MAESTRO_VISIBILITY_UNSPECIFIED = 0;
   MAESTRO_VISIBILITY_FULL = 1;
   MAESTRO_VISIBILITY_HARD_FACTS_ONLY = 2;
+}
+```
+
+### message `GetStateRequest`
+
+```proto
+message GetStateRequest {}
+```
+
+### message `MaestroState`
+
+```proto
+message MaestroState {
+  bool enabled = 1;             // Maestro enabled (vs disabled by user/policy).
+  int64 daily_in_today = 2;     // Input tokens spent today (cumulative).
+  int64 daily_out_today = 3;    // Output tokens spent today (cumulative).
+  int64 in_cap = 4;             // Daily input cap (412: 200K).
+  int64 out_cap = 5;            // Daily output cap (412: 50K).
+  int64 last_digest_at_ms = 6;  // Unix-ms of last digest; 0 ⇒ never.
+  bool inert = 7;               // True when the LLM path is inert (budget/policy).
+  string inert_reason = 8;      // "" | "budget_exhausted" | "disabled_by_policy".
+  string maestro_session_id = 9; // Live Maestro session id; "" when none.
 }
 ```
 

@@ -26,12 +26,14 @@
 
 use concerto_proto::v1::maestro_server::Maestro as MaestroService;
 use concerto_proto::v1::{
-    Digest, GetDigestRequest, MaestroMessageRequest, MaestroVisibility, VisibilityRequest,
+    Digest, GetDigestRequest, GetStateRequest, MaestroMessageRequest, MaestroState,
+    MaestroVisibility, VisibilityRequest,
 };
 use tonic::{Request, Response, Status};
 
 use crate::error_map::error_to_status;
-use crate::maestro::MaestroHandle;
+use crate::llm::{DEFAULT_DAILY_IN_CAP, DEFAULT_DAILY_OUT_CAP};
+use crate::maestro::{InertReason, MaestroHandle};
 use concerto_persist::WorkareaId;
 
 /// The `Status` a policy-disabled (handle un-constructed at boot) RPC returns.
@@ -118,6 +120,42 @@ impl MaestroService for MaestroHandler {
             .map_err(error_to_status)?;
         Ok(Response::new(()))
     }
+
+    #[tracing::instrument(skip_all, name = "Maestro::GetState")]
+    async fn get_state(
+        &self,
+        _request: Request<GetStateRequest>,
+    ) -> Result<Response<MaestroState>, Status> {
+        let handle = self.handle()?;
+        // Read projection (mirrors `get_digest`): assemble the wire `MaestroState`
+        // from the handle's read-model (enabled/counts/last_digest) + 412's caps
+        // + the inert reason + the live Maestro session id (Task 417 subscribes
+        // to its `session.events.<sid>` for write-tool approval chips). No
+        // business logic; the handle owns every source.
+        let view = handle.get_state().await.map_err(error_to_status)?;
+        // `inert_reason()` ⇒ the `inert` flag + the FROZEN reason string
+        // (`"" | "budget_exhausted" | "disabled_by_policy"`), consistent with
+        // what 412 enforces and 414 emits.
+        let (inert, inert_reason) = match handle.inert_reason().await {
+            None => (false, String::new()),
+            Some(InertReason::BudgetExhausted { .. }) => (true, "budget_exhausted".to_string()),
+            Some(InertReason::DisabledByPolicy { .. }) => (true, "disabled_by_policy".to_string()),
+        };
+        let state = MaestroState {
+            enabled: view.enabled,
+            daily_in_today: view.daily_in_today,
+            daily_out_today: view.daily_out_today,
+            in_cap: DEFAULT_DAILY_IN_CAP as i64,
+            out_cap: DEFAULT_DAILY_OUT_CAP as i64,
+            last_digest_at_ms: view.last_digest_at_ms.unwrap_or(0),
+            inert,
+            inert_reason,
+            // Empty string when there is no live Maestro session (417 keys off
+            // this to decide whether to subscribe to the session's events).
+            maestro_session_id: handle.maestro_session_id_str().await,
+        };
+        Ok(Response::new(state))
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +192,17 @@ mod tests {
         let h = MaestroHandler::new(None);
         let err = h
             .set_workarea_visibility(Request::new(VisibilityRequest::default()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.message(), DISABLED_BY_POLICY);
+    }
+
+    #[tokio::test]
+    async fn policy_disabled_get_state_is_failed_precondition() {
+        let h = MaestroHandler::new(None);
+        let err = h
+            .get_state(Request::new(GetStateRequest::default()))
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
