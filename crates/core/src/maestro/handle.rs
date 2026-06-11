@@ -180,8 +180,10 @@ impl MaestroHandle {
         *self.inner.inert.lock().await = reason;
     }
 
-    /// The current inert reason, if any.
-    async fn inert_reason(&self) -> Option<InertReason> {
+    /// The current inert reason, if any. `pub` so `handlers/maestro.rs` can
+    /// project it into the `MaestroState.inert`/`inert_reason` wire fields
+    /// (Task 416); also used internally by `guard_llm`.
+    pub async fn inert_reason(&self) -> Option<InertReason> {
         self.inner.inert.lock().await.clone()
     }
 
@@ -313,6 +315,18 @@ impl MaestroHandle {
             daily_out_today: state.daily_out_today,
             last_digest_at_ms: state.last_digest_at,
         })
+    }
+
+    /// The live Maestro session id as a wire string, or `""` when there is no
+    /// live session (Task 416). Wraps the internal [`Self::maestro_session_id`]
+    /// (which returns a typed `NotFound` for the forward path) and flattens
+    /// `Err`/none to the empty string the `MaestroState.maestro_session_id`
+    /// field carries — 417 keys "no live session" off the empty string.
+    pub async fn maestro_session_id_str(&self) -> String {
+        self.maestro_session_id()
+            .await
+            .map(|s| s.0)
+            .unwrap_or_default()
     }
 
     // -- internals ----------------------------------------------------------
@@ -795,5 +809,105 @@ mod tests {
         let state = handle.get_state().await.expect("state");
         assert!(state.enabled, "default enabled");
         assert_eq!(state.last_digest_at_ms, None);
+    }
+
+    // -- Task 416: maestro_session_id_str flattens to "" / the live id -------
+
+    #[tokio::test]
+    async fn maestro_session_id_str_empty_when_no_live_session() {
+        let (_tmp, handle, _persistence) = live_handle().await;
+        assert_eq!(
+            handle.maestro_session_id_str().await,
+            "",
+            "no live Maestro session ⇒ empty string"
+        );
+    }
+
+    #[tokio::test]
+    async fn maestro_session_id_str_returns_live_session_id() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        insert_workarea(&persistence, "wa-1", "bach").await;
+        // A live (`ended_at IS NULL`) session on the bootstrapped maestro chat.
+        {
+            let mut w = persistence.writer().await;
+            sqlx::query(
+                "INSERT INTO sessions (id, workarea_id, chat_id, agent_kind, permission_mode, \
+                 bypass_destructive_guard, started_at, ended_at, status, last_acked_seq) \
+                 VALUES ('maestro-sess', 'wa-1', 'maestro-chat', 'maestro', 'normal', 0, 1, NULL, 'running', 0)",
+            )
+            .execute(&mut *w)
+            .await
+            .expect("insert maestro session");
+        }
+        assert_eq!(handle.maestro_session_id_str().await, "maestro-sess");
+    }
+
+    // -- Task 416: GetState handler projects the full MaestroState ----------
+
+    #[tokio::test]
+    async fn get_state_handler_projects_full_state_with_session_id() {
+        use crate::handlers::maestro::MaestroHandler;
+        use crate::llm::{DEFAULT_DAILY_IN_CAP, DEFAULT_DAILY_OUT_CAP};
+        use concerto_proto::v1::maestro_server::Maestro as MaestroService;
+        use concerto_proto::v1::GetStateRequest;
+        use tonic::Request;
+
+        let (_tmp, handle, persistence) = live_handle().await;
+        insert_workarea(&persistence, "wa-1", "bach").await;
+        // A live Maestro session so `maestro_session_id` is non-empty (417's
+        // load-bearing field).
+        {
+            let mut w = persistence.writer().await;
+            sqlx::query(
+                "INSERT INTO sessions (id, workarea_id, chat_id, agent_kind, permission_mode, \
+                 bypass_destructive_guard, started_at, ended_at, status, last_acked_seq) \
+                 VALUES ('maestro-sess', 'wa-1', 'maestro-chat', 'maestro', 'normal', 0, 1, NULL, 'running', 0)",
+            )
+            .execute(&mut *w)
+            .await
+            .expect("insert maestro session");
+        }
+
+        let svc = MaestroHandler::new(Some(handle));
+        let state = svc
+            .get_state(Request::new(GetStateRequest::default()))
+            .await
+            .expect("get_state")
+            .into_inner();
+
+        assert!(state.enabled, "default enabled");
+        assert_eq!(state.daily_in_today, 0);
+        assert_eq!(state.daily_out_today, 0);
+        assert_eq!(state.in_cap, DEFAULT_DAILY_IN_CAP as i64);
+        assert_eq!(state.out_cap, DEFAULT_DAILY_OUT_CAP as i64);
+        assert_eq!(state.last_digest_at_ms, 0, "0 ⇒ never");
+        assert!(!state.inert, "live handle is not inert");
+        assert_eq!(state.inert_reason, "");
+        assert_eq!(
+            state.maestro_session_id, "maestro-sess",
+            "live session id is load-bearing for 417"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_state_handler_reports_inert_budget_exhausted() {
+        use crate::handlers::maestro::MaestroHandler;
+        use concerto_proto::v1::maestro_server::Maestro as MaestroService;
+        use concerto_proto::v1::GetStateRequest;
+        use tonic::Request;
+
+        let (_tmp, handle, _persistence) = live_handle().await;
+        handle
+            .set_inert(Some(InertReason::BudgetExhausted { resets_at_ms: 9 }))
+            .await;
+
+        let svc = MaestroHandler::new(Some(handle));
+        let state = svc
+            .get_state(Request::new(GetStateRequest::default()))
+            .await
+            .expect("get_state")
+            .into_inner();
+        assert!(state.inert);
+        assert_eq!(state.inert_reason, "budget_exhausted");
     }
 }

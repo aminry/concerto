@@ -54,12 +54,12 @@ Give the Desktop a way to **read the live Maestro state** so it can render the b
 6. `scripts/smoke.sh` — unchanged.
 
 ## Definition of Done
-- [ ] `Maestro.GetState` RPC + `MaestroState`/`GetStateRequest` messages added (additive; existing field numbers unchanged)
-- [ ] `get_state` handler filled (attached ⇒ enabled/counts/caps/last_digest/inert/inert_reason/maestro_session_id; `None` ⇒ `failed_precondition("maestro.disabled_by_policy")`); `#[cfg(unix)]`-gated, `error_to_status`
-- [ ] Tier-1 tests pass; smoke unchanged; interfaces regenerated + committed
-- [ ] No TODO/FIXME/unimplemented!()/todo!() in new code
-- [ ] No files outside Outputs modified
-- [ ] Single commit with the message below
+- [x] `Maestro.GetState` RPC + `MaestroState`/`GetStateRequest` messages added (additive; existing field numbers unchanged)
+- [x] `get_state` handler filled (attached ⇒ enabled/counts/caps/last_digest/inert/inert_reason/maestro_session_id; `None` ⇒ `failed_precondition("maestro.disabled_by_policy")`); `#[cfg(unix)]`-gated, `error_to_status`
+- [x] Tier-1 tests pass; smoke unchanged; interfaces regenerated + committed
+- [x] No TODO/FIXME/unimplemented!()/todo!() in new code
+- [x] No files outside Outputs modified
+- [x] Single commit with the message below
 
 ## Outputs
 - `crates/proto/proto/concerto/v1/maestro.proto` (modified — `GetState` RPC + `MaestroState`/`GetStateRequest`)
@@ -83,7 +83,8 @@ Refs: tasks/v1.0/416-maestro-getstate-rpc.md
 ```
 
 ## Handoff Notes (filled in when finishing)
-- **Drift from plan:** —
-- **Open questions for next task:** — (417 adds the `Maestro.GetState` binding + feeds `<BudgetBanner>`/`<DigestPanel>` and subscribes to `maestro_session_id`'s `session.events` for the confirmation-chip producer.)
-- **Deliberate debt:** —
-- **Smoke-gate state:** —
+- **Drift from plan:** None to the wire contract. `MaestroStateView` (the frozen Rust read-model) was **NOT** changed — the caps come from 412's `DEFAULT_DAILY_IN_CAP`/`DEFAULT_DAILY_OUT_CAP` (`crate::llm`, 200K/50K), and the inert/session-id come straight off the handle, so the handler assembles the full `MaestroState` without touching `MaestroStateView`'s field set. Two small **additive** accessors were added on `MaestroHandle`: `inert_reason()` was made `pub` (was private), and a new `pub async fn maestro_session_id_str(&self) -> String` wraps the private `maestro_session_id()` and flattens `Err`/none → `""` (the empty-string contract). No new proto field/message-number changes beyond the additive `GetState`/`MaestroState`/`GetStateRequest`.
+- **FROZEN `MaestroState` field set (417's binding mirrors this):** `enabled=1 (bool)`, `daily_in_today=2 (i64)`, `daily_out_today=3 (i64)`, `in_cap=4 (i64, 200K)`, `out_cap=5 (i64, 50K)`, `last_digest_at_ms=6 (i64; 0 ⇒ never)`, `inert=7 (bool)`, `inert_reason=8 (string ∈ "" | "budget_exhausted" | "disabled_by_policy")`, `maestro_session_id=9 (string; "" when no live Maestro session)`.
+- **Open questions for next task:** — (417 adds the `Maestro.GetState` binding + feeds `<BudgetBanner>`/`<DigestPanel>` and subscribes to `maestro_session_id`'s `session.events` for the confirmation-chip producer. The TS `MaestroState` read-model at `apps/desktop/src/api/maestro.ts:81` currently lacks `in_cap`/`out_cap`/`inert`/`inert_reason`/`maestro_session_id` — 417 extends it to the 9-field wire shape above.)
+- **Deliberate debt:** None.
+- **Smoke-gate state:** Unchanged — no boot/wire-registration changes (`GetState` is a new RPC on the already-registered `Maestro` service); `scripts/smoke.sh` untouched.
