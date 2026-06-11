@@ -61,6 +61,14 @@
 // typed-unimplemented seam each task replaces its own arm of.)
 // ---------------------------------------------------------------------------
 
+// Task 405 — the 11 read-tool impls behind 401's frozen read schemas. The live
+// entry point is [`read::dispatch_read`] (async + Core-handle-bearing); the
+// handle-less [`dispatch`] below routes the 11 read names to it once the MCP
+// server (`super::mcp`) threads the Core handles in (402/414's wiring). This
+// line sits in 405's OWN region so the sibling 406 `pub mod write;` / 407
+// `pub mod side;` lines auto-merge on rebase.
+pub mod read;
+
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use rmcp::ErrorData as McpError;
 use serde_json::{json, Value};
@@ -566,7 +574,14 @@ pub fn all_tools() -> Vec<ToolDescriptor> {
 /// `_arguments` are the validated tool arguments; unused in 401 (no tool runs).
 pub fn dispatch(name: &str, _arguments: Option<JsonObject>) -> Result<CallToolResult, McpError> {
     match name {
-        // 11 read tools → Task 405 (tools/read.rs)
+        // 11 read tools → Task 405. The live impls live in [`read`]; the real
+        // entry point is the async, Core-handle-bearing [`read::dispatch_read`]
+        // (the 11 read tools query persistence / the 404 summary cache / live
+        // grep, which this handle-less sync `dispatch` cannot reach). The MCP
+        // server (`super::mcp`) calls `read::dispatch_read` once 402/414 thread
+        // the Core handles into `MaestroMcpServer`; until that wiring lands this
+        // handle-less path keeps 401's typed seam error (never a macro, never a
+        // fake-success) — `read::dispatch_read` is the route that actually runs.
         "list_workspaces"
         | "list_workareas"
         | "list_sessions"
