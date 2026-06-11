@@ -307,12 +307,20 @@ pub async fn list_non_archived_minimal(
 /// boot-time crash adoption sweep (`design/03 §6.5`) to probe disks and
 /// transition workareas whose worktree has gone missing into the
 /// `crashed` state.
+///
+/// The reserved Maestro system workarea (`MAESTRO_SYSTEM_WORKAREA_ID`) is
+/// always excluded — it is a synthetic row whose `worktree_root` is the
+/// Maestro scratch dir (not a real git worktree) and must never be a
+/// crash-adoption candidate.
 pub async fn list_all_non_archived(pool: &SqlitePool) -> Result<Vec<(WorkareaId, String)>> {
     let rows = sqlx::query(
         "SELECT id, worktree_root
          FROM workareas
-         WHERE archived_at IS NULL AND status != 'crashed'",
+         WHERE archived_at IS NULL AND status != 'crashed' AND id != ?",
     )
+    // Bind the sentinel value from the crate-level const so the literal
+    // lives in exactly one place.
+    .bind(crate::MAESTRO_SYSTEM_WORKAREA_ID)
     .fetch_all(pool)
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
@@ -664,6 +672,44 @@ mod sentinel_tests {
             listed.iter().map(|w| &w.id.0).collect::<Vec<_>>()
         );
         assert_eq!(listed[0].id.0, "wa-normal");
+    }
+
+    /// `list_all_non_archived` must never return the reserved system workarea.
+    /// The crash-sweep must not see the sentinel so it can never transition it
+    /// to `crashed`.
+    #[tokio::test]
+    async fn list_all_non_archived_excludes_system_sentinel() {
+        let pool = pool().await;
+
+        // Seed the system workspace + sentinel workarea, plus one normal
+        // workspace + workarea.  Both have status='created' and no archived_at,
+        // so without the sentinel guard the sentinel would appear in the result.
+        seed_workspace(&pool, MAESTRO_SYSTEM_WORKSPACE_ID, "__maestro_system__").await;
+        seed_workarea(
+            &pool,
+            MAESTRO_SYSTEM_WORKAREA_ID,
+            MAESTRO_SYSTEM_WORKSPACE_ID,
+            "__maestro__",
+        )
+        .await;
+
+        seed_workspace(&pool, "ws-normal", "ws-normal-slug").await;
+        seed_workarea(&pool, "wa-normal", "ws-normal", "composer-1").await;
+
+        let listed = list_all_non_archived(&pool).await.unwrap();
+
+        let ids: Vec<&str> = listed.iter().map(|(id, _)| id.0.as_str()).collect();
+        assert!(
+            !ids.contains(&MAESTRO_SYSTEM_WORKAREA_ID),
+            "list_all_non_archived must not return the system sentinel; got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"wa-normal"),
+            "list_all_non_archived must return normal workareas; got {:?}",
+            ids
+        );
+        assert_eq!(listed.len(), 1, "expected exactly 1 workarea; got {:?}", ids);
     }
 
     /// `get` by id must still return the sentinel (non-list queries unaffected).
