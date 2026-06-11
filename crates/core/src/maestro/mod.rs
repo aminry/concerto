@@ -273,6 +273,42 @@ pub fn ensure_maestro_scratch_trusted(scratch_cwd: &Path) -> Result<()> {
     crate::agent_supervisor::ensure_claude_trusts_dir(scratch_cwd)
 }
 
+/// The Core's Maestro-MCP unix socket path (`~/.concerto/maestro-mcp.sock`).
+/// The bridge dials this; the Core listens on it (a later task).
+pub fn maestro_mcp_socket_path() -> Result<PathBuf> {
+    let home = home::home_dir().ok_or_else(|| {
+        Error::Internal("cannot resolve home dir for the Maestro MCP socket path".into())
+    })?;
+    Ok(home.join(".concerto").join("maestro-mcp.sock"))
+}
+
+/// Compose the `.mcp.json` body that points the spawned CLI at the bridge.
+/// `--strict-mcp-config` (in the launch args) restricts the CLI to exactly the
+/// server registered here.
+pub fn compose_maestro_mcp_json(bridge_bin: &std::path::Path, socket: &std::path::Path) -> String {
+    let v = serde_json::json!({
+        "mcpServers": {
+            crate::maestro::mcp::SERVER_NAME: {
+                "command": bridge_bin.to_string_lossy(),
+                "args": ["--socket", socket.to_string_lossy()],
+            }
+        }
+    });
+    serde_json::to_string_pretty(&v).expect("serializing a json! literal never fails")
+}
+
+/// Write the Maestro `.mcp.json` into `scratch_cwd` (the `--mcp-config` target:
+/// `scratch_cwd/.mcp.json`). Idempotent (overwrites).
+pub fn write_maestro_mcp_json(
+    scratch_cwd: &std::path::Path,
+    bridge_bin: &std::path::Path,
+    socket: &std::path::Path,
+) -> Result<PathBuf> {
+    let path = scratch_cwd.join(".mcp.json");
+    std::fs::write(&path, compose_maestro_mcp_json(bridge_bin, socket)).map_err(Error::Io)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +330,18 @@ mod tests {
         assert_eq!(req.cwd, scratch);
         assert!(req.resume_session_id.is_none());
         assert!(req.echo_text.is_none());
+    }
+
+    #[test]
+    fn mcp_json_names_bridge_and_socket_under_server_name() {
+        let json = compose_maestro_mcp_json(
+            std::path::Path::new("/opt/concerto/concerto-maestro-bridge"),
+            std::path::Path::new("/home/u/.concerto/maestro-mcp.sock"),
+        );
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let server = &v["mcpServers"][crate::maestro::mcp::SERVER_NAME];
+        assert_eq!(server["command"], "/opt/concerto/concerto-maestro-bridge");
+        assert_eq!(server["args"][0], "--socket");
+        assert_eq!(server["args"][1], "/home/u/.concerto/maestro-mcp.sock");
     }
 }
