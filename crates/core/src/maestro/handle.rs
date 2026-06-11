@@ -235,8 +235,10 @@ impl MaestroHandle {
     /// would never find the session (Seam 4b). Idempotent: a live session short-
     /// circuits to its id, so boot can call this unconditionally.
     pub async fn spawn_maestro_session(&self) -> Result<concerto_persist::SessionId> {
-        if let Ok(existing) = self.maestro_session_id().await {
-            return Ok(existing);
+        match self.maestro_session_id().await {
+            Ok(existing) => return Ok(existing),
+            Err(Error::NotFound(_)) => {} // no live session yet — proceed to spawn
+            Err(e) => return Err(e),       // surface real DB/internal errors
         }
         let chat_id = self.ensure_maestro_chat().await?;
         let (_ws, wa_id) = crate::maestro::system_workarea::ensure_system_workspace_and_workarea(

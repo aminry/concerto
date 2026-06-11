@@ -520,11 +520,17 @@ impl AgentSupervisorHandle {
         {
             let mut writer = self.persistence.writer().await;
             let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
-            sqlx::query("PRAGMA defer_foreign_keys = ON")
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| Error::Sqlx(Box::new(e)))?;
             if !bind_existing_chat {
+                // Defer FK checks to commit time: `chats.session_id` and
+                // `sessions.chat_id` reference each other, so neither can be
+                // inserted first under immediate FK enforcement. The PRAGMA is
+                // scoped to this transaction and is only needed here (the
+                // `bind_existing_chat` path inserts no new `chats` row, so
+                // there is no cycle to defer).
+                sqlx::query("PRAGMA defer_foreign_keys = ON")
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| Error::Sqlx(Box::new(e)))?;
                 concerto_persist::sessions::insert_chat(
                     &mut tx,
                     NewChat {
