@@ -8,10 +8,12 @@ use concerto_persist::{
     NewWorkarea, NewWorkspace, Persistence, WorkareaId, WorkspaceId, workareas, workspaces,
 };
 
-/// Reserved workspace id hosting the Maestro. Filtered from UI lists.
-pub const SYSTEM_WORKSPACE_ID: &str = "__maestro_system__";
-/// Reserved workarea id the Maestro session FKs to.
-pub const SYSTEM_WORKAREA_ID: &str = "__maestro_system_wa__";
+// Re-export the canonical sentinel id literals from `concerto_persist` so that
+// the single source of truth lives in the persistence layer (which is the only
+// layer that needs to reference them in SQL). All existing call sites resolve
+// through these names unchanged.
+pub use concerto_persist::MAESTRO_SYSTEM_WORKAREA_ID as SYSTEM_WORKAREA_ID;
+pub use concerto_persist::MAESTRO_SYSTEM_WORKSPACE_ID as SYSTEM_WORKSPACE_ID;
 
 /// Reserved slug + composer/branch names for the system rows. The slug must be
 /// globally unique (`workspaces.UNIQUE(slug)`) and the composer name unique

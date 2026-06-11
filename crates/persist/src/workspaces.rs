@@ -100,12 +100,21 @@ pub async fn get(pool: &SqlitePool, id: &WorkspaceId) -> Result<Option<Workspace
 
 /// List every workspace (read-only). Sorted by `name` for deterministic
 /// UI / test output.
+///
+/// The reserved system workspace (`MAESTRO_SYSTEM_WORKSPACE_ID`) is always
+/// excluded — it is an internal sentinel and must never appear in user-facing
+/// lists or in the Maestro's own `list_workspaces` read tool.
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Workspace>> {
     let rows = sqlx::query(
         "SELECT id, name, slug, icon, description,
                 permission_mode, created_at, archived_at
-         FROM workspaces ORDER BY name",
+         FROM workspaces
+         WHERE id != ?
+         ORDER BY name",
     )
+    // Bind the sentinel value from the crate-level const so the literal
+    // lives in exactly one place.
+    .bind(crate::MAESTRO_SYSTEM_WORKSPACE_ID)
     .fetch_all(pool)
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
@@ -440,6 +449,63 @@ fn row_to_workspace(row: sqlx::sqlite::SqliteRow) -> Workspace {
         permission_mode: row.get::<Option<String>, _>("permission_mode"),
         created_at: row.get::<i64, _>("created_at"),
         archived_at: row.get::<Option<i64>, _>("archived_at"),
+    }
+}
+
+#[cfg(test)]
+mod sentinel_tests {
+    use super::*;
+    use crate::{MAESTRO_SYSTEM_WORKSPACE_ID, api::{NewWorkspace, WorkspaceId}};
+    use sqlx::SqlitePool;
+
+    async fn pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn seed_ws(pool: &SqlitePool, id: &str, name: &str, slug: &str) {
+        let mut conn = pool.acquire().await.unwrap();
+        insert(
+            &mut conn,
+            NewWorkspace {
+                id: WorkspaceId(id.into()),
+                name: name.into(),
+                slug: slug.into(),
+                icon: None,
+                description: None,
+                permission_mode: None,
+                created_at: 0,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// `list_all` must exclude the reserved system workspace sentinel.
+    #[tokio::test]
+    async fn list_all_excludes_system_sentinel() {
+        let pool = pool().await;
+        // Insert one normal workspace and the reserved sentinel.
+        seed_ws(&pool, "ws-normal", "Normal Workspace", "normal-ws").await;
+        seed_ws(&pool, MAESTRO_SYSTEM_WORKSPACE_ID, "Maestro (system)", "__maestro_system__").await;
+
+        let all = list_all(&pool).await.unwrap();
+
+        // Only the normal workspace should appear; the sentinel is hidden.
+        assert_eq!(all.len(), 1, "expected 1 workspace, got {:?}", all.iter().map(|w| &w.id.0).collect::<Vec<_>>());
+        assert_eq!(all[0].id.0, "ws-normal");
+    }
+
+    /// `get` by id must still return the sentinel (non-list queries unaffected).
+    #[tokio::test]
+    async fn get_still_returns_sentinel_by_id() {
+        let pool = pool().await;
+        seed_ws(&pool, MAESTRO_SYSTEM_WORKSPACE_ID, "Maestro (system)", "__maestro_system__").await;
+        let ws = get(&pool, &WorkspaceId(MAESTRO_SYSTEM_WORKSPACE_ID.into()))
+            .await
+            .unwrap();
+        assert!(ws.is_some(), "get by id must still return the sentinel row");
     }
 }
 

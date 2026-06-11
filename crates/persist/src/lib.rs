@@ -41,3 +41,10 @@ pub use api::{
     SkillScope, SuggestionLearn, SuggestionLearnId, VcsCredential, VcsCredentialId, Workarea,
     WorkareaId, Workspace, WorkspaceId, WorkspaceRepoCones, WriterGuard,
 };
+
+/// Reserved id of the hidden system workspace that hosts the global Maestro
+/// session. Excluded from user-facing list queries.
+pub const MAESTRO_SYSTEM_WORKSPACE_ID: &str = "__maestro_system__";
+/// Reserved id of the hidden system workarea the Maestro session FKs to.
+/// Excluded from user-facing list queries.
+pub const MAESTRO_SYSTEM_WORKAREA_ID: &str = "__maestro_system_wa__";
