@@ -165,6 +165,13 @@ impl ServerHandler for MaestroMcpServer {
                 let h = self.handles.as_ref().ok_or_else(|| {
                     McpError::internal_error("maestro read handles not wired", None)
                 })?;
+                // We hold the cache guard across the whole read-tool dispatch. Only
+                // `get_workarea_summary` actually reads the cache; the other read tools use the
+                // concurrent Persistence read pool. For the single-user desktop Maestro (one
+                // session, sequential tool calls) this coarse serialization is an accepted
+                // tradeoff — narrowing it would mean changing dispatch_read's `&SummaryCache`
+                // signature, which is intentionally frozen here.
+                //
                 // Source `now_ms` from the cache's injected clock (the
                 // synthetic-clock seam, summary.rs §10) so the whole maestro
                 // read path shares one clock — `SystemClock` in prod, a
@@ -249,8 +256,11 @@ where
 ///
 /// This is the Core end of the CLI bridge (Task 1): the bridge dials this UDS
 /// and speaks newline-delimited JSON-RPC (the MCP stdio framing) over it; each
-/// accepted connection is one MCP session. The loop runs until aborted — boot
-/// (the spawn site) holds the `JoinHandle` and drops/aborts it on shutdown.
+/// accepted connection is one MCP session. The loop runs until the task is
+/// aborted — boot (the spawn site) holds the `JoinHandle` and drops/aborts it
+/// on shutdown. Transient `accept` errors (e.g. ECONNABORTED, EMFILE/ENFILE on
+/// fd exhaustion) are logged and skipped with a short backoff; they do not
+/// terminate the listener.
 ///
 /// A stale socket left by a crashed prior run is removed before bind; the `0600`
 /// mode keeps the session owner-only (the bridge runs as the same user).
@@ -265,7 +275,15 @@ pub async fn serve_maestro_mcp_listener(
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
 
     loop {
-        let (conn, _) = listener.accept().await?;
+        let (conn, _) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(target: "concerto::maestro", error = %e, "maestro mcp accept failed; continuing");
+                // Avoid a hot spin on persistent fd-exhaustion style errors.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
+            }
+        };
         let server = template.clone();
         tokio::spawn(async move {
             let (r, w) = conn.into_split();
