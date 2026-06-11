@@ -66,23 +66,29 @@ export type MaestroAttachment = {
   ref: string; // opaque reference resolved by the consumer
 };
 
-/// Mirrors 401.5's Rust-side `MaestroStateView` read-model (401.5 handoff /
-/// PHASE4_PLANNING §4.2): the state 414 fills from `maestro_state`
-/// (migration 0015, Task 403) and surfaces via `MaestroHandle::get_state`.
-/// All timestamps are `int64` unix-ms plain numbers — NOT [seconds, nanos]
-/// tuples.
+/// Mirrors `concerto.v1.MaestroState` — the read-model returned by
+/// `Maestro.GetState`, FROZEN by Task 416 (maestro.proto, field numbers 1-9).
+/// 416 assembles it from `MaestroHandle::get_state` (enabled / daily counters /
+/// last_digest) + 412's `TokenBudget` caps (200K in / 50K out) + the handle's
+/// inert reason + the Maestro singleton session id. All timestamps are `int64`
+/// unix-ms plain numbers — NOT [seconds, nanos] tuples.
 ///
-/// NOTE: `MaestroState` is NOT yet a `maestro.proto` message nor an exposed
-/// `Maestro.*` RPC — it is a frozen Rust read-model whose gRPC surfacing is
-/// 414's. 415 mirrors the shape now so the budget banner / stale badge render
-/// against it the moment 414 wires a `GetState`-style accessor; until then the
-/// renderer derives banner state defensively from `maestro.events` frames
-/// (`budget_exhausted` / `disabled_by_policy`) and any state pushed in.
+/// Field contract (416 Handoff): `last_digest_at_ms = 0` ⇒ never;
+/// `inert_reason` ∈ `"" | "budget_exhausted" | "disabled_by_policy"`;
+/// `maestro_session_id = ""` ⇒ no live Maestro session. Task 417 binds this
+/// shape via `getState`, feeds it into `<BudgetBanner>`/`<DigestPanel>`, and
+/// subscribes to `maestro_session_id`'s `session.events` for the
+/// confirmation-chip producer.
 export type MaestroState = {
-  enabled: boolean;
-  daily_in_today: number; // i64
-  daily_out_today: number; // i64
-  last_digest_at_ms?: number | null; // Option<i64> unix-ms
+  enabled: boolean; // = 1
+  daily_in_today: number; // = 2 (i64)
+  daily_out_today: number; // = 3 (i64)
+  in_cap: number; // = 4 (i64; 200000)
+  out_cap: number; // = 5 (i64; 50000)
+  last_digest_at_ms?: number | null; // = 6 (i64 unix-ms; 0 ⇒ never)
+  inert: boolean; // = 7
+  inert_reason: string; // = 8 ("" | "budget_exhausted" | "disabled_by_policy")
+  maestro_session_id: string; // = 9 ("" ⇒ no live Maestro session)
 };
 
 // ── RPC request/response shapes (FROZEN field names, maestro.proto) ──────────
@@ -119,6 +125,19 @@ export async function sendToMaestro(
 /// content. The request message `GetDigestRequest` is empty.
 export async function getDigest(): Promise<Digest> {
   return callRpc<Record<string, never>, Digest>("Maestro.GetDigest", {});
+}
+
+/// Read the live Maestro state (`Maestro.GetState`, FROZEN by Task 416): the
+/// budget counters + caps (for `<BudgetBanner>`'s 80%-amber / 100%-red meter),
+/// the inert state + reason (the stale badge + policy-disabled banner), the
+/// last-digest cursor, and the Maestro singleton session id (which
+/// `useMaestroConfirmations` subscribes to for write-tool `AwaitingApproval`
+/// frames). The request message `GetStateRequest` is empty. When the Maestro
+/// handle is policy-disabled at boot the Core rejects with
+/// `failed_precondition("maestro.disabled_by_policy")` — the caller degrades to
+/// the policy banner via the event path.
+export async function getState(): Promise<MaestroState> {
+  return callRpc<Record<string, never>, MaestroState>("Maestro.GetState", {});
 }
 
 /// Toggle a workarea's Maestro visibility (`Maestro.SetWorkareaVisibility`,

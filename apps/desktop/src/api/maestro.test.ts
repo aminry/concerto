@@ -14,11 +14,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   decodeMaestroEvent,
   getDigest,
+  getState,
   MAESTRO_EVENTS_SUBJECT,
   MaestroVisibility,
   sendToMaestro,
   setWorkareaVisibility,
   type Digest,
+  type MaestroState,
 } from "./maestro";
 
 beforeEach(() => {
@@ -62,6 +64,35 @@ describe("maestro bindings", () => {
     expect(out.chips[0].rule_id).toBe("r1");
     expect(out.chips[0].created_at_ms).toBe(1717459200000);
     expect(out.generated_at_ms).toBe(1717459200000);
+  });
+
+  it("getState calls Maestro.GetState with an empty request and returns the 9-field MaestroState", async () => {
+    const state: MaestroState = {
+      enabled: true,
+      daily_in_today: 160000,
+      daily_out_today: 12000,
+      in_cap: 200000,
+      out_cap: 50000,
+      last_digest_at_ms: 1717459200000,
+      inert: false,
+      inert_reason: "",
+      maestro_session_id: "sess-maestro-1",
+    };
+    invoke.mockResolvedValueOnce(state);
+    const out = await getState();
+    expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
+      method: "Maestro.GetState",
+      payload: {},
+    });
+    // The frozen 9 field names round-trip verbatim (snake_case on the wire).
+    expect(out.enabled).toBe(true);
+    expect(out.daily_in_today).toBe(160000);
+    expect(out.in_cap).toBe(200000);
+    expect(out.out_cap).toBe(50000);
+    expect(out.last_digest_at_ms).toBe(1717459200000);
+    expect(out.inert).toBe(false);
+    expect(out.inert_reason).toBe("");
+    expect(out.maestro_session_id).toBe("sess-maestro-1");
   });
 
   it("setWorkareaVisibility forwards the snake_case workarea_id + enum tag", async () => {
