@@ -143,6 +143,15 @@ pub struct StartSessionRequest {
     /// `None` for normal first-spawn — the supervisor never inserts a
     /// resume token without the caller asking.
     pub resume_session_id: Option<String>,
+    /// Task 6 (Maestro live-integration): bind the new session to a
+    /// pre-existing `chats` row instead of creating a fresh `kind='session'`
+    /// one. `None` ⇒ the default behavior (the supervisor INSERTs a
+    /// `kind='session'` chat with a generated uuid). `Some(id)` ⇒ the session's
+    /// `chat_id` links to that row verbatim and NO chat row is inserted — the
+    /// Maestro spawn path uses this to bind its session to the singleton
+    /// `chats(kind='maestro')` row (chat ids are raw `String`s; there is no
+    /// `ChatId` newtype in `concerto_persist`).
+    pub chat_id: Option<String>,
 }
 
 /// Config for the actor's `run` loop. V0.1 has no knobs — the actor
@@ -499,7 +508,15 @@ impl AgentSupervisorHandle {
             }
         };
         let permission_mode_enum = crate::security::parse_permission_mode(&permission_mode)?;
-        let chat_id = uuid::Uuid::now_v7().to_string();
+        // Task 6: when the caller passed a pre-existing chat (the Maestro spawn
+        // path binds to the singleton `chats(kind='maestro')` row), reuse it and
+        // skip the `kind='session'` INSERT below. Otherwise mint a fresh chat id
+        // and create the per-session chat verbatim (the V0.1 behavior).
+        let bind_existing_chat = req.chat_id.is_some();
+        let chat_id = req
+            .chat_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         {
             let mut writer = self.persistence.writer().await;
             let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
@@ -507,16 +524,18 @@ impl AgentSupervisorHandle {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| Error::Sqlx(Box::new(e)))?;
-            concerto_persist::sessions::insert_chat(
-                &mut tx,
-                NewChat {
-                    id: chat_id.clone(),
-                    session_id: Some(session_id.0.clone()),
-                    kind: "session".to_string(),
-                    created_at: now_ms,
-                },
-            )
-            .await?;
+            if !bind_existing_chat {
+                concerto_persist::sessions::insert_chat(
+                    &mut tx,
+                    NewChat {
+                        id: chat_id.clone(),
+                        session_id: Some(session_id.0.clone()),
+                        kind: "session".to_string(),
+                        created_at: now_ms,
+                    },
+                )
+                .await?;
+            }
             concerto_persist::sessions::insert(
                 &mut tx,
                 NewSession {
@@ -1304,6 +1323,7 @@ impl AgentSupervisorHandle {
             cwd: cwd.clone(),
             permission_mode: None,
             resume_session_id: Some(resume_token.to_string()),
+            chat_id: None,
         })?;
         let cookie_hex = hex::encode(cookie);
         let mut child = spawn_host(
@@ -2837,6 +2857,7 @@ mod tests {
             cwd: scratch.clone(),
             permission_mode: Some("strict".to_string()),
             resume_session_id: None,
+            chat_id: None,
         };
         let (bin, args) = resolve_agent_bin(&req).expect("maestro arm resolves");
         assert_eq!(bin, crate::maestro::provider::DEFAULT_CLAUDE_BIN);

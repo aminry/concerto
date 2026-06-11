@@ -281,6 +281,11 @@ pub fn maestro_start_request(workarea_id: WorkareaId, scratch_cwd: PathBuf) -> S
         // is the supervisor's `cold_resume_session` path (found via the
         // chats(kind='maestro') singleton), unchanged by this task.
         resume_session_id: None,
+        // The spawn path (`MaestroHandle::spawn_maestro_session`) overrides this
+        // with the singleton `chats(kind='maestro')` id; the pure request builder
+        // leaves it `None` so callers that only want the request shape (the unit
+        // test below) don't depend on a live chat row.
+        chat_id: None,
     }
 }
 

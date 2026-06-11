@@ -187,6 +187,74 @@ impl MaestroHandle {
         self.inner.inert.lock().await.clone()
     }
 
+    /// Insert-or-get the singleton `chats(kind='maestro')` row and return its id
+    /// (a raw `String` — there is no `ChatId` newtype in `concerto_persist`).
+    ///
+    /// Idempotent: `maestro_state::ensure_maestro_chat` only INSERTs when no
+    /// `kind='maestro'` row exists (CHECK allows the NULL `session_id`), so a
+    /// second call is a no-op and re-reads the existing id. The Maestro spawn
+    /// path binds its long-lived session to this row, which is why
+    /// `maestro_session_id()` (joining `sessions` to `chats WHERE kind='maestro'`)
+    /// resolves it — closing Seam 4b's chat-kind mismatch.
+    async fn ensure_maestro_chat(&self) -> Result<String> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        {
+            let mut w = self.inner.persistence.writer().await;
+            // Caller-supplied id is honored only on first bootstrap; if a maestro
+            // chat already exists this is a no-op and the SELECT below returns the
+            // existing id.
+            concerto_persist::maestro_state::ensure_maestro_chat(
+                &mut w,
+                &uuid::Uuid::now_v7().to_string(),
+                now_ms,
+            )
+            .await?;
+        }
+        let id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM chats WHERE kind = 'maestro' ORDER BY created_at ASC LIMIT 1",
+        )
+        .fetch_optional(self.inner.persistence.readers())
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        id.ok_or_else(|| {
+            Error::Internal("maestro chat missing immediately after ensure".to_string())
+        })
+    }
+
+    /// Spawn (or no-op if already live) the long-lived Maestro session.
+    ///
+    /// The Maestro runs as ONE long-lived agent session under the supervisor.
+    /// This ensures the singleton `chats(kind='maestro')` row + the reserved
+    /// system workspace/workarea exist, then `start_session`s an
+    /// `AgentKind::Maestro` session bound to that chat (via the Task-6
+    /// `StartSessionRequest.chat_id` seam). Without the binding the supervisor
+    /// would create a fresh `kind='session'` chat and `maestro_session_id()`
+    /// would never find the session (Seam 4b). Idempotent: a live session short-
+    /// circuits to its id, so boot can call this unconditionally.
+    pub async fn spawn_maestro_session(&self) -> Result<concerto_persist::SessionId> {
+        if let Ok(existing) = self.maestro_session_id().await {
+            return Ok(existing);
+        }
+        let chat_id = self.ensure_maestro_chat().await?;
+        let (_ws, wa_id) = crate::maestro::system_workarea::ensure_system_workspace_and_workarea(
+            &self.inner.persistence,
+        )
+        .await?;
+        let scratch = crate::maestro::ensure_maestro_scratch_dir()?;
+        // Best-effort folder-trust preseed so the strict Maestro session never
+        // blocks on Claude's interactive "trust this folder?" dialog. A failure
+        // here must NOT fail the spawn (the supervisor also preseeds trust).
+        if let Err(e) = crate::maestro::ensure_maestro_scratch_trusted(&scratch) {
+            tracing::warn!(error = %e, "maestro: folder-trust preseed failed (best-effort)");
+        }
+        let mut req = crate::maestro::maestro_start_request(wa_id, scratch);
+        req.chat_id = Some(chat_id);
+        self.inner.supervisor.start_session(req).await
+    }
+
     /// Send the user's chat input to the Maestro (design/08 §5.2 / §6.1). Runs
     /// 408's deterministic [`pre_parse`] first; routes `@workarea` mentions,
     /// handles slash directives, or forwards freeform text to the Maestro
@@ -532,35 +600,38 @@ mod tests {
             .expect("insert workspace");
         }
 
-        let data_dir = tmp.path().join("data");
-        let config_dir = tmp.path().join("config");
+        let handle = handle_over(Arc::clone(&persistence), tmp.path()).await;
+        (tmp, handle, persistence)
+    }
+
+    /// Build a `MaestroHandle` over an already-open `persistence` rooted at
+    /// `base` (for `data`/`config` subdirs). Does NOT seed the DB — callers
+    /// that need the maestro-state/chat/workspace fixtures use `live_handle()`;
+    /// the Task-6 insert-arm test drives a near-bare DB to exercise the
+    /// `ensure_maestro_chat` INSERT path. The supervisor uses `/bin/true` (no
+    /// live PTY): the Task-6 unit tests never reach a real first-spawn.
+    async fn handle_over(persistence: Arc<Persistence>, base: &std::path::Path) -> MaestroHandle {
+        let data_dir = base.join("data");
+        let config_dir = base.join("config");
         std::fs::create_dir_all(&data_dir).unwrap();
         std::fs::create_dir_all(&config_dir).unwrap();
         let repo_manager = RepoManager::new(Arc::clone(&persistence), data_dir.join("repos"));
         let workareas = WorkareaManager::new(
             Arc::clone(&persistence),
             repo_manager,
-            Arc::new(data_dir),
+            Arc::new(data_dir.clone()),
             Arc::new(config_dir.clone()),
         );
         let supervisor = AgentSupervisorHandle::new(
             Arc::clone(&persistence),
-            Arc::new(tmp.path().join("data")),
+            Arc::new(data_dir),
             Arc::new(config_dir),
             PathBuf::from("/bin/true"),
         );
         let cache = Arc::new(Mutex::new(SummaryCache::with_system_clock()));
         let oneshot = crate::maestro::digest::default_oneshot();
         let events = MaestroEventSender::new();
-        let handle = MaestroHandle::new(
-            Arc::clone(&persistence),
-            workareas,
-            supervisor,
-            cache,
-            oneshot,
-            events,
-        );
-        (tmp, handle, persistence)
+        MaestroHandle::new(persistence, workareas, supervisor, cache, oneshot, events)
     }
 
     /// A workarea row in workspace `ws`, so visibility toggles + routing have a
@@ -840,6 +911,118 @@ mod tests {
             .expect("insert maestro session");
         }
         assert_eq!(handle.maestro_session_id_str().await, "maestro-sess");
+    }
+
+    // -- Task 6: ensure_maestro_chat + spawn binding (Seam 4b) --------------
+
+    /// `ensure_maestro_chat` returns the singleton `kind='maestro'` chat id,
+    /// the row's kind is `'maestro'`, and a second call is a no-op (same id, no
+    /// second row). `live_handle()` bootstraps `"maestro-chat"` so we assert the
+    /// existing row is reused (insert-or-GET, not insert-or-error).
+    #[tokio::test]
+    async fn ensure_maestro_chat_is_idempotent_and_kind_maestro() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        let id1 = handle.ensure_maestro_chat().await.expect("ensure 1");
+        let id2 = handle.ensure_maestro_chat().await.expect("ensure 2");
+        assert_eq!(id1, id2, "idempotent: same chat id");
+        assert_eq!(id1, "maestro-chat", "reuses the bootstrapped maestro chat");
+
+        let kind: String =
+            sqlx::query_scalar("SELECT kind FROM chats WHERE id = ?")
+                .bind(&id1)
+                .fetch_one(persistence.readers())
+                .await
+                .expect("kind");
+        assert_eq!(kind, "maestro");
+
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats WHERE kind = 'maestro'")
+            .fetch_one(persistence.readers())
+            .await
+            .expect("count");
+        assert_eq!(n, 1, "never creates a second maestro chat");
+    }
+
+    /// `ensure_maestro_chat` INSERTs the singleton on a DB that has none yet
+    /// (the `live_handle()` harness pre-bootstraps it, so this drives a bare DB
+    /// to exercise the insert arm — proving the chat the spawn binds to is the
+    /// one `maestro_session_id()` later joins on).
+    #[tokio::test]
+    async fn ensure_maestro_chat_inserts_when_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let persistence = Arc::new(
+            Persistence::open(PersistenceConfig {
+                db_path: tmp.path().join("test.db"),
+                max_readers: 2,
+            })
+            .await
+            .expect("open"),
+        );
+        {
+            let mut w = persistence.writer().await;
+            concerto_persist::maestro_state::ensure_initialized(&mut w, 0)
+                .await
+                .expect("init");
+        }
+        // No maestro chat yet.
+        let pre: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats WHERE kind = 'maestro'")
+            .fetch_one(persistence.readers())
+            .await
+            .expect("pre count");
+        assert_eq!(pre, 0);
+
+        let handle = handle_over(Arc::clone(&persistence), tmp.path()).await;
+        let id = handle.ensure_maestro_chat().await.expect("ensure");
+        let kind: String = sqlx::query_scalar("SELECT kind FROM chats WHERE id = ?")
+            .bind(&id)
+            .fetch_one(persistence.readers())
+            .await
+            .expect("kind");
+        assert_eq!(kind, "maestro", "freshly-inserted chat is kind='maestro'");
+    }
+
+    /// `spawn_maestro_session` short-circuits to the already-live session when
+    /// one exists. This proves the end-state Task 6 targets: a Maestro session
+    /// bound to a `kind='maestro'` chat is resolvable by `maestro_session_id()`
+    /// (Seam 4b closed), and the spawn is idempotent — a second call returns the
+    /// same id without spawning. (The first-spawn PTY path uses
+    /// `AgentKind::Maestro` → the real `claude` CLI and is integration-tested in
+    /// Task 10; the seam it depends on — `StartSessionRequest.chat_id` binding —
+    /// is covered by `chat_id_binds_session_to_existing_chat` in
+    /// `tests/agent_spawn.rs`.)
+    #[tokio::test]
+    async fn spawn_short_circuits_to_live_maestro_session() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        insert_workarea(&persistence, "wa-1", "bach").await;
+        // A live (`ended_at IS NULL`) Maestro session on the bootstrapped
+        // `kind='maestro'` chat — i.e. exactly the row a normal bound spawn
+        // produces.
+        {
+            let mut w = persistence.writer().await;
+            sqlx::query(
+                "INSERT INTO sessions (id, workarea_id, chat_id, agent_kind, permission_mode, \
+                 bypass_destructive_guard, started_at, ended_at, status, last_acked_seq) \
+                 VALUES ('maestro-sess', 'wa-1', 'maestro-chat', 'maestro', 'strict', 0, 1, NULL, 'running', 0)",
+            )
+            .execute(&mut *w)
+            .await
+            .expect("insert maestro session");
+        }
+        let sid = handle.spawn_maestro_session().await.expect("spawn (short-circuit)");
+        assert_eq!(sid.0, "maestro-sess", "resolves the live bound session");
+
+        // The backing chat is kind='maestro' (Seam 4b).
+        let kind: String = sqlx::query_scalar(
+            "SELECT c.kind FROM sessions s JOIN chats c ON c.id = s.chat_id WHERE s.id = ?",
+        )
+        .bind(&sid.0)
+        .fetch_one(persistence.readers())
+        .await
+        .expect("kind");
+        assert_eq!(kind, "maestro");
+
+        // Idempotency: a second spawn returns the same session.
+        let sid2 = handle.spawn_maestro_session().await.expect("spawn 2");
+        assert_eq!(sid, sid2);
     }
 
     // -- Task 416: GetState handler projects the full MaestroState ----------

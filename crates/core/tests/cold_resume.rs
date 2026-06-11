@@ -158,6 +158,7 @@ async fn cold_resume_respawns_host_and_returns_running() {
             cwd: cwd.clone(),
             permission_mode: None,
             resume_session_id: None,
+            chat_id: None,
         })
         .await
         .expect("start_session");
@@ -275,6 +276,7 @@ async fn cold_resume_errors_when_external_session_id_missing() {
             cwd: cwd.clone(),
             permission_mode: None,
             resume_session_id: None,
+            chat_id: None,
         })
         .await
         .expect("start_session");
