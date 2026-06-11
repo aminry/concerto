@@ -19,14 +19,15 @@ where
     let stream = UnixStream::connect(socket).await?;
     let (mut sock_r, mut sock_w) = stream.into_split();
 
-    let up = async {
-        tokio::io::copy(&mut input, &mut sock_w).await?;
-        sock_w.shutdown().await
-    };
-    let down = async {
-        tokio::io::copy(&mut sock_r, &mut output).await?;
-        output.shutdown().await
-    };
-    tokio::try_join!(up, down)?;
+    tokio::select! {
+        r = tokio::io::copy(&mut input, &mut sock_w) => {
+            r?;
+            let _ = sock_w.shutdown().await;
+        }
+        r = tokio::io::copy(&mut sock_r, &mut output) => {
+            r?;
+            let _ = output.shutdown().await;
+        }
+    }
     Ok(())
 }
