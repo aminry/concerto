@@ -128,14 +128,16 @@ export function MaestroComposer({
     setError(null);
     try {
       // V1.0 is text-only (design/08 R-9); attachments is the empty seam.
-      await sendToMaestro(text, []);
+      // `wsId` is the Task 8 scope hint — the active workspace the pane is
+      // showing — so a bare `@composer` resolves there first.
+      await sendToMaestro(text, [], wsId ?? undefined);
       setDraft("");
     } catch (e) {
       setError(formatError(e));
     } finally {
       setSending(false);
     }
-  }, [draft, sending, setDraft]);
+  }, [draft, sending, setDraft, wsId]);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
