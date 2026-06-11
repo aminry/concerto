@@ -69,6 +69,17 @@
 // `pub mod side;` lines auto-merge on rebase.
 pub mod read;
 
+// Task 406 — the 5 write-tool impls behind 401's frozen write schemas. The live
+// entry point is [`write::dispatch_write`] (async + gate-bearing): each tool
+// drives the strict `AwaitingApproval`/`ResolveApproval` confirmation chip
+// BEFORE it mutates (no bypass, design/08 R-2), then `send_input` /
+// `create_workspace` / `create_workarea` / `transition_workarea`. The handle-less
+// sync [`dispatch`] below keeps 401's typed seam error until the MCP server
+// (`super::mcp`) threads the Core handles + the confirmation sink in (Task 414's
+// wiring). This line sits in 406's OWN region so the sibling 405 `pub mod read;`
+// / 407 `pub mod side;` lines auto-merge on rebase.
+pub mod write;
+
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use rmcp::ErrorData as McpError;
 use serde_json::{json, Value};
@@ -594,7 +605,16 @@ pub fn dispatch(name: &str, _arguments: Option<JsonObject>) -> Result<CallToolRe
         | "get_workarea_recent_commits"
         | "cross_workarea_search" => Err(unimplemented(name, "405")),
 
-        // 5 write tools → Task 406 (tools/write.rs)
+        // 5 write tools → Task 406. The live impls live in [`write`]; the real
+        // entry point is the async, gate-bearing [`write::dispatch_write`] (each
+        // write tool drives the strict `AwaitingApproval`/`ResolveApproval`
+        // confirmation chip BEFORE it mutates, then `send_input` / the
+        // Workspace/Workarea managers — none of which this handle-less sync
+        // `dispatch` can reach). The MCP server (`super::mcp`) calls
+        // `write::dispatch_write` once Task 414 threads the Core handles + the
+        // confirmation sink into `MaestroMcpServer`; until that wiring lands this
+        // handle-less path keeps 401's typed seam error (never a macro, never a
+        // fake-success) — `write::dispatch_write` is the route that actually runs.
         "route_prompt_to_session"
         | "fanout_to_sessions"
         | "create_workspace"
