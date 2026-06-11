@@ -74,6 +74,20 @@ pub mod provider;
 pub mod condense;
 
 // ===========================================================================
+// Task 409 region — DISTINCT additive zone (PHASE4_PLANNING §3.6 / §8.1). Kept
+// in its OWN clearly-labeled block so it auto-merges against 401's `pub mod
+// mcp;`/`pub mod tools;`, the 401.5/402/404/408/410 soft-seam lines above, AND
+// task 412's in-flight `mod.rs` re-export region.
+//
+// Return-from-absence digest generation: consumes 404's summary cache, 408's
+// `/digest` route, 312's `OneShotLlm`/`DigestSummary`, and 403's
+// `last_digest_at`/maestro-chat singleton; persists the digest's chips on the
+// `kind='maestro'` chat row (D11). FROZEN by 409; 414 (`GetDigest`) consumes
+// `Digest`/`WorkareaDelta`/`generate_digest`.
+pub mod digest;
+// ===========================================================================
+
+// ===========================================================================
 // Task 408 region — DISTINCT additive zone (PHASE4_PLANNING §4.7 / §8.1). Kept
 // in its OWN clearly-labeled block so it auto-merges against 401's `pub mod
 // mcp;`/`pub mod tools;`, the 401.5/402/404 lines above, AND task 410's
@@ -106,6 +120,11 @@ pub use routing::{
     pre_parse, DispatchResult, ParseOutcome, ResolvedRoute, Router, RoutingError, RoutingTarget,
     SlashDirective, WorkareaRef,
 };
+
+// Task 409 re-exports (distinct region — see the `pub mod digest;` block
+// above). The FROZEN digest producer surface 408 (`/digest`) + 414 (`GetDigest`)
+// consume.
+pub use digest::{generate_digest, Digest, DigestEntry, DigestGroup, WorkareaDelta};
 
 // ===========================================================================
 // Task 412 region — DISTINCT additive zone (do NOT merge with 402's `pub use`
