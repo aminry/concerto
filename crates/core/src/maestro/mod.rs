@@ -99,6 +99,20 @@ pub mod digest;
 pub mod routing;
 // ===========================================================================
 
+// ===========================================================================
+// Task 413 region — DISTINCT additive zone (PHASE4_PLANNING §8.1 / §4.4 / D10).
+// Kept in its OWN clearly-labeled block so it auto-merges against 401's
+// `pub mod mcp;`/`pub mod tools;`, the 401.5/402/404 lines above, AND task
+// 409's in-flight digest soft-seam line.
+//
+// The pure Maestro privacy policy: blank `exclude_from_maestro` workareas to
+// name-only over 404's summary cache, the `concerto_chat_full_chat_access`
+// summary-source flip, and the `enterpriseDataPrivacy`+external ⇒ Maestro-LLM
+// disabled gate (routing unaffected). design/08 §3.3 / §3.10. Consumed by
+// 405/409 (read-blanked summaries) + 412/414 (the disable decision).
+pub mod privacy;
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
@@ -136,6 +150,16 @@ pub use provider::{
     direct_api_unimplemented, is_direct_api_unimplemented, select_provider, CodexCliProvider,
     GeminiCliProvider, MaestroBackend, ProviderSelection, DEFAULT_CODEX_BIN, DEFAULT_GEMINI_BIN,
     DIRECT_API_UNIMPLEMENTED_MARKER,
+};
+// ===========================================================================
+
+// ===========================================================================
+// Task 413 re-exports (distinct region — see the `pub mod privacy;` block
+// above). The FROZEN privacy-policy surface 405/409 (read-blanked summaries) +
+// 412/414 (the LLM-disable decision) consume.
+// ===========================================================================
+pub use privacy::{
+    MaestroLlmGate, MaestroModelLocality, PrivacyPolicy, SummarySource, PRIVATE_WORKAREA_BLANK,
 };
 // ===========================================================================
 
