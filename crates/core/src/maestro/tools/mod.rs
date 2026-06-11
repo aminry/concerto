@@ -80,6 +80,15 @@ pub mod read;
 // / 407 `pub mod side;` lines auto-merge on rebase.
 pub mod write;
 
+// Task 407 — the 2 side-channel-tool impls behind 401's frozen `notify_user` /
+// `propose_chip` schemas. The live entry point is [`side::dispatch_side`]
+// (Maestro-handle-bearing: the injected `NotifyRecorder`/`NotifySink` + the
+// Maestro-owned `ChipSlate`, D11); the handle-less [`dispatch`] below keeps
+// 401's typed seam error until the MCP server (`super::mcp`) threads those
+// handles in (402/414's wiring). This line sits in 407's OWN region so the
+// sibling 405 `pub mod read;` / 406 `pub mod write;` lines auto-merge on rebase.
+pub mod side;
+
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use rmcp::ErrorData as McpError;
 use serde_json::{json, Value};
