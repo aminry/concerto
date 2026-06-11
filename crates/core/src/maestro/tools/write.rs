@@ -551,6 +551,337 @@ pub async fn create_workarea(
 }
 
 // ===========================================================================
+// Task 411 — `create_from_description` (issue parse → multi-repo detect → cone
+// suggest → confirmation chip slate → on-confirm create). design/08 §3.8.
+//
+// This is a PLANNER that terminates in 406's confirmation chip slate (via 407's
+// `propose_chip` onto the Maestro-owned `ChipSlate`). Steps 1–4 spend ZERO side
+// effects; the workspace/workarea creation happens ONLY on the user's chip
+// resolution (`resolve_create_plan`, driven by the `AwaitingApproval` /
+// `ResolveApproval` flow 406/414 wire). There is NO "skip confirmation" fast
+// path — `design/08 §3.8` line 221 / R-2: the Maestro never creates silently.
+// ===========================================================================
+
+use crate::maestro::tools::side::{ChipSlate, MaestroChip};
+use concerto_gix_wrap::ConePath;
+use concerto_persist::RepositoryId;
+
+/// A repository candidate in the global registry the multi-repo detector ranks
+/// (`design/08 §3.8` step 2). The minimal shape the planner needs: the id +
+/// human name to match the description against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoCandidate {
+    /// The global-registry repository id.
+    pub id: String,
+    /// The repository's human name (matched against the description text).
+    pub name: String,
+}
+
+/// The global repository registry the multi-repo detector reads (`design/08
+/// §3.8` step 2). The live impl lists `RepoManager::list_all`; tests inject a
+/// fixed catalog. Abstracted so the planner is unit-testable without a live
+/// repo pool.
+#[async_trait]
+pub trait RepoCatalog: Send + Sync {
+    /// List every registered repository candidate (the global registry, D9).
+    async fn list_repos(&self) -> concerto_error::Result<Vec<RepoCandidate>>;
+}
+
+/// The issue-fetch seam (`design/08 §3.8` step 1) — `VcsHandle::fetch_issue_url`
+/// (313) behind a narrow trait so the planner is unit-testable against the 313
+/// `testkit` wiremock without the keychain/credential plumbing. Returns the
+/// fetched issue's planning text (title + body), or `None` when the URL fetched
+/// no issue.
+#[async_trait]
+pub trait IssueFetchSink: Send + Sync {
+    /// Fetch the issue at `url`, returning its planning text (e.g.
+    /// `"{title}\n\n{body}"`). `Ok(None)` ⇒ no issue at the URL (freeform
+    /// planning continues). A blocked external-tracker fetch (enterprise
+    /// privacy) surfaces as the typed `Err`.
+    async fn fetch_issue_text(&self, url: &str) -> concerto_error::Result<Option<String>>;
+}
+
+/// The cone-suggest seam (`design/08 §3.8` step 3) — `RepoManager::suggest_cones`
+/// (the seam 305 froze, LIVE via the injected `MaestroConeSuggester`). Narrowed
+/// to a trait so the planner is unit-testable against a stub `ConeSuggester`.
+#[async_trait]
+pub trait ConeSuggestSink: Send + Sync {
+    /// Suggest a cone set for `repo` from `issue_text`. Errors are non-fatal to
+    /// the plan (a repo whose suggestion fails carries an empty cone set into
+    /// the slate for the user to edit), so this returns the cone set directly;
+    /// the planner treats an `Err` as "no suggestion".
+    async fn suggest(&self, repo: &str, issue_text: &str) -> concerto_error::Result<Vec<ConePath>>;
+}
+
+/// One planned repository in the create plan: the repo + its suggested cones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedRepo {
+    /// The chosen repository id.
+    pub repository_id: String,
+    /// The suggested cone set (forward-slash, repo-root-relative). May be empty
+    /// (freeform / no suggestion) — the user edits it in the slate.
+    pub cones: Vec<ConePath>,
+}
+
+/// The structured create plan `create_from_description` produces (`design/08
+/// §3.8`). It carries everything the confirmation chip slate renders AND the
+/// `resolve_create_plan` confirm path replays — but spends NO side effects on
+/// the managers. `ambiguous` records whether the multi-repo detect could not
+/// narrow the registry (⇒ all candidate repos are carried for the user to edit,
+/// never auto-picked silently).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePlan {
+    /// The proposed workspace name (derived from the issue title / description).
+    pub workspace_name: String,
+    /// The original free-text description (kept as the workspace description).
+    pub description: String,
+    /// The repos + suggested cones the user confirms/edits.
+    pub repos: Vec<PlannedRepo>,
+    /// True when the repo set could not be narrowed from the description (the
+    /// whole registry is carried into the slate; the user picks).
+    pub ambiguous: bool,
+}
+
+/// The chip action token the "create + first workarea" confirmation chip
+/// carries (resolved by `resolve_create_plan` with `with_workarea = true`).
+pub const CHIP_ACTION_CREATE_WITH_WORKAREA: &str =
+    "create_workspace_from_description:with_workarea";
+/// The chip action token the "just the workspace, no workarea" chip carries.
+pub const CHIP_ACTION_CREATE_WORKSPACE_ONLY: &str =
+    "create_workspace_from_description:workspace_only";
+/// The chip action token the "edit repo set / cones" chip carries (a no-op on
+/// confirm — it re-opens the picker on the Desktop, Task 415).
+pub const CHIP_ACTION_EDIT_REPOS: &str = "create_workspace_from_description:edit_repos";
+
+/// Maximum candidate repos the multi-repo detector keeps when it CAN narrow the
+/// registry by name match (keeps the slate legible).
+const MAX_DETECTED_REPOS: usize = 8;
+
+/// Derive a workspace name from the issue/description text: the first non-empty
+/// line, trimmed + length-capped. Falls back to `"New workspace"` when blank.
+fn derive_workspace_name(text: &str) -> String {
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if first.is_empty() {
+        return "New workspace".to_string();
+    }
+    if first.chars().count() <= 72 {
+        first.to_string()
+    } else {
+        let truncated: String = first.chars().take(72).collect();
+        let cut = truncated.rfind(' ').unwrap_or(truncated.len());
+        truncated[..cut].trim_end().to_string()
+    }
+}
+
+/// Scan `text` for the FIRST Linear/GitHub/Jira issue URL (deterministic, zero
+/// LLM tokens; `design/08 §3.8` step 1). Returns the matched URL slice.
+fn first_issue_url(text: &str) -> Option<String> {
+    for raw in text.split_whitespace() {
+        let tok = raw.trim_matches(|c: char| {
+            matches!(
+                c,
+                '<' | '>' | '(' | ')' | '[' | ']' | ',' | '.' | '"' | '\''
+            )
+        });
+        if !(tok.starts_with("http://") || tok.starts_with("https://")) {
+            continue;
+        }
+        let lower = tok.to_ascii_lowercase();
+        if lower.contains("github.com")
+            || lower.contains("linear.app")
+            || lower.contains("atlassian.net")
+        {
+            return Some(tok.to_string());
+        }
+    }
+    None
+}
+
+/// Multi-repo intent detect (`design/08 §3.8` step 2): pick the repo subset of
+/// the global registry whose name appears (case-insensitive, word-token) in the
+/// planning text. When NO repo matches (ambiguous), carry ALL candidate repos so
+/// the user picks — never auto-pick silently. Returns `(repos, ambiguous)`.
+fn detect_repos(catalog: &[RepoCandidate], planning_text: &str) -> (Vec<RepoCandidate>, bool) {
+    let haystack = planning_text.to_ascii_lowercase();
+    let matched: Vec<RepoCandidate> = catalog
+        .iter()
+        .filter(|r| {
+            let name = r.name.trim().to_ascii_lowercase();
+            !name.is_empty() && haystack.contains(&name)
+        })
+        .take(MAX_DETECTED_REPOS)
+        .cloned()
+        .collect();
+    if matched.is_empty() {
+        // Ambiguous: carry the whole registry for the user to edit.
+        (catalog.to_vec(), true)
+    } else {
+        (matched, false)
+    }
+}
+
+/// **Step 1–4 of the create flow (`design/08 §3.8`): the PLANNER.** Parses an
+/// issue ref out of `description`, fetches its text (313), detects the repo
+/// subset, suggests cones per repo (305's seam), composes the confirmation chip
+/// slate (407's `propose_chip`), and returns the structured [`CreatePlan`].
+///
+/// **Spends ZERO side effects on the managers** — no workspace/workarea is
+/// created here. The create happens ONLY when the user resolves a chip
+/// ([`resolve_create_plan`]). `now_ms` is the caller's clock (the supervisor's
+/// wall clock in prod; a fixed value in tests).
+#[allow(clippy::too_many_arguments)]
+pub async fn create_from_description(
+    description: &str,
+    workspace_id_hint: Option<&str>,
+    issues: &dyn IssueFetchSink,
+    catalog: &dyn RepoCatalog,
+    cones: &dyn ConeSuggestSink,
+    slate: &ChipSlate,
+    now_ms: i64,
+) -> Result<CreatePlan, McpError> {
+    let _ = workspace_id_hint; // reserved (the hint scopes a future "add to existing workspace" flow)
+
+    // Step 1 — issue-ref parse + fetch (no URL ⇒ freeform planning).
+    let mut planning_text = description.to_string();
+    if let Some(url) = first_issue_url(description) {
+        match issues.fetch_issue_text(&url).await {
+            Ok(Some(issue_text)) => {
+                // Prepend the fetched issue text as planning context.
+                planning_text = format!("{issue_text}\n\n{description}");
+            }
+            Ok(None) => { /* no issue at the URL — freeform planning */ }
+            Err(e) => return Err(map_err(e)),
+        }
+    }
+
+    // Step 2 — multi-repo intent detect over the global registry.
+    let registry = catalog.list_repos().await.map_err(map_err)?;
+    let (chosen, ambiguous) = detect_repos(&registry, &planning_text);
+
+    // Step 3 — cone suggest per chosen repo (305's seam; an Err ⇒ empty cones).
+    let mut planned = Vec::with_capacity(chosen.len());
+    for repo in &chosen {
+        let suggested = cones
+            .suggest(&repo.id, &planning_text)
+            .await
+            .unwrap_or_default();
+        planned.push(PlannedRepo {
+            repository_id: repo.id.clone(),
+            cones: suggested,
+        });
+    }
+
+    let plan = CreatePlan {
+        workspace_name: derive_workspace_name(&planning_text),
+        description: description.to_string(),
+        repos: planned,
+        ambiguous,
+    };
+
+    // Step 4 — compose the confirmation chip slate (NEVER a silent create). The
+    // three §3.8 step-4 chips go onto the Maestro-owned slate via 407.
+    slate.propose(MaestroChip {
+        title: format!("Create workspace + first workarea: {}", plan.workspace_name),
+        priority: 100,
+        action: CHIP_ACTION_CREATE_WITH_WORKAREA.to_string(),
+        workarea_id: None,
+        created_at_ms: now_ms,
+    });
+    slate.propose(MaestroChip {
+        title: format!(
+            "Just create the workspace, no workarea yet: {}",
+            plan.workspace_name
+        ),
+        priority: 90,
+        action: CHIP_ACTION_CREATE_WORKSPACE_ONLY.to_string(),
+        workarea_id: None,
+        created_at_ms: now_ms,
+    });
+    slate.propose(MaestroChip {
+        title: "Edit repo set / cones".to_string(),
+        priority: 80,
+        action: CHIP_ACTION_EDIT_REPOS.to_string(),
+        workarea_id: None,
+        created_at_ms: now_ms,
+    });
+
+    Ok(plan)
+}
+
+/// **Step 5 of the create flow (`design/08 §3.8`): the user CONFIRMED.** Drives
+/// the actual create from a [`CreatePlan`]: first `create_workspace`, then (when
+/// `with_workarea`) `create_workarea` — the existing 03 signatures, via the
+/// reusable [`do_create_workspace`] / [`do_create_workarea`] inner fns 406 owns
+/// (so the gate already fired on the chip).
+///
+/// This is called ONLY from a confirmed chip resolution; there is no path that
+/// reaches it without a prior user confirm. Returns `(workspace_id,
+/// Option<workarea_id>)`.
+pub async fn resolve_create_plan(
+    ctx: &WriteToolCtx<'_>,
+    plan: &CreatePlan,
+    with_workarea: bool,
+) -> Result<(String, Option<String>), McpError> {
+    let repository_ids: Vec<String> = plan.repos.iter().map(|r| r.repository_id.clone()).collect();
+    let ws_spec = WorkspaceSpec {
+        name: plan.workspace_name.clone(),
+        repository_ids,
+        permission_mode: None,
+        description: Some(plan.description.clone()),
+        icon: None,
+    };
+    let workspace_id = do_create_workspace(ctx, ws_spec).await?;
+
+    let workarea_id = if with_workarea {
+        // 406's session-create default (Claude in plan mode) is the workarea's
+        // inherited permission mode; `None` ⇒ inherit.
+        let wa = do_create_workarea(ctx, &workspace_id, WorkareaSpec::default()).await?;
+        Some(wa)
+    } else {
+        None
+    };
+    Ok((workspace_id, workarea_id))
+}
+
+// ===========================================================================
+// Live seam impls (Task 411) — bind the planner seams to the real Core handles.
+// `boot.rs` / 414 build a planner from these alongside the `WriteToolCtx`.
+// ===========================================================================
+
+/// Live [`RepoCatalog`] over [`crate::repo_manager::RepoManager::list_all`].
+#[async_trait]
+impl RepoCatalog for crate::repo_manager::RepoManager {
+    async fn list_repos(&self) -> concerto_error::Result<Vec<RepoCandidate>> {
+        let rows = self.list_all().await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| RepoCandidate {
+                id: r.id.0,
+                name: r.name,
+            })
+            .collect())
+    }
+}
+
+/// Live [`ConeSuggestSink`] over [`crate::repo_manager::RepoManager::suggest_cones`]
+/// (the seam 305 froze, LIVE via the injected `MaestroConeSuggester`). An
+/// unwired seam / delegate error surfaces as the typed `Err` (the planner then
+/// carries an empty cone set into the slate).
+#[async_trait]
+impl ConeSuggestSink for crate::repo_manager::RepoManager {
+    async fn suggest(&self, repo: &str, issue_text: &str) -> concerto_error::Result<Vec<ConePath>> {
+        let rid = RepositoryId(repo.to_string());
+        self.suggest_cones(&rid, issue_text)
+            .await
+            .map_err(|e| concerto_error::Error::Internal(e.to_string()))
+    }
+}
+
+// ===========================================================================
 // Argument-deserializing entry point (the frozen 401 arg sets).
 // ===========================================================================
 
@@ -1166,5 +1497,240 @@ mod tests {
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         // No mutation on a malformed call.
         assert!(sink.sends().is_empty());
+    }
+
+    // =======================================================================
+    // Task 411 — `create_from_description` planner (issue parse → multi-repo
+    // detect → cone suggest → chip slate; never a silent create).
+    // =======================================================================
+
+    /// A scripted issue-fetch sink that returns fixed issue text for a given
+    /// URL (the 313 wiremock stand-in at the planner seam).
+    struct StubIssueFetch {
+        text: Option<String>,
+    }
+    #[async_trait]
+    impl IssueFetchSink for StubIssueFetch {
+        async fn fetch_issue_text(&self, _url: &str) -> concerto_error::Result<Option<String>> {
+            Ok(self.text.clone())
+        }
+    }
+
+    /// A fixed global registry.
+    struct StubCatalog {
+        repos: Vec<RepoCandidate>,
+    }
+    #[async_trait]
+    impl RepoCatalog for StubCatalog {
+        async fn list_repos(&self) -> concerto_error::Result<Vec<RepoCandidate>> {
+            Ok(self.repos.clone())
+        }
+    }
+
+    /// A stub `ConeSuggester` (the Tier-2 double) returning a fixed cone set.
+    struct StubCones {
+        cones: Vec<ConePath>,
+    }
+    #[async_trait]
+    impl ConeSuggestSink for StubCones {
+        async fn suggest(
+            &self,
+            _repo: &str,
+            _issue_text: &str,
+        ) -> concerto_error::Result<Vec<ConePath>> {
+            Ok(self.cones.clone())
+        }
+    }
+
+    fn cat(repos: &[(&str, &str)]) -> StubCatalog {
+        StubCatalog {
+            repos: repos
+                .iter()
+                .map(|(id, name)| RepoCandidate {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    // ---- (1) GitHub-URL path: fetched issue context → chip slate (no create)
+
+    #[tokio::test]
+    async fn create_from_description_github_url_ends_in_chip_slate_not_a_create() {
+        let issues = StubIssueFetch {
+            text: Some("Add retry to the api gateway\n\nFlaky under load.".to_string()),
+        };
+        let catalog = cat(&[("repo-api", "api"), ("repo-ios", "ios")]);
+        let cones = StubCones {
+            cones: vec!["src".to_string()],
+        };
+        let slate = ChipSlate::new();
+
+        let plan = create_from_description(
+            "Please fix https://github.com/acme/api/issues/42 in the api repo",
+            None,
+            &issues,
+            &catalog,
+            &cones,
+            &slate,
+            1_000,
+        )
+        .await
+        .expect("planner succeeds");
+
+        // The plan picked the named `api` repo (multi-repo detect over the
+        // fetched issue + description), with the suggested cones attached.
+        assert_eq!(plan.repos.len(), 1);
+        assert_eq!(plan.repos[0].repository_id, "repo-api");
+        assert_eq!(plan.repos[0].cones, vec!["src".to_string()]);
+        assert!(!plan.ambiguous);
+
+        // It composed the §3.8 step-4 confirmation chips — NOT a silent create.
+        let chips = slate.current();
+        assert_eq!(chips.len(), 3, "the three §3.8 step-4 chips");
+        assert_eq!(chips[0].action, CHIP_ACTION_CREATE_WITH_WORKAREA);
+        assert_eq!(chips[1].action, CHIP_ACTION_CREATE_WORKSPACE_ONLY);
+        assert_eq!(chips[2].action, CHIP_ACTION_EDIT_REPOS);
+    }
+
+    // ---- (2) Freeform (no URL): still ends in a chip slate ------------------
+
+    #[tokio::test]
+    async fn create_from_description_freeform_no_url_still_ends_in_chip_slate() {
+        let issues = StubIssueFetch { text: None };
+        let catalog = cat(&[("repo-api", "api")]);
+        let cones = StubCones { cones: vec![] };
+        let slate = ChipSlate::new();
+
+        let plan = create_from_description(
+            "Build a new payments service",
+            None,
+            &issues,
+            &catalog,
+            &cones,
+            &slate,
+            2_000,
+        )
+        .await
+        .expect("freeform planner succeeds");
+
+        // No named repo matched → ambiguous → the whole registry carried.
+        assert!(plan.ambiguous);
+        assert_eq!(plan.repos.len(), 1);
+        assert_eq!(
+            slate.current().len(),
+            3,
+            "freeform still proposes the chips"
+        );
+        assert_eq!(plan.workspace_name, "Build a new payments service");
+    }
+
+    // ---- (3) Multi-repo detect: named subset + ambiguity into the slate ----
+
+    #[tokio::test]
+    async fn create_from_description_detects_named_repo_subset() {
+        let issues = StubIssueFetch { text: None };
+        let catalog = cat(&[
+            ("repo-api", "api"),
+            ("repo-ios", "ios"),
+            ("repo-web", "web"),
+        ]);
+        let cones = StubCones { cones: vec![] };
+        let slate = ChipSlate::new();
+
+        // Mentions "api" and "ios" but not "web".
+        let plan = create_from_description(
+            "Change the api and the ios app together",
+            None,
+            &issues,
+            &catalog,
+            &cones,
+            &slate,
+            3_000,
+        )
+        .await
+        .expect("planner succeeds");
+
+        assert!(!plan.ambiguous, "a named subset matched → not ambiguous");
+        let ids: Vec<&str> = plan
+            .repos
+            .iter()
+            .map(|r| r.repository_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["repo-api", "repo-ios"]);
+    }
+
+    // ---- (4) On confirm: create_workspace THEN create_workarea -------------
+
+    #[tokio::test]
+    async fn resolve_create_plan_with_workarea_creates_workspace_then_workarea() {
+        let gate = ScriptedGate::new(Decision::AutoApprove);
+        let sink = RecordingSink::default();
+        let creators = RecordingCreators::default();
+        let ctx = ctx(&gate, &sink, &creators);
+
+        let plan = CreatePlan {
+            workspace_name: "Payments".to_string(),
+            description: "Build payments".to_string(),
+            repos: vec![PlannedRepo {
+                repository_id: "repo-api".to_string(),
+                cones: vec!["src".to_string()],
+            }],
+            ambiguous: false,
+        };
+
+        let (ws_id, wa_id) = resolve_create_plan(&ctx, &plan, true)
+            .await
+            .expect("confirmed create succeeds");
+        assert_eq!(ws_id, "ws-new");
+        assert_eq!(wa_id.as_deref(), Some("wa-new"));
+
+        // create_workspace was called with the planned name + repos, THEN
+        // create_workarea against the new workspace.
+        let created_ws = creators.created_ws.lock().unwrap();
+        assert_eq!(created_ws.len(), 1);
+        assert_eq!(created_ws[0].name, "Payments");
+        assert_eq!(created_ws[0].repository_ids, vec!["repo-api".to_string()]);
+        let created_wa = creators.created_wa.lock().unwrap();
+        assert_eq!(created_wa.len(), 1);
+        assert_eq!(created_wa[0].0, "ws-new");
+    }
+
+    #[tokio::test]
+    async fn resolve_create_plan_workspace_only_skips_workarea() {
+        let gate = ScriptedGate::new(Decision::AutoApprove);
+        let sink = RecordingSink::default();
+        let creators = RecordingCreators::default();
+        let ctx = ctx(&gate, &sink, &creators);
+
+        let plan = CreatePlan {
+            workspace_name: "WS".to_string(),
+            description: "d".to_string(),
+            repos: vec![],
+            ambiguous: true,
+        };
+
+        let (_ws_id, wa_id) = resolve_create_plan(&ctx, &plan, false)
+            .await
+            .expect("workspace-only create succeeds");
+        assert!(wa_id.is_none(), "no workarea when with_workarea = false");
+        assert!(creators.created_wa.lock().unwrap().is_empty());
+        assert_eq!(creators.created_ws.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn first_issue_url_finds_first_tracker_url() {
+        assert_eq!(
+            first_issue_url("see https://github.com/a/b/issues/3 please").as_deref(),
+            Some("https://github.com/a/b/issues/3")
+        );
+        assert_eq!(
+            first_issue_url("ref (https://linear.app/acme/issue/ENG-1/x).").as_deref(),
+            Some("https://linear.app/acme/issue/ENG-1/x")
+        );
+        assert!(first_issue_url("no url here").is_none());
+        // A non-tracker URL is ignored.
+        assert!(first_issue_url("https://example.com/foo").is_none());
     }
 }

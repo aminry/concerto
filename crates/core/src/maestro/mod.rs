@@ -124,6 +124,19 @@ pub mod privacy;
 pub mod events;
 // ===========================================================================
 
+// ===========================================================================
+// Task 411 region — DISTINCT additive zone (PHASE4_PLANNING §8.1 / §2 row 411).
+// Kept in its OWN clearly-labeled block so it auto-merges against 414's
+// `pub mod events;` line above and the sibling soft-seam lines.
+//
+// The Maestro-backed `ConeSuggester` (the LIVE wiring of 305's seam through
+// 312's `OneShotLlm`, `DeterministicOneShot` fallback) injected into the
+// RepoManager via `with_cone_suggester` at boot. design/08 §3.8. Consumed by
+// `RepoManager::suggest_cones` (the `Repositories.SuggestCones` RPC) + the
+// create-from-description planner.
+pub mod cone_suggester;
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
@@ -138,6 +151,11 @@ pub use handle::{InertReason, MaestroHandle, MaestroStateView, SendOutcome};
 // the `pub mod events;` block above). The domain event enum + its producer the
 // live service publishes on `maestro.events`.
 pub use events::{MaestroEvent, MaestroEventSender};
+
+// Task 411 — re-export the Maestro-backed cone suggester (distinct region; see
+// the `pub mod cone_suggester;` block above). `boot.rs` injects it into the
+// RepoManager via `with_cone_suggester`.
+pub use cone_suggester::MaestroConeSuggester;
 
 // Task 402 re-exports (distinct region — see above).
 pub use provider::{

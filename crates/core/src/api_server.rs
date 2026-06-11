@@ -125,6 +125,12 @@ pub struct ApiServerActor {
     /// (`auth.invalid_cert`) while the UDS peer-uid fast path still works
     /// (kernel attestation needs no issuer).
     auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
+    /// Optional `enterprise_data_privacy` resolver the `Vcs.FetchIssueByUrl` D10
+    /// path consults (Task 411). Built at boot from the managed policy +
+    /// persistence + opt-out config and attached to the `VcsHandler` (and the
+    /// bridge's) via `with_privacy_resolver`. `None` ⇒ the pre-resolver default
+    /// (`false`), preserving prior behavior on a Core that does not wire it.
+    vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
 }
 
 impl ApiServerActor {
@@ -151,7 +157,19 @@ impl ApiServerActor {
             pairing: None,
             device_manager: None,
             auth_issuer: None,
+            vcs_privacy_resolver: None,
         }
+    }
+
+    /// Attach the `enterprise_data_privacy` resolver the `Vcs.FetchIssueByUrl`
+    /// D10 fix consults (Task 411). Additive builder; `boot.rs` chains it after
+    /// `with_managers`. Returns `self` for chaining.
+    pub fn with_vcs_privacy_resolver(
+        mut self,
+        resolver: Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>,
+    ) -> Self {
+        self.vcs_privacy_resolver = Some(resolver);
+        self
     }
 
     /// Build a new actor that also hosts the `Repositories` service.
@@ -183,6 +201,7 @@ impl ApiServerActor {
             pairing: None,
             device_manager: None,
             auth_issuer: None,
+            vcs_privacy_resolver: None,
         }
     }
 
@@ -230,6 +249,7 @@ impl ApiServerActor {
             pairing,
             device_manager,
             auth_issuer,
+            vcs_privacy_resolver: None,
         }
     }
 }
@@ -269,6 +289,7 @@ impl Actor for ApiServerActor {
                     suggestions: self.suggestions.clone(),
                     maestro: self.maestro.clone(),
                     vcs: self.vcs.clone(),
+                    vcs_privacy_resolver: self.vcs_privacy_resolver.clone(),
                 };
                 let (listener, bound) = crate::connect_bridge::bind(&bridge_cfg).await?;
                 tracing::info!(
@@ -297,6 +318,7 @@ impl Actor for ApiServerActor {
                 self.pairing,
                 self.device_manager,
                 self.auth_issuer,
+                self.vcs_privacy_resolver,
                 ctx.shutdown.clone(),
             );
 
@@ -328,6 +350,7 @@ impl Actor for ApiServerActor {
                 self.pairing,
                 self.device_manager,
                 self.auth_issuer,
+                self.vcs_privacy_resolver,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -362,6 +385,7 @@ async fn run_uds(
     pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
     auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
+    vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -467,6 +491,7 @@ async fn run_uds(
         suggestions,
         maestro,
         vcs,
+        vcs_privacy_resolver,
         pairing,
         device_manager,
         auth_issuer,
@@ -537,6 +562,10 @@ pub struct CoreServiceSet {
     #[cfg(unix)]
     pub maestro: Option<crate::maestro::MaestroHandle>,
     pub vcs: Option<VcsHandle>,
+    /// The `enterprise_data_privacy` resolver the `Vcs.FetchIssueByUrl` D10 path
+    /// consults (Task 411). `None` ⇒ the pre-resolver default (`false`).
+    /// Threaded alongside the `vcs` handle (additive; distinct field).
+    pub vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
     pub pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     pub device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
     pub auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
@@ -573,6 +602,7 @@ impl CoreServiceSet {
             #[cfg(unix)]
             maestro: None,
             vcs: None,
+            vcs_privacy_resolver: None,
             pairing: None,
             device_manager: None,
             auth_issuer: None,
@@ -630,6 +660,7 @@ where
         #[cfg(unix)]
         maestro,
         vcs,
+        vcs_privacy_resolver,
         pairing,
         device_manager,
         auth_issuer: _auth_issuer,
@@ -738,7 +769,6 @@ where
         builder = builder.add_service(skills_service);
     }
     if let Some(vcs) = vcs {
-        #[allow(unused_mut)]
         let mut vcs_handler = VcsHandler::new(vcs);
         // Task 316: the "Send to agent" sink needs the `#[cfg(unix)]` agent
         // supervisor. On a non-unix Core the sink stays `None` and
@@ -748,6 +778,12 @@ where
             use crate::handlers::vcs::AgentSupervisorSink;
             vcs_handler = vcs_handler
                 .with_session_sink(std::sync::Arc::new(AgentSupervisorSink::new(supervisor)));
+        }
+        // Task 411 (D10): attach the `enterprise_data_privacy` resolver so
+        // `FetchIssueByUrl` enforces the per-workspace / managed-floor privacy
+        // gate instead of the hardcoded `false`.
+        if let Some(resolver) = vcs_privacy_resolver {
+            vcs_handler = vcs_handler.with_privacy_resolver(resolver);
         }
         let vcs_service = VcsServer::new(vcs_handler);
         builder = builder.add_service(vcs_service);

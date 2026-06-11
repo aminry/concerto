@@ -302,6 +302,24 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let repo_handle =
         repo_handle.with_prewarm_signals(crate::repo_manager::prefetch::signals::host_signals());
 
+    // Task 411: inject the Maestro-backed `ConeSuggester` (the LIVE wiring of
+    // 305's seam, through 312's `OneShotLlm` / `DeterministicOneShot` fallback)
+    // so `RepoManager::suggest_cones` + the `Repositories.SuggestCones` RPC +
+    // the `create_from_description` planner return a live cone set instead of
+    // `UNIMPLEMENTED`. The suggester reads the repo's REAL top-level tree (via a
+    // pre-suggester clone of the handle), so a suggested cone is always a valid
+    // path. `#[cfg(unix)]` because `MaestroConeSuggester` lives in the
+    // `#[cfg(unix)]` maestro module; on Windows the seam stays unwired
+    // (`SuggestCones` → `UNIMPLEMENTED`), exactly as before this task.
+    #[cfg(unix)]
+    let repo_handle = {
+        let suggester = crate::maestro::MaestroConeSuggester::new(
+            repo_handle.clone(),
+            crate::maestro::digest::default_oneshot(),
+        );
+        repo_handle.with_cone_suggester(Arc::new(suggester))
+    };
+
     // Task 206: establish the Core's Ed25519 identity (`design/12 §3.1`).
     // Runs AFTER the audit writer (so a first-launch generation can emit
     // `CoreIdentityCreated`) and is constructed here so the issuer's signing
@@ -876,6 +894,29 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         Err(e) => tracing::warn!(error = %e, "workspace-settings boot resolution failed"),
     }
 
+    // Task 411 (D10 fix): build the `enterprise_data_privacy` resolver the
+    // `Vcs.FetchIssueByUrl` path consults, from the SAME managed-policy /
+    // opt-out / persistence inputs the settings boot step loads above. A
+    // workspace scope routes through `build_resolver_for_workspace`; an empty
+    // scope falls back to the Core-wide `ManagedPolicy` floor. Threaded
+    // additively into the api-server (UDS + Iroh) + the Connect-Web bridge
+    // alongside the existing `vcs` handle, replacing the prior hardcoded
+    // `enterprise_data_privacy = false` (the privacy floor is now enforced).
+    // Built as its OWN self-contained `let` (it does not interleave with 414's
+    // maestro-handle block above).
+    let vcs_privacy_resolver: Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver> = {
+        let managed =
+            crate::security::managed::load_managed_policy(config_dir.as_path()).unwrap_or_default();
+        let opt_out =
+            crate::settings::workspace_file::OptOutConfig::load(settings_home_concerto.as_path());
+        Arc::new(crate::handlers::vcs::CorePrivacyResolver::new(
+            Arc::clone(&persistence),
+            managed,
+            opt_out,
+        ))
+    };
+    let factory_vcs_privacy_resolver = vcs_privacy_resolver.clone();
+
     // Task 414: construct the live Maestro handle, gated on the Maestro being
     // enabled (403's `maestro_state.enabled`, §4.6) AND a managed-policy model
     // permission (D1: `enterpriseDataPrivacy=true` + an external `default_model`
@@ -1029,6 +1070,9 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     factory_device_manager.clone(),
                     factory_auth_issuer.clone(),
                 )
+                // Task 411 (D10): attach the privacy resolver additively after
+                // `with_managers` (kept off the long ctor arg list).
+                .with_vcs_privacy_resolver(factory_vcs_privacy_resolver.clone())
             },
             ApiServerConfig {
                 socket_path: socket_path.clone(),
@@ -1069,6 +1113,8 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
             #[cfg(unix)]
             maestro: maestro_handle.clone(),
             vcs: Some(vcs_handle.clone()),
+            // Task 411 (D10): the privacy resolver on the Iroh serve path too.
+            vcs_privacy_resolver: Some(vcs_privacy_resolver.clone()),
             pairing: pairing_coordinator.clone(),
             device_manager: device_manager.clone(),
             auth_issuer: auth_issuer.clone(),

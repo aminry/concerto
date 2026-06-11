@@ -181,6 +181,10 @@ pub struct BridgeServices {
     #[cfg(unix)]
     pub maestro: Option<crate::maestro::MaestroHandle>,
     pub vcs: Option<VcsHandle>,
+    /// The `enterprise_data_privacy` resolver the `Vcs.FetchIssueByUrl` D10 path
+    /// consults (Task 411). `None` ⇒ the pre-resolver default (`false`).
+    /// Threaded alongside the `vcs` handle (additive; distinct field).
+    pub vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
 }
 
 /// The address the bridge actually bound, reported back so tests (and a
@@ -252,6 +256,7 @@ async fn build_and_serve(
         #[cfg(unix)]
         maestro,
         vcs,
+        vcs_privacy_resolver,
     } = services;
 
     let runtime_service = RuntimeServer::new(RuntimeHandler::new(started_at, supervisor_view));
@@ -366,7 +371,14 @@ async fn build_and_serve(
     if let Some(vcs) = vcs {
         use crate::handlers::vcs::VcsHandler;
         use concerto_proto::v1::vcs_server::VcsServer;
-        let vcs_service = VcsServer::new(VcsHandler::new(vcs));
+        let mut vcs_handler = VcsHandler::new(vcs);
+        // Task 411 (D10): the same `enterprise_data_privacy` resolver the UDS /
+        // Iroh paths attach, so `FetchIssueByUrl` over the Connect-Web bridge
+        // enforces the privacy floor too.
+        if let Some(resolver) = vcs_privacy_resolver {
+            vcs_handler = vcs_handler.with_privacy_resolver(resolver);
+        }
+        let vcs_service = VcsServer::new(vcs_handler);
         builder = builder.add_service(vcs_service);
     }
 
