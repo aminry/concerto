@@ -34,7 +34,7 @@ use tonic::{Request, Response, Status};
 use crate::error_map::error_to_status;
 use crate::llm::{DEFAULT_DAILY_IN_CAP, DEFAULT_DAILY_OUT_CAP};
 use crate::maestro::{InertReason, MaestroHandle};
-use concerto_persist::WorkareaId;
+use concerto_persist::{WorkareaId, WorkspaceId};
 
 /// The `Status` a policy-disabled (handle un-constructed at boot) RPC returns.
 /// FROZEN string — 415 keys off the `maestro.disabled_by_policy` message.
@@ -77,11 +77,20 @@ impl MaestroService for MaestroHandler {
     ) -> Result<Response<()>, Status> {
         let handle = self.handle()?;
         let req = request.into_inner();
+        // OPTIONAL workspace scope hint (Task 8): the desktop passes the active
+        // workspace (Task 9) so a bare `@composer` resolves in the workspace the
+        // user is viewing, not the most-recent one. An empty string carries the
+        // same "no hint" meaning as an absent field (proto3 `optional` ⇒ `None`,
+        // but be defensive about an empty-string sentinel), so map both to `None`.
+        let workspace_id = req
+            .workspace_id
+            .filter(|id| !id.is_empty())
+            .map(WorkspaceId);
         // The handle runs 408's `pre_parse` → routes / handles slash / forwards
         // freeform, emitting the matching `maestro.events`. The dispatch outcome
         // rides `maestro.events`, not this unary reply (which is `Empty`).
         handle
-            .send_to_maestro(req.text, req.attachments)
+            .send_to_maestro(req.text, req.attachments, workspace_id)
             .await
             .map_err(error_to_status)?;
         Ok(Response::new(()))
