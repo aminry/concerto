@@ -137,6 +137,18 @@ pub mod events;
 pub mod cone_suggester;
 // ===========================================================================
 
+// ===========================================================================
+// Task 3 (Maestro Live-Integration) region — DISTINCT additive zone
+// (design Fork B1). Kept in its OWN clearly-labeled block so it auto-merges
+// against the sibling soft-seam lines above.
+//
+// The reserved, UI-hidden system workspace + workarea that hosts the global
+// Maestro session, satisfying `sessions.workarea_id NOT NULL REFERENCES
+// workareas(id)` without a schema change. Ensured idempotently at boot; the
+// sentinel ids are filtered from every user-facing list (a separate task).
+pub mod system_workarea;
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
@@ -156,6 +168,14 @@ pub use events::{MaestroEvent, MaestroEventSender};
 // the `pub mod cone_suggester;` block above). `boot.rs` injects it into the
 // RepoManager via `with_cone_suggester`.
 pub use cone_suggester::MaestroConeSuggester;
+
+// Task 3 (Maestro Live-Integration) — re-export the reserved system
+// workspace+workarea ensure-helper + its sentinel ids (distinct region; see the
+// `pub mod system_workarea;` block above). Boot calls
+// `ensure_system_workspace_and_workarea` to host the global Maestro session.
+pub use system_workarea::{
+    ensure_system_workspace_and_workarea, SYSTEM_WORKAREA_ID, SYSTEM_WORKSPACE_ID,
+};
 
 // Task 402 re-exports (distinct region — see above).
 pub use provider::{
