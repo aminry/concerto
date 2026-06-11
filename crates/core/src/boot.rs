@@ -74,6 +74,22 @@ fn is_external_maestro_model(model: &str) -> bool {
     EXTERNAL_MARKERS.iter().any(|marker| m.contains(marker))
 }
 
+/// Resolve the absolute path to the `concerto-maestro-bridge` binary, which is
+/// built into the same target directory as `concerto-agent-host`. We reuse the
+/// agent-host resolver (`$CONCERTO_AGENT_HOST_BIN` override → co-located →
+/// bounded dev-layout walk) and then swap the file stem, so the bridge tracks
+/// the same dev/packaged layouts the rest of the supervisor already handles.
+///
+/// Returns `None` (never panics) if the agent-host bin — and thus its parent
+/// directory — cannot be resolved; the caller logs and degrades Maestro to
+/// inert.
+#[cfg(unix)]
+fn resolve_maestro_bridge_bin() -> Option<PathBuf> {
+    let host = crate::agent_supervisor::spawn::resolve_host_binary().ok()?;
+    let dir = host.parent()?;
+    Some(dir.join("concerto-maestro-bridge"))
+}
+
 /// The live Iroh-transport seam a booted Core exposes (Task 217.5). Held by
 /// [`RunningCore`] when the listener is enabled so the split-host smoke driver
 /// (Task 220) + the Tier-2 loopback test can dial the endpoint, drive a pairing,
@@ -999,14 +1015,101 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
             let oneshot = crate::maestro::digest::default_oneshot();
             let events = crate::maestro::MaestroEventSender::new();
             tracing::info!(target: "concerto::maestro", "maestro enabled at boot");
-            Some(crate::maestro::MaestroHandle::new(
+
+            let handle = crate::maestro::MaestroHandle::new(
                 Arc::clone(&persistence),
                 workarea_handle.clone(),
                 agent_supervisor_handle.clone(),
-                summary_cache,
+                // Clone: the same cache instance also backs the MCP read tools
+                // (the digest and the `read` MCP tools see one cache).
+                Arc::clone(&summary_cache),
                 oneshot,
                 events,
-            ))
+            );
+
+            // --- live Maestro spine (Tasks 1-6). Best-effort: any failure logs
+            // a warning and leaves the Maestro inert; boot NEVER fails here. ---
+            match crate::maestro::maestro_mcp_socket_path() {
+                Ok(socket) => {
+                    if let Some(parent) = socket.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+
+                    // 1. Serve the MCP server over its dedicated UDS. Detached:
+                    //    dropping the `JoinHandle` does NOT abort the task, so it
+                    //    runs for the runtime's lifetime (accept-loops, 0600,
+                    //    survives transient accept errors).
+                    let template = crate::maestro::mcp::MaestroMcpServer::with_read_handles(
+                        Arc::clone(&persistence),
+                        Arc::clone(&summary_cache),
+                    );
+                    let listen_socket = socket.clone();
+                    let _listener = tokio::spawn(async move {
+                        if let Err(e) = crate::maestro::mcp::serve_maestro_mcp_listener(
+                            listen_socket,
+                            template,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                target: "concerto::maestro",
+                                error = %e,
+                                "maestro mcp listener exited"
+                            );
+                        }
+                    });
+
+                    // 2. Write `.mcp.json` pointing the CLI at the bridge (which
+                    //    sits next to the agent-host bin).
+                    match (
+                        crate::maestro::ensure_maestro_scratch_dir(),
+                        resolve_maestro_bridge_bin(),
+                    ) {
+                        (Ok(scratch), Some(bridge)) => {
+                            if let Err(e) =
+                                crate::maestro::write_maestro_mcp_json(&scratch, &bridge, &socket)
+                            {
+                                tracing::warn!(
+                                    target: "concerto::maestro",
+                                    error = %e,
+                                    "failed to write maestro .mcp.json"
+                                );
+                            }
+                        }
+                        (scratch_res, bridge_opt) => {
+                            tracing::warn!(
+                                target: "concerto::maestro",
+                                scratch_ok = scratch_res.is_ok(),
+                                bridge_found = bridge_opt.is_some(),
+                                "skipping .mcp.json (scratch or bridge bin unavailable) — maestro tools unavailable"
+                            );
+                        }
+                    }
+
+                    // 3. Spawn the long-lived Maestro session (idempotent). Inert
+                    //    (logged, not fatal) when the CLI can't be resolved/spawned
+                    //    — e.g. CI with no `claude` binary present.
+                    match handle.spawn_maestro_session().await {
+                        Ok(sid) => tracing::info!(
+                            target: "concerto::maestro",
+                            session = %sid.0,
+                            "maestro session live"
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "concerto::maestro",
+                            error = %e,
+                            "maestro session not spawned (inert) — chat/digest read paths still available once a session starts"
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    target: "concerto::maestro",
+                    error = %e,
+                    "could not resolve maestro mcp socket path — maestro inert"
+                ),
+            }
+
+            Some(handle)
         }
     };
 
