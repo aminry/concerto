@@ -47,6 +47,7 @@ use concerto_persist::{RepositoryId, SessionId, WorkareaId, WorkspaceId};
 
 use crate::agent_supervisor::actor::AgentKind;
 use crate::llm::oneshot::{compose_action_prompt, ActionKind, OneShotLlm, OneShotRequest};
+use crate::maestro::privacy::{MaestroLlmGate, PrivacyPolicy, SummarySource};
 use crate::settings::{Resolved, SettingsSource};
 
 /// Upper bound on a `last_turn_summary` (design/08 §3.3: "≤ 300 chars").
@@ -242,13 +243,57 @@ impl SummaryCache {
 
     /// Cheap clone of one entry for the read tool (Task 405's
     /// `get_workarea_summary`). `None` when the workarea is untracked.
+    ///
+    /// This is the **raw** entry — callers serving a summary to the Maestro
+    /// must instead use [`SummaryCache::get_for_maestro`], which applies the
+    /// read-time `exclude_from_maestro` privacy filter (Task 413).
     pub fn get(&self, wa: &WorkareaId) -> Option<WorkareaSummary> {
         self.entries.get(wa).cloned()
     }
 
+    /// Serve one entry to the Maestro with the **read-time privacy filter**
+    /// applied (Task 413, design/08 §3.3). When `excluded` (the workarea's
+    /// `exclude_from_maestro` flag, resolved by the caller from
+    /// `workareas.settings_json`), the returned summary is blanked to
+    /// name-only via [`PrivacyPolicy::blank_excluded`] — every LLM/chat-derived
+    /// field stripped, every git/PR/CI hard fact preserved.
+    ///
+    /// Blanking is applied at **serve time, not refresh time**: a freshly
+    /// flipped `exclude_from_maestro` is honored on the next read without a
+    /// cache rebuild, so a stale pre-toggle cache entry can NOT leak summary
+    /// prose. `None` when the workarea is untracked.
+    pub fn get_for_maestro(&self, wa: &WorkareaId, excluded: bool) -> Option<WorkareaSummary> {
+        self.entries
+            .get(wa)
+            .cloned()
+            .map(|s| PrivacyPolicy::blank_excluded(s, excluded))
+    }
+
     /// Snapshot of every tracked summary (Task 409's `list_active_summaries`).
+    ///
+    /// **Raw** — the digest/summary serve path must blank `exclude_from_maestro`
+    /// workareas via [`SummaryCache::list_for_maestro`].
     pub fn list(&self) -> Vec<WorkareaSummary> {
         self.entries.values().cloned().collect()
+    }
+
+    /// Snapshot of every tracked summary with the read-time privacy filter
+    /// applied (Task 413). `is_excluded(&WorkareaId) -> bool` resolves each
+    /// workarea's `exclude_from_maestro` flag (the caller reads it from
+    /// `workareas.settings_json`); excluded workareas are blanked to name-only
+    /// while their hard facts + name stay visible. Task 409's digest builds on
+    /// this serve path.
+    pub fn list_for_maestro(
+        &self,
+        mut is_excluded: impl FnMut(&WorkareaId) -> bool,
+    ) -> Vec<WorkareaSummary> {
+        self.entries
+            .values()
+            .map(|s| {
+                let excluded = is_excluded(&s.workarea_id);
+                PrivacyPolicy::blank_excluded(s.clone(), excluded)
+            })
+            .collect()
     }
 
     /// Number of tracked workareas.
@@ -511,6 +556,54 @@ pub async fn summarize_turn(llm: &dyn OneShotLlm, repo_id: &str, recent: &str) -
     let req = OneShotRequest::new(ActionKind::DigestSummary, repo_id, prompt, recent);
     let out = llm.suggest(req).await?;
     Ok(truncate_turn_summary(&out))
+}
+
+/// The marker a workarea's `last_turn_summary` carries when the external
+/// Maestro summarizer is disabled by the enterprise-privacy policy (design/08
+/// §3.10). Hard facts still render; only the LLM-derived prose is replaced.
+pub const MAESTRO_DISABLED_BY_POLICY_SUMMARY: &str = "[maestro disabled by policy]";
+
+/// Summarize a turn through the external [`OneShotLlm`] seam **only when the
+/// enterprise-privacy gate allows it** (Task 413, design/08 §3.10).
+///
+/// This is the gated counterpart to [`summarize_turn`]: it is the call site for
+/// the *external* provider path. `gate` is computed once by the caller via
+/// [`PrivacyPolicy::llm_gate`] from the resolved `enterprise_data_privacy` +
+/// the chosen model's externality.
+///
+/// - [`MaestroLlmGate::Allowed`] ⇒ issue the external call (delegates to
+///   [`summarize_turn`]).
+/// - [`MaestroLlmGate::DisabledExternalPolicy`] ⇒ **do not call** the external
+///   provider; return [`MAESTRO_DISABLED_BY_POLICY_SUMMARY`] so the workarea
+///   still renders its hard facts + the disabled marker. The in-process
+///   deterministic summarizer (`DeterministicOneShot`) is NOT external and is
+///   reached only through [`summarize_turn`], so callers that want a real
+///   deterministic summary when disabled pass a deterministic `llm` AND
+///   [`MaestroLlmGate::Allowed`] — the gate guards exactly the external egress.
+pub async fn summarize_turn_gated(
+    llm: &dyn OneShotLlm,
+    repo_id: &str,
+    recent: &str,
+    gate: MaestroLlmGate,
+) -> Result<String> {
+    if gate.is_disabled() {
+        // The external provider is disabled by policy — egress nothing.
+        return Ok(MAESTRO_DISABLED_BY_POLICY_SUMMARY.to_string());
+    }
+    summarize_turn(llm, repo_id, recent).await
+}
+
+/// Resolve, on the refresh path, whether a workarea entry should populate the
+/// raw last-3-turns or summary text only (Task 413, design/08 §3.3).
+///
+/// `full_chat_access` is the per-workspace `concerto_chat_full_chat_access`
+/// flag (default `false`, read via
+/// [`concerto_persist::workspaces::get_settings_json_bool`]). The refresher
+/// consults the returned [`SummarySource`] to decide whether to keep the raw
+/// last-3-turns in the cache entry ([`SummarySource::FullLast3Turns`]) or only
+/// the summary text ([`SummarySource::SummaryOnly`], the default).
+pub fn refresh_summary_source(full_chat_access: bool) -> SummarySource {
+    PrivacyPolicy::summary_source(full_chat_access)
 }
 
 /// The `commits_ahead` hard fact via the new gix-wrap helper. Thin re-export so
@@ -816,5 +909,88 @@ mod tests {
         let long = "word ".repeat(200); // 1000 chars
         let out = summarize_turn(&llm, "repo-1", &long).await.unwrap();
         assert!(out.chars().count() <= MAX_TURN_SUMMARY_LEN);
+    }
+
+    #[test]
+    fn get_for_maestro_blanks_excluded_at_serve_time() {
+        let mut cache = SummaryCache::new(Box::new(ManualClock::new(0)));
+        seed(&mut cache, "wa-a", 0);
+        // Seed real chat prose so blanking has something to strip.
+        cache.on_turn_complete(&wa("wa-a"), &sid("sess-1"), "secret prose");
+
+        // Not excluded ⇒ raw summary served.
+        let raw = cache.get_for_maestro(&wa("wa-a"), false).unwrap();
+        assert_eq!(raw.last_turn_summary, "secret prose");
+        assert_eq!(raw.sessions[0].last_turn_summary, "secret prose");
+
+        // Excluded ⇒ name-only; hard facts (branch/status) survive.
+        let blanked = cache.get_for_maestro(&wa("wa-a"), true).unwrap();
+        assert_eq!(
+            blanked.last_turn_summary,
+            crate::maestro::privacy::PRIVATE_WORKAREA_BLANK
+        );
+        assert!(blanked.last_3_turn_summaries.is_empty());
+        assert!(blanked.sessions.is_empty());
+        assert_eq!(blanked.branch_name, "concerto/bach");
+        assert_eq!(blanked.status, "running");
+
+        // The cache entry itself is untouched (blanking is a serve-time copy).
+        assert_eq!(
+            cache.get(&wa("wa-a")).unwrap().last_turn_summary,
+            "secret prose"
+        );
+    }
+
+    #[test]
+    fn list_for_maestro_blanks_only_excluded_workareas() {
+        let mut cache = SummaryCache::new(Box::new(ManualClock::new(0)));
+        seed(&mut cache, "wa-pub", 0);
+        seed(&mut cache, "wa-priv", 0);
+        cache.on_turn_complete(&wa("wa-pub"), &sid("sess-1"), "public prose");
+        cache.on_turn_complete(&wa("wa-priv"), &sid("sess-1"), "private prose");
+
+        let served = cache.list_for_maestro(|id| id == &wa("wa-priv"));
+        let pubd = served
+            .iter()
+            .find(|s| s.workarea_id == wa("wa-pub"))
+            .unwrap();
+        let privd = served
+            .iter()
+            .find(|s| s.workarea_id == wa("wa-priv"))
+            .unwrap();
+        assert_eq!(pubd.last_turn_summary, "public prose");
+        assert_eq!(
+            privd.last_turn_summary,
+            crate::maestro::privacy::PRIVATE_WORKAREA_BLANK
+        );
+    }
+
+    #[tokio::test]
+    async fn summarize_turn_gated_skips_external_call_when_disabled() {
+        use crate::llm::oneshot::DeterministicOneShot;
+        let llm = DeterministicOneShot;
+
+        // Allowed ⇒ the external seam runs (here a deterministic stand-in).
+        let allowed = summarize_turn_gated(&llm, "repo-1", "did the work", MaestroLlmGate::Allowed)
+            .await
+            .unwrap();
+        assert_eq!(allowed, "did the work");
+
+        // Disabled ⇒ no external call; the policy marker is returned.
+        let disabled = summarize_turn_gated(
+            &llm,
+            "repo-1",
+            "did the work",
+            MaestroLlmGate::DisabledExternalPolicy,
+        )
+        .await
+        .unwrap();
+        assert_eq!(disabled, MAESTRO_DISABLED_BY_POLICY_SUMMARY);
+    }
+
+    #[test]
+    fn refresh_summary_source_honors_full_chat_access() {
+        assert_eq!(refresh_summary_source(true), SummarySource::FullLast3Turns);
+        assert_eq!(refresh_summary_source(false), SummarySource::SummaryOnly);
     }
 }
