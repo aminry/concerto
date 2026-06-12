@@ -351,6 +351,11 @@ service Maestro {
 message MaestroMessageRequest {
   string text = 1;
   repeated MaestroAttachment attachments = 2;
+  // Scope hint (Task 8): resolve a bare `@composer` within this workspace
+  // first; absent ⇒ fall back to the default (most-recent) workspace. The
+  // Maestro stays global — this only sets the DEFAULT scope for unqualified
+  // names. `optional` ⇒ `Option<String>` in the generated Rust struct.
+  optional string workspace_id = 3;
 }
 ```
 

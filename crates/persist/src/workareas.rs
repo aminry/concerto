@@ -599,8 +599,8 @@ pub async fn set_settings_json_key(
 mod sentinel_tests {
     use super::*;
     use crate::{
-        MAESTRO_SYSTEM_WORKAREA_ID, MAESTRO_SYSTEM_WORKSPACE_ID,
         api::{NewWorkarea, NewWorkspace, WorkareaId, WorkspaceId},
+        MAESTRO_SYSTEM_WORKAREA_ID, MAESTRO_SYSTEM_WORKSPACE_ID,
     };
     use sqlx::SqlitePool;
 
@@ -709,7 +709,12 @@ mod sentinel_tests {
             "list_all_non_archived must return normal workareas; got {:?}",
             ids
         );
-        assert_eq!(listed.len(), 1, "expected exactly 1 workarea; got {:?}", ids);
+        assert_eq!(
+            listed.len(),
+            1,
+            "expected exactly 1 workarea; got {:?}",
+            ids
+        );
     }
 
     /// `get` by id must still return the sentinel (non-list queries unaffected).

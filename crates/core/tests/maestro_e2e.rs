@@ -68,10 +68,7 @@ use concerto_persist::{NewWorkspace, Persistence, PersistenceConfig, WorkspaceId
 /// Open a fresh on-disk `Persistence` seeded with one workspace, mirroring the
 /// `mcp.rs` / `tools/read.rs` fixture. The tempdir is returned so the caller
 /// keeps the DB file alive for the duration of the test.
-async fn fresh_persist_with_workspace(
-    id: &str,
-    name: &str,
-) -> (tempfile::TempDir, Persistence) {
+async fn fresh_persist_with_workspace(id: &str, name: &str) -> (tempfile::TempDir, Persistence) {
     let dir = tempfile::tempdir().expect("tempdir");
     let persist = Persistence::open(PersistenceConfig {
         db_path: dir.path().join("test.db"),
@@ -181,7 +178,10 @@ async fn bridge_bin_serves_live_read_end_to_end() {
             .expect("rmcp client handshakes through the real bridge");
 
         // (a) Sanity: the frozen 18-tool registry crosses the full loop.
-        let tools = client.list_all_tools().await.expect("list_tools over bridge");
+        let tools = client
+            .list_all_tools()
+            .await
+            .expect("list_tools over bridge");
         assert_eq!(
             tools.len(),
             18,

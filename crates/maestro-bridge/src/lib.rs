@@ -3,6 +3,11 @@
 //! Maestro-MCP unix socket and copies bytes both directions. It has NO MCP
 //! knowledge: MCP stdio framing (newline-delimited JSON-RPC) passes through
 //! transparently. Unix-only (the Maestro is `#[cfg(unix)]`).
+//!
+//! The whole crate is `#![cfg(unix)]`: it relays over a `tokio::net::UnixStream`,
+//! which does not exist on Windows. On a non-unix target the lib is empty and the
+//! bin's `main` is a typed "unix-only" stub (see `main.rs`).
+#![cfg(unix)]
 
 use std::path::Path;
 

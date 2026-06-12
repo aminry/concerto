@@ -354,7 +354,10 @@ async fn chat_id_binds_session_to_existing_chat() {
         .fetch_one(persistence.readers())
         .await
         .expect("chat_id");
-    assert_eq!(chat_id, "maestro-chat", "session binds to the pre-existing chat");
+    assert_eq!(
+        chat_id, "maestro-chat",
+        "session binds to the pre-existing chat"
+    );
 
     // (2) No fresh kind='session' chat was created.
     let n_chats: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats")
@@ -370,7 +373,10 @@ async fn chat_id_binds_session_to_existing_chat() {
     .fetch_one(persistence.readers())
     .await
     .expect("resolve via maestro chat");
-    assert_eq!(resolved, session_id.0, "maestro-chat join resolves the bound session");
+    assert_eq!(
+        resolved, session_id.0,
+        "maestro-chat join resolves the bound session"
+    );
 
     // Tear down the spawned host so no orphaned `concerto-agent-host` lingers
     // into a sibling test's handshake window (the cookie-mismatch fragility).

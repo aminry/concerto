@@ -5,7 +5,7 @@
 
 use concerto_error::Result;
 use concerto_persist::{
-    NewWorkarea, NewWorkspace, Persistence, WorkareaId, WorkspaceId, workareas, workspaces,
+    workareas, workspaces, NewWorkarea, NewWorkspace, Persistence, WorkareaId, WorkspaceId,
 };
 
 // Re-export the canonical sentinel id literals from `concerto_persist` so that
@@ -108,23 +108,23 @@ mod tests {
     #[tokio::test]
     async fn ensure_is_idempotent_and_returns_sentinel_ids() {
         let (_dir, persist) = fresh().await;
-        let (ws1, wa1) = ensure_system_workspace_and_workarea(&persist).await.unwrap();
-        let (ws2, wa2) = ensure_system_workspace_and_workarea(&persist).await.unwrap();
+        let (ws1, wa1) = ensure_system_workspace_and_workarea(&persist)
+            .await
+            .unwrap();
+        let (ws2, wa2) = ensure_system_workspace_and_workarea(&persist)
+            .await
+            .unwrap();
         assert_eq!(ws1, ws2);
         assert_eq!(wa1, wa2);
         assert_eq!(ws1.0, SYSTEM_WORKSPACE_ID);
         assert_eq!(wa1.0, SYSTEM_WORKAREA_ID);
-        assert!(
-            concerto_persist::workareas::get(persist.readers(), &wa1)
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            concerto_persist::workspaces::get(persist.readers(), &ws1)
-                .await
-                .unwrap()
-                .is_some()
-        );
+        assert!(concerto_persist::workareas::get(persist.readers(), &wa1)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(concerto_persist::workspaces::get(persist.readers(), &ws1)
+            .await
+            .unwrap()
+            .is_some());
     }
 }

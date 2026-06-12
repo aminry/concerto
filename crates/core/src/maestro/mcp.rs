@@ -46,8 +46,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer, RunningService};
 use rmcp::transport::async_rw::AsyncRwTransport;
@@ -472,8 +472,7 @@ mod tests {
         use std::time::Duration;
 
         let (_dir, persist) = fresh_persist_with_workspace("ws-real", "Real").await;
-        let server =
-            MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
+        let server = MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
 
         let (server_io, client_io) = tokio::io::duplex(8192);
         let (sr, sw) = tokio::io::split(server_io);
@@ -490,10 +489,10 @@ mod tests {
         });
 
         let body = async {
-            let client = ()
-                .serve(AsyncRwTransport::<rmcp::RoleClient, _, _>::new(cr, cw))
-                .await
-                .expect("client connects");
+            let client =
+                ().serve(AsyncRwTransport::<rmcp::RoleClient, _, _>::new(cr, cw))
+                    .await
+                    .expect("client connects");
 
             let result = client
                 .call_tool(CallToolRequestParams::new("list_workspaces"))
@@ -542,8 +541,7 @@ mod tests {
     #[tokio::test]
     async fn write_tool_stays_typed_unimplemented_on_live_server() {
         let (_dir, persist) = fresh_persist_with_workspace("ws-w", "W").await;
-        let server =
-            MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
+        let server = MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
         let err = server
             .dispatch_tool(CallToolRequestParams::new("create_workspace"))
             .expect_err("write tool keeps the frozen seam");
@@ -563,14 +561,12 @@ mod tests {
         use tokio::net::UnixStream;
 
         let (_dir, persist) = fresh_persist_with_workspace("ws-socket", "Socketed").await;
-        let template =
-            MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
+        let template = MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
 
         let sockdir = tempfile::tempdir().expect("sockdir");
         let socket = sockdir.path().join("maestro-mcp.sock");
 
-        let listener_task =
-            tokio::spawn(serve_maestro_mcp_listener(socket.clone(), template));
+        let listener_task = tokio::spawn(serve_maestro_mcp_listener(socket.clone(), template));
 
         // Wait for the socket to appear (bind happens inside the spawned task).
         let bound = async {
@@ -596,10 +592,10 @@ mod tests {
         let body = async {
             let stream = UnixStream::connect(&socket).await.expect("dial socket");
             let (r, w) = stream.into_split();
-            let client = ()
-                .serve(AsyncRwTransport::<rmcp::RoleClient, _, _>::new(r, w))
-                .await
-                .expect("client connects over socket");
+            let client =
+                ().serve(AsyncRwTransport::<rmcp::RoleClient, _, _>::new(r, w))
+                    .await
+                    .expect("client connects over socket");
 
             let result = client
                 .call_tool(CallToolRequestParams::new("list_workspaces"))
@@ -635,8 +631,7 @@ mod tests {
         // Leave a stale regular file at the path; bind must clear it first.
         std::fs::write(&socket, b"stale").expect("write stale file");
 
-        let listener_task =
-            tokio::spawn(serve_maestro_mcp_listener(socket.clone(), template));
+        let listener_task = tokio::spawn(serve_maestro_mcp_listener(socket.clone(), template));
 
         let bound = async {
             loop {

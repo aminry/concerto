@@ -238,7 +238,7 @@ impl MaestroHandle {
         match self.maestro_session_id().await {
             Ok(existing) => return Ok(existing),
             Err(Error::NotFound(_)) => {} // no live session yet — proceed to spawn
-            Err(e) => return Err(e),       // surface real DB/internal errors
+            Err(e) => return Err(e),      // surface real DB/internal errors
         }
         let chat_id = self.ensure_maestro_chat().await?;
         let (_ws, wa_id) = crate::maestro::system_workarea::ensure_system_workspace_and_workarea(
@@ -937,9 +937,7 @@ mod tests {
     /// workspace A (`ws`, created_at 0) has composer "alpha"; workspace B
     /// (`wsB`, created_at 100 ⇒ the DEFAULT) has composer "beta". Returns the
     /// two workspace ids `(a, b)`.
-    async fn two_workspace_fixture(
-        persistence: &Persistence,
-    ) -> (WorkspaceId, WorkspaceId) {
+    async fn two_workspace_fixture(persistence: &Persistence) -> (WorkspaceId, WorkspaceId) {
         // `ws` (workspace A) already exists from `live_handle()` at created_at 0.
         insert_workarea_in(persistence, "ws", "wa-alpha", "alpha").await;
         // Workspace B is the most-recent ⇒ `default_workspace_id()` resolves it.
@@ -1090,12 +1088,11 @@ mod tests {
         assert_eq!(id1, id2, "idempotent: same chat id");
         assert_eq!(id1, "maestro-chat", "reuses the bootstrapped maestro chat");
 
-        let kind: String =
-            sqlx::query_scalar("SELECT kind FROM chats WHERE id = ?")
-                .bind(&id1)
-                .fetch_one(persistence.readers())
-                .await
-                .expect("kind");
+        let kind: String = sqlx::query_scalar("SELECT kind FROM chats WHERE id = ?")
+            .bind(&id1)
+            .fetch_one(persistence.readers())
+            .await
+            .expect("kind");
         assert_eq!(kind, "maestro");
 
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chats WHERE kind = 'maestro'")
@@ -1170,7 +1167,10 @@ mod tests {
             .await
             .expect("insert maestro session");
         }
-        let sid = handle.spawn_maestro_session().await.expect("spawn (short-circuit)");
+        let sid = handle
+            .spawn_maestro_session()
+            .await
+            .expect("spawn (short-circuit)");
         assert_eq!(sid.0, "maestro-sess", "resolves the live bound session");
 
         // The backing chat is kind='maestro' (Seam 4b).

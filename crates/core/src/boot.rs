@@ -1046,11 +1046,9 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     );
                     let listen_socket = socket.clone();
                     let _listener = tokio::spawn(async move {
-                        if let Err(e) = crate::maestro::mcp::serve_maestro_mcp_listener(
-                            listen_socket,
-                            template,
-                        )
-                        .await
+                        if let Err(e) =
+                            crate::maestro::mcp::serve_maestro_mcp_listener(listen_socket, template)
+                                .await
                         {
                             tracing::warn!(
                                 target: "concerto::maestro",

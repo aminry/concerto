@@ -455,7 +455,10 @@ fn row_to_workspace(row: sqlx::sqlite::SqliteRow) -> Workspace {
 #[cfg(test)]
 mod sentinel_tests {
     use super::*;
-    use crate::{MAESTRO_SYSTEM_WORKSPACE_ID, api::{NewWorkspace, WorkspaceId}};
+    use crate::{
+        api::{NewWorkspace, WorkspaceId},
+        MAESTRO_SYSTEM_WORKSPACE_ID,
+    };
     use sqlx::SqlitePool;
 
     async fn pool() -> SqlitePool {
@@ -488,12 +491,23 @@ mod sentinel_tests {
         let pool = pool().await;
         // Insert one normal workspace and the reserved sentinel.
         seed_ws(&pool, "ws-normal", "Normal Workspace", "normal-ws").await;
-        seed_ws(&pool, MAESTRO_SYSTEM_WORKSPACE_ID, "Maestro (system)", "__maestro_system__").await;
+        seed_ws(
+            &pool,
+            MAESTRO_SYSTEM_WORKSPACE_ID,
+            "Maestro (system)",
+            "__maestro_system__",
+        )
+        .await;
 
         let all = list_all(&pool).await.unwrap();
 
         // Only the normal workspace should appear; the sentinel is hidden.
-        assert_eq!(all.len(), 1, "expected 1 workspace, got {:?}", all.iter().map(|w| &w.id.0).collect::<Vec<_>>());
+        assert_eq!(
+            all.len(),
+            1,
+            "expected 1 workspace, got {:?}",
+            all.iter().map(|w| &w.id.0).collect::<Vec<_>>()
+        );
         assert_eq!(all[0].id.0, "ws-normal");
     }
 
@@ -501,7 +515,13 @@ mod sentinel_tests {
     #[tokio::test]
     async fn get_still_returns_sentinel_by_id() {
         let pool = pool().await;
-        seed_ws(&pool, MAESTRO_SYSTEM_WORKSPACE_ID, "Maestro (system)", "__maestro_system__").await;
+        seed_ws(
+            &pool,
+            MAESTRO_SYSTEM_WORKSPACE_ID,
+            "Maestro (system)",
+            "__maestro_system__",
+        )
+        .await;
         let ws = get(&pool, &WorkspaceId(MAESTRO_SYSTEM_WORKSPACE_ID.into()))
             .await
             .unwrap();

@@ -62,7 +62,10 @@ async fn boot_wires_maestro_mcp_listener_and_mcp_json() {
 
     // (c) Boot completes without error even though no `claude` binary is
     // present — the Maestro session is best-effort and degrades to inert.
-    let core = match boot::start(config).await.expect("boot::start should not fail") {
+    let core = match boot::start(config)
+        .await
+        .expect("boot::start should not fail")
+    {
         BootOutcome::Started(c) => c,
         BootOutcome::AlreadyRunning { pid } => panic!("unexpected live instance pid={pid}"),
     };

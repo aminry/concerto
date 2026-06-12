@@ -1,3 +1,6 @@
+// Unix-only: exercises the `UnixStream`-based relay (the crate is `#![cfg(unix)]`).
+#![cfg(unix)]
+
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
@@ -58,7 +61,10 @@ async fn relay_exits_when_socket_closes_with_stdin_open() {
     .await;
 
     server.await.unwrap();
-    assert!(res.is_ok(), "relay must exit when the socket closes, not hang");
+    assert!(
+        res.is_ok(),
+        "relay must exit when the socket closes, not hang"
+    );
     res.unwrap().unwrap();
     assert_eq!(output, b"hello\n");
 }
