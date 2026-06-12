@@ -137,6 +137,18 @@ pub mod events;
 pub mod cone_suggester;
 // ===========================================================================
 
+// ===========================================================================
+// Task 3 (Maestro Live-Integration) region — DISTINCT additive zone
+// (design Fork B1). Kept in its OWN clearly-labeled block so it auto-merges
+// against the sibling soft-seam lines above.
+//
+// The reserved, UI-hidden system workspace + workarea that hosts the global
+// Maestro session, satisfying `sessions.workarea_id NOT NULL REFERENCES
+// workareas(id)` without a schema change. Ensured idempotently at boot; the
+// sentinel ids are filtered from every user-facing list (a separate task).
+pub mod system_workarea;
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
@@ -156,6 +168,14 @@ pub use events::{MaestroEvent, MaestroEventSender};
 // the `pub mod cone_suggester;` block above). `boot.rs` injects it into the
 // RepoManager via `with_cone_suggester`.
 pub use cone_suggester::MaestroConeSuggester;
+
+// Task 3 (Maestro Live-Integration) — re-export the reserved system
+// workspace+workarea ensure-helper + its sentinel ids (distinct region; see the
+// `pub mod system_workarea;` block above). Boot calls
+// `ensure_system_workspace_and_workarea` to host the global Maestro session.
+pub use system_workarea::{
+    ensure_system_workspace_and_workarea, SYSTEM_WORKAREA_ID, SYSTEM_WORKSPACE_ID,
+};
 
 // Task 402 re-exports (distinct region — see above).
 pub use provider::{
@@ -261,6 +281,11 @@ pub fn maestro_start_request(workarea_id: WorkareaId, scratch_cwd: PathBuf) -> S
         // is the supervisor's `cold_resume_session` path (found via the
         // chats(kind='maestro') singleton), unchanged by this task.
         resume_session_id: None,
+        // The spawn path (`MaestroHandle::spawn_maestro_session`) overrides this
+        // with the singleton `chats(kind='maestro')` id; the pure request builder
+        // leaves it `None` so callers that only want the request shape (the unit
+        // test below) don't depend on a live chat row.
+        chat_id: None,
     }
 }
 
@@ -271,6 +296,42 @@ pub fn maestro_start_request(workarea_id: WorkareaId, scratch_cwd: PathBuf) -> S
 /// pattern used for workarea sessions). Idempotent.
 pub fn ensure_maestro_scratch_trusted(scratch_cwd: &Path) -> Result<()> {
     crate::agent_supervisor::ensure_claude_trusts_dir(scratch_cwd)
+}
+
+/// The Core's Maestro-MCP unix socket path (`~/.concerto/maestro-mcp.sock`).
+/// The bridge dials this; the Core listens on it (a later task).
+pub fn maestro_mcp_socket_path() -> Result<PathBuf> {
+    let home = home::home_dir().ok_or_else(|| {
+        Error::Internal("cannot resolve home dir for the Maestro MCP socket path".into())
+    })?;
+    Ok(home.join(".concerto").join("maestro-mcp.sock"))
+}
+
+/// Compose the `.mcp.json` body that points the spawned CLI at the bridge.
+/// `--strict-mcp-config` (in the launch args) restricts the CLI to exactly the
+/// server registered here.
+pub fn compose_maestro_mcp_json(bridge_bin: &std::path::Path, socket: &std::path::Path) -> String {
+    let v = serde_json::json!({
+        "mcpServers": {
+            crate::maestro::mcp::SERVER_NAME: {
+                "command": bridge_bin.to_string_lossy(),
+                "args": ["--socket", socket.to_string_lossy()],
+            }
+        }
+    });
+    serde_json::to_string_pretty(&v).expect("serializing a json! literal never fails")
+}
+
+/// Write the Maestro `.mcp.json` into `scratch_cwd` (the `--mcp-config` target:
+/// `scratch_cwd/.mcp.json`). Idempotent (overwrites).
+pub fn write_maestro_mcp_json(
+    scratch_cwd: &std::path::Path,
+    bridge_bin: &std::path::Path,
+    socket: &std::path::Path,
+) -> Result<PathBuf> {
+    let path = scratch_cwd.join(".mcp.json");
+    std::fs::write(&path, compose_maestro_mcp_json(bridge_bin, socket)).map_err(Error::Io)?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -294,5 +355,18 @@ mod tests {
         assert_eq!(req.cwd, scratch);
         assert!(req.resume_session_id.is_none());
         assert!(req.echo_text.is_none());
+    }
+
+    #[test]
+    fn mcp_json_names_bridge_and_socket_under_server_name() {
+        let json = compose_maestro_mcp_json(
+            std::path::Path::new("/opt/concerto/concerto-maestro-bridge"),
+            std::path::Path::new("/home/u/.concerto/maestro-mcp.sock"),
+        );
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let server = &v["mcpServers"][crate::maestro::mcp::SERVER_NAME];
+        assert_eq!(server["command"], "/opt/concerto/concerto-maestro-bridge");
+        assert_eq!(server["args"][0], "--socket");
+        assert_eq!(server["args"][1], "/home/u/.concerto/maestro-mcp.sock");
     }
 }

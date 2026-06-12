@@ -1139,6 +1139,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "concerto-maestro-bridge"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "concerto-pair-dial"
 version = "0.0.1"
 dependencies = [

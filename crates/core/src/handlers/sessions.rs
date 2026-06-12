@@ -109,6 +109,7 @@ impl SessionsService for SessionsHandler {
                 cwd,
                 permission_mode,
                 resume_session_id: None,
+                chat_id: None,
             })
             .await
             .map_err(error_to_status)?;

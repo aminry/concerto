@@ -634,6 +634,7 @@ pub(crate) async fn fire_schedule(
         cwd,
         permission_mode: None,
         resume_session_id: None,
+        chat_id: None,
     };
     let session_id = match supervisor.start_session(start_req).await {
         Ok(sid) => sid,

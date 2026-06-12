@@ -42,6 +42,13 @@ members = [
     # workspace so `cargo test --workspace` builds its self-tests but
     # nothing in the production build links against it.
     "crates/test-harness",
+    # Task 401 (Maestro live-integration): the bridge binary the Claude CLI
+    # spawns (named in the Maestro `.mcp.json`). It connects to the Core's
+    # Maestro-MCP unix socket and relays bytes both directions — stdin →
+    # socket, socket → stdout. Zero MCP knowledge; framing passes through
+    # transparently. Unix-only at runtime (`UnixStream`), but the crate
+    # builds everywhere.
+    "crates/maestro-bridge",
 ]
 default-members = ["crates/core", "crates/cli"]
 # Task 208: the cargo-fuzz crate (`crates/identity/fuzz`) is EXCLUDED from the

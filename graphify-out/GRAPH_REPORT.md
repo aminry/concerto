@@ -1,16 +1,16 @@
-# Graph Report - bangalore  (2026-06-08)
+# Graph Report - maestro-live  (2026-06-11)
 
 ## Corpus Check
-- 492 files · ~599,044 words
+- 539 files · ~659,315 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 9560 nodes · 19115 edges · 485 communities (468 shown, 17 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 539 edges (avg confidence: 0.82)
+- 10256 nodes · 21512 edges · 473 communities (454 shown, 19 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 543 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `8ef4f067`
+- Built from commit: `6ed5a410`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -383,24 +383,12 @@
 - [[_COMMUNITY_Community 401|Community 401]]
 - [[_COMMUNITY_Community 402|Community 402]]
 - [[_COMMUNITY_Community 403|Community 403]]
-- [[_COMMUNITY_Community 404|Community 404]]
 - [[_COMMUNITY_Community 405|Community 405]]
 - [[_COMMUNITY_Community 406|Community 406]]
-- [[_COMMUNITY_Community 407|Community 407]]
 - [[_COMMUNITY_Community 408|Community 408]]
-- [[_COMMUNITY_Community 409|Community 409]]
-- [[_COMMUNITY_Community 410|Community 410]]
-- [[_COMMUNITY_Community 411|Community 411]]
 - [[_COMMUNITY_Community 412|Community 412]]
-- [[_COMMUNITY_Community 413|Community 413]]
-- [[_COMMUNITY_Community 414|Community 414]]
 - [[_COMMUNITY_Community 415|Community 415]]
-- [[_COMMUNITY_Community 416|Community 416]]
-- [[_COMMUNITY_Community 417|Community 417]]
-- [[_COMMUNITY_Community 418|Community 418]]
-- [[_COMMUNITY_Community 419|Community 419]]
 - [[_COMMUNITY_Community 460|Community 460]]
-- [[_COMMUNITY_Community 469|Community 469]]
 - [[_COMMUNITY_Community 485|Community 485]]
 - [[_COMMUNITY_Community 497|Community 497]]
 - [[_COMMUNITY_Community 514|Community 514]]
@@ -429,7 +417,6 @@
 - [[_COMMUNITY_Community 1101|Community 1101]]
 - [[_COMMUNITY_Community 1102|Community 1102]]
 - [[_COMMUNITY_Community 1103|Community 1103]]
-- [[_COMMUNITY_Community 1107|Community 1107]]
 - [[_COMMUNITY_Community 1175|Community 1175]]
 - [[_COMMUNITY_Community 1178|Community 1178]]
 - [[_COMMUNITY_Community 1179|Community 1179]]
@@ -466,27 +453,27 @@
 - [[_COMMUNITY_Community 2338|Community 2338]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `allow` - 76 edges
-2. `deny` - 76 edges
-3. `WorkareaManager` - 71 edges
-4. `useUiStore` - 53 edges
-5. `RepoManager` - 44 edges
-6. `callRpc()` - 42 edges
-7. `Result` - 41 edges
-8. `VcsHandle` - 41 edges
-9. `formatError()` - 39 edges
-10. `SchedulerHandle` - 37 edges
+1. `WorkareaManager` - 72 edges
+2. `useUiStore` - 56 edges
+3. `callRpc()` - 46 edges
+4. `RepoManager` - 44 edges
+5. `formatError()` - 43 edges
+6. `Result` - 42 edges
+7. `VcsHandle` - 41 edges
+8. `Command` - 40 edges
+9. `SchedulerHandle` - 37 edges
+10. `WorkareaId` - 36 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `onConcertoEvent()` --implements--> `CoreClient trait (UDS/Iroh)`  [INFERRED]
-  apps/desktop/src/api/client.ts → design/15_Desktop_Client.md
+- `useCoreConnection()` --references--> `CoreClient trait (UDS/Iroh)`  [INFERRED]
+  apps/desktop/src/hooks/useCoreConnection.ts → design/15_Desktop_Client.md
+- `loadLayoutState()` --references--> `Tauri 2 Shell + React SPA`  [INFERRED]
+  apps/desktop/src/state/useUiStore.ts → design/15_Desktop_Client.md
 - `State` --implements--> `PTY Subprocess Agent Backend (portable-pty)`  [INFERRED]
   crates/agent-host/src/main.rs → design/04_Agent_Supervisor.md
 - `run_connection()` --implements--> `PTY Subprocess Agent Backend (portable-pty)`  [INFERRED]
   crates/agent-host/src/main.rs → design/04_Agent_Supervisor.md
 - `EffectiveMode` --implements--> `Permission Modes (strict/normal/auto/yolo)`  [INFERRED]
-  crates/core/src/agent_supervisor/actor.rs → design/04_Agent_Supervisor.md
-- `adopt_resume_session()` --implements--> `Host Adoption + Cold Resume`  [INFERRED]
   crates/core/src/agent_supervisor/actor.rs → design/04_Agent_Supervisor.md
 
 ## Import Cycles
@@ -506,10 +493,10 @@
 - 1-file cycle: `apps/desktop/src-tauri/src/transport.rs -> apps/desktop/src-tauri/src/transport.rs`
 - 1-file cycle: `apps/desktop/src-tauri/src/tray.rs -> apps/desktop/src-tauri/src/tray.rs`
 - 1-file cycle: `crates/agent-host/src/exit.rs -> crates/agent-host/src/exit.rs`
+- 1-file cycle: `crates/core/src/maestro/mcp.rs -> crates/core/src/maestro/mcp.rs`
 - 1-file cycle: `crates/agent-host/src/ring.rs -> crates/agent-host/src/ring.rs`
 - 1-file cycle: `crates/agent-host/tests/echo_round_trip.rs -> crates/agent-host/tests/echo_round_trip.rs`
 - 1-file cycle: `crates/cli/src/client.rs -> crates/cli/src/client.rs`
-- 1-file cycle: `crates/cli/src/commands/backup.rs -> crates/cli/src/commands/backup.rs`
 
 ## Hyperedges (group relationships)
 - **Core Runtime supervises all server-side sub-systems** — design_01_core_daemon_runtime, design_02_repository_manager, design_03_workspace_session_manager, design_04_agent_supervisor, design_09_persistence, design_10_local_api_protocol [EXTRACTED 1.00]
@@ -519,39 +506,39 @@
 - **Three Client Surfaces over one Core** — design_16_mobile_clients_mobile_clients, design_17_web_client_web_client, desktop_readme_desktop_app, design_concerto_prd_local_api [INFERRED 0.85]
 - **OSS-vs-Operated Governance** — design_18_distribution_and_operations_oss_vs_operated_boundary, design_18_distribution_and_operations_self_host_parity, design_18_distribution_and_operations_bsl_plugin_seam, design_18_distribution_and_operations_concerto_pro [INFERRED 0.75]
 
-## Communities (485 total, 17 thin omitted)
+## Communities (473 total, 19 thin omitted)
 
 ### Community 0 - "Community 0"
 Cohesion: 0.04
-Nodes (80): errorMessage(), aggregateBand(), checkBand, CheckConclusion, CheckRun, ChecksCheckRunFrame, ChecksDeploymentFrame, ChecksFrame (+72 more)
+Nodes (82): errorMessage(), aggregateBand(), checkBand, CheckConclusion, CheckRun, ChecksCheckRunFrame, ChecksDeploymentFrame, ChecksFrame (+74 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.05
 Nodes (82): AuditWriter, Debug, Default, Formatter, JoinHandle, Option, Path, PathBuf (+74 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.05
-Nodes (81): AckOffsetRequest, Attach, BoxEventStream, AgentEvent, AgentSupervisorHandle, Arc, AtomicU64, Chip (+73 more)
+Cohesion: 0.13
+Nodes (24): BoxEventStream, AgentEvent, Chip, Event, Option, Receiver, Timestamp, WorkareaEvent (+16 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.11
-Nodes (32): Arc, CancellationToken, Channel, Connection, Endpoint, EndpointAddr, NoiseDuplex, NoiseStatic (+24 more)
+Cohesion: 0.08
+Nodes (42): Arc, CancellationToken, Channel, Connection, EchoReply, EchoRequest, Endpoint, EndpointAddr (+34 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.06
 Nodes (62): Arc, CancellationToken, CompletePairingInput, IrohDuplex, IrohTransport, JoinHandle, Mutex, Option (+54 more)
 
 ### Community 5 - "Community 5"
-Cohesion: 0.05
-Nodes (82): App, AppHandle, Box, CoreClient, CoreClientError, HashMap, JoinHandle, M (+74 more)
+Cohesion: 0.12
+Nodes (28): App, AppHandle, Result, String, Vec, Workarea, FetchError, ListWorkareasRequest (+20 more)
 
 ### Community 6 - "Community 6"
 Cohesion: 0.05
-Nodes (62): AuditWriter, KeyPair, Path, PathBuf, PublicKey, Result, Secrets, IdentityError (+54 more)
+Nodes (64): AuditWriter, KeyPair, Path, PathBuf, PublicKey, Result, Secrets, IdentityError (+56 more)
 
 ### Community 7 - "Community 7"
-Cohesion: 0.05
-Nodes (66): formatError(), addRepository(), AddRepositoryInput, CloneStrategy, estimateRepoSize(), listRepositories(), ListRepositoriesResponse, listTree() (+58 more)
+Cohesion: 0.03
+Nodes (90): ConeStats, estimateConeSize(), setCones(), invoke, addRepository(), AddRepositoryInput, CloneStrategy, estimateRepoSize() (+82 more)
 
 ### Community 8 - "Community 8"
 Cohesion: 0.05
@@ -562,52 +549,52 @@ Cohesion: 0.08
 Nodes (51): Drop, HandshakeState, IdentityError, Instant, NoiseSession, Option, R, Result (+43 more)
 
 ### Community 10 - "Community 10"
-Cohesion: 0.17
-Nodes (17): AllowRoot, Option, PathBuf, Repository, Self, Vec, Workarea, P (+9 more)
+Cohesion: 0.05
+Nodes (42): AllowRoot, Option, Value, Error, Option, Path, PathBuf, Persistence (+34 more)
 
 ### Community 11 - "Community 11"
-Cohesion: 0.07
-Nodes (54): AgentSupervisorHandle, Arc, CheckRun, CreatePrRequest, IssueDetail, Option, ProtoPullRequest, Request (+46 more)
+Cohesion: 0.06
+Nodes (59): AgentSupervisorHandle, Arc, CheckRun, CreatePrRequest, IssueDetail, ManagedPolicy, Option, OptOutConfig (+51 more)
 
 ### Community 12 - "Community 12"
 Cohesion: 0.07
-Nodes (58): Arc, AuditEvent, AuditLogSubscriber, AuditWriter, ManagedPolicy, Mutex, Path, Persistence (+50 more)
+Nodes (58): Arc, AuditEvent, AuditLogSubscriber, AuditWriter, ManagedPolicy, Mutex, OptOutConfig, Path (+50 more)
 
 ### Community 13 - "Community 13"
-Cohesion: 0.07
-Nodes (58): Arc, CheckRunSnapshot, CheckRunsSource, HashMap, MergeMethod, MergeProgress, MergeReport, Mutex (+50 more)
+Cohesion: 0.11
+Nodes (43): Arc, CheckRunSnapshot, CheckRunsSource, HashMap, MergeMethod, MergeProgress, MergeReport, Mutex (+35 more)
 
 ### Community 14 - "Community 14"
 Cohesion: 0.08
 Nodes (46): ChecksOutcome, Actor, ActorContext, AgentEvent, AgentSupervisorHandle, Arc, BTreeMap, CheckRunsSource (+38 more)
 
 ### Community 15 - "Community 15"
-Cohesion: 0.06
-Nodes (41): completePairingFromPayload(), CompletePairingResult, CoreTransportKind, decodePairingPayload(), encodePairingPayload(), getActiveCore(), listPairedCores(), PairedCore (+33 more)
+Cohesion: 0.05
+Nodes (57): completePairingFromPayload(), CompletePairingResult, CoreTransportKind, decodePairingPayload(), encodePairingPayload(), getActiveCore(), listPairedCores(), PairedCore (+49 more)
 
 ### Community 16 - "Community 16"
 Cohesion: 0.11
 Nodes (26): Error, Into, Option, Result, Self, Send, String, Sync (+18 more)
 
 ### Community 17 - "Community 17"
-Cohesion: 0.08
-Nodes (49): A, ActorViewEntry, Any, Arc, AtomicUsize, Box, C, CancellationToken (+41 more)
+Cohesion: 0.15
+Nodes (25): ActorViewEntry, Arc, C, CancellationToken, HashMap, Instant, JoinHandle, Persistence (+17 more)
 
 ### Community 18 - "Community 18"
-Cohesion: 0.07
-Nodes (59): Code, Arc, ConePath, ConeSuggester, Path, PathBuf, Persistence, RepoManager (+51 more)
+Cohesion: 0.19
+Nodes (27): Channel, Option, PathBuf, Result, Status, String, TempDir, UploadChunk (+19 more)
 
 ### Community 19 - "Community 19"
 Cohesion: 0.06
 Nodes (45): Actor, ActorContext, AgentEvent, AgentSupervisorHandle, Arc, Box, CancellationToken, Chip (+37 more)
 
 ### Community 20 - "Community 20"
-Cohesion: 0.12
-Nodes (28): AddRepoRequest, CloneRequest, CloneStream, ConeStats, ConeSuggestError, RepoManager, Repository, Request (+20 more)
+Cohesion: 0.11
+Nodes (29): AddRepoRequest, CloneRequest, CloneStream, ConeStats, ConeSuggestError, RepoManager, Repository, Request (+21 more)
 
 ### Community 21 - "Community 21"
-Cohesion: 0.06
-Nodes (40): CloneProgressEvent, cloneRepository(), eventNameForSubject(), onCloneProgress(), onConcertoEvent(), RpcMethod, subscribe(), unsubscribe() (+32 more)
+Cohesion: 0.07
+Nodes (37): checkCommand(), CloneProgressEvent, cloneRepository(), eventNameForSubject(), onCloneProgress(), onConcertoEvent(), RpcMethod, subscribe() (+29 more)
 
 ### Community 22 - "Community 22"
 Cohesion: 0.06
@@ -626,24 +613,24 @@ Cohesion: 0.09
 Nodes (38): Actor, ActorContext, Arc, AuditWriter, Config, Option, PathBuf, Persistence (+30 more)
 
 ### Community 26 - "Community 26"
-Cohesion: 0.15
-Nodes (28): Option, String, NewChat, NewPullRequest, NewRepository, NewSchedule, NewSkill, NewSuggestionLearn (+20 more)
+Cohesion: 0.17
+Nodes (27): Option, String, Vec, MaestroState, NewChat, NewRepository, NewSchedule, NewSession (+19 more)
 
 ### Community 27 - "Community 27"
 Cohesion: 0.10
 Nodes (49): Option, Path, PathBuf, Result, Self, String, Vec, Files-to-copy (copy/symlink/exclude) (+41 more)
 
 ### Community 28 - "Community 28"
-Cohesion: 0.07
-Nodes (45): CodePrRegion(), AddRepositoryForm(), AppLayout(), CenterPanel(), ConnectedCoresList(), EditWorkspaceModal(), NewWorkspaceModal(), PairCoreModal() (+37 more)
+Cohesion: 0.10
+Nodes (17): ListMcpResponse, listMcpServers(), McpServer, listSchedules(), ListSchedulesResponse, Schedule, RightRail(), TABS (+9 more)
 
 ### Community 29 - "Community 29"
 Cohesion: 0.11
 Nodes (37): Arc, AtomicUsize, Duration, Error, Into, Mutex, Option, Receiver (+29 more)
 
 ### Community 30 - "Community 30"
-Cohesion: 0.05
-Nodes (46): commands, description, identifier, commands, description, identifier, commands, description (+38 more)
+Cohesion: 0.07
+Nodes (86): ChipSlate, Arc, AtomicBool, ConePath, Decision, Error, Map, McpError (+78 more)
 
 ### Community 31 - "Community 31"
 Cohesion: 0.07
@@ -654,12 +641,12 @@ Cohesion: 0.10
 Nodes (44): Arc, CheckRunSnapshot, CheckRunsSource, IssueProvider, IssueRef, IssueWriteBack, MergeMethod, MergeReport (+36 more)
 
 ### Community 33 - "Community 33"
-Cohesion: 0.12
-Nodes (34): Arc, CheckRun, Default, Deployment, E, HashMap, Mutex, NowSecs (+26 more)
+Cohesion: 0.15
+Nodes (22): CheckRun, Deployment, E, HashMap, Mutex, Option, Receiver, Sender (+14 more)
 
 ### Community 34 - "Community 34"
-Cohesion: 0.10
-Nodes (36): ConePath, Option, Vec, ConePath, Path, Result, Vec, Path (+28 more)
+Cohesion: 0.11
+Nodes (35): ConePath, Option, Vec, ConePath, Path, Result, Vec, Path (+27 more)
 
 ### Community 35 - "Community 35"
 Cohesion: 0.09
@@ -679,11 +666,11 @@ Nodes (26): diffViewerSpy, invoke, repos, workarea, eventCallbacks, invoke, prSe
 
 ### Community 39 - "Community 39"
 Cohesion: 0.09
-Nodes (26): Arc, D, DeviceId, Endpoint, EndpointId, IrohTransport, JoinHandle, Mutex (+18 more)
+Nodes (26): Arc, D, DeviceId, Endpoint, EndpointId, FnOnce, IrohTransport, JoinHandle (+18 more)
 
 ### Community 40 - "Community 40"
-Cohesion: 0.17
-Nodes (21): ApiDispatcher, Receiver, TransportConfig, TransportTelemetry, Vec, assert_lifecycle_err(), close_sessions_for_device_severs_the_targeted_session(), drain() (+13 more)
+Cohesion: 0.09
+Nodes (38): ApiDispatcher, Box, EchoReply, EchoRequest, FirehoseRequest, FirehoseStream, Future, Loopback (+30 more)
 
 ### Community 41 - "Community 41"
 Cohesion: 0.09
@@ -694,8 +681,8 @@ Cohesion: 0.11
 Nodes (39): bench_sparse_cone(), build_fixture(), Cell, count_worktree_files(), Fixture, fsmonitor_running(), git(), git_capture() (+31 more)
 
 ### Community 43 - "Community 43"
-Cohesion: 0.09
-Nodes (24): AgentSupervisorHandle, Arc, CancellationToken, EditMutexRegistry, IssueWriteBack, OneShotLlm, Persistence, PrComposeContext (+16 more)
+Cohesion: 0.08
+Nodes (28): Actor, ActorContext, AgentEvent, AgentSupervisorHandle, Arc, CancellationToken, Config, EditMutexRegistry (+20 more)
 
 ### Community 44 - "Community 44"
 Cohesion: 0.11
@@ -703,15 +690,15 @@ Nodes (30): Arc, Request, Response, Result, RuntimeStatus, Self, Send, ServerCap
 
 ### Community 45 - "Community 45"
 Cohesion: 0.12
-Nodes (32): Arc, AtomicUsize, Mutex, OneShotLlm, Path, PathBuf, Persistence, PrComposeContext (+24 more)
+Nodes (32): Arc, AtomicUsize, Mutex, OneShotLlm, OneShotRequest, Path, PathBuf, Persistence (+24 more)
 
 ### Community 46 - "Community 46"
-Cohesion: 0.05
-Nodes (91): adopt_resume_session(), AgentKind, AgentSupervisorActor, AgentSupervisorConfig, AgentSupervisorHandle, build_path_policy(), bypass_for_session(), dispatch_parse_event() (+83 more)
+Cohesion: 0.25
+Nodes (10): adopt_resume_session(), AgentSupervisorActor, AgentSupervisorHandle, Actor, Arc, EditMutexRegistry, HashMap, PathBuf (+2 more)
 
 ### Community 47 - "Community 47"
-Cohesion: 0.04
-Nodes (45): commands, description, identifier, commands, description, identifier, commands, description (+37 more)
+Cohesion: 0.06
+Nodes (62): AgentKind, AtomicI64, Box, Debug, Default, DiffPayload, FnMut, FnOnce (+54 more)
 
 ### Community 48 - "Community 48"
 Cohesion: 0.14
@@ -722,8 +709,8 @@ Cohesion: 0.13
 Nodes (14): ChecksAggregator, Issue, Option, PathBuf, RefreshToken, SecretValue, Url, IssueFetchCreds (+6 more)
 
 ### Community 50 - "Community 50"
-Cohesion: 0.16
-Nodes (38): Error, HashSet, Option, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow (+30 more)
+Cohesion: 0.15
+Nodes (44): Error, HashSet, Option, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow (+36 more)
 
 ### Community 51 - "Community 51"
 Cohesion: 0.12
@@ -738,8 +725,8 @@ Cohesion: 0.09
 Nodes (27): CheckRun, CreatePrRequest, Deployment, Issue, MergeMethod, MergeReport, Option, ProviderPrId (+19 more)
 
 ### Community 54 - "Community 54"
-Cohesion: 0.12
-Nodes (24): Arc, CancellationToken, Duration, JoinHandle, Option, PathBuf, Persistence, Receiver (+16 more)
+Cohesion: 0.17
+Nodes (16): CancellationToken, Duration, PathBuf, Result, Self, TempDir, Core as Source of Truth, Single-instance PID-lock guard (+8 more)
 
 ### Community 55 - "Community 55"
 Cohesion: 0.10
@@ -754,12 +741,12 @@ Cohesion: 0.09
 Nodes (25): Arc, AtomicU64, CancellationToken, Error, Option, RelayError, Result, Self (+17 more)
 
 ### Community 58 - "Community 58"
-Cohesion: 0.25
-Nodes (15): Arc, CancellationToken, Endpoint, Mutex, RelayState, RelayUrl, SocketAddr, TcpListener (+7 more)
+Cohesion: 0.29
+Nodes (13): Arc, CancellationToken, Endpoint, Mutex, RelayState, RelayUrl, SocketAddr, TcpListener (+5 more)
 
 ### Community 59 - "Community 59"
-Cohesion: 0.12
-Nodes (35): CoreClientError, Option, Result, StreamSink, StreamSubscription, String, T, Value (+27 more)
+Cohesion: 0.10
+Nodes (40): CoreClientError, Option, Result, StreamSink, StreamSubscription, String, T, Value (+32 more)
 
 ### Community 60 - "Community 60"
 Cohesion: 0.12
@@ -771,11 +758,11 @@ Nodes (29): ApiDispatcher, Arc, Box, Channel, EchoReply, EchoRequest, FirehoseRe
 
 ### Community 62 - "Community 62"
 Cohesion: 0.07
-Nodes (37): callRpc(), ConeStats, estimateConeSize(), setCones(), invoke, ListMcpResponse, listMcpServers(), McpServer (+29 more)
+Nodes (34): callRpc(), MaestroVisibilityValue, listSkills(), ListSkillsResponse, Skill, getPullRequest(), CreateWorkareaOptions, getWorkarea() (+26 more)
 
 ### Community 63 - "Community 63"
-Cohesion: 0.10
-Nodes (30): BranchRef, HashSet, Path, PathBuf, Repository, String, WorkspaceId, Three-layer Settings Precedence (+22 more)
+Cohesion: 0.11
+Nodes (24): HashSet, Path, PathBuf, Repository, Vec, WorkspaceId, Three-layer Settings Precedence, Rule (+16 more)
 
 ### Community 64 - "Community 64"
 Cohesion: 0.11
@@ -790,20 +777,20 @@ Cohesion: 0.12
 Nodes (25): Arc, Debug, Display, Drop, Duration, Formatter, HashMap, Mutex (+17 more)
 
 ### Community 67 - "Community 67"
-Cohesion: 0.13
-Nodes (15): Arc, Mutex, Path, PathBuf, Self, SqliteConnection, SqlitePool, Single-writer Queue + WAL (+7 more)
+Cohesion: 0.18
+Nodes (12): Arc, Mutex, Path, SqliteConnection, SqlitePool, Single-writer Queue + WAL, MutexGuard, applied_schema_version() (+4 more)
 
 ### Community 68 - "Community 68"
-Cohesion: 0.17
-Nodes (32): claude_json_parses_canonical_shape(), ClaudeMcpFile, codex_toml_parses_mcp_servers_table(), CodexConfigFile, entries_to_servers(), entries_to_servers_skips_missing_command(), list_mcp_servers(), malformed_json_returns_empty_not_panic() (+24 more)
+Cohesion: 0.18
+Nodes (31): claude_json_parses_canonical_shape(), ClaudeMcpFile, codex_toml_parses_mcp_servers_table(), CodexConfigFile, entries_to_servers(), entries_to_servers_skips_missing_command(), list_mcp_servers(), malformed_json_returns_empty_not_panic() (+23 more)
 
 ### Community 69 - "Community 69"
-Cohesion: 0.18
-Nodes (24): ArchiveWorkareaRequest, Request, Response, Result, Self, Status, Workarea, WorkareaManager (+16 more)
+Cohesion: 0.17
+Nodes (25): ArchiveWorkareaRequest, Request, Response, Result, Self, Status, Workarea, WorkareaManager (+17 more)
 
 ### Community 70 - "Community 70"
-Cohesion: 0.05
-Nodes (42): DiffHunk, DiffKind, DiffPayload, MergeProgress, Path, ProtoPullRequest, PullRequest, RevertReport (+34 more)
+Cohesion: 0.06
+Nodes (37): DiffHunk, DiffKind, DiffPayload, Path, ProtoPullRequest, PullRequest, RevertReport, String (+29 more)
 
 ### Community 71 - "Community 71"
 Cohesion: 0.13
@@ -815,23 +802,23 @@ Nodes (28): Arc, AtomicUsize, CheckRunSnapshot, CheckRunsSource, Mutex, Option, 
 
 ### Community 73 - "Community 73"
 Cohesion: 0.09
-Nodes (32): Option, ReviewThread, String, Value, Vec, GqlComment, GqlCommentConnection, GqlPullRequest (+24 more)
+Nodes (31): Option, ReviewThread, String, Value, Vec, GqlComment, GqlCommentConnection, GqlPullRequest (+23 more)
 
 ### Community 74 - "Community 74"
-Cohesion: 0.11
-Nodes (29): AgentSupervisorHandle, Arc, CancellationToken, Default, Option, Persistence, RepoManager, Request (+21 more)
+Cohesion: 0.10
+Nodes (31): AgentSupervisorHandle, Arc, CancellationToken, Default, EnterprisePrivacyResolver, MaestroHandle, Option, Persistence (+23 more)
 
 ### Community 75 - "Community 75"
-Cohesion: 0.05
-Nodes (41): commands, description, identifier, commands, description, identifier, commands, description (+33 more)
+Cohesion: 0.07
+Nodes (60): Arc, HashMap, Mutex, Option, Persistence, Result, Self, Send (+52 more)
 
 ### Community 76 - "Community 76"
 Cohesion: 0.05
-Nodes (38): Arc, CancellationToken, Channel, ClientKind, Connection, ConnectionPath, D, DeviceId (+30 more)
+Nodes (42): Arc, CancellationToken, Channel, ClientKind, Connection, ConnectionPath, D, DeviceId (+34 more)
 
 ### Community 77 - "Community 77"
-Cohesion: 0.18
-Nodes (9): ArchiveOpts, AgentEvent, DiffPayload, Result, Workarea, WorkareaId, Workspace/Workarea/Session 3-level hierarchy, Async Plan Deep-link Handoff (+1 more)
+Cohesion: 0.16
+Nodes (9): ArchiveOpts, DiffPayload, PullRequest, Result, Workarea, WorkareaId, Workspace/Workarea/Session 3-level hierarchy, Async Plan Deep-link Handoff (+1 more)
 
 ### Community 78 - "Community 78"
 Cohesion: 0.15
@@ -839,7 +826,7 @@ Nodes (29): AgentKind, Arc, Handle, JoinHandle, Mutex, Notify, Option, Path (+21
 
 ### Community 79 - "Community 79"
 Cohesion: 0.21
-Nodes (27): Actor, AgentSupervisorHandle, Arc, CancellationToken, DeviceCertIssuer, DeviceManager, IrohTransport, Metadata (+19 more)
+Nodes (27): Actor, AgentSupervisorHandle, Arc, CancellationToken, DeviceCertIssuer, DeviceManager, EnterprisePrivacyResolver, MaestroHandle (+19 more)
 
 ### Community 80 - "Community 80"
 Cohesion: 0.14
@@ -850,12 +837,12 @@ Cohesion: 0.09
 Nodes (17): Drop, Handle, Option, Path, PathBuf, RepositoriesClient, Result, RuntimeClient (+9 more)
 
 ### Community 82 - "Community 82"
-Cohesion: 0.17
-Nodes (27): BackupArgs, BackupError, civil_from_unix(), ConcertoPaths, export_audit_range(), in_range(), Included, iso8601_matches_known_epoch() (+19 more)
+Cohesion: 0.08
+Nodes (50): BackupArgs, BackupError, civil_from_unix(), ConcertoPaths, export_audit_range(), in_range(), Included, iso8601_matches_known_epoch() (+42 more)
 
 ### Community 83 - "Community 83"
 Cohesion: 0.06
-Nodes (59): Arc, CheckRun, Error, HashMap, Issue, Mutex, NowSecs, Option (+51 more)
+Nodes (60): Arc, CheckRun, Error, HashMap, Issue, Mutex, NowSecs, Option (+52 more)
 
 ### Community 84 - "Community 84"
 Cohesion: 0.10
@@ -867,11 +854,11 @@ Nodes (29): Option, Persistence, Result, Session, SessionId, SqliteConnection, S
 
 ### Community 86 - "Community 86"
 Cohesion: 0.06
-Nodes (38): commands, description, identifier, commands, description, identifier, commands, description (+30 more)
+Nodes (61): AgentSupervisorHandle, Arc, Chip, Debug, Error, Formatter, Mutex, OneShotLlm (+53 more)
 
 ### Community 87 - "Community 87"
-Cohesion: 0.10
-Nodes (22): DiffHunk, DiffKind, DiffPayload, FileDiff, getWorkareaRepoDiff(), CodePrRegionProps, CodePrSubTab, DiffViewer() (+14 more)
+Cohesion: 0.12
+Nodes (18): DiffHunk, DiffKind, DiffPayload, FileDiff, getWorkareaRepoDiff(), DiffViewer(), DiffViewerProps, hunkToSides() (+10 more)
 
 ### Community 88 - "Community 88"
 Cohesion: 0.15
@@ -902,24 +889,24 @@ Cohesion: 0.20
 Nodes (23): DeviceCertIssuer, DeviceContext, KeyPair, PairingRequest, Result, RevokedSet, SignedDeviceCert, Vec (+15 more)
 
 ### Community 95 - "Community 95"
-Cohesion: 0.07
-Nodes (32): ApiDispatcher, Arc, Box, Channel, EchoReply, EchoRequest, FirehoseRequest, FirehoseStream (+24 more)
+Cohesion: 0.08
+Nodes (31): ApiDispatcher, Arc, Box, Channel, EchoReply, EchoRequest, FirehoseRequest, FirehoseStream (+23 more)
 
 ### Community 96 - "Community 96"
-Cohesion: 0.29
-Nodes (10): Persistence, TempDir, WorkareaId, WorkspaceId, SqliteConnectOptions, finished_and_partial_round_trip_through_widened_check(), fk_unique_and_indexes_survive_recreate(), fresh_db() (+2 more)
+Cohesion: 0.15
+Nodes (10): AgentKind, bypass_for_session(), now_unix_ms(), build_hello(), Decision, Option, Receiver, Result (+2 more)
 
 ### Community 97 - "Community 97"
 Cohesion: 0.15
 Nodes (21): Request, Response, Result, SchedulerHandle, Self, Status, Timestamp, CreateScheduleRequest (+13 more)
 
 ### Community 98 - "Community 98"
-Cohesion: 0.18
-Nodes (27): Arc, DeviceCertIssuer, Option, Persistence, Request, RevokedSet, Self, String (+19 more)
+Cohesion: 0.20
+Nodes (24): Arc, DeviceCertIssuer, Option, Persistence, RevokedSet, Self, String, admin_ctx() (+16 more)
 
 ### Community 99 - "Community 99"
-Cohesion: 0.11
-Nodes (11): Instant, Connection, ConnectionPath, IpAddr, ActiveSession, ClientKind, ConnectionPath, network_class_for() (+3 more)
+Cohesion: 0.14
+Nodes (12): Connection, HashMap, Instant, ActiveSession, ClientKind, ConnectionPath, DeviceId, NatStats (+4 more)
 
 ### Community 100 - "Community 100"
 Cohesion: 0.10
@@ -934,31 +921,31 @@ Cohesion: 0.11
 Nodes (15): Option, Result, Self, Option, WorkareaEvent, WorkareaState, Workarea Status FSM, every_pair_matches_expected_table() (+7 more)
 
 ### Community 103 - "Community 103"
-Cohesion: 0.15
-Nodes (24): Arc, Error, Issue, Mutex, Option, String, Url, Value (+16 more)
+Cohesion: 0.18
+Nodes (20): Error, Issue, Option, String, Url, EncodingKey, AppAuth, GhCheckRun (+12 more)
 
 ### Community 104 - "Community 104"
-Cohesion: 0.13
-Nodes (17): CheckRun, CreatePrRequest, Deployment, MergeMethod, MergeReport, ProviderPrId, PullRequest, Result (+9 more)
+Cohesion: 0.12
+Nodes (16): CheckRun, CreatePrRequest, Deployment, MergeMethod, MergeReport, ProviderPrId, PullRequest, Result (+8 more)
 
 ### Community 105 - "Community 105"
 Cohesion: 0.18
 Nodes (25): Arc, CompletePairingInput, KeyPair, LocalCoreIssuer, PairingCoordinator, Persistence, PublicKey, String (+17 more)
 
 ### Community 106 - "Community 106"
-Cohesion: 0.20
-Nodes (31): Option, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow, String, Vec (+23 more)
+Cohesion: 0.18
+Nodes (38): Option, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow, String, Value (+30 more)
 
 ### Community 107 - "Community 107"
-Cohesion: 0.14
-Nodes (11): Option, RelayConfig, Result, Self, SocketAddr, String, WebhookRouteServer, WssBridgeServer (+3 more)
+Cohesion: 0.13
+Nodes (10): Option, RelayConfig, Result, Self, String, WebhookRouteServer, WssBridgeServer, WssTlsConfig (+2 more)
 
 ### Community 108 - "Community 108"
-Cohesion: 0.12
-Nodes (20): AgentEvent, MessageRole, Session, Co-located Deployment Topology, Concerto Architecture Overview, Core as Source of Truth, Local-First Orchestration Platform, Locked Architectural Decisions (+12 more)
+Cohesion: 0.11
+Nodes (21): AgentEvent, MessageRole, ActorContext, Config, Session, Concerto Architecture Overview, Local-First Orchestration Platform, Locked Architectural Decisions (+13 more)
 
 ### Community 109 - "Community 109"
-Cohesion: 0.14
+Cohesion: 0.13
 Nodes (19): Arc, CancellationToken, IrohTransport, Option, Path, PathBuf, Result, Runtime (+11 more)
 
 ### Community 110 - "Community 110"
@@ -982,8 +969,8 @@ Cohesion: 0.22
 Nodes (23): Arc, Option, Path, PathBuf, Persistence, Result, String, Vec (+15 more)
 
 ### Community 115 - "Community 115"
-Cohesion: 0.11
-Nodes (23): HashMap, Instant, Option, SocketAddr, String, Vec, RelayInner, BandwidthCounter (+15 more)
+Cohesion: 0.10
+Nodes (24): HashMap, Instant, Option, SocketAddr, String, Vec, WSS Bridge for Browsers, RelayInner (+16 more)
 
 ### Community 116 - "Community 116"
 Cohesion: 0.14
@@ -998,8 +985,8 @@ Cohesion: 0.17
 Nodes (22): CancellationToken, Option, Path, RuntimeConfig, String, Embedded-Core Mode, EmbeddedHandle (CancellationToken teardown), Launch Modes (EmbeddedReal/Scratch/External) (+14 more)
 
 ### Community 119 - "Community 119"
-Cohesion: 0.11
-Nodes (26): Arc, CoreClient, CoreClientError, Endpoint, EndpointAddr, NatStats, NoiseStatic, Request (+18 more)
+Cohesion: 0.08
+Nodes (35): ApiDispatcher, Arc, Box, CoreClient, CoreClientError, Endpoint, EndpointAddr, Future (+27 more)
 
 ### Community 120 - "Community 120"
 Cohesion: 0.19
@@ -1030,16 +1017,16 @@ Cohesion: 0.17
 Nodes (16): AgentKind, Decision, Option, ParseEvent, ParserPack, Regex, Self, String (+8 more)
 
 ### Community 127 - "Community 127"
-Cohesion: 0.13
-Nodes (22): core, core:app, default_permission, global_scope_schema, permission_sets, default_permission, core:event, default_permission (+14 more)
+Cohesion: 0.09
+Nodes (71): Commit, Display, Map, McpError, Option, Path, PathBuf, Persistence (+63 more)
 
 ### Community 128 - "Community 128"
 Cohesion: 0.21
 Nodes (19): Option, RepositoryId, String, WorkareaId, assemble_appends_footer_and_template(), assemble_body(), caller_override(), ctx() (+11 more)
 
 ### Community 129 - "Community 129"
-Cohesion: 0.17
-Nodes (12): Error, ProgressSink, PullRequest, RepositoryId, Vec, Per-workarea Implicit PR Set, FailureKind, is_merge_conflict() (+4 more)
+Cohesion: 0.19
+Nodes (12): Error, ProgressSink, String, Per-workarea Implicit PR Set, FailureKind, is_merge_conflict(), MergePlan, MergeReport (+4 more)
 
 ### Community 130 - "Community 130"
 Cohesion: 0.18
@@ -1086,8 +1073,8 @@ Cohesion: 0.22
 Nodes (19): DeviceCert, IdentityError, KeyPair, PublicKey, Result, SignedDeviceCert, Vec, Signed Device Certificate (CBOR) (+11 more)
 
 ### Community 141 - "Community 141"
-Cohesion: 0.08
-Nodes (37): AuthObserverInner, CancellationToken, Endpoint, From, HashMap, IpAddr, Mutex, NoiseSession (+29 more)
+Cohesion: 0.18
+Nodes (19): CancellationToken, Endpoint, IpAddr, Mutex, Option, Sender, String, UnboundedReceiver (+11 more)
 
 ### Community 142 - "Community 142"
 Cohesion: 0.15
@@ -1134,16 +1121,16 @@ Cohesion: 0.23
 Nodes (10): CheckRun, IssueDetail, Path, PrDetail, PullRequest, Repository, RepositoryId, Result (+2 more)
 
 ### Community 153 - "Community 153"
-Cohesion: 0.15
-Nodes (17): Box, EchoReply, EchoRequest, FirehoseRequest, FirehoseStream, Future, Loopback, NoiseDuplex (+9 more)
+Cohesion: 0.17
+Nodes (21): Arc, ConePath, ConeSuggester, CResult, Path, PathBuf, Persistence, RepoManager (+13 more)
 
 ### Community 154 - "Community 154"
 Cohesion: 0.20
 Nodes (17): cold_status(), ensure_cold(), fixture_path(), GateMeasurement, have_sparse_checkout(), index_is_sparse(), measure_gate(), pct() (+9 more)
 
 ### Community 155 - "Community 155"
-Cohesion: 0.10
-Nodes (25): getServerCapabilities(), isRemoteTransport(), ServerCapabilities, TransportKind, resizeSession(), sendMessage(), drainSendQueue(), SessionTerminal() (+17 more)
+Cohesion: 0.12
+Nodes (20): resizeSession(), sendMessage(), drainSendQueue(), SessionTerminal(), SessionTerminalProps, XTERM_OPTIONS, StatusBar(), CoreConnectionState (+12 more)
 
 ### Community 156 - "Community 156"
 Cohesion: 0.20
@@ -1174,20 +1161,20 @@ Cohesion: 0.19
 Nodes (17): CloneStrategy, Option, Path, String, TempDir, clone_with_strategy(), blobless_strategy_records_blob_none_filter(), clone_full_unchanged_full_checkout_no_filter() (+9 more)
 
 ### Community 163 - "Community 163"
-Cohesion: 0.21
-Nodes (19): NewPullRequest, Option, PullRequest, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow (+11 more)
+Cohesion: 0.22
+Nodes (18): NewPullRequest, Option, PullRequest, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow (+10 more)
 
 ### Community 164 - "Community 164"
-Cohesion: 0.23
-Nodes (18): Option, Repository, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow, String (+10 more)
+Cohesion: 0.21
+Nodes (19): Option, Repository, RepositoryId, Result, SqliteConnection, SqlitePool, SqliteRow, String (+11 more)
 
 ### Community 165 - "Community 165"
-Cohesion: 0.16
+Cohesion: 0.15
 Nodes (8): EndpointId, Receiver, Result, Url, Split-host Deployment Topology, PairingListener, TransportHandle<D>, TransportTelemetry
 
 ### Community 166 - "Community 166"
-Cohesion: 0.25
-Nodes (15): AuthObserver, ApiDispatcher, Box, Future, NoiseDuplex, Output, Pin, Result (+7 more)
+Cohesion: 0.22
+Nodes (17): AuthObserver, ApiDispatcher, Box, Future, IrohTransport, NoiseDuplex, Output, Pin (+9 more)
 
 ### Community 167 - "Community 167"
 Cohesion: 0.25
@@ -1198,20 +1185,20 @@ Cohesion: 0.20
 Nodes (17): Option, Result, ScheduleId, ScheduleRun, ScheduleRunId, SessionId, SqliteConnection, SqlitePool (+9 more)
 
 ### Community 169 - "Community 169"
-Cohesion: 0.14
-Nodes (13): checkCommand(), AutoUpdateToast(), FirstRunClaudeToast(), AutoUpdateState, useAutoUpdate(), ButtonProps, ButtonSize, ButtonVariant (+5 more)
+Cohesion: 0.08
+Nodes (33): formatError(), AGENT_MENU_ITEMS, SessionRegion(), SessionRegionProps, useEditMutexContention(), CloneState, SessionComposer(), SessionComposerProps (+25 more)
 
 ### Community 170 - "Community 170"
-Cohesion: 0.09
-Nodes (26): CheckRun, CreatePrRequest, Deployment, Issue, IssueDetail, MergeMethod, MergeReport, Option (+18 more)
+Cohesion: 0.12
+Nodes (17): CreatePrRequest, Deployment, MergeMethod, MergeReport, PathBuf, PrDetail, ProviderPrId, PullRequest (+9 more)
 
 ### Community 171 - "Community 171"
-Cohesion: 0.29
-Nodes (14): Error, Into, Option, Status, String, auth_invalid_cert_status(), auth_revoked_status(), concerto_code() (+6 more)
+Cohesion: 0.24
+Nodes (16): Error, Into, Option, Status, String, IdentityError, map_validate_err(), auth_invalid_cert_status() (+8 more)
 
 ### Community 172 - "Community 172"
-Cohesion: 0.24
-Nodes (16): AgentEvent, Arc, Duration, PathBuf, Persistence, Receiver, TempDir, Vec (+8 more)
+Cohesion: 0.17
+Nodes (21): AgentEvent, Arc, Drop, Duration, Mutex, PathBuf, Persistence, Receiver (+13 more)
 
 ### Community 173 - "Community 173"
 Cohesion: 0.24
@@ -1230,16 +1217,16 @@ Cohesion: 0.24
 Nodes (15): Arc, Option, Path, Persistence, RepoManager, String, TempDir, clone_applies_perf_config() (+7 more)
 
 ### Community 177 - "Community 177"
-Cohesion: 0.26
-Nodes (16): Path, String, TempDir, clone_full(), rename_branch(), worktree_add(), clone_full_streams_progress(), clone_full_writes_a_git_dir() (+8 more)
+Cohesion: 0.24
+Nodes (17): Path, String, TempDir, Shared .git object DB across worktrees, clone_full(), rename_branch(), worktree_add(), clone_full_streams_progress() (+9 more)
 
 ### Community 178 - "Community 178"
-Cohesion: 0.14
-Nodes (12): DeviceContext, IdentityError, PairingRequest, Result, SignedDeviceCert, Status, AuthzScope, local_uds_context() (+4 more)
+Cohesion: 0.15
+Nodes (13): DeviceContext, PairingRequest, Request, Result, SignedDeviceCert, Status, T, AuthzScope (+5 more)
 
 ### Community 179 - "Community 179"
-Cohesion: 0.25
-Nodes (14): D, Error, Ok, Option, Result, S, Timestamp, Value (+6 more)
+Cohesion: 0.23
+Nodes (15): D, Error, Ok, Option, Result, S, Timestamp, Value (+7 more)
 
 ### Community 180 - "Community 180"
 Cohesion: 0.26
@@ -1258,8 +1245,8 @@ Cohesion: 0.21
 Nodes (10): AgentKind, Decision, ParseEvent, ParserPack, Self, Vec, echo_pack_emits_bytes_and_message_per_chunk(), echo_pack_empty_chunk_is_noop() (+2 more)
 
 ### Community 184 - "Community 184"
-Cohesion: 0.11
-Nodes (17): ManagedPolicy, Self, auto_decision_string_mirrors_mode(), classify_consults_tool_classes_table(), decide_matrix_auto(), decide_matrix_normal(), decide_matrix_strict(), decide_matrix_yolo() (+9 more)
+Cohesion: 0.07
+Nodes (30): ManagedPolicy, Option, Path, Persistence, Result, Self, SessionId, auto_decision_string_mirrors_mode() (+22 more)
 
 ### Community 185 - "Community 185"
 Cohesion: 0.33
@@ -1270,8 +1257,8 @@ Cohesion: 0.23
 Nodes (11): Arc, AuditEvent, AuditLogSubscriber, Mutex, Self, Vec, daily_rotation_opens_new_file_when_clock_crosses_midnight(), drop_on_full_does_not_block_producers() (+3 more)
 
 ### Community 187 - "Community 187"
-Cohesion: 0.41
-Nodes (7): Context, NoiseSession, Pin, Result, Self, Poll, ReadBuf
+Cohesion: 0.33
+Nodes (10): Arc, Default, ProviderPrId, Result, ReviewThread, ThreadId, VcsProvider, Inner (+2 more)
 
 ### Community 188 - "Community 188"
 Cohesion: 0.25
@@ -1294,12 +1281,12 @@ Cohesion: 0.24
 Nodes (9): Child, Duration, Option, Path, Result, Self, ExitStatus, Handle (+1 more)
 
 ### Community 193 - "Community 193"
-Cohesion: 0.21
-Nodes (12): Error, Path, Persistence, Result, WorkareaId, DenyRoot, classify(), deny_v0_1_default_expands_home() (+4 more)
+Cohesion: 0.10
+Nodes (52): Arc, Chip, OneShotLlm, OneShotRequest, Option, Persistence, Result, String (+44 more)
 
 ### Community 194 - "Community 194"
-Cohesion: 0.28
-Nodes (9): AuditActor, AuditKind, EntityKind, SubjectRef, Error, Ok, Result, S (+1 more)
+Cohesion: 0.54
+Nodes (4): Error, Ok, Result, S
 
 ### Community 195 - "Community 195"
 Cohesion: 0.27
@@ -1330,8 +1317,8 @@ Cohesion: 0.13
 Nodes (14): base, ref, sha, body, draft, head, ref, sha (+6 more)
 
 ### Community 203 - "Community 203"
-Cohesion: 0.19
-Nodes (11): Actor, ActorContext, Config, Path, PathBuf, String, measure_object_db(), RepoManagerActor (+3 more)
+Cohesion: 0.20
+Nodes (11): Arc, Into, Mutex, NowSecs, Self, VcsProvider, HeaderMap, Octocrab (+3 more)
 
 ### Community 204 - "Community 204"
 Cohesion: 0.20
@@ -1361,49 +1348,45 @@ Nodes (10): ActorContext, Config, Option, Result, SkillFilter, SkillId, SkillRow
 Cohesion: 0.15
 Nodes (11): Display, Error, Formatter, From, Result, Self, Send, Sync (+3 more)
 
-### Community 211 - "Community 211"
-Cohesion: 0.24
-Nodes (3): Formatter, Result, PullRequestId
-
 ### Community 212 - "Community 212"
 Cohesion: 0.27
 Nodes (9): Actor, Arc, PathBuf, Persistence, Self, SkillsRegistryHandle, SkillsRegistryActor, SkillsRegistryConfig (+1 more)
 
 ### Community 213 - "Community 213"
-Cohesion: 0.15
-Nodes (13): definitions, Number, PermissionEntry, Target, Value, anyOf, description, anyOf (+5 more)
+Cohesion: 0.10
+Nodes (32): Error, Fn, ManagedPolicy, Option, PathBuf, Provider, Result, Self (+24 more)
 
 ### Community 214 - "Community 214"
-Cohesion: 0.22
-Nodes (6): Decision, PermissionMode, Vec, full_matrix_4_modes_x_3_classes(), matrix(), MatrixCase
+Cohesion: 0.18
+Nodes (8): Decision, PermissionMode, Vec, allow_yolo_false_blocks_yolo(), full_matrix_4_modes_x_3_classes(), managed_cap_auto_blocks_yolo(), matrix(), MatrixCase
 
 ### Community 215 - "Community 215"
 Cohesion: 0.24
 Nodes (11): DeviceCert, known_answer_cert_bytes_are_frozen(), known_answer_signature_is_frozen(), non_canonical_trailing_garbage_fails_even_with_valid_sig(), print_known_answer_vector(), public_key_from_cert_core_pubkey_is_usable(), sign_then_verify_happy_path(), single_bit_tamper_in_body_fails() (+3 more)
 
 ### Community 216 - "Community 216"
-Cohesion: 0.33
-Nodes (9): Arc, CancellationToken, Mutex, RelayState, IrohRelayMetrics, IrohRelayServer, RelayMetrics, RelayInner (+1 more)
+Cohesion: 0.30
+Nodes (10): Arc, CancellationToken, Mutex, RelayState, SocketAddr, IrohRelayMetrics, IrohRelayServer, RelayMetrics (+2 more)
 
 ### Community 217 - "Community 217"
-Cohesion: 0.15
-Nodes (13): definitions, Number, PermissionEntry, Target, Value, anyOf, description, anyOf (+5 more)
+Cohesion: 0.12
+Nodes (33): Arc, Map, McpError, Mutex, Option, Result, Self, Send (+25 more)
 
 ### Community 218 - "Community 218"
 Cohesion: 0.15
 Nodes (14): App-lock Biometric Gate, Cross-device Handoff (Continue on Desktop), ConcertoIroh Native Module (JSI/JNI), Lite-mode Streaming (cellular), Localhost Preview WebView (tunnelled), Mobile Clients (iOS + Android), Mobile Push Integration (Expo Push), React Native + Expo (mobile platform) (+6 more)
 
 ### Community 219 - "Community 219"
-Cohesion: 0.23
-Nodes (10): Option, Path, Persistence, Result, SessionId, EffectiveMode, ModeSource, parse_permission_mode() (+2 more)
+Cohesion: 0.10
+Nodes (35): MaestroHandle, MaestroState, Option, Request, Response, Result, Self, Status (+27 more)
 
 ### Community 220 - "Community 220"
-Cohesion: 0.33
-Nodes (7): Arc, Connection, D, NoiseStatic, HandleInner, IrohConnector, TransportHandle
+Cohesion: 0.21
+Nodes (8): AuthObserverInner, Arc, D, NoiseStatic, HandleInner, AuthObserver, IrohConnector, TransportHandle
 
 ### Community 221 - "Community 221"
-Cohesion: 0.48
-Nodes (6): Path, String, Vec, git(), git_status_paths(), parity_with_git_status_porcelain()
+Cohesion: 0.14
+Nodes (14): bench_idle_memory(), read_rss_kb(), bench_status(), build_fixture(), git(), Command, PathBuf, Criterion (+6 more)
 
 ### Community 222 - "Community 222"
 Cohesion: 0.20
@@ -1474,8 +1457,8 @@ Cohesion: 0.26
 Nodes (8): AgentEvent, Chip, Option, SuggestionRule, WorkareaId, WorkareaState, now_unix_ms(), ReviewToolRule
 
 ### Community 239 - "Community 239"
-Cohesion: 0.24
-Nodes (9): Display, Vec, NewScheduleRun, NewSession, ScheduleId, ScheduleRun, ScheduleRunId, Session (+1 more)
+Cohesion: 0.19
+Nodes (11): Actor, ActorContext, Config, Path, PathBuf, String, measure_object_db(), RepoManagerActor (+3 more)
 
 ### Community 240 - "Community 240"
 Cohesion: 0.35
@@ -1490,8 +1473,8 @@ Cohesion: 0.26
 Nodes (13): PathBuf, Persistence, TempDir, every_expected_index_exists(), every_expected_table_exists(), foreign_key_violation_is_rejected(), fresh_db(), insert_and_read_back_every_table() (+5 more)
 
 ### Community 243 - "Community 243"
-Cohesion: 0.13
-Nodes (24): AsyncRead, AsyncWrite, Connected, ConnectInfo, ChannelTag, Error, Future, NoiseStatic (+16 more)
+Cohesion: 0.14
+Nodes (28): AsyncRead, AsyncWrite, Connected, ConnectInfo, ChannelTag, Context, Error, Future (+20 more)
 
 ### Community 244 - "Community 244"
 Cohesion: 0.32
@@ -1506,8 +1489,8 @@ Cohesion: 0.35
 Nodes (9): Channel, Option, Path, PathBuf, Result, ClientError, connect(), default_socket_path() (+1 more)
 
 ### Community 247 - "Community 247"
-Cohesion: 0.23
-Nodes (10): EchoReply, EchoRequest, FirehoseRequest, FirehoseStream, Request, Response, Result, Status (+2 more)
+Cohesion: 0.27
+Nodes (7): Config, F, Result, Actor, IdleActor, ImmediatePanic, ReturnsErr
 
 ### Community 248 - "Community 248"
 Cohesion: 0.27
@@ -1530,8 +1513,8 @@ Cohesion: 0.18
 Nodes (10): data, issue, description, identifier, labels, state, title, url (+2 more)
 
 ### Community 253 - "Community 253"
-Cohesion: 0.33
-Nodes (5): Into, NowSecs, Self, Octocrab, ensure_crypto_provider()
+Cohesion: 0.22
+Nodes (11): Code, CoreUnderTest, String, create_get_list_archive_workspace(), duplicate_repo_rejected(), multi_repo_create_persists_positions(), register_repo(), slug_collision_auto_suffix() (+3 more)
 
 ### Community 254 - "Community 254"
 Cohesion: 0.25
@@ -1550,12 +1533,12 @@ Cohesion: 0.40
 Nodes (9): CoreUnderTest, Path, String, TempDir, get_workarea_repo_diff_returns_modified_file(), git(), make_bare_with_commit(), seed() (+1 more)
 
 ### Community 258 - "Community 258"
-Cohesion: 0.24
-Nodes (4): Decision, PermissionMode, PermissionResolver, ToolClass
+Cohesion: 0.09
+Nodes (26): MaestroState, Option, Persistence, Result, Self, SqliteConnection, String, TempDir (+18 more)
 
 ### Community 259 - "Community 259"
-Cohesion: 0.20
-Nodes (9): ApiDispatcher, Box, Future, NoiseDuplex, Output, Pin, Send, TransportError (+1 more)
+Cohesion: 0.25
+Nodes (7): Display, NewScheduleRun, ScheduleId, ScheduleRun, ScheduleRunId, SessionId, VcsCredentialId
 
 ### Community 260 - "Community 260"
 Cohesion: 0.36
@@ -1574,12 +1557,12 @@ Cohesion: 0.22
 Nodes (7): Display, Error, Formatter, From, Result, Self, RelayError
 
 ### Community 264 - "Community 264"
-Cohesion: 0.31
-Nodes (6): Duration, IdleSignal, NetSignal, PowerSignal, Self, PrewarmSignals
+Cohesion: 0.08
+Nodes (35): BTreeSet, Arc, ConePath, ConeSuggester, OneShotLlm, RepoManager, RepositoryId, Result (+27 more)
 
 ### Community 265 - "Community 265"
-Cohesion: 0.20
-Nodes (10): properties, type, default, description, type, identifier, local, remote (+2 more)
+Cohesion: 0.09
+Nodes (43): CallToolRequestParams, Arc, CallToolResult, McpError, Mutex, Option, PathBuf, Persistence (+35 more)
 
 ### Community 266 - "Community 266"
 Cohesion: 0.20
@@ -1594,8 +1577,8 @@ Cohesion: 0.31
 Nodes (4): StdoutSubscriber, AuditEvent, AuditLogSubscriber, Self
 
 ### Community 269 - "Community 269"
-Cohesion: 0.20
-Nodes (10): $ref, description, items, type, uniqueItems, description, items, type (+2 more)
+Cohesion: 0.14
+Nodes (28): Arc, ConePath, ConeSuggester, CResult, ManagedPolicy, Path, Persistence, RepoManager (+20 more)
 
 ### Community 270 - "Community 270"
 Cohesion: 0.50
@@ -1610,12 +1593,12 @@ Cohesion: 0.42
 Nodes (8): Persistence, RepositoryId, TempDir, WorkareaId, fresh_db(), get_workarea_repo_cones_absent_pair_is_none(), seed(), workarea_repo_cones_default_empty_then_round_trip()
 
 ### Community 273 - "Community 273"
-Cohesion: 0.20
-Nodes (10): type, webviews, windows, items, description, items, type, description (+2 more)
+Cohesion: 0.28
+Nodes (21): dispatch_parse_event(), emit_edit_mutex_blocked(), push_replay(), push_replay_io(), run_ack_send_ticker(), run_read_pump(), SessionEntry, SessionIoChunk (+13 more)
 
 ### Community 274 - "Community 274"
-Cohesion: 0.20
-Nodes (10): properties, type, default, description, type, identifier, local, remote (+2 more)
+Cohesion: 0.21
+Nodes (24): Path, Result, String, TempDir, Vec, cap_snippet(), cap_snippet_truncates_long_lines(), Commit (+16 more)
 
 ### Community 275 - "Community 275"
 Cohesion: 0.36
@@ -1630,8 +1613,8 @@ Cohesion: 0.43
 Nodes (7): String, delete_missing_is_idempotent(), delete_then_get_returns_none(), missing_key_returns_none(), overwrite_returns_new_value(), set_then_get_returns_same_value(), unique_service()
 
 ### Community 278 - "Community 278"
-Cohesion: 0.43
-Nodes (7): Option, Result, SqliteConnection, String, insert(), NewChatMessage, soft_delete_after()
+Cohesion: 0.21
+Nodes (24): Option, Persistence, Result, SqliteConnection, SqlitePool, SqliteRow, String, TempDir (+16 more)
 
 ### Community 279 - "Community 279"
 Cohesion: 0.32
@@ -1639,27 +1622,27 @@ Nodes (6): MdnsBrowser, Option, DiscoveredCore, discover_until(), opt_out_suppre
 
 ### Community 280 - "Community 280"
 Cohesion: 0.20
-Nodes (10): $ref, description, items, type, uniqueItems, description, items, type (+2 more)
+Nodes (24): MaestroState, Option, Persistence, Result, SqliteConnection, SqlitePool, SqliteRow, TempDir (+16 more)
 
 ### Community 281 - "Community 281"
 Cohesion: 0.52
 Nodes (6): aead_roundtrip(), bench_second_aead(), establish_pair(), Criterion, Instant, NoiseSession
 
 ### Community 282 - "Community 282"
-Cohesion: 0.52
-Nodes (6): bench_status(), build_fixture(), git(), Criterion, Path, TempDir
+Cohesion: 0.27
+Nodes (9): CheckRun, Issue, IssueDetail, Option, String, Url, check_run_from_cli(), issue_detail_to_issue() (+1 more)
 
 ### Community 283 - "Community 283"
 Cohesion: 0.29
 Nodes (6): Option, String, Vec, AgentKind, FinalInfo, HostFrame
 
 ### Community 284 - "Community 284"
-Cohesion: 0.20
-Nodes (10): type, webviews, windows, items, description, items, type, description (+2 more)
+Cohesion: 0.13
+Nodes (26): AgentSupervisorConfig, build_path_policy(), ensure_claude_trusts_dir(), _hint_path_field(), make_persistence(), map_msg_role(), resolve_agent_bin(), resolve_agent_bin_maestro_emits_mcp_strict_no_skip_permissions() (+18 more)
 
 ### Community 285 - "Community 285"
-Cohesion: 0.28
-Nodes (7): Option, Json, benign_commands_do_not_match(), bypass_destructive_guard_auto_approves(), label_for(), smoke_set_of_twenty_dangerous_commands_all_match(), yolo_without_bypass_still_asks_for_destructive()
+Cohesion: 0.13
+Nodes (19): ClientKind, ConnectionPath, Status, invalid_subject(), map_client_kind(), map_maestro_event(), map_maestro_event_carries_only_checks_opaque(), map_path() (+11 more)
 
 ### Community 286 - "Community 286"
 Cohesion: 0.31
@@ -1678,8 +1661,8 @@ Cohesion: 0.43
 Nodes (6): Path, Persistence, dedup_survives_restart(), first_insert_processes_replay_drops(), fresh_db(), prune_drops_only_expired()
 
 ### Community 290 - "Community 290"
-Cohesion: 0.21
-Nodes (8): commands, description, identifier, commands, description, identifier, allow-remove-at, deny-identifier
+Cohesion: 0.31
+Nodes (6): Duration, IdleSignal, NetSignal, PowerSignal, Self, PrewarmSignals
 
 ### Community 291 - "Community 291"
 Cohesion: 0.29
@@ -1702,12 +1685,12 @@ Cohesion: 0.33
 Nodes (5): Send, Sync, MsgRole, ParseEvent, ParserPack
 
 ### Community 296 - "Community 296"
-Cohesion: 0.25
-Nodes (8): description, properties, required, type, CapabilityRemote, urls, description, type
+Cohesion: 0.15
+Nodes (17): AgentSupervisorHandle, Arc, Drop, HashMap, Mutex, Self, Sender, String (+9 more)
 
 ### Community 297 - "Community 297"
-Cohesion: 0.25
-Nodes (8): description, properties, required, type, CapabilityRemote, urls, description, type
+Cohesion: 0.27
+Nodes (5): From, Self, Vec, WakeupPayload, WebhookEnvelope
 
 ### Community 298 - "Community 298"
 Cohesion: 0.47
@@ -1723,7 +1706,7 @@ Nodes (5): Instant, Mutex, SessionCloser, Vec, RecordingSessionCloser
 
 ### Community 301 - "Community 301"
 Cohesion: 0.47
-Nodes (5): Instant, FnMut, core_bin(), second_instance_exits_zero_first_instance_cleans_pid_on_sigterm(), wait_until()
+Nodes (5): FnMut, Instant, core_bin(), second_instance_exits_zero_first_instance_cleans_pid_on_sigterm(), wait_until()
 
 ### Community 302 - "Community 302"
 Cohesion: 0.40
@@ -1750,12 +1733,12 @@ Cohesion: 0.52
 Nodes (6): IrohDuplex, Vec, boot_pairs_over_iroh_then_authenticated_rpc_then_revoke_severs(), encode_pairing_request(), read_frame(), write_frame()
 
 ### Community 310 - "Community 310"
-Cohesion: 0.43
-Nodes (5): PathBuf, TempDir, fresh_db_boots_and_migrates(), future_schema_version_refuses_downgrade(), tmp_db()
+Cohesion: 0.32
+Nodes (5): NewPullRequest, PullRequest, PullRequestId, RepositoryId, WorkspaceRepoCones
 
 ### Community 311 - "Community 311"
-Cohesion: 0.29
-Nodes (6): main-window, description, identifier, local, permissions, windows
+Cohesion: 0.23
+Nodes (22): Box, CoreClient, CoreClientError, Option, Result, String, TransportKind, Vec (+14 more)
 
 ### Community 312 - "Community 312"
 Cohesion: 0.60
@@ -1766,8 +1749,8 @@ Cohesion: 0.40
 Nodes (3): Option, String, WorkareaState
 
 ### Community 314 - "Community 314"
-Cohesion: 0.33
-Nodes (4): Actor, ActorContext, Config, WorkareaManagerActor
+Cohesion: 0.48
+Nodes (5): AuditActor, AuditKind, EntityKind, SubjectRef, Serialize
 
 ### Community 315 - "Community 315"
 Cohesion: 0.70
@@ -1790,12 +1773,12 @@ Cohesion: 0.50
 Nodes (5): Desktop App, Tray Inactive Icon, Inactive State, Menu Bar Tray Icon, Monochrome Glyph Style
 
 ### Community 321 - "Community 321"
-Cohesion: 0.47
-Nodes (4): IssueRef, Option, SessionId, issue_ref_from_url()
+Cohesion: 0.16
+Nodes (16): AppHandle, HashMap, JoinHandle, M, Mutex, PathBuf, Self, Value (+8 more)
 
 ### Community 323 - "Community 323"
-Cohesion: 0.40
-Nodes (4): Default, Duration, MergeMethod, MergeOpts
+Cohesion: 0.22
+Nodes (5): Default, Duration, MergeMethod, PrComposeContext, MergeOpts
 
 ### Community 324 - "Community 324"
 Cohesion: 0.83
@@ -1818,188 +1801,132 @@ Cohesion: 0.50
 Nodes (4): SignedDeviceCert, Vec, get_capabilities_over_iroh_reports_iroh_transport(), on_wire()
 
 ### Community 329 - "Community 329"
-Cohesion: 0.40
-Nodes (4): anyOf, description, $schema, title
+Cohesion: 0.17
+Nodes (12): Default, Self, Sender, Value, Vec, emit_broadcasts_frame_to_subscriber(), emit_with_no_subscriber_is_noop(), frame_round_trips_kind_and_payload() (+4 more)
 
 ### Community 331 - "Community 331"
-Cohesion: 0.40
-Nodes (4): anyOf, description, $schema, title
+Cohesion: 0.25
+Nodes (18): ChatMessage, OneShotLlm, Option, Persistence, Result, String, TempDir, Vec (+10 more)
+
+### Community 332 - "Community 332"
+Cohesion: 0.27
+Nodes (9): Arc, JoinHandle, Option, Persistence, Receiver, SystemTime, ReloadEvent, RootSupervisor (+1 more)
 
 ### Community 371 - "Community 371"
-Cohesion: 0.16
-Nodes (16): EndpointId, RecvStream, Result, Self, SendStream, String, TcpStream, TlsStream (+8 more)
+Cohesion: 0.24
+Nodes (12): EndpointId, RecvStream, SendStream, String, TcpStream, TlsStream, close_ws_clean(), new_bridge_id() (+4 more)
 
 ### Community 376 - "Community 376"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-identifier
+Cohesion: 0.16
+Nodes (8): WorkareaSummary, excluded_leaks_only_hard_facts(), MaestroLlmGate, MaestroModelLocality, not_excluded_is_identity(), populated(), PrivacyPolicy, SummarySource
 
 ### Community 377 - "Community 377"
-Cohesion: 0.53
-Nodes (8): Path, Vec, assert_quick_check_ok(), backup_snapshots_db_and_filters_audit_range(), backup_with_worktrees_produces_tar(), run_backup(), seed_audit(), seed_db()
+Cohesion: 0.29
+Nodes (6): NoiseSession, RecvStream, SendStream, ReadState, IrohDuplex, NoiseDuplex
 
 ### Community 378 - "Community 378"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-is-checked
+Cohesion: 0.24
+Nodes (15): Channel, Option, Path, PathBuf, Result, OnceCell, connect_uds(), connect_uds_fails_when_socket_missing() (+7 more)
 
 ### Community 379 - "Community 379"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-is-enabled
+Cohesion: 0.19
+Nodes (9): AgentKind, Decision, ParseEvent, ParserPack, Self, Vec, empty_buffer_yields_no_events(), MaestroPack (+1 more)
 
 ### Community 380 - "Community 380"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-items
+Cohesion: 0.23
+Nodes (16): allowed_passes_through(), classify_policy_for_path(), classify_policy_for_path_is_publicly_callable(), denied_overrides_resolver(), outside_returns_outside(), passthrough_when_no_path_extracted(), policy_override(), PolicyVerdict (+8 more)
 
 ### Community 381 - "Community 381"
-Cohesion: 0.19
-Nodes (8): bench_idle_memory(), read_rss_kb(), Command, PathBuf, Criterion, Option, status_without_core_names_the_socket(), tempdir_path()
+Cohesion: 0.47
+Nodes (4): IssueRef, Option, SessionId, issue_ref_from_url()
 
 ### Community 382 - "Community 382"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-name
-
-### Community 383 - "Community 383"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-popup
+Cohesion: 0.26
+Nodes (13): Arc, FakeGitHub, Value, VcsProvider, check_runs_cache_ttl_refetch(), check_runs_emits_opaque_frame(), deployments_aggregate_status_and_emit(), list_review_threads_parses_graphql_fixture() (+5 more)
 
 ### Community 384 - "Community 384"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-prepend
+Cohesion: 0.29
+Nodes (6): AtomicU64, Vec, VecDeque, Streams Service + Ring Buffer Reconnect, RingBound, SubjectBuffer
 
 ### Community 385 - "Community 385"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-register-listener
+Cohesion: 0.40
+Nodes (3): PathBuf, Self, PersistenceConfig
 
 ### Community 386 - "Community 386"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-remove
+Cohesion: 0.33
+Nodes (11): byte_eviction_for_session_io_bounds_by_bytes_not_count(), byte_eviction_retains_single_oversized_chunk(), count_eviction_drops_oldest_and_advances_floor(), gap_detection_boundary(), io_event(), prune_to_min_ack_never_drops_unacked_by_attached_subscriber(), prune_with_zero_subscribers_retains_tail(), publish_assigns_monotonic_offsets_from_zero() (+3 more)
 
 ### Community 387 - "Community 387"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-remove-listener
+Cohesion: 0.23
+Nodes (8): AckOffsetRequest, Attach, Request, Response, Result, Subject, SubscribeRequest, SubscribeStream
 
 ### Community 388 - "Community 388"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-set-accelerator
+Cohesion: 0.42
+Nodes (11): Path, Result, TempDir, add_commits(), ahead_count_errors_on_unknown_base(), ahead_count_is_zero_when_not_ahead(), ahead_count_matches_commits_past_base(), ahead_count_one_commit() (+3 more)
 
 ### Community 389 - "Community 389"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-set-as-app-menu
+Cohesion: 0.40
+Nodes (9): CoreUnderTest, Path, String, TempDir, git(), list_workarea_repos_is_scoped_to_the_workarea(), make_bare_with_commit(), seed() (+1 more)
 
 ### Community 390 - "Community 390"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-set-as-window-menu
+Cohesion: 0.44
+Nodes (7): Self, duplicate_actor_name_rejected(), err_return_also_restarts_then_fails(), panic_triggers_restart_then_failed(), peer_actor_unaffected_by_neighbor_panic(), spawn_and_shutdown_cleanly(), test_persistence()
 
 ### Community 391 - "Community 391"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-set-as-windows-menu-for-nsapp
+Cohesion: 0.33
+Nodes (8): Persistence, Result, TempDir, WorkareaId, WorkspaceId, ensure_is_idempotent_and_returns_sentinel_ids(), ensure_system_workspace_and_workarea(), fresh()
 
 ### Community 392 - "Community 392"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-set-dock-visibility
+Cohesion: 0.31
+Nodes (5): Connection, ConnectionPath, IpAddr, classify_path(), is_lan_addr()
 
 ### Community 393 - "Community 393"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-set-icon
-
-### Community 394 - "Community 394"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-set-text
+Cohesion: 0.29
+Nodes (5): Result, Self, ServerConfig, WssBridgeServer, WssTlsConfig
 
 ### Community 395 - "Community 395"
 Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-supports-multiple-windows
+Nodes (4): 3.1 The Happy Coder pattern (for the remote control layer), 3.2 The Tailscale / Iroh pattern (for the transport), 3.3 The orchestration-dashboard UX pattern, 3. Reference architectures we should explicitly copy
 
 ### Community 396 - "Community 396"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-tauri-version
+Cohesion: 0.47
+Nodes (3): BranchRef, next_suffixed_name(), RenameReport
 
 ### Community 397 - "Community 397"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, allow-text
+Cohesion: 0.33
+Nodes (6): MergeProgress, FailureKind, failure_kind_to_proto(), merge_progress_to_proto(), ProtoFailureKind, ProtoMergeProgress
 
 ### Community 398 - "Community 398"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-bundle-type
-
-### Community 399 - "Community 399"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-create-default
+Cohesion: 0.40
+Nodes (5): Path, R, Result, W, relay()
 
 ### Community 400 - "Community 400"
 Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-default-window-icon
-
-### Community 401 - "Community 401"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-fetch-data-store-identifiers
-
-### Community 402 - "Community 402"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-get
+Nodes (4): PathBuf, Result, Cli, main()
 
 ### Community 403 - "Community 403"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-is-checked
-
-### Community 404 - "Community 404"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-name
+Cohesion: 0.48
+Nodes (6): Path, String, Vec, git(), git_status_paths(), parity_with_git_status_porcelain()
 
 ### Community 405 - "Community 405"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-remove-data-store
+Cohesion: 0.29
+Nodes (7): 3.1 Daemonization strategy: rely on OS integration, not double-fork, 3.2 Supervision tree shape: typed actor pattern over tokio tasks, 3.3 Single-instance guard: advisory lock on a PID file, 3.4 Configuration model: layered, JSON, hot-reload via SIGHUP / equivalent, 3.5 Tray / menu-bar UI host: sidecar Tauri process, not in-Core, 3.6 OpenTelemetry exporter: opt-in, off by default, 3. Key design decisions (sub-system-internal)
 
 ### Community 406 - "Community 406"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-remove-listener
-
-### Community 407 - "Community 407"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-set-dock-visibility
+Cohesion: 0.20
+Nodes (10): A, Any, AtomicUsize, Box, Fn, Send, String, Sync (+2 more)
 
 ### Community 408 - "Community 408"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-supports-multiple-windows
+Cohesion: 0.29
+Nodes (7): PermissionMode, Permission Modes (strict/normal/auto/yolo), One-tap Suggestion Chips, Maestro Digest Generation, Per-workarea Summary Cache, Multi-device Fan-out + First-wins Approval, EffectiveMode
 
-### Community 409 - "Community 409"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-tauri-version
-
-### Community 410 - "Community 410"
-Cohesion: 0.50
-Nodes (4): commands, description, identifier, deny-version
-
-### Community 411 - "Community 411"
-Cohesion: 0.50
-Nodes (4): description, required, type, Capability
-
-### Community 412 - "Community 412"
-Cohesion: 0.50
-Nodes (4): default, description, type, description
-
-### Community 413 - "Community 413"
-Cohesion: 0.50
-Nodes (4): description, required, type, Capability
-
-### Community 414 - "Community 414"
-Cohesion: 0.50
-Nodes (4): default, description, type, description
-
-### Community 417 - "Community 417"
-Cohesion: 0.67
-Nodes (3): Identifier, description, oneOf
-
-### Community 418 - "Community 418"
-Cohesion: 0.67
-Nodes (3): Identifier, description, oneOf
+### Community 415 - "Community 415"
+Cohesion: 0.04
+Nodes (69): asString(), asStringArray(), decodeMaestroEvent(), Digest, extractMaestroFrame(), getDigest(), getState(), isDigest() (+61 more)
 
 ### Community 460 - "Community 460"
 Cohesion: 0.04
 Nodes (47): 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 15 — Desktop Client, 1. Purpose & scope, 2. Phase scope, 3.10.1 Connected-Core registry, 3.10.2 Launch flow (+39 more)
-
-### Community 469 - "Community 469"
-Cohesion: 0.13
-Nodes (6): Option, Value, Filesystem Allow-list + Destructive Command Intercept, DestructiveMatch, is_destructive(), matches()
 
 ### Community 485 - "Community 485"
 Cohesion: 0.05
@@ -2050,8 +1977,8 @@ Cohesion: 0.06
 Nodes (32): 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 14 — Notifications & Push, 1. Purpose & scope, 2. Phase scope, 3.1 Notification taxonomy, 3.2 Push payload is wakeup-only — no content (+24 more)
 
 ### Community 617 - "Community 617"
-Cohesion: 0.06
-Nodes (31): 01 — Core Daemon Runtime, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 3.1 Daemonization strategy: rely on OS integration, not double-fork, 3.2 Supervision tree shape: typed actor pattern over tokio tasks (+23 more)
+Cohesion: 0.08
+Nodes (24): 01 — Core Daemon Runtime, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 4.1 On-disk, 4.2 In-memory state (+16 more)
 
 ### Community 618 - "Community 618"
 Cohesion: 0.06
@@ -2062,8 +1989,8 @@ Cohesion: 0.07
 Nodes (27): 02 — Repository Manager, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 3.1 Git command dispatcher: routing per operation, 3.2 Cone selection at workarea creation: ergonomics (+19 more)
 
 ### Community 654 - "Community 654"
-Cohesion: 0.07
-Nodes (29): 10 — Client API Protocol, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 3.1 One service per domain, not one giant service, 3.2 Streams as a separate service, not RPCs per subject (+21 more)
+Cohesion: 0.06
+Nodes (30): Co-located Deployment Topology, 10 — Client API Protocol, 10. Testing strategy, 11. Open questions / deferred, 12. Resolved decisions log, 1. Purpose & scope, 2. Phase scope, 3.1 One service per domain, not one giant service (+22 more)
 
 ### Community 750 - "Community 750"
 Cohesion: 0.06
@@ -2110,8 +2037,8 @@ Cohesion: 0.13
 Nodes (15): 8.1.1 Process model, 8.1.2 What lives in the Core, 8.1.3 The local API, 8.1.4 Persistence and crash recovery, 8.1 Server (Concerto Core), 8.2.1 Layout, 8.2 Desktop client, 8.3.1 Layout (+7 more)
 
 ### Community 1103 - "Community 1103"
-Cohesion: 0.13
-Nodes (14): 0. How to read this document, 12. MCP integration, 13.1 xterm.js, 13. Terminal emulator (web side), 14.1 Desktop — Monaco Editor (Microsoft, VS Code's editor) in diff mode, 14.2 Mobile — custom SwiftUI / Compose / React Native components, 14. Diff viewer, 18. Decisions deferred to a prototype (+6 more)
+Cohesion: 0.18
+Nodes (10): 0. How to read this document, 12. MCP integration, 13.1 xterm.js, 13. Terminal emulator (web side), 14.1 Desktop — Monaco Editor (Microsoft, VS Code's editor) in diff mode, 14.2 Mobile — custom SwiftUI / Compose / React Native components, 14. Diff viewer, 18. Decisions deferred to a prototype (+2 more)
 
 ### Community 1175 - "Community 1175"
 Cohesion: 0.16
@@ -2250,24 +2177,24 @@ Cohesion: 0.50
 Nodes (4): 11.1 Spawn the CLI as a subprocess, 11.2 Embed the Claude Agent SDK (Anthropic's library), 11.3 Recommendation, 11. Agent integration
 
 ## Knowledge Gaps
-- **2753 isolated node(s):** `name`, `private`, `version`, `type`, `dev` (+2748 more)
+- **2668 isolated node(s):** `name`, `private`, `version`, `type`, `dev` (+2663 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **17 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **19 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Command` connect `Community 381` to `Community 257`, `Community 130`, `Community 260`, `Community 138`, `Community 271`, `Community 145`, `Community 18`, `Community 154`, `Community 282`, `Community 1178`, `Community 161`, `Community 162`, `Community 34`, `Community 167`, `Community 42`, `Community 45`, `Community 175`, `Community 176`, `Community 177`, `Community 185`, `Community 195`, `Community 196`, `Community 197`, `Community 71`, `Community 205`, `Community 206`, `Community 83`, `Community 221`, `Community 223`, `Community 225`, `Community 232`, `Community 377`, `Community 122`?**
-  _High betweenness centrality (0.089) - this node is a cross-community bridge._
-- **Why does `Concerto Architecture Overview` connect `Community 108` to `Community 28`, `Community 77`, `Community 165`?**
+- **Why does `Command` connect `Community 221` to `Community 257`, `Community 130`, `Community 388`, `Community 260`, `Community 389`, `Community 138`, `Community 269`, `Community 271`, `Community 145`, `Community 274`, `Community 403`, `Community 153`, `Community 154`, `Community 1178`, `Community 161`, `Community 162`, `Community 34`, `Community 167`, `Community 42`, `Community 45`, `Community 175`, `Community 176`, `Community 177`, `Community 185`, `Community 195`, `Community 196`, `Community 197`, `Community 71`, `Community 205`, `Community 206`, `Community 82`, `Community 83`, `Community 223`, `Community 225`, `Community 232`, `Community 122`, `Community 127`?**
+  _High betweenness centrality (0.070) - this node is a cross-community bridge._
+- **Why does `Monaco Diff Viewer + Comment Layer` connect `Community 87` to `Community 108`?**
+  _High betweenness centrality (0.049) - this node is a cross-community bridge._
+- **Why does `Concerto Architecture Overview` connect `Community 108` to `Community 165`, `Community 77`, `Community 654`, `Community 15`, `Community 54`?**
   _High betweenness centrality (0.047) - this node is a cross-community bridge._
-- **Why does `SQLite Schema` connect `Community 163` to `Community 67`, `Community 164`, `Community 131`, `Community 168`, `Community 106`, `Community 108`, `Community 241`, `Community 50`, `Community 148`, `Community 85`, `Community 278`, `Community 189`, `Community 190`?**
-  _High betweenness centrality (0.045) - this node is a cross-community bridge._
 - **What connects `name`, `private`, `version` to the rest of the system?**
-  _2766 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _2681 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Community 0` be split into smaller, more focused modules?**
-  _Cohesion score 0.03643564356435643 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.035847647498132934 - nodes in this community are weakly interconnected._
 - **Should `Community 1` be split into smaller, more focused modules?**
   _Cohesion score 0.05013477088948787 - nodes in this community are weakly interconnected._
 - **Should `Community 2` be split into smaller, more focused modules?**
-  _Cohesion score 0.05227781926811053 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.13333333333333333 - nodes in this community are weakly interconnected._

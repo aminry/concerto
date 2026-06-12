@@ -187,6 +187,7 @@ async fn spawn_echo_session(
             cwd: cwd.to_path_buf(),
             permission_mode: None,
             resume_session_id: None,
+            chat_id: None,
         })
         .await
         .expect("start_session");

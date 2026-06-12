@@ -100,16 +100,21 @@ describe("MaestroComposer", () => {
     });
   });
 
-  it("Cmd+Enter submits via Maestro.SendToMaestro", async () => {
+  it("Cmd+Enter submits via Maestro.SendToMaestro with the active workspace scope", async () => {
     useMaestroStore.setState({ composerDraft: "hello maestro" });
     renderWithClient(<MaestroComposer workspaceId="ws-1" />);
     const textarea = screen.getByLabelText("Message the Concerto chat");
     textarea.focus();
     await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
     await waitFor(() => {
+      // Task 8: the composer threads its active workspace as `workspace_id`.
       expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
         method: "Maestro.SendToMaestro",
-        payload: { text: "hello maestro", attachments: [] },
+        payload: {
+          text: "hello maestro",
+          attachments: [],
+          workspace_id: "ws-1",
+        },
       });
     });
   });

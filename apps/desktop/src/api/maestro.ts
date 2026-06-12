@@ -97,6 +97,7 @@ export type MaestroState = {
 export type MaestroMessageRequest = {
   text: string; // = 1
   attachments: MaestroAttachment[]; // = 2 (empty in V1.0, R-9 seam)
+  workspace_id?: string; // = 3 (Task 8 scope hint; absent ⇒ default workspace)
 };
 
 /// Mirrors `concerto.v1.VisibilityRequest` (maestro.proto:79).
@@ -109,14 +110,21 @@ export type VisibilityRequest = {
 
 /// Send the user's chat input to the Maestro (`Maestro.SendToMaestro`).
 /// V1.0 is text-only (design/08 R-9); `attachments` is a frozen-but-empty
-/// seam. Returns `google.protobuf.Empty` (null on the wire).
+/// seam. `workspaceId` is the Task 8 scope hint — the active workspace the
+/// composer is showing — so a bare `@composer` resolves there first; absent
+/// ⇒ the Core falls back to the default (most-recent) workspace. Returns
+/// `google.protobuf.Empty` (null on the wire).
 export async function sendToMaestro(
   text: string,
   attachments: MaestroAttachment[] = [],
+  workspaceId?: string,
 ): Promise<void> {
   await callRpc<MaestroMessageRequest, null>("Maestro.SendToMaestro", {
     text,
     attachments,
+    // Omit the key entirely when there's no active workspace so the wire
+    // stays `optional`-absent (Core default scope) rather than empty-string.
+    ...(workspaceId ? { workspace_id: workspaceId } : {}),
   });
 }
 

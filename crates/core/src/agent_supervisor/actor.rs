@@ -143,6 +143,15 @@ pub struct StartSessionRequest {
     /// `None` for normal first-spawn — the supervisor never inserts a
     /// resume token without the caller asking.
     pub resume_session_id: Option<String>,
+    /// Task 6 (Maestro live-integration): bind the new session to a
+    /// pre-existing `chats` row instead of creating a fresh `kind='session'`
+    /// one. `None` ⇒ the default behavior (the supervisor INSERTs a
+    /// `kind='session'` chat with a generated uuid). `Some(id)` ⇒ the session's
+    /// `chat_id` links to that row verbatim and NO chat row is inserted — the
+    /// Maestro spawn path uses this to bind its session to the singleton
+    /// `chats(kind='maestro')` row (chat ids are raw `String`s; there is no
+    /// `ChatId` newtype in `concerto_persist`).
+    pub chat_id: Option<String>,
 }
 
 /// Config for the actor's `run` loop. V0.1 has no knobs — the actor
@@ -449,11 +458,16 @@ impl AgentSupervisorHandle {
         let socket_path = if canonical_socket.to_string_lossy().len() < 100 {
             canonical_socket
         } else {
-            // Truncate the UUID to 8 chars; this is enough collision
-            // resistance for the in-process map and the socket is removed
-            // on session end.
-            let short = &session_id.0[..8.min(session_id.0.len())];
-            let tmp = std::env::temp_dir().join(format!("ccs-{short}.sock"));
+            // Use the TAIL of the id, not the head: session ids are UUIDv7,
+            // whose leading bytes are a millisecond timestamp — two sessions
+            // started in the same ~256 s window share the same first 8 hex
+            // chars and would collide on this fallback path (observed under
+            // concurrent test binaries + sibling live hosts: Core then dials a
+            // foreign host and gets a cookie mismatch). The trailing 8 chars
+            // are UUIDv7's random `rand_b`, so they carry real entropy; the
+            // socket is removed on session end either way.
+            let tail = &session_id.0[session_id.0.len().saturating_sub(8)..];
+            let tmp = std::env::temp_dir().join(format!("ccs-{tail}.sock"));
             tmp
         };
         let log_dir = self.data_dir.join("agents").join(&session_id.0);
@@ -499,24 +513,40 @@ impl AgentSupervisorHandle {
             }
         };
         let permission_mode_enum = crate::security::parse_permission_mode(&permission_mode)?;
-        let chat_id = uuid::Uuid::now_v7().to_string();
+        // Task 6: when the caller passed a pre-existing chat (the Maestro spawn
+        // path binds to the singleton `chats(kind='maestro')` row), reuse it and
+        // skip the `kind='session'` INSERT below. Otherwise mint a fresh chat id
+        // and create the per-session chat verbatim (the V0.1 behavior).
+        let bind_existing_chat = req.chat_id.is_some();
+        let chat_id = req
+            .chat_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         {
             let mut writer = self.persistence.writer().await;
             let mut tx = writer.begin().await.map_err(|e| Error::Sqlx(Box::new(e)))?;
-            sqlx::query("PRAGMA defer_foreign_keys = ON")
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| Error::Sqlx(Box::new(e)))?;
-            concerto_persist::sessions::insert_chat(
-                &mut tx,
-                NewChat {
-                    id: chat_id.clone(),
-                    session_id: Some(session_id.0.clone()),
-                    kind: "session".to_string(),
-                    created_at: now_ms,
-                },
-            )
-            .await?;
+            if !bind_existing_chat {
+                // Defer FK checks to commit time: `chats.session_id` and
+                // `sessions.chat_id` reference each other, so neither can be
+                // inserted first under immediate FK enforcement. The PRAGMA is
+                // scoped to this transaction and is only needed here (the
+                // `bind_existing_chat` path inserts no new `chats` row, so
+                // there is no cycle to defer).
+                sqlx::query("PRAGMA defer_foreign_keys = ON")
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+                concerto_persist::sessions::insert_chat(
+                    &mut tx,
+                    NewChat {
+                        id: chat_id.clone(),
+                        session_id: Some(session_id.0.clone()),
+                        kind: "session".to_string(),
+                        created_at: now_ms,
+                    },
+                )
+                .await?;
+            }
             concerto_persist::sessions::insert(
                 &mut tx,
                 NewSession {
@@ -1250,8 +1280,10 @@ impl AgentSupervisorHandle {
         let socket_path = if canonical_socket.to_string_lossy().len() < 100 {
             canonical_socket
         } else {
-            let short = &session_id.0[..8.min(session_id.0.len())];
-            std::env::temp_dir().join(format!("ccs-{short}.sock"))
+            // Tail, not head — UUIDv7 leading bytes are a timestamp and
+            // collide across same-window sessions (see `start_session`).
+            let tail = &session_id.0[session_id.0.len().saturating_sub(8)..];
+            std::env::temp_dir().join(format!("ccs-{tail}.sock"))
         };
         // Best-effort: remove any leftover socket file from the old host.
         let _ = tokio::fs::remove_file(&socket_path).await;
@@ -1304,6 +1336,7 @@ impl AgentSupervisorHandle {
             cwd: cwd.clone(),
             permission_mode: None,
             resume_session_id: Some(resume_token.to_string()),
+            chat_id: None,
         })?;
         let cookie_hex = hex::encode(cookie);
         let mut child = spawn_host(
@@ -2837,6 +2870,7 @@ mod tests {
             cwd: scratch.clone(),
             permission_mode: Some("strict".to_string()),
             resume_session_id: None,
+            chat_id: None,
         };
         let (bin, args) = resolve_agent_bin(&req).expect("maestro arm resolves");
         assert_eq!(bin, crate::maestro::provider::DEFAULT_CLAUDE_BIN);
