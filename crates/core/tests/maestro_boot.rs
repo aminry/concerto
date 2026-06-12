@@ -42,10 +42,11 @@ async fn boot_wires_maestro_mcp_listener_and_mcp_json() {
 
     // Make the agent-host bin resolution deterministic regardless of the test
     // exe's on-disk layout: `resolve_maestro_bridge_bin` reuses the agent-host
-    // resolver and swaps the file stem, so pinning the override pins the bridge
-    // path to the same target dir. `cargo_bin` guarantees the bin is built as a
-    // dependency of this test (the canonical "find a workspace bin from a test"
-    // pattern, mirrored from `agent_spawn`).
+    // resolver and derives the bridge as a sibling in the same directory, so
+    // pinning the override pins the bridge path to the same target dir.
+    // `cargo_bin` locates the workspace bin built by the `--workspace` test run
+    // (the canonical "find a workspace bin from a test" pattern, mirrored from
+    // `agent_spawn`).
     let host_bin = assert_cmd::cargo::cargo_bin("concerto-agent-host");
     std::env::set_var("CONCERTO_AGENT_HOST_BIN", &host_bin);
     let expected_bridge = host_bin

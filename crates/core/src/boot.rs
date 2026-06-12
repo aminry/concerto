@@ -77,8 +77,9 @@ fn is_external_maestro_model(model: &str) -> bool {
 /// Resolve the absolute path to the `concerto-maestro-bridge` binary, which is
 /// built into the same target directory as `concerto-agent-host`. We reuse the
 /// agent-host resolver (`$CONCERTO_AGENT_HOST_BIN` override → co-located →
-/// bounded dev-layout walk) and then swap the file stem, so the bridge tracks
-/// the same dev/packaged layouts the rest of the supervisor already handles.
+/// bounded dev-layout walk) and then take its parent directory and join the
+/// bridge's name, so the bridge tracks the same dev/packaged layouts the rest of
+/// the supervisor already handles.
 ///
 /// Returns `None` (never panics) if the agent-host bin — and thus its parent
 /// directory — cannot be resolved; the caller logs and degrades Maestro to

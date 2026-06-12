@@ -458,11 +458,16 @@ impl AgentSupervisorHandle {
         let socket_path = if canonical_socket.to_string_lossy().len() < 100 {
             canonical_socket
         } else {
-            // Truncate the UUID to 8 chars; this is enough collision
-            // resistance for the in-process map and the socket is removed
-            // on session end.
-            let short = &session_id.0[..8.min(session_id.0.len())];
-            let tmp = std::env::temp_dir().join(format!("ccs-{short}.sock"));
+            // Use the TAIL of the id, not the head: session ids are UUIDv7,
+            // whose leading bytes are a millisecond timestamp — two sessions
+            // started in the same ~256 s window share the same first 8 hex
+            // chars and would collide on this fallback path (observed under
+            // concurrent test binaries + sibling live hosts: Core then dials a
+            // foreign host and gets a cookie mismatch). The trailing 8 chars
+            // are UUIDv7's random `rand_b`, so they carry real entropy; the
+            // socket is removed on session end either way.
+            let tail = &session_id.0[session_id.0.len().saturating_sub(8)..];
+            let tmp = std::env::temp_dir().join(format!("ccs-{tail}.sock"));
             tmp
         };
         let log_dir = self.data_dir.join("agents").join(&session_id.0);
@@ -1275,8 +1280,10 @@ impl AgentSupervisorHandle {
         let socket_path = if canonical_socket.to_string_lossy().len() < 100 {
             canonical_socket
         } else {
-            let short = &session_id.0[..8.min(session_id.0.len())];
-            std::env::temp_dir().join(format!("ccs-{short}.sock"))
+            // Tail, not head — UUIDv7 leading bytes are a timestamp and
+            // collide across same-window sessions (see `start_session`).
+            let tail = &session_id.0[session_id.0.len().saturating_sub(8)..];
+            std::env::temp_dir().join(format!("ccs-{tail}.sock"))
         };
         // Best-effort: remove any leftover socket file from the old host.
         let _ = tokio::fs::remove_file(&socket_path).await;
