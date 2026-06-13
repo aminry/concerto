@@ -4,10 +4,12 @@
 //! this accumulates a turn's text and emits one `MaestroEvent::Message` per
 //! completed turn. (M1: one bubble per turn; delta streaming is later polish.)
 
+use std::sync::Arc;
+
 use crate::agent_supervisor::events::{AgentEvent, MessageRole};
 use crate::agent_supervisor::AgentSupervisorHandle;
 use crate::maestro::events::{MaestroEvent, MaestroEventSender};
-use concerto_persist::SessionId;
+use concerto_persist::{Persistence, SessionId};
 
 /// A completed assistant turn ready to publish.
 pub struct TurnMessage {
@@ -45,10 +47,19 @@ impl TurnAccumulator {
 
 /// Spawn the bridge for the given Maestro session. Runs until the session's
 /// event channel closes (session end / Core shutdown).
+///
+/// On each completed assistant turn the bridge BOTH emits a
+/// `MaestroEvent::Message` (the live bubble) AND persists the assistant text as
+/// a `{"text":...}` `chat_messages` row on `chat_id` (Task 8), so the
+/// conversation survives a reload. The checkpoint/turn system also writes an
+/// assistant `v0_1_turn_marker` row (no text) — that is intentionally separate;
+/// the history reader skips the markers and reads this text row instead.
 pub fn spawn_maestro_events_bridge(
     supervisor: AgentSupervisorHandle,
     events: MaestroEventSender,
     session_id: SessionId,
+    persistence: Arc<Persistence>,
+    chat_id: String,
 ) {
     tokio::spawn(async move {
         let Some(mut rx) = supervisor.subscribe_events(&session_id).await else {
@@ -75,6 +86,24 @@ pub fn spawn_maestro_events_bridge(
                 }
                 Ok(AgentEvent::TurnComplete { session_id: s }) if s == session_id => {
                     if let Some(m) = acc.on_turn_complete() {
+                        // Persist the assistant turn TEXT before emitting (the
+                        // checkpoint system's marker row carries none), so the
+                        // history reader can rebuild this turn after a reload.
+                        // Best-effort: a persistence hiccup must not break the
+                        // bubble or the loop.
+                        if let Err(e) = concerto_persist::chat_messages::insert_assistant_message(
+                            &persistence,
+                            &chat_id,
+                            &m.text,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                target: "concerto::maestro",
+                                error = %e,
+                                "failed to persist maestro assistant turn"
+                            );
+                        }
                         events.emit(MaestroEvent::Message {
                             text: m.text,
                             message_id: m.message_id,

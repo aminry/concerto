@@ -129,6 +129,45 @@ pub async fn insert_user_message(
     Ok(id)
 }
 
+/// Insert an assistant-turn `chat_messages` row for the Maestro chat (Task 8).
+///
+/// Mirrors [`insert_user_message`] but writes a `role='assistant'` row. The
+/// `content_json` payload is `{"text": "<assistant text>"}` — the assistant text
+/// is stored directly so the conversation survives a reload (the checkpoint
+/// system's `v0_1_turn_marker` assistant rows carry NO text, so the Maestro
+/// turn text must be persisted separately here, and the history reader skips the
+/// marker rows). No `parent_id`/`superseded_by`/`metadata`.
+///
+/// Returns the new `chat_messages.id` on success.
+pub async fn insert_assistant_message(
+    persistence: &crate::api::Persistence,
+    chat_id: &str,
+    text: &str,
+) -> concerto_error::Result<String> {
+    let id = uuid::Uuid::now_v7().to_string();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let content_json = serde_json::json!({ "text": text }).to_string();
+    let mut writer = persistence.writer().await;
+    insert(
+        &mut writer,
+        NewChatMessage {
+            id: id.clone(),
+            chat_id: chat_id.to_string(),
+            role: "assistant".to_string(),
+            content_json,
+            created_at: now_ms,
+            parent_id: None,
+            superseded_by: None,
+            metadata: None,
+        },
+    )
+    .await?;
+    Ok(id)
+}
+
 /// The FROZEN tag a daily-summary row carries in its `metadata` column
 /// (`design/08 §4.1`, D12). The summary *text* lives in `content_json`; this
 /// JSON object lives in `metadata` and is what `list_daily_summaries` filters
@@ -163,6 +202,39 @@ pub async fn list_in_day_range(
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
     Ok(rows.into_iter().map(row_to_chat_message).collect())
+}
+
+/// Select the most-recent `limit` `chat_messages` rows for `chat_id`,
+/// non-superseded, returned oldest-first (`created_at ASC`) — the Maestro
+/// chat-history load (Task 8).
+///
+/// "Most-recent N, oldest-first" is computed by selecting the newest `limit`
+/// rows (`created_at DESC LIMIT ?`) then re-ordering ascending in memory, so the
+/// transcript reads top-to-bottom while the window stays bounded. Superseded
+/// rows (rewound history) are excluded, matching [`list_in_day_range`]. NOTE:
+/// the assistant `v0_1_turn_marker` rows (the checkpoint/turn system's
+/// text-less markers) come back here too — the history reader filters them by
+/// the absent `content_json.text` key.
+pub async fn list_by_chat(pool: &SqlitePool, chat_id: &str, limit: i64) -> Result<Vec<ChatMessage>> {
+    let mut rows = sqlx::query(
+        "SELECT id, chat_id, role, content_json, created_at, parent_id, superseded_by, metadata
+         FROM chat_messages
+         WHERE chat_id = ?
+           AND superseded_by IS NULL
+         ORDER BY created_at DESC
+         LIMIT ?",
+    )
+    .bind(chat_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?
+    .into_iter()
+    .map(row_to_chat_message)
+    .collect::<Vec<_>>();
+    // Re-order to oldest-first so the transcript renders top-to-bottom.
+    rows.reverse();
+    Ok(rows)
 }
 
 /// Persist a one-paragraph daily summary as a `chat_messages` row tagged
@@ -403,6 +475,102 @@ mod tests {
             Some(DAILY_SUMMARY_METADATA),
             "tag lives in metadata"
         );
+    }
+
+    /// `insert_assistant_message` writes a `role='assistant'` row whose
+    /// `content_json` is `{"text": ...}` (Task 8) — the readable assistant text
+    /// the history reader needs (the checkpoint marker rows carry no text).
+    #[tokio::test]
+    async fn insert_assistant_message_writes_text_row() {
+        let (_dir, persist) = fresh_db().await;
+        maestro_chat(&persist, "c1").await;
+        let id = insert_assistant_message(&persist, "c1", "You have 1 workspace.")
+            .await
+            .expect("insert assistant");
+
+        let rows = list_by_chat(persist.readers(), "c1", 10)
+            .await
+            .expect("list");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, id);
+        assert_eq!(rows[0].role, "assistant");
+        let content: serde_json::Value =
+            serde_json::from_str(&rows[0].content_json).expect("content_json");
+        assert_eq!(content["text"], "You have 1 workspace.");
+    }
+
+    /// `list_by_chat` returns the rows oldest-first and includes BOTH the
+    /// `{"text":...}` rows (user + assistant) and the text-less
+    /// `v0_1_turn_marker` assistant marker row (the reader filters markers, not
+    /// this query). Ordering is by `created_at ASC`.
+    #[tokio::test]
+    async fn list_by_chat_orders_ascending_and_keeps_marker_rows() {
+        let (_dir, persist) = fresh_db().await;
+        maestro_chat(&persist, "c1").await;
+        // user(text) @10, assistant marker @20, assistant(text) @30 — inserted
+        // out of order to prove the ascending re-order.
+        {
+            let mut w = persist.writer().await;
+            insert(
+                &mut w,
+                NewChatMessage {
+                    id: "asst-text".into(),
+                    chat_id: "c1".into(),
+                    role: "assistant".into(),
+                    content_json: r#"{"text":"hi back"}"#.into(),
+                    created_at: 30,
+                    parent_id: None,
+                    superseded_by: None,
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+            insert(
+                &mut w,
+                NewChatMessage {
+                    id: "user-text".into(),
+                    chat_id: "c1".into(),
+                    role: "user".into(),
+                    content_json: r#"{"text":"hi"}"#.into(),
+                    created_at: 10,
+                    parent_id: None,
+                    superseded_by: None,
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+            insert(
+                &mut w,
+                NewChatMessage {
+                    id: "asst-marker".into(),
+                    chat_id: "c1".into(),
+                    role: "assistant".into(),
+                    content_json: r#"{"v0_1_turn_marker":true}"#.into(),
+                    created_at: 20,
+                    parent_id: None,
+                    superseded_by: None,
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let rows = list_by_chat(persist.readers(), "c1", 200)
+            .await
+            .expect("list");
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["user-text", "asst-marker", "asst-text"],
+            "oldest-first, marker row retained"
+        );
+        // The marker row has no `text` key (the reader filters on this).
+        let marker: serde_json::Value =
+            serde_json::from_str(&rows[1].content_json).unwrap();
+        assert!(marker.get("text").is_none(), "marker carries no text");
     }
 
     #[tokio::test]

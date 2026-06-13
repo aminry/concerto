@@ -342,6 +342,11 @@ service Maestro {
   // Maestro session's write-tool approvals (Task 417). Task 416: ADDITIVE
   // GetState — existing field numbers above are unchanged.
   rpc GetState(GetStateRequest) returns (MaestroState);
+  // Load the persisted Maestro chat history so the conversation survives a
+  // reload (Task 8). Returns the most-recent turns oldest-first; the Desktop
+  // seeds its transcript with these on mount, then appends live
+  // `maestro.events` messages.
+  rpc GetHistory(GetHistoryRequest) returns (MaestroHistory);
 }
 ```
 
@@ -436,6 +441,30 @@ message MaestroState {
   bool inert = 7;               // True when the LLM path is inert (budget/policy).
   string inert_reason = 8;      // "" | "budget_exhausted" | "disabled_by_policy".
   string maestro_session_id = 9; // Live Maestro session id; "" when none.
+}
+```
+
+### message `GetHistoryRequest`
+
+```proto
+message GetHistoryRequest {}
+```
+
+### message `MaestroHistory`
+
+```proto
+message MaestroHistory {
+  repeated MaestroTurn turns = 1;
+}
+```
+
+### message `MaestroTurn`
+
+```proto
+message MaestroTurn {
+  string role = 1;
+  string text = 2;
+  int64 created_at_ms = 3; // unix epoch ms
 }
 ```
 

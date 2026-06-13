@@ -14,6 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   decodeMaestroEvent,
   getDigest,
+  getHistory,
   getState,
   MAESTRO_EVENTS_SUBJECT,
   MaestroVisibility,
@@ -64,6 +65,28 @@ describe("maestro bindings", () => {
     expect(out.chips[0].rule_id).toBe("r1");
     expect(out.chips[0].created_at_ms).toBe(1717459200000);
     expect(out.generated_at_ms).toBe(1717459200000);
+  });
+
+  it("getHistory calls Maestro.GetHistory and returns the turns oldest-first", async () => {
+    invoke.mockResolvedValueOnce({
+      turns: [
+        { role: "user", text: "hi", created_at_ms: 10 },
+        { role: "assistant", text: "hi back", created_at_ms: 30 },
+      ],
+    });
+    const out = await getHistory();
+    expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
+      method: "Maestro.GetHistory",
+      payload: {},
+    });
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual({ role: "user", text: "hi", created_at_ms: 10 });
+    expect(out[1].role).toBe("assistant");
+  });
+
+  it("getHistory tolerates a null/empty response (no persisted history yet)", async () => {
+    invoke.mockResolvedValueOnce(null);
+    expect(await getHistory()).toEqual([]);
   });
 
   it("getState calls Maestro.GetState with an empty request and returns the 9-field MaestroState", async () => {

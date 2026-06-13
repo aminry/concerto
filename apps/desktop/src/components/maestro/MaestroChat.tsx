@@ -22,18 +22,20 @@
 // resulting empty-state renders (no digest / no messages) are the DELIBERATE
 // UX seam, NOT stubs — they light up with zero rework when 414 wires live data.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   decodeMaestroEvent,
   getDigest,
+  getHistory,
   getState,
   MAESTRO_EVENTS_SUBJECT,
   type Digest,
   type MaestroEvent,
   type MaestroState,
+  type MaestroTurn,
 } from "../../api/maestro";
 import { useEventSubscription } from "../../hooks/useEventSubscription";
 import { useMaestroStore } from "../../state/useMaestroStore";
@@ -43,6 +45,7 @@ import { DigestPanel } from "./DigestPanel";
 import { MaestroComposer } from "./MaestroComposer";
 import {
   eventsToLines,
+  historyToLines,
   MaestroTranscript,
   type TranscriptLine,
 } from "./MaestroTranscript";
@@ -79,6 +82,13 @@ export function MaestroChat(): JSX.Element {
 
   // Conversational events accumulated off the live stream (server-canonical).
   const [events, setEvents] = useState<MaestroEvent[]>([]);
+  // The persisted chat history (Task 8), loaded ONCE on mount so the
+  // conversation survives a reload. Live `message`/`routing_executed` events
+  // append AFTER these history lines. Loading once (rather than merging on
+  // every event) keeps the seed deterministic; a transient duplicate of a
+  // just-sent turn that lands in BOTH the history fetch and a live event is
+  // acceptable (and rare — the fetch resolves on mount, before new turns).
+  const [history, setHistory] = useState<MaestroTurn[]>([]);
   const [exhaustedByEvent, setExhaustedByEvent] = useState(false);
   const [policyDisabledReason, setPolicyDisabledReason] = useState<
     string | null
@@ -165,9 +175,29 @@ export function MaestroChat(): JSX.Element {
   );
   useEventSubscription<unknown>(MAESTRO_EVENTS_SUBJECT, onFrame);
 
+  // Seed the transcript with the persisted history ONCE on mount (Task 8). The
+  // Core skips the text-less checkpoint marker rows, so every turn here renders.
+  // `getHistory` rejects with `Status::unimplemented`/policy-disabled behind the
+  // mocked shell until the Maestro is live — we swallow the error and start
+  // empty (the deliberate seam; live events still populate the transcript).
+  useEffect(() => {
+    let cancelled = false;
+    void getHistory()
+      .then((turns) => {
+        if (!cancelled) setHistory(turns);
+      })
+      .catch(() => {
+        /* no persisted history (policy-disabled / not yet live) — start empty */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // History (persisted, oldest-first) seeds the top; live events append below.
   const lines: TranscriptLine[] = useMemo(
-    () => eventsToLines(events),
-    [events],
+    () => [...historyToLines(history), ...eventsToLines(events)],
+    [history, events],
   );
 
   const refreshDigest = useCallback(() => {

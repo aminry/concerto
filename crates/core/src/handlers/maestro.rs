@@ -26,8 +26,8 @@
 
 use concerto_proto::v1::maestro_server::Maestro as MaestroService;
 use concerto_proto::v1::{
-    Digest, GetDigestRequest, GetStateRequest, MaestroMessageRequest, MaestroState,
-    MaestroVisibility, VisibilityRequest,
+    Digest, GetDigestRequest, GetHistoryRequest, GetStateRequest, MaestroHistory,
+    MaestroMessageRequest, MaestroState, MaestroTurn, MaestroVisibility, VisibilityRequest,
 };
 use tonic::{Request, Response, Status};
 
@@ -165,6 +165,27 @@ impl MaestroService for MaestroHandler {
         };
         Ok(Response::new(state))
     }
+
+    #[tracing::instrument(skip_all, name = "Maestro::GetHistory")]
+    async fn get_history(
+        &self,
+        _request: Request<GetHistoryRequest>,
+    ) -> Result<Response<MaestroHistory>, Status> {
+        let handle = self.handle()?;
+        // The handle loads the persisted maestro-chat rows, parses each
+        // `content_json.text`, and SKIPS the text-less checkpoint marker rows.
+        // Pure projection here onto the proto wire shape.
+        let turns = handle.get_history().await.map_err(error_to_status)?;
+        let turns = turns
+            .into_iter()
+            .map(|(role, text, created_at_ms)| MaestroTurn {
+                role,
+                text,
+                created_at_ms,
+            })
+            .collect();
+        Ok(Response::new(MaestroHistory { turns }))
+    }
 }
 
 #[cfg(test)]
@@ -212,6 +233,17 @@ mod tests {
         let h = MaestroHandler::new(None);
         let err = h
             .get_state(Request::new(GetStateRequest::default()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.message(), DISABLED_BY_POLICY);
+    }
+
+    #[tokio::test]
+    async fn policy_disabled_get_history_is_failed_precondition() {
+        let h = MaestroHandler::new(None);
+        let err = h
+            .get_history(Request::new(GetHistoryRequest::default()))
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);

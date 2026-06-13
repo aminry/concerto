@@ -259,12 +259,14 @@ impl MaestroHandle {
             tracing::warn!(error = %e, "maestro: MCP-server trust preseed failed (best-effort)");
         }
         let mut req = crate::maestro::maestro_start_request(wa_id, scratch);
-        req.chat_id = Some(chat_id);
+        req.chat_id = Some(chat_id.clone());
         let sid = self.inner.supervisor.start_session(req).await?;
         crate::maestro::events_bridge::spawn_maestro_events_bridge(
             self.inner.supervisor.clone(),
             self.inner.events.clone(),
             sid.clone(),
+            Arc::clone(&self.inner.persistence),
+            chat_id,
         );
         Ok(sid)
     }
@@ -429,6 +431,39 @@ impl MaestroHandle {
             .await
             .map(|s| s.0)
             .unwrap_or_default()
+    }
+
+    /// Load the persisted Maestro chat history (Task 8) so the conversation
+    /// survives a reload. Returns up to the most-recent 200 turns, oldest-first,
+    /// as `(role, text, created_at_ms)`.
+    ///
+    /// Two row kinds live in the maestro chat: the `{"text":...}` rows (user
+    /// turns from Task 7 + assistant turns the events bridge persists) and the
+    /// checkpoint/turn system's text-less `v0_1_turn_marker` assistant rows. We
+    /// keep ONLY the rows that carry a `content_json.text` — the marker rows are
+    /// SKIPPED (they have no renderable text; their text lives in the sibling
+    /// `{"text":...}` assistant row).
+    pub async fn get_history(&self) -> Result<Vec<(String, String, i64)>> {
+        let chat_id = self.ensure_maestro_chat().await?;
+        let rows = concerto_persist::chat_messages::list_by_chat(
+            self.inner.persistence.readers(),
+            &chat_id,
+            200,
+        )
+        .await?;
+        let mut turns = Vec::with_capacity(rows.len());
+        for row in rows {
+            // Parse `content_json` as `{"text": String}`; SKIP rows with no
+            // `text` key (the `v0_1_turn_marker` assistant rows).
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&row.content_json) else {
+                continue;
+            };
+            let Some(text) = value.get("text").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            turns.push((row.role, text.to_string(), row.created_at));
+        }
+        Ok(turns)
     }
 
     // -- internals ----------------------------------------------------------
@@ -1325,6 +1360,52 @@ mod tests {
         let content: serde_json::Value =
             serde_json::from_str(&rows[0].content_json).expect("content_json");
         assert_eq!(content["text"], "what are my workareas doing?");
+    }
+
+    // -- Task 8: get_history loads persisted turns + skips marker rows -------
+
+    /// `get_history` returns the persisted user + assistant text turns oldest-
+    /// first AND skips the checkpoint `v0_1_turn_marker` assistant rows (which
+    /// carry no `content_json.text`). Proves the round-trip a reload depends on.
+    #[tokio::test]
+    async fn get_history_loads_text_turns_and_skips_markers() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        let chat_id = handle.ensure_maestro_chat().await.expect("chat id");
+
+        // Explicit timestamps (10/20/30) so the ascending order is
+        // deterministic regardless of wall-clock ms ties:
+        //   user(text)@10, assistant marker@20 (no text), assistant(text)@30.
+        {
+            let mut w = persistence.writer().await;
+            for (id, role, content, ts) in [
+                ("u-1", "user", r#"{"text":"hi"}"#, 10i64),
+                ("marker", "assistant", r#"{"v0_1_turn_marker":true}"#, 20),
+                ("a-1", "assistant", r#"{"text":"hi back"}"#, 30),
+            ] {
+                concerto_persist::chat_messages::insert(
+                    &mut w,
+                    concerto_persist::chat_messages::NewChatMessage {
+                        id: id.into(),
+                        chat_id: chat_id.clone(),
+                        role: role.into(),
+                        content_json: content.into(),
+                        created_at: ts,
+                        parent_id: None,
+                        superseded_by: None,
+                        metadata: None,
+                    },
+                )
+                .await
+                .expect("insert row");
+            }
+        }
+
+        let turns = handle.get_history().await.expect("history");
+        // Marker row dropped; the two text turns survive, oldest-first.
+        let roles: Vec<&str> = turns.iter().map(|(r, _, _)| r.as_str()).collect();
+        let texts: Vec<&str> = turns.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant"], "marker skipped");
+        assert_eq!(texts, vec!["hi", "hi back"]);
     }
 
     // -- compose_user_envelope: stream-json framing --------------------------

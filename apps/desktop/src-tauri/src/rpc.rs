@@ -25,7 +25,8 @@ use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
     AddRepoRequest, CreatePrRequest, CreateSessionRequest, CreateWorkareaRequest,
     CreateWorkspaceRequest, EstimateConeSizeRequest, EstimateRepoSizeRequest, GetChecksRequest,
-    GetDiffRequest, GetDigestRequest, GetPrRequest, GetStateRequest, ListRepositoriesRequest,
+    GetDiffRequest, GetDigestRequest, GetHistoryRequest, GetPrRequest, GetStateRequest,
+    ListRepositoriesRequest,
     ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListTreeRequest,
     ListWorkareaReposRequest, ListWorkareasRequest, ListWorkspacesRequest, MaestroAttachment,
     MaestroMessageRequest, McpScopeRequest, MergePrRequest, PermissionMode, ResizeSessionRequest,
@@ -789,6 +790,13 @@ where
             let mut client = MaestroClient::new(channel);
             client
                 .get_state(GetStateRequest {})
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Maestro.GetHistory" => {
+            let mut client = MaestroClient::new(channel);
+            client
+                .get_history(GetHistoryRequest {})
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }

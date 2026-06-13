@@ -9,7 +9,7 @@
 // the empty-state below, NOT a stub). The events themselves are
 // server-canonical; this component is a pure renderer of the lifted list.
 
-import type { MaestroEvent } from "../../api/maestro";
+import type { MaestroEvent, MaestroTurn } from "../../api/maestro";
 
 /// A single rendered transcript line. The parent maps the `MaestroEvent` union
 /// into this view shape; `routing_executed` becomes a `quoted` line.
@@ -48,6 +48,20 @@ export function eventsToLines(events: MaestroEvent[]): TranscriptLine[] {
     }
   });
   return lines;
+}
+
+/// Map the persisted Maestro history (Task 8) into renderable transcript lines.
+/// Each `MaestroTurn` becomes a `message` line tagged with its persisted role,
+/// so a reload rebuilds the conversation top-to-bottom (oldest-first) exactly
+/// as the live `message` events render. Pure — unit-tested. Ids are
+/// `hist-`-prefixed so they never collide with the live `msg-`/`route-` ids.
+export function historyToLines(turns: MaestroTurn[]): TranscriptLine[] {
+  return turns.map((turn, i) => ({
+    id: `hist-${i}`,
+    kind: "message",
+    text: turn.text,
+    role: turn.role,
+  }));
 }
 
 export type MaestroTranscriptProps = {

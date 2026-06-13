@@ -91,6 +91,22 @@ export type MaestroState = {
   maestro_session_id: string; // = 9 ("" ⇒ no live Maestro session)
 };
 
+/// Mirrors `concerto.v1.MaestroTurn` (maestro.proto) — one persisted chat turn
+/// returned by `Maestro.GetHistory` (Task 8). `role` is `"user" | "assistant"`;
+/// `created_at_ms` is `int64` unix-ms. The text-less checkpoint `v0_1_turn_marker`
+/// rows are filtered out server-side, so every turn here carries renderable text.
+export type MaestroTurn = {
+  role: string; // = 1
+  text: string; // = 2
+  created_at_ms?: number; // = 3 (int64 unix ms)
+};
+
+/// Mirrors `concerto.v1.MaestroHistory` (maestro.proto) — the persisted Maestro
+/// chat history (Task 8), most-recent turns oldest-first.
+export type MaestroHistory = {
+  turns: MaestroTurn[]; // = 1
+};
+
 // ── RPC request/response shapes (FROZEN field names, maestro.proto) ──────────
 
 /// Mirrors `concerto.v1.MaestroMessageRequest` (maestro.proto:36).
@@ -146,6 +162,18 @@ export async function getDigest(): Promise<Digest> {
 /// the policy banner via the event path.
 export async function getState(): Promise<MaestroState> {
   return callRpc<Record<string, never>, MaestroState>("Maestro.GetState", {});
+}
+
+/// Load the persisted Maestro chat history (`Maestro.GetHistory`, Task 8) so
+/// the conversation survives a reload. Returns the most-recent turns oldest-
+/// first; the chat seeds its transcript with these on mount, then appends live
+/// `maestro.events` messages. The request message `GetHistoryRequest` is empty.
+export async function getHistory(): Promise<MaestroTurn[]> {
+  const history = await callRpc<Record<string, never>, MaestroHistory>(
+    "Maestro.GetHistory",
+    {},
+  );
+  return history?.turns ?? [];
 }
 
 /// Toggle a workarea's Maestro visibility (`Maestro.SetWorkareaVisibility`,
