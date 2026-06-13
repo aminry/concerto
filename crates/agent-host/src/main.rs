@@ -424,6 +424,134 @@ mod unix {
         (exit_code, signal)
     }
 
+    /// Pipe-mode supervisor: spawn the child with plain piped stdio (a non-TTY) so
+    /// `claude --print --input-format stream-json` enters streaming multi-turn mode.
+    /// Reuses the shared reader/writer pumps; stderr is drained to the host log
+    /// (NOT the ring buffer — that feeds the stream-json stdout the parser reads);
+    /// resize requests are ignored (pipes don't resize).
+    #[allow(dead_code)] // wired up in Task 4
+    fn spawn_pipe_task(
+        cli: &Cli,
+        state: Arc<State>,
+        stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        resize_rx: tokio::sync::mpsc::UnboundedReceiver<(u16, u16)>,
+    ) -> JoinHandle<(Option<i32>, Option<i32>)> {
+        let agent_bin = cli.agent_bin.clone();
+        let agent_args = cli.agent_arg.clone();
+        let cwd = cli.cwd.clone();
+        let resume = cli.resume_jsonl.clone();
+        let rt = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            run_pipe(agent_bin, agent_args, cwd, resume, state, stdin_rx, resize_rx, rt)
+        })
+    }
+
+    /// Body of the pipe-mode supervisor. Runs on a blocking thread because
+    /// `std::process::ChildStdout`/`ChildStdin` are synchronous `Read`/`Write`.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // wired up in Task 4
+    fn run_pipe(
+        agent_bin: PathBuf,
+        agent_args: Vec<String>,
+        cwd: PathBuf,
+        resume: Option<PathBuf>,
+        state: Arc<State>,
+        stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        mut resize_rx: tokio::sync::mpsc::UnboundedReceiver<(u16, u16)>,
+        rt: tokio::runtime::Handle,
+    ) -> (Option<i32>, Option<i32>) {
+        use std::process::Stdio;
+
+        let mut cmd = std::process::Command::new(&agent_bin);
+        cmd.args(&agent_args);
+        if let Some(r) = &resume {
+            cmd.arg("--resume").arg(r);
+        }
+        cmd.current_dir(&cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, bin = ?agent_bin, "spawn agent CLI (pipe mode) failed");
+                let s = state.clone();
+                rt.block_on(async move {
+                    record_chunk(
+                        &s,
+                        format!(
+                            "[concerto] Failed to start agent '{}': {}\n",
+                            agent_bin.display(),
+                            e
+                        )
+                        .into_bytes(),
+                    )
+                    .await;
+                    *s.child_exited.lock().await = Some((None, None));
+                    s.notify.notify_waiters();
+                });
+                return (None, None);
+            }
+        };
+
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+
+        // stdout → ring buffer (same record path as PTY → StdoutBytes frames).
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let state_for_record = state.clone();
+        rt.spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                record_chunk(&state_for_record, chunk).await;
+            }
+        });
+        let reader_handle = spawn_reader_thread(Box::new(stdout), chunk_tx);
+        let stdin_thread = spawn_writer_thread(Box::new(stdin), stdin_rx);
+
+        // stderr → host log ONLY (NOT the ring buffer — keeps stdout clean for the
+        // stream-json parser). Visible in Tier-3 via the agent-host's tracing.
+        let stderr_thread = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut r = std::io::BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match r.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        warn!(target: "concerto::agent_host", stderr = %line.trim_end(), "agent stderr (pipe mode)")
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Pipes don't resize — drain the channel so the sender side never blocks.
+        let resize_thread = std::thread::spawn(move || while resize_rx.blocking_recv().is_some() {});
+
+        let status = child.wait().ok();
+        reader_handle.join().ok();
+        let _ = (stdin_thread, stderr_thread, resize_thread);
+
+        let exit_code = status.as_ref().and_then(|s| s.code());
+        let signal = {
+            use std::os::unix::process::ExitStatusExt;
+            status.as_ref().and_then(|s| s.signal())
+        };
+
+        // Mirror run_pty: set child_exited BEFORE returning so the accept loop
+        // and connection writer see the exit flag.
+        let s = state.clone();
+        rt.block_on(async move {
+            *s.child_exited.lock().await = Some((exit_code, signal));
+            s.notify.notify_waiters();
+        });
+
+        (exit_code, signal)
+    }
+
     /// Drive a single accepted Core connection from the post-`Hello`
     /// point to disconnect. Returns when the connection drops; the
     /// outer accept loop is then free to take the next one.
