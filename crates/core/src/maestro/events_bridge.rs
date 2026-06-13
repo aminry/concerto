@@ -82,7 +82,10 @@ pub fn spawn_maestro_events_bridge(
                     }
                 }
                 Ok(_) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(target: "concerto::maestro", session = %session_id.0, skipped = n, "events bridge lagged; a reply bubble may be truncated");
+                    continue;
+                }
                 Err(_) => break,
             }
         }
@@ -103,5 +106,17 @@ mod tests {
         assert!(!done.message_id.is_empty());
         // A turn with no assistant text produces nothing.
         assert!(acc.on_turn_complete().is_none());
+    }
+
+    #[test]
+    fn accumulator_message_id_increments_per_turn() {
+        let mut acc = TurnAccumulator::default();
+        acc.on_message("first");
+        let a = acc.on_turn_complete().expect("turn 1");
+        assert_eq!(a.message_id, "m-1");
+        acc.on_message("second");
+        let b = acc.on_turn_complete().expect("turn 2");
+        assert_eq!(b.message_id, "m-2");
+        assert_eq!(b.text, "second");
     }
 }
