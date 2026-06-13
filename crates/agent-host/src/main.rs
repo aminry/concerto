@@ -269,7 +269,7 @@ mod unix {
         cwd: PathBuf,
         resume: Option<PathBuf>,
         state: Arc<State>,
-        mut stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
         mut resize_rx: tokio::sync::mpsc::UnboundedReceiver<(u16, u16)>,
         rt: tokio::runtime::Handle,
     ) -> (Option<i32>, Option<i32>) {
@@ -328,7 +328,7 @@ mod unix {
         // EOF when the child exits.
         drop(pair.slave);
 
-        let mut reader = match pair.master.try_clone_reader() {
+        let reader = match pair.master.try_clone_reader() {
             Ok(r) => r,
             Err(e) => {
                 error!(error = %e, "clone PTY reader failed");
@@ -367,36 +367,11 @@ mod unix {
                 record_chunk(&state_for_record, chunk).await;
             }
         });
-        let reader_handle = std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if chunk_tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
-                }
-            }
-        });
+        let reader_handle = spawn_reader_thread(reader, chunk_tx);
 
         // Writer thread: pulls stdin from the channel, writes to PTY
         // master synchronously.
-        let writer_mutex = Arc::new(std::sync::Mutex::new(writer));
-        let writer_for_stdin = writer_mutex.clone();
-        let stdin_thread = std::thread::spawn(move || {
-            while let Some(data) = stdin_rx.blocking_recv() {
-                if let Ok(mut w) = writer_for_stdin.lock() {
-                    if w.write_all(&data).is_err() {
-                        break;
-                    }
-                    let _ = w.flush();
-                }
-            }
-        });
+        let stdin_thread = spawn_writer_thread(writer, stdin_rx);
 
         // Resize thread: applies resize requests to the PTY master.
         let master_for_resize = Arc::new(std::sync::Mutex::new(master));
@@ -650,6 +625,47 @@ mod unix {
         let _ = tokio::join!(writer, reader);
         *state.connection_active.lock().await = false;
         info!("Core disconnected");
+    }
+
+    /// Reader pump: blocking-read `reader` in 8 KiB chunks and forward each chunk
+    /// over `chunk_tx` (an async task records them onto the ring buffer). Returns
+    /// when the child closes its output (EOF) or the channel drops. Shared by the
+    /// PTY (master reader) and pipe (`ChildStdout`) sessions.
+    fn spawn_reader_thread(
+        mut reader: Box<dyn std::io::Read + Send>,
+        chunk_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if chunk_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        })
+    }
+
+    /// Writer pump: drain `stdin_rx` and write each payload to `writer` (the child's
+    /// stdin). Shared by the PTY (master writer) and pipe (`ChildStdin`) sessions.
+    fn spawn_writer_thread(
+        mut writer: Box<dyn std::io::Write + Send>,
+        mut stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            while let Some(data) = stdin_rx.blocking_recv() {
+                if writer.write_all(&data).is_err() {
+                    break;
+                }
+                let _ = writer.flush();
+            }
+        })
     }
 
     pub async fn main(cli: Cli) -> std::io::Result<i32> {
