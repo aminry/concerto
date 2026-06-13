@@ -26,13 +26,13 @@ use concerto_proto::v1::{
     AddRepoRequest, CreatePrRequest, CreateSessionRequest, CreateWorkareaRequest,
     CreateWorkspaceRequest, EstimateConeSizeRequest, EstimateRepoSizeRequest, GetChecksRequest,
     GetDiffRequest, GetDigestRequest, GetHistoryRequest, GetPrRequest, GetStateRequest,
-    ListRepositoriesRequest,
-    ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListTreeRequest,
-    ListWorkareaReposRequest, ListWorkareasRequest, ListWorkspacesRequest, MaestroAttachment,
-    MaestroMessageRequest, McpScopeRequest, MergePrRequest, PermissionMode, ResizeSessionRequest,
-    SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest, SetRepoConeDefaultsRequest,
-    StopSessionRequest, SubscribeRequest, UpdateWorkspaceRequest, VisibilityRequest,
-    WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId, WorkspaceRepoSpec,
+    ListRepositoriesRequest, ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest,
+    ListTreeRequest, ListWorkareaReposRequest, ListWorkareasRequest, ListWorkspacesRequest,
+    MaestroAttachment, MaestroMessageRequest, McpScopeRequest, MergePrRequest, PermissionMode,
+    ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest,
+    SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest, UpdateWorkspaceRequest,
+    VisibilityRequest, WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId,
+    WorkspaceRepoSpec,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};

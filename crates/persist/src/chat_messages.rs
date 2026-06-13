@@ -215,7 +215,11 @@ pub async fn list_in_day_range(
 /// the assistant `v0_1_turn_marker` rows (the checkpoint/turn system's
 /// text-less markers) come back here too — the history reader filters them by
 /// the absent `content_json.text` key.
-pub async fn list_by_chat(pool: &SqlitePool, chat_id: &str, limit: i64) -> Result<Vec<ChatMessage>> {
+pub async fn list_by_chat(
+    pool: &SqlitePool,
+    chat_id: &str,
+    limit: i64,
+) -> Result<Vec<ChatMessage>> {
     let mut rows = sqlx::query(
         "SELECT id, chat_id, role, content_json, created_at, parent_id, superseded_by, metadata
          FROM chat_messages
@@ -568,8 +572,7 @@ mod tests {
             "oldest-first, marker row retained"
         );
         // The marker row has no `text` key (the reader filters on this).
-        let marker: serde_json::Value =
-            serde_json::from_str(&rows[1].content_json).unwrap();
+        let marker: serde_json::Value = serde_json::from_str(&rows[1].content_json).unwrap();
         assert!(marker.get("text").is_none(), "marker carries no text");
     }
 

@@ -48,8 +48,8 @@ use crate::agent_supervisor::bridge::{
 };
 use crate::agent_supervisor::events::{AgentEvent, MessageRole};
 use crate::agent_supervisor::parsers::{
-    claude_code::ClaudeCodePack, echo::EchoPack,
-    maestro_stream_json::MaestroStreamJsonPack, MsgRole, ParseEvent, ParserPack,
+    claude_code::ClaudeCodePack, echo::EchoPack, maestro_stream_json::MaestroStreamJsonPack,
+    MsgRole, ParseEvent, ParserPack,
 };
 use crate::agent_supervisor::spawn::{spawn_host, wait_for_socket, SOCKET_POLL_BUDGET};
 use crate::maestro::MaestroProvider;

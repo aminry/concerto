@@ -476,12 +476,24 @@ mod tests {
         let spec = ClaudeCliProvider::new()
             .resolve_launch(&ctx_with(ManagedPolicy::default()))
             .expect("spec");
-        assert!(spec.args.windows(2).any(|w| w == ["--input-format", "stream-json"]));
-        assert!(spec.args.windows(2).any(|w| w == ["--output-format", "stream-json"]));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--input-format", "stream-json"]));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]));
         assert!(spec.args.iter().any(|a| a == "--verbose"));
-        assert!(spec.args.windows(2).any(|w| w == ["--allowedTools", "mcp__concerto-maestro-mcp"]));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--allowedTools", "mcp__concerto-maestro-mcp"]));
         assert!(spec.args.iter().any(|a| a == "--strict-mcp-config"));
-        assert!(!spec.args.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(!spec
+            .args
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions"));
     }
 
     #[test]

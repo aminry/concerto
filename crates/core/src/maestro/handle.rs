@@ -500,11 +500,13 @@ impl MaestroHandle {
     /// `role="user"`) and persist it to the maestro chat.  Best-effort: a
     /// persistence hiccup must not block the forward.
     async fn record_user_turn(&self, body: &str) {
-        self.inner.events.emit(crate::maestro::events::MaestroEvent::Message {
-            text: body.to_string(),
-            message_id: String::new(),
-            role: "user".to_string(),
-        });
+        self.inner
+            .events
+            .emit(crate::maestro::events::MaestroEvent::Message {
+                text: body.to_string(),
+                message_id: String::new(),
+                role: "user".to_string(),
+            });
         if let Ok(chat_id) = self.ensure_maestro_chat().await {
             if let Err(e) = concerto_persist::chat_messages::insert_user_message(
                 &self.inner.persistence,
@@ -610,7 +612,10 @@ pub(crate) fn compose_user_envelope(body: &str) -> String {
         "type": "user",
         "message": { "role": "user", "content": [{ "type": "text", "text": body }] }
     });
-    format!("{}\n", serde_json::to_string(&v).expect("serialize user envelope"))
+    format!(
+        "{}\n",
+        serde_json::to_string(&v).expect("serialize user envelope")
+    )
 }
 
 /// Map a 408 `RoutingError` to a typed `Error::Internal` carrying the routing
@@ -1335,7 +1340,9 @@ mod tests {
         let (_tmp, handle, persistence) = live_handle().await;
         let mut rx = handle.inner.events.frame_sender().subscribe();
 
-        handle.record_user_turn("what are my workareas doing?").await;
+        handle
+            .record_user_turn("what are my workareas doing?")
+            .await;
 
         // -- event side --
         let frame = rx.recv().await.expect("frame received");
@@ -1418,7 +1425,10 @@ mod tests {
         assert_eq!(v["type"], "user");
         assert_eq!(v["message"]["role"], "user");
         assert_eq!(v["message"]["content"][0]["type"], "text");
-        assert_eq!(v["message"]["content"][0]["text"], "what are my workareas doing?");
+        assert_eq!(
+            v["message"]["content"][0]["text"],
+            "what are my workareas doing?"
+        );
     }
 
     #[tokio::test]

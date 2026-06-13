@@ -149,4 +149,102 @@ mod tests {
         assert_eq!(b.message_id, "m-2");
         assert_eq!(b.text, "second");
     }
+
+    // =========================================================================
+    // Task 9 — conversation SEAM integration test
+    //
+    // Proves the real parser → real accumulator → MaestroEvent shape end-to-end
+    // without a live Claude session. All units are real; no mocks.
+    //
+    // Placement rationale: `compose_user_envelope` is `pub(crate)` (handle.rs)
+    // and `TurnAccumulator`/`TurnMessage` live here — an in-crate test module
+    // reaches both without widening any public surface.
+    // =========================================================================
+
+    /// Feed the fixture through the real `MaestroStreamJsonPack` (in 7-byte
+    /// chunks to exercise partial-line buffering), then pipe the resulting
+    /// `ParseEvent`s through the real `TurnAccumulator`, and finally assert the
+    /// completed turn round-trips to a `maestro.message` frame with
+    /// `role="assistant"` carrying the expected reply text.
+    #[test]
+    fn conversation_seam_fixture_produces_assistant_message_frame() {
+        use crate::agent_supervisor::parsers::maestro_stream_json::MaestroStreamJsonPack;
+        use crate::agent_supervisor::parsers::{MsgRole, ParseEvent, ParserPack};
+        use crate::maestro::events::MaestroEvent;
+        use crate::maestro::handle::compose_user_envelope;
+
+        // ── 1. Input half: compose_user_envelope produces a parseable line ──
+        let envelope = compose_user_envelope("hi");
+        assert!(envelope.ends_with('\n'), "envelope must end with newline");
+        let parsed: serde_json::Value =
+            serde_json::from_str(envelope.trim_end()).expect("envelope is valid JSON");
+        assert_eq!(parsed["type"], "user");
+        assert_eq!(parsed["message"]["role"], "user");
+        assert_eq!(parsed["message"]["content"][0]["type"], "text");
+        assert_eq!(parsed["message"]["content"][0]["text"], "hi");
+
+        // ── 2. Output half: feed fixture through parser → accumulator ────────
+        let pack = MaestroStreamJsonPack::new();
+        let data = include_bytes!("../../tests/fixtures/maestro_stream_json/turn.jsonl");
+        let mut buf = Vec::new();
+        let mut parse_events: Vec<ParseEvent> = Vec::new();
+        // 7-byte chunks exercise partial-line buffering in the real parser.
+        for chunk in data.chunks(7) {
+            buf.extend_from_slice(chunk);
+            parse_events.extend(pack.parse_chunk(&mut buf));
+        }
+
+        // Feed events into the real TurnAccumulator.
+        let mut acc = TurnAccumulator::default();
+        let mut completed: Option<TurnMessage> = None;
+        for event in &parse_events {
+            match event {
+                ParseEvent::Message {
+                    role: MsgRole::Assistant,
+                    content,
+                } => {
+                    acc.on_message(content);
+                }
+                ParseEvent::TurnComplete => {
+                    completed = acc.on_turn_complete();
+                }
+                _ => {}
+            }
+        }
+
+        // ── 3. Assert the accumulated turn carries the fixture's reply text ──
+        let turn = completed.expect("fixture must produce a completed TurnMessage");
+        assert!(
+            turn.text.contains("1 workspace"),
+            "accumulated text must contain the fixture reply; got: {:?}",
+            turn.text
+        );
+        assert!(!turn.message_id.is_empty(), "message_id must be non-empty");
+
+        // ── 4. Assert the MaestroEvent frame round-trips correctly ───────────
+        let event = MaestroEvent::Message {
+            text: turn.text.clone(),
+            message_id: turn.message_id.clone(),
+            role: "assistant".to_string(),
+        };
+        assert_eq!(event.kind(), "maestro.message");
+        let frame = event.to_frame();
+        let v: serde_json::Value =
+            serde_json::from_slice(&frame).expect("to_frame must produce valid JSON");
+        assert_eq!(
+            v["kind"], "maestro.message",
+            "frame kind must be maestro.message"
+        );
+        assert_eq!(v["role"], "assistant", "frame role must be assistant");
+        assert!(
+            v["text"].as_str().unwrap_or("").contains("1 workspace"),
+            "frame text must carry the reply; got: {:?}",
+            v["text"]
+        );
+        assert_eq!(
+            v["message_id"].as_str(),
+            Some(turn.message_id.as_str()),
+            "frame message_id must match the turn's id"
+        );
+    }
 }

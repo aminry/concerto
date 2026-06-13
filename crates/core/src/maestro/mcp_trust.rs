@@ -57,8 +57,8 @@ pub fn ensure_mcp_trusted_at(config_path: &Path, scratch_cwd: &Path) -> Result<(
         return Ok(());
     }
     list.push(serde_json::Value::String(SERVER_NAME.to_string()));
-    let serialized =
-        serde_json::to_vec_pretty(&root).map_err(|e| Error::Internal(format!("serialize claude.json: {e}")))?;
+    let serialized = serde_json::to_vec_pretty(&root)
+        .map_err(|e| Error::Internal(format!("serialize claude.json: {e}")))?;
     // Atomic replace: write to a sibling temp file then rename over the
     // original so a partial write never leaves a corrupt config.
     let tmp = config_path.with_extension("json.concerto-tmp");
@@ -76,14 +76,24 @@ mod tests {
         let scratch = home.path().join("concerto/maestro");
         std::fs::create_dir_all(&scratch).unwrap();
         let cfg = home.path().join(".claude.json");
-        let key = std::fs::canonicalize(&scratch).unwrap().to_string_lossy().into_owned();
+        let key = std::fs::canonicalize(&scratch)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         // Pre-existing folder-trust written by ensure_claude_trusts_dir.
         let seed = serde_json::json!({ "projects": { &key: { "hasTrustDialogAccepted": true } } });
         std::fs::write(&cfg, serde_json::to_vec_pretty(&seed).unwrap()).unwrap();
         ensure_mcp_trusted_at(&cfg, &scratch).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&cfg).unwrap()).unwrap();
-        assert_eq!(v["projects"][&key]["hasTrustDialogAccepted"], serde_json::json!(true));
-        assert!(v["projects"][&key]["enabledMcpjsonServers"].as_array().unwrap().iter().any(|s| s == "concerto-maestro-mcp"));
+        assert_eq!(
+            v["projects"][&key]["hasTrustDialogAccepted"],
+            serde_json::json!(true)
+        );
+        assert!(v["projects"][&key]["enabledMcpjsonServers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s == "concerto-maestro-mcp"));
     }
 
     #[test]
@@ -95,8 +105,16 @@ mod tests {
         ensure_mcp_trusted_at(&cfg, &scratch).unwrap();
         ensure_mcp_trusted_at(&cfg, &scratch).unwrap(); // idempotent
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&cfg).unwrap()).unwrap();
-        let key = std::fs::canonicalize(&scratch).unwrap().to_string_lossy().into_owned();
-        let arr = v["projects"][&key]["enabledMcpjsonServers"].as_array().unwrap();
-        assert_eq!(arr.iter().filter(|s| *s == "concerto-maestro-mcp").count(), 1);
+        let key = std::fs::canonicalize(&scratch)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let arr = v["projects"][&key]["enabledMcpjsonServers"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            arr.iter().filter(|s| *s == "concerto-maestro-mcp").count(),
+            1
+        );
     }
 }

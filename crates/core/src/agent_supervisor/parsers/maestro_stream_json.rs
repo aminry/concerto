@@ -113,7 +113,10 @@ mod tests {
         let texts: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                ParseEvent::Message { role: MsgRole::Assistant, content } => Some(content.as_str()),
+                ParseEvent::Message {
+                    role: MsgRole::Assistant,
+                    content,
+                } => Some(content.as_str()),
                 _ => None,
             })
             .collect();
@@ -124,14 +127,20 @@ mod tests {
     fn empty_text_part_emits_no_message() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":""}]}}"#;
         let events = run(line);
-        assert!(events.is_empty(), "expected no events for empty text, got {events:?}");
+        assert!(
+            events.is_empty(),
+            "expected no events for empty text, got {events:?}"
+        );
     }
 
     #[test]
     fn tool_use_part_in_assistant_emits_nothing() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"foo","input":{}}]}}"#;
         let events = run(line);
-        assert!(events.is_empty(), "tool_use must not bubble, got {events:?}");
+        assert!(
+            events.is_empty(),
+            "tool_use must not bubble, got {events:?}"
+        );
     }
 
     #[test]
