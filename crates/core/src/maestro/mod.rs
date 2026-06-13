@@ -194,6 +194,17 @@ pub use system_workarea::{
 // calls `ensure_maestro_mcp_trusted` after the scratch dir is ensured.
 pub use mcp_trust::ensure_maestro_mcp_trusted;
 
+// ===========================================================================
+// Task 6 (Maestro Live-Conversation) region — DISTINCT additive zone.
+// Kept in its OWN clearly-labeled block so it auto-merges against the sibling
+// soft-seam lines above.
+//
+// Bridges the Maestro session's `AgentEvent::Message` + `AgentEvent::TurnComplete`
+// onto `maestro.events` as `MaestroEvent::Message` bubbles the chat UI renders.
+// One bubble per completed turn (M1; delta streaming is later polish).
+pub mod events_bridge;
+// ===========================================================================
+
 // Task 402 re-exports (distinct region — see above).
 pub use provider::{
     ClaudeCliProvider, DirectApiProvider, MaestroLaunchContext, MaestroLaunchSpec, MaestroProvider,

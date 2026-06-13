@@ -260,7 +260,13 @@ impl MaestroHandle {
         }
         let mut req = crate::maestro::maestro_start_request(wa_id, scratch);
         req.chat_id = Some(chat_id);
-        self.inner.supervisor.start_session(req).await
+        let sid = self.inner.supervisor.start_session(req).await?;
+        crate::maestro::events_bridge::spawn_maestro_events_bridge(
+            self.inner.supervisor.clone(),
+            self.inner.events.clone(),
+            sid.clone(),
+        );
+        Ok(sid)
     }
 
     /// Send the user's chat input to the Maestro (design/08 §5.2 / §6.1). Runs
