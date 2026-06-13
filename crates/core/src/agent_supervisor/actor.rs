@@ -604,6 +604,7 @@ impl AgentSupervisorHandle {
             &cookie_hex,
             &final_info,
             req.resume_session_id.as_deref(),
+            &req.agent_kind,
         )
         .map_err(|e| Error::Internal(format!("spawn agent-host: {e}")))?;
         let host_pid = child.id().map(|p| p as i64).unwrap_or(-1);
@@ -1348,6 +1349,7 @@ impl AgentSupervisorHandle {
             &cookie_hex,
             &final_info,
             Some(resume_token),
+            &agent_kind,
         )
         .map_err(|e| Error::Internal(format!("spawn agent-host: {e}")))?;
         let host_pid = child.id().map(|p| p as i64).unwrap_or(-1);
