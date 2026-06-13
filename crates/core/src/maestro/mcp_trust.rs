@@ -51,16 +51,40 @@ pub fn ensure_mcp_trusted_at(config_path: &Path, scratch_cwd: &Path) -> Result<(
         .or_insert_with(|| serde_json::Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| Error::Internal("enabledMcpjsonServers not an array".into()))?;
-    if !list.iter().any(|s| s == SERVER_NAME) {
-        list.push(serde_json::Value::String(SERVER_NAME.to_string()));
+    // Early-exit when already present: avoid churning the file and racing
+    // Claude's own writes (mirrors `ensure_claude_trusts_dir`).
+    if list.iter().any(|s| s == SERVER_NAME) {
+        return Ok(());
     }
-    std::fs::write(config_path, serde_json::to_vec_pretty(&root).expect("serialize"))
-        .map_err(Error::Io)
+    list.push(serde_json::Value::String(SERVER_NAME.to_string()));
+    let serialized =
+        serde_json::to_vec_pretty(&root).map_err(|e| Error::Internal(format!("serialize claude.json: {e}")))?;
+    // Atomic replace: write to a sibling temp file then rename over the
+    // original so a partial write never leaves a corrupt config.
+    let tmp = config_path.with_extension("json.concerto-tmp");
+    std::fs::write(&tmp, &serialized).map_err(Error::Io)?;
+    std::fs::rename(&tmp, config_path).map_err(Error::Io)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preseed_preserves_existing_project_keys() {
+        let home = tempfile::tempdir().unwrap();
+        let scratch = home.path().join("concerto/maestro");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let cfg = home.path().join(".claude.json");
+        let key = std::fs::canonicalize(&scratch).unwrap().to_string_lossy().into_owned();
+        // Pre-existing folder-trust written by ensure_claude_trusts_dir.
+        let seed = serde_json::json!({ "projects": { &key: { "hasTrustDialogAccepted": true } } });
+        std::fs::write(&cfg, serde_json::to_vec_pretty(&seed).unwrap()).unwrap();
+        ensure_mcp_trusted_at(&cfg, &scratch).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&cfg).unwrap()).unwrap();
+        assert_eq!(v["projects"][&key]["hasTrustDialogAccepted"], serde_json::json!(true));
+        assert!(v["projects"][&key]["enabledMcpjsonServers"].as_array().unwrap().iter().any(|s| s == "concerto-maestro-mcp"));
+    }
 
     #[test]
     fn preseed_adds_server_to_enabled_list_idempotently() {
