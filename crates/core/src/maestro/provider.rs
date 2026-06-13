@@ -218,9 +218,19 @@ fn resolve_cli_launch_spec(ctx: &MaestroLaunchContext, bin: String) -> MaestroLa
     let args = vec![
         "--model".to_string(),
         model.clone(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
         "--mcp-config".to_string(),
         mcp_config,
         "--strict-mcp-config".to_string(),
+        // M1: auto-approve the live read tools (whole server; the 5 write + 2
+        // side-channel tools return typed-unimplemented, so nothing to gate yet).
+        // M2 replaces this with --permission-prompt-tool → PermissionResolver chips.
+        "--allowedTools".to_string(),
+        "mcp__concerto-maestro-mcp".to_string(),
         "--append-system-prompt".to_string(),
         MAESTRO_PREAMBLE.to_string(),
     ];
@@ -459,6 +469,19 @@ mod tests {
             PathBuf::from("/home/user/concerto/maestro"),
             PathBuf::from("/home/user/concerto/maestro/.mcp.json"),
         )
+    }
+
+    #[test]
+    fn maestro_launch_is_headless_stream_json_with_read_tools_allowed() {
+        let spec = ClaudeCliProvider::new()
+            .resolve_launch(&ctx_with(ManagedPolicy::default()))
+            .expect("spec");
+        assert!(spec.args.windows(2).any(|w| w == ["--input-format", "stream-json"]));
+        assert!(spec.args.windows(2).any(|w| w == ["--output-format", "stream-json"]));
+        assert!(spec.args.iter().any(|a| a == "--verbose"));
+        assert!(spec.args.windows(2).any(|w| w == ["--allowedTools", "mcp__concerto-maestro-mcp"]));
+        assert!(spec.args.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(!spec.args.iter().any(|a| a == "--dangerously-skip-permissions"));
     }
 
     #[test]
