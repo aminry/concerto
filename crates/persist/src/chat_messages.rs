@@ -93,12 +93,11 @@ pub async fn insert(conn: &mut SqliteConnection, row: NewChatMessage) -> Result<
 
 /// Insert a user-turn `chat_messages` row for the Maestro chat (Task 7).
 ///
-/// Mirrors [`insert_daily_summary`] / `insert_turn_message` (checkpoint.rs)
-/// but for `role='user'`. The `content_json` payload uses the same marker
-/// shape as the assistant placeholder — `{"v0_1_turn_marker":true}` — because
-/// V0.1 doesn't yet parse full structured history; the user text rides the
-/// `text` field so it is human-readable in the DB and compatible with the
-/// condensation window reader. No `parent_id`/`superseded_by`/`metadata`.
+/// Writes a `role='user'` row via [`insert`]. The `content_json` payload is
+/// `{"text": "<user text>"}` — the user text is stored directly so it is
+/// human-readable in the DB and recoverable by the history reader
+/// (`json_extract(content_json, '$.text')`, used by the Maestro chat-history
+/// load). No `parent_id`/`superseded_by`/`metadata`.
 ///
 /// Returns the new `chat_messages.id` on success.
 pub async fn insert_user_message(
