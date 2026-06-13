@@ -460,9 +460,10 @@ impl MaestroHandle {
             return Ok(());
         }
         let session_id = self.maestro_session_id().await?;
+        let line = compose_user_envelope(body);
         self.inner
             .supervisor
-            .send_input(&session_id, body.as_bytes().to_vec())
+            .send_input(&session_id, line.into_bytes())
             .await
     }
 
@@ -529,6 +530,16 @@ impl MaestroHandle {
         let state = concerto_persist::maestro_state::get(self.inner.persistence.readers()).await?;
         Ok(state.and_then(|s| s.last_digest_at).unwrap_or(0))
     }
+}
+
+/// Frame a freeform user message as a Claude `stream-json` input line.
+/// (`--input-format stream-json` reads one JSON object per line.)
+pub(crate) fn compose_user_envelope(body: &str) -> String {
+    let v = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": body }] }
+    });
+    format!("{}\n", serde_json::to_string(&v).expect("serialize user envelope"))
 }
 
 /// Map a 408 `RoutingError` to a typed `Error::Internal` carrying the routing
@@ -1239,6 +1250,19 @@ mod tests {
             state.maestro_session_id, "maestro-sess",
             "live session id is load-bearing for 417"
         );
+    }
+
+    // -- compose_user_envelope: stream-json framing --------------------------
+
+    #[test]
+    fn user_envelope_is_newline_terminated_stream_json() {
+        let line = compose_user_envelope("what are my workareas doing?");
+        assert!(line.ends_with('\n'));
+        let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        assert_eq!(v["message"]["content"][0]["type"], "text");
+        assert_eq!(v["message"]["content"][0]["text"], "what are my workareas doing?");
     }
 
     #[tokio::test]
