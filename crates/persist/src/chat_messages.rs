@@ -91,6 +91,45 @@ pub async fn insert(conn: &mut SqliteConnection, row: NewChatMessage) -> Result<
     Ok(id)
 }
 
+/// Insert a user-turn `chat_messages` row for the Maestro chat (Task 7).
+///
+/// Mirrors [`insert_daily_summary`] / `insert_turn_message` (checkpoint.rs)
+/// but for `role='user'`. The `content_json` payload uses the same marker
+/// shape as the assistant placeholder — `{"v0_1_turn_marker":true}` — because
+/// V0.1 doesn't yet parse full structured history; the user text rides the
+/// `text` field so it is human-readable in the DB and compatible with the
+/// condensation window reader. No `parent_id`/`superseded_by`/`metadata`.
+///
+/// Returns the new `chat_messages.id` on success.
+pub async fn insert_user_message(
+    persistence: &crate::api::Persistence,
+    chat_id: &str,
+    text: &str,
+) -> concerto_error::Result<String> {
+    let id = uuid::Uuid::now_v7().to_string();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let content_json = serde_json::json!({ "text": text }).to_string();
+    let mut writer = persistence.writer().await;
+    insert(
+        &mut writer,
+        NewChatMessage {
+            id: id.clone(),
+            chat_id: chat_id.to_string(),
+            role: "user".to_string(),
+            content_json,
+            created_at: now_ms,
+            parent_id: None,
+            superseded_by: None,
+            metadata: None,
+        },
+    )
+    .await?;
+    Ok(id)
+}
+
 /// The FROZEN tag a daily-summary row carries in its `metadata` column
 /// (`design/08 §4.1`, D12). The summary *text* lives in `content_json`; this
 /// JSON object lives in `metadata` and is what `list_daily_summaries` filters

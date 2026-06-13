@@ -44,12 +44,19 @@ const MAESTRO_EVENTS_CHANNEL_CAP: usize = 1024;
 /// discipline).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MaestroEvent {
-    /// `maestro.message` — streamed assistant output from the Maestro session.
+    /// `maestro.message` — a chat bubble from either the assistant or the user.
+    /// The `role` field distinguishes the two: `"assistant"` for streamed LLM
+    /// output (Task 6 bridge) and `"user"` for the echoed freeform input (Task
+    /// 7). 415 renders them as distinct bubble styles. `message_id` is a stable
+    /// id for the assistant turn; user echoes carry an empty string.
     Message {
-        /// The assistant text chunk.
+        /// The text content of the bubble.
         text: String,
-        /// A stable id for the message this chunk belongs to.
+        /// A stable id for the message this chunk belongs to (empty for user
+        /// echoes).
         message_id: String,
+        /// `"user"` or `"assistant"` — the bubble role (Task 7).
+        role: String,
     },
     /// `maestro.routing_executed` — a deterministic `@workarea` route fired
     /// (408's `pre_parse` → resolve → dispatch).
@@ -100,10 +107,15 @@ impl MaestroEvent {
     /// `checks.*` frame discipline.
     pub fn to_frame(&self) -> Vec<u8> {
         let value = match self {
-            MaestroEvent::Message { text, message_id } => serde_json::json!({
+            MaestroEvent::Message {
+                text,
+                message_id,
+                role,
+            } => serde_json::json!({
                 "kind": self.kind(),
                 "text": text,
                 "message_id": message_id,
+                "role": role,
             }),
             MaestroEvent::RoutingExecuted { targets, body } => serde_json::json!({
                 "kind": self.kind(),
@@ -188,7 +200,8 @@ mod tests {
         assert_eq!(
             MaestroEvent::Message {
                 text: String::new(),
-                message_id: String::new()
+                message_id: String::new(),
+                role: "assistant".into(),
             }
             .kind(),
             "maestro.message"
@@ -227,11 +240,13 @@ mod tests {
         let ev = MaestroEvent::Message {
             text: "hello".into(),
             message_id: "m-1".into(),
+            role: "assistant".into(),
         };
         let v = parse_frame(&ev);
         assert_eq!(v["kind"], "maestro.message");
         assert_eq!(v["text"], "hello");
         assert_eq!(v["message_id"], "m-1");
+        assert_eq!(v["role"], "assistant");
 
         let ev = MaestroEvent::RoutingExecuted {
             targets: vec!["bach".into(), "mozart".into()],
@@ -287,7 +302,29 @@ mod tests {
         let reached = sender.emit(MaestroEvent::Message {
             text: "x".into(),
             message_id: "m".into(),
+            role: "assistant".into(),
         });
         assert_eq!(reached, 0);
+    }
+
+    /// TDD (Task 7): a user-turn echo emits a `role:"user"` `maestro.message`
+    /// frame that a subscriber receives with the correct fields.
+    #[tokio::test]
+    async fn user_turn_emits_role_user_message_event() {
+        let sender = MaestroEventSender::new();
+        let mut rx = sender.frame_sender().subscribe();
+        let body = "what are my workareas doing?";
+        let reached = sender.emit(MaestroEvent::Message {
+            text: body.to_string(),
+            message_id: String::new(), // user echoes carry empty message_id
+            role: "user".to_string(),
+        });
+        assert_eq!(reached, 1, "one live subscriber");
+        let frame = rx.recv().await.expect("frame received");
+        let v: serde_json::Value = serde_json::from_slice(&frame.frame).expect("json");
+        assert_eq!(v["kind"], "maestro.message");
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["text"], body);
+        assert_eq!(v["message_id"], "");
     }
 }

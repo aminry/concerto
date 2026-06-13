@@ -345,6 +345,10 @@ impl MaestroHandle {
             ParseOutcome::Freeform(body) => {
                 // Freeform goes to the Maestro LLM — gated on the inert state.
                 self.guard_llm().await?;
+                // Echo + persist the user turn (Task 7) before forwarding so
+                // the chat bubble appears immediately; best-effort, never
+                // blocks the forward.
+                self.record_user_turn(&body).await;
                 self.forward_freeform(&body).await?;
                 Ok(SendOutcome::Forwarded)
             }
@@ -455,6 +459,32 @@ impl MaestroHandle {
             &self.inner.persistence,
         )
         .await
+    }
+
+    /// Publish the user's turn to `maestro.events` (immediate bubble,
+    /// `role="user"`) and persist it to the maestro chat.  Best-effort: a
+    /// persistence hiccup must not block the forward.
+    async fn record_user_turn(&self, body: &str) {
+        self.inner.events.emit(crate::maestro::events::MaestroEvent::Message {
+            text: body.to_string(),
+            message_id: String::new(),
+            role: "user".to_string(),
+        });
+        if let Ok(chat_id) = self.ensure_maestro_chat().await {
+            if let Err(e) = concerto_persist::chat_messages::insert_user_message(
+                &self.inner.persistence,
+                &chat_id,
+                body,
+            )
+            .await
+            {
+                tracing::warn!(
+                    target: "concerto::maestro",
+                    error = %e,
+                    "failed to persist maestro user turn"
+                );
+            }
+        }
     }
 
     /// Forward freeform text to the live Maestro session's stdin via the agent
@@ -1256,6 +1286,45 @@ mod tests {
             state.maestro_session_id, "maestro-sess",
             "live session id is load-bearing for 417"
         );
+    }
+
+    // -- Task 7: record_user_turn emits + persists ---------------------------
+
+    /// `record_user_turn` emits a `role:"user"` `maestro.message` frame on the
+    /// events channel and persists the text as a `chat_messages` row in the
+    /// maestro chat. This tests both the event side (subscriber receives the
+    /// frame with `role:"user"`) and the DB side (the row is readable via
+    /// `list_in_day_range`).
+    #[tokio::test]
+    async fn record_user_turn_emits_event_and_persists_row() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        let mut rx = handle.inner.events.frame_sender().subscribe();
+
+        handle.record_user_turn("what are my workareas doing?").await;
+
+        // -- event side --
+        let frame = rx.recv().await.expect("frame received");
+        let v: serde_json::Value = serde_json::from_slice(&frame.frame).expect("json");
+        assert_eq!(v["kind"], "maestro.message");
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["text"], "what are my workareas doing?");
+        assert_eq!(v["message_id"], "", "user echoes carry empty message_id");
+
+        // -- DB side: the row must be visible via `list_in_day_range` --
+        let chat_id = handle.ensure_maestro_chat().await.expect("chat id");
+        let rows = concerto_persist::chat_messages::list_in_day_range(
+            persistence.readers(),
+            &chat_id,
+            0,
+            i64::MAX,
+        )
+        .await
+        .expect("list");
+        assert_eq!(rows.len(), 1, "one persisted user-turn row");
+        assert_eq!(rows[0].role, "user");
+        let content: serde_json::Value =
+            serde_json::from_str(&rows[0].content_json).expect("content_json");
+        assert_eq!(content["text"], "what are my workareas doing?");
     }
 
     // -- compose_user_envelope: stream-json framing --------------------------

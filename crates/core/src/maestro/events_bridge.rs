@@ -78,6 +78,7 @@ pub fn spawn_maestro_events_bridge(
                         events.emit(MaestroEvent::Message {
                             text: m.text,
                             message_id: m.message_id,
+                            role: "assistant".to_string(),
                         });
                     }
                 }
