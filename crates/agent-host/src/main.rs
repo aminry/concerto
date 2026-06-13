@@ -814,7 +814,7 @@ mod unix {
         info!(socket = ?cli.socket, "host bridge listening");
 
         let agent_kind = agent_kind_from_bin(&cli.agent_bin);
-        let pty_handle = match cli.io_mode {
+        let session_handle = match cli.io_mode {
             IoMode::Pty => spawn_pty_task(&cli, state.clone(), stdin_rx, resize_rx),
             IoMode::Pipe => spawn_pipe_task(&cli, state.clone(), stdin_rx, resize_rx),
         };
@@ -879,11 +879,11 @@ mod unix {
             }
         });
 
-        // Wait for the PTY supervisor to return.
-        let (exit_code, signal) = match pty_handle.await {
+        // Wait for the session supervisor (PTY or pipe) to return.
+        let (exit_code, signal) = match session_handle.await {
             Ok(pair) => pair,
             Err(e) => {
-                error!(error = %e, "pty supervisor join failed");
+                error!(error = %e, "session supervisor join failed");
                 (None, None)
             }
         };
