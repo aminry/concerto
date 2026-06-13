@@ -252,6 +252,12 @@ impl MaestroHandle {
         if let Err(e) = crate::maestro::ensure_maestro_scratch_trusted(&scratch) {
             tracing::warn!(error = %e, "maestro: folder-trust preseed failed (best-effort)");
         }
+        // Best-effort MCP-server trust preseed so the strict Maestro session
+        // never blocks on Claude's interactive "trust this MCP server?" gate.
+        // Mirrors the folder-trust preseed above; a failure must NOT block spawn.
+        if let Err(e) = crate::maestro::ensure_maestro_mcp_trusted(&scratch) {
+            tracing::warn!(error = %e, "maestro: MCP-server trust preseed failed (best-effort)");
+        }
         let mut req = crate::maestro::maestro_start_request(wa_id, scratch);
         req.chat_id = Some(chat_id);
         self.inner.supervisor.start_session(req).await
