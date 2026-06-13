@@ -96,6 +96,121 @@ impl ParserPack for MaestroStreamJsonPack {
 mod tests {
     use super::*;
 
+    // Helper: run pack over a single complete input (appends \n if missing).
+    fn run(input: &str) -> Vec<ParseEvent> {
+        let pack = MaestroStreamJsonPack::new();
+        let mut buf = input.as_bytes().to_vec();
+        if buf.last() != Some(&b'\n') {
+            buf.push(b'\n');
+        }
+        pack.parse_chunk(&mut buf)
+    }
+
+    #[test]
+    fn multiple_text_parts_emit_multiple_messages() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"},{"type":"text","text":"World"}]}}"#;
+        let events = run(line);
+        let texts: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                ParseEvent::Message { role: MsgRole::Assistant, content } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["Hello", "World"]);
+    }
+
+    #[test]
+    fn empty_text_part_emits_no_message() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":""}]}}"#;
+        let events = run(line);
+        assert!(events.is_empty(), "expected no events for empty text, got {events:?}");
+    }
+
+    #[test]
+    fn tool_use_part_in_assistant_emits_nothing() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"foo","input":{}}]}}"#;
+        let events = run(line);
+        assert!(events.is_empty(), "tool_use must not bubble, got {events:?}");
+    }
+
+    #[test]
+    fn error_result_emits_message_then_turn_complete() {
+        let line = r#"{"type":"result","is_error":true,"result":"boom"}"#;
+        let events = run(line);
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0], ParseEvent::Message { role: MsgRole::Assistant, content } if content == "boom"),
+            "first event should be Message(boom), got {:?}",
+            events[0]
+        );
+        assert!(matches!(events[1], ParseEvent::TurnComplete));
+    }
+
+    #[test]
+    fn success_result_emits_only_turn_complete() {
+        let line = r#"{"type":"result","is_error":false,"result":"done"}"#;
+        let events = run(line);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ParseEvent::TurnComplete));
+    }
+
+    #[test]
+    fn garbage_line_skipped_does_not_abort_subsequent() {
+        let pack = MaestroStreamJsonPack::new();
+        let input = b"not json at all\n{\"type\":\"result\",\"is_error\":false}\n";
+        let mut buf = input.to_vec();
+        let events = pack.parse_chunk(&mut buf);
+        assert!(buf.is_empty(), "all complete lines must be consumed");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ParseEvent::TurnComplete));
+    }
+
+    #[test]
+    fn blank_line_skipped() {
+        let pack = MaestroStreamJsonPack::new();
+        let input = b"\n\n{\"type\":\"result\",\"is_error\":false}\n";
+        let mut buf = input.to_vec();
+        let events = pack.parse_chunk(&mut buf);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ParseEvent::TurnComplete));
+    }
+
+    #[test]
+    fn partial_line_retained_in_buf() {
+        let pack = MaestroStreamJsonPack::new();
+        // Feed first half with no newline — nothing should be emitted and partial must stay.
+        let half = b"{\"type\":\"result\",\"is_error\":false}";
+        let mut buf = half.to_vec();
+        let events = pack.parse_chunk(&mut buf);
+        assert!(events.is_empty(), "partial line must not be parsed");
+        assert_eq!(buf, half, "partial bytes must remain in buf");
+        // Now complete the line.
+        buf.push(b'\n');
+        let events = pack.parse_chunk(&mut buf);
+        assert!(buf.is_empty());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ParseEvent::TurnComplete));
+    }
+
+    #[test]
+    fn crlf_line_endings_handled() {
+        let pack = MaestroStreamJsonPack::new();
+        let input = b"{\"type\":\"result\",\"is_error\":false}\r\n";
+        let mut buf = input.to_vec();
+        let events = pack.parse_chunk(&mut buf);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ParseEvent::TurnComplete));
+    }
+
+    #[test]
+    fn system_and_user_lines_emit_nothing() {
+        let sys = r#"{"type":"system","subtype":"init","tools":[]}"#;
+        let usr = r#"{"type":"user","message":{"role":"user","content":[]}}"#;
+        assert!(run(sys).is_empty());
+        assert!(run(usr).is_empty());
+    }
+
     #[test]
     fn parses_assistant_text_and_turn_complete_from_fixture() {
         let pack = MaestroStreamJsonPack::new();
