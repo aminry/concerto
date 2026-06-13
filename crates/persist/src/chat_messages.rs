@@ -221,7 +221,7 @@ pub async fn list_by_chat(pool: &SqlitePool, chat_id: &str, limit: i64) -> Resul
          FROM chat_messages
          WHERE chat_id = ?
            AND superseded_by IS NULL
-         ORDER BY created_at DESC
+         ORDER BY created_at DESC, id DESC
          LIMIT ?",
     )
     .bind(chat_id)
