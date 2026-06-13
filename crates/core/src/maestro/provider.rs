@@ -218,6 +218,12 @@ fn resolve_cli_launch_spec(ctx: &MaestroLaunchContext, bin: String) -> MaestroLa
     let args = vec![
         "--model".to_string(),
         model.clone(),
+        // `--input-format stream-json` REQUIRES `--print` (claude CLI). With
+        // stream-json input, `--print` is the *streaming* multi-turn mode: it
+        // reads a stream of newline-delimited user-message envelopes from stdin
+        // and stays alive responding to each — exactly the long-lived Maestro
+        // session model (NOT the one-shot `-p "<prompt>"` form).
+        "--print".to_string(),
         "--input-format".to_string(),
         "stream-json".to_string(),
         "--output-format".to_string(),
@@ -476,6 +482,10 @@ mod tests {
         let spec = ClaudeCliProvider::new()
             .resolve_launch(&ctx_with(ManagedPolicy::default()))
             .expect("spec");
+        // `--input-format stream-json` REQUIRES `--print` (claude CLI errors out
+        // without it); `--print` + stream-json input is the streaming multi-turn
+        // mode, not the one-shot prompt form.
+        assert!(spec.args.iter().any(|a| a == "--print"));
         assert!(spec
             .args
             .windows(2)
