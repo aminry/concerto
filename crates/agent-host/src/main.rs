@@ -429,7 +429,6 @@ mod unix {
     /// Reuses the shared reader/writer pumps; stderr is drained to the host log
     /// (NOT the ring buffer — that feeds the stream-json stdout the parser reads);
     /// resize requests are ignored (pipes don't resize).
-    #[allow(dead_code)] // wired up in Task 4
     fn spawn_pipe_task(
         cli: &Cli,
         state: Arc<State>,
@@ -449,7 +448,6 @@ mod unix {
     /// Body of the pipe-mode supervisor. Runs on a blocking thread because
     /// `std::process::ChildStdout`/`ChildStdin` are synchronous `Read`/`Write`.
     #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)] // wired up in Task 4
     fn run_pipe(
         agent_bin: PathBuf,
         agent_args: Vec<String>,
@@ -816,7 +814,10 @@ mod unix {
         info!(socket = ?cli.socket, "host bridge listening");
 
         let agent_kind = agent_kind_from_bin(&cli.agent_bin);
-        let pty_handle = spawn_pty_task(&cli, state.clone(), stdin_rx, resize_rx);
+        let pty_handle = match cli.io_mode {
+            IoMode::Pty => spawn_pty_task(&cli, state.clone(), stdin_rx, resize_rx),
+            IoMode::Pipe => spawn_pipe_task(&cli, state.clone(), stdin_rx, resize_rx),
+        };
 
         // Accept loop. Runs concurrently with the PTY supervisor and
         // exits once the child is gone AND no Core is connected.
