@@ -441,7 +441,9 @@ mod unix {
         let resume = cli.resume_jsonl.clone();
         let rt = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            run_pipe(agent_bin, agent_args, cwd, resume, state, stdin_rx, resize_rx, rt)
+            run_pipe(
+                agent_bin, agent_args, cwd, resume, state, stdin_rx, resize_rx, rt,
+            )
         })
     }
 
@@ -527,7 +529,8 @@ mod unix {
         });
 
         // Pipes don't resize — drain the channel so the sender side never blocks.
-        let resize_thread = std::thread::spawn(move || while resize_rx.blocking_recv().is_some() {});
+        let resize_thread =
+            std::thread::spawn(move || while resize_rx.blocking_recv().is_some() {});
 
         let status = child.wait().ok();
         reader_handle.join().ok();
@@ -950,11 +953,16 @@ mod unix {
         fn io_mode_defaults_to_pty_and_parses_pipe() {
             let base = [
                 "concerto-agent-host",
-                "--agent-bin", "/bin/echo",
-                "--cwd", "/tmp",
-                "--socket", "/tmp/s.sock",
-                "--cookie", "0000000000000000000000000000000000000000000000000000000000000000",
-                "--final-info", "/tmp/f.json",
+                "--agent-bin",
+                "/bin/echo",
+                "--cwd",
+                "/tmp",
+                "--socket",
+                "/tmp/s.sock",
+                "--cookie",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "--final-info",
+                "/tmp/f.json",
             ];
             let cli = Cli::try_parse_from(base).expect("parse base");
             assert_eq!(cli.io_mode, IoMode::Pty);

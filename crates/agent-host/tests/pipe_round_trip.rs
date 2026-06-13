@@ -128,20 +128,15 @@ async fn pipe_round_trip() {
     let drain_deadline = Instant::now() + Duration::from_secs(120);
     loop {
         if Instant::now() > drain_deadline {
-            panic!(
-                "did not see StdoutBytes with 'ping' within 120s; stdout so far: {stdout:?}"
-            );
+            panic!("did not see StdoutBytes with 'ping' within 120s; stdout so far: {stdout:?}");
         }
 
-        let r =
-            tokio::time::timeout(Duration::from_secs(90), read_frame(&mut reader)).await;
+        let r = tokio::time::timeout(Duration::from_secs(90), read_frame(&mut reader)).await;
         let frame = match r {
             Ok(Ok(f)) => f,
             Ok(Err(FrameError::Eof)) => break,
             Ok(Err(e)) => panic!("read_frame: {e}"),
-            Err(_) => panic!(
-                "timeout waiting for StdoutBytes; stdout so far: {stdout:?}"
-            ),
+            Err(_) => panic!("timeout waiting for StdoutBytes; stdout so far: {stdout:?}"),
         };
         match frame {
             HostFrame::StdoutBytes { data, .. } => {
