@@ -49,6 +49,17 @@ mod unix {
     use tokio::task::JoinHandle;
     use tracing::{debug, error, info, warn};
 
+    /// How the agent-host wires the child's stdio. `Pty` (default) runs the agent
+    /// in a pseudo-terminal (interactive TUI agents). `Pipe` wires stdin/stdout as
+    /// plain pipes (a non-TTY) — required for `claude --print --input-format
+    /// stream-json`, which refuses a TTY. Selected by the Core per agent kind.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Default)]
+    pub enum IoMode {
+        #[default]
+        Pty,
+        Pipe,
+    }
+
     /// CLI surface locked by Task 21. See module docs for the rationale.
     #[derive(Parser, Debug)]
     #[command(
@@ -87,6 +98,10 @@ mod unix {
         /// [`FinalInfo`] for the schema.
         #[arg(long)]
         final_info: PathBuf,
+        /// stdio wiring for the child (default `pty`). The Core passes `pipe` for the
+        /// Maestro session.
+        #[arg(long, value_enum, default_value_t = IoMode::Pty)]
+        io_mode: IoMode, // consumed in the pipe-mode dispatch (Task 4)
     }
 
     /// Identifier for the "agent kind" surfaced in `Ready` frames. V0.1
@@ -779,6 +794,29 @@ mod unix {
 
     pub fn parse_cli() -> Cli {
         Cli::parse()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use clap::Parser;
+
+        #[test]
+        fn io_mode_defaults_to_pty_and_parses_pipe() {
+            let base = [
+                "concerto-agent-host",
+                "--agent-bin", "/bin/echo",
+                "--cwd", "/tmp",
+                "--socket", "/tmp/s.sock",
+                "--cookie", "0000000000000000000000000000000000000000000000000000000000000000",
+                "--final-info", "/tmp/f.json",
+            ];
+            let cli = Cli::try_parse_from(base).expect("parse base");
+            assert_eq!(cli.io_mode, IoMode::Pty);
+            let mut withpipe: Vec<&str> = base.to_vec();
+            withpipe.extend(["--io-mode", "pipe"]);
+            assert_eq!(Cli::try_parse_from(withpipe).unwrap().io_mode, IoMode::Pipe);
+        }
     }
 }
 
