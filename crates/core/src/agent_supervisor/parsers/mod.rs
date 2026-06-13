@@ -28,6 +28,11 @@ pub mod echo;
 // Task 402: the Maestro's structured/no-op pack (its tool calls ride the
 // MCP channel, not the PTY scrape — so it is NOT `ClaudeCodePack`).
 pub mod maestro;
+// Task 4 (Maestro live-conversation): structured stream-json parser that
+// reads Claude's `--output-format stream-json` event lines and emits
+// `ParseEvent::Message` + `ParseEvent::TurnComplete`. Replaces the no-op
+// `MaestroPack` in the Maestro chat path (Task 5 does the swap).
+pub mod maestro_stream_json;
 
 /// Locked trait for per-CLI parser packs.
 ///
