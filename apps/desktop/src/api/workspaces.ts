@@ -2,6 +2,13 @@
 
 import { callRpc } from "./client";
 
+/// The Maestro system workspace id. Mirrors the Core sentinel
+/// `MAESTRO_SYSTEM_WORKSPACE_ID` (`crates/persist/src/lib.rs`) — the hidden
+/// workspace that hosts the Maestro singleton session. The Core already filters
+/// it from `Workspaces.ListWorkspaces` (Task 4); we filter defensively here so
+/// no UI path ever surfaces it. Kept in ONE place in the TS layer.
+export const MAESTRO_SYSTEM_WORKSPACE_ID = "__maestro_system__";
+
 // Mirrors `concerto.v1.Workspace`. Per the proto serde shim,
 // timestamps land as `[seconds, nanos]` tuples or null.
 //
@@ -31,10 +38,19 @@ export type ListWorkspacesResponse = {
 export async function listWorkspaces(opts?: {
   includeArchived?: boolean;
 }): Promise<ListWorkspacesResponse> {
-  return callRpc<{ include_archived: boolean }, ListWorkspacesResponse>(
-    "Workspaces.ListWorkspaces",
-    { include_archived: opts?.includeArchived ?? false },
-  );
+  const res = await callRpc<
+    { include_archived: boolean },
+    ListWorkspacesResponse
+  >("Workspaces.ListWorkspaces", {
+    include_archived: opts?.includeArchived ?? false,
+  });
+  // Belt-and-suspenders: the Core already excludes the Maestro system
+  // workspace (Task 4), but filter defensively so no path surfaces it.
+  return {
+    workspaces: res.workspaces.filter(
+      (w) => w.id !== MAESTRO_SYSTEM_WORKSPACE_ID,
+    ),
+  };
 }
 
 export async function getWorkspace(id: string): Promise<Workspace> {

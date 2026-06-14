@@ -94,6 +94,12 @@ pub struct ApiServerActor {
     /// subject.
     #[cfg(unix)]
     suggestions: Option<SuggestionEngineHandle>,
+    /// Optional Maestro handle (Task 401.5 — frozen seam; 414 supplies the
+    /// real one). `#[cfg(unix)]` (over the agent supervisor, like
+    /// `suggestions`). `None` in 401.5; the `Maestro` service is served but
+    /// returns `Status::unimplemented`.
+    #[cfg(unix)]
+    maestro: Option<crate::maestro::MaestroHandle>,
     /// Optional VCS Provider handle. When `Some`, the gRPC `Vcs`
     /// service is registered (Task 45). The handle is cheap to clone
     /// and lazily resolves the `gh` binary path on first use.
@@ -119,6 +125,12 @@ pub struct ApiServerActor {
     /// (`auth.invalid_cert`) while the UDS peer-uid fast path still works
     /// (kernel attestation needs no issuer).
     auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
+    /// Optional `enterprise_data_privacy` resolver the `Vcs.FetchIssueByUrl` D10
+    /// path consults (Task 411). Built at boot from the managed policy +
+    /// persistence + opt-out config and attached to the `VcsHandler` (and the
+    /// bridge's) via `with_privacy_resolver`. `None` ⇒ the pre-resolver default
+    /// (`false`), preserving prior behavior on a Core that does not wire it.
+    vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
 }
 
 impl ApiServerActor {
@@ -139,11 +151,25 @@ impl ApiServerActor {
             skills_registry: None,
             #[cfg(unix)]
             suggestions: None,
+            #[cfg(unix)]
+            maestro: None,
             vcs: None,
             pairing: None,
             device_manager: None,
             auth_issuer: None,
+            vcs_privacy_resolver: None,
         }
+    }
+
+    /// Attach the `enterprise_data_privacy` resolver the `Vcs.FetchIssueByUrl`
+    /// D10 fix consults (Task 411). Additive builder; `boot.rs` chains it after
+    /// `with_managers`. Returns `self` for chaining.
+    pub fn with_vcs_privacy_resolver(
+        mut self,
+        resolver: Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>,
+    ) -> Self {
+        self.vcs_privacy_resolver = Some(resolver);
+        self
     }
 
     /// Build a new actor that also hosts the `Repositories` service.
@@ -169,10 +195,13 @@ impl ApiServerActor {
             skills_registry: None,
             #[cfg(unix)]
             suggestions: None,
+            #[cfg(unix)]
+            maestro: None,
             vcs: None,
             pairing: None,
             device_manager: None,
             auth_issuer: None,
+            vcs_privacy_resolver: None,
         }
     }
 
@@ -194,6 +223,7 @@ impl ApiServerActor {
         #[cfg(unix)] scheduler: Option<SchedulerHandle>,
         skills_registry: Option<SkillsRegistryHandle>,
         #[cfg(unix)] suggestions: Option<SuggestionEngineHandle>,
+        #[cfg(unix)] maestro: Option<crate::maestro::MaestroHandle>,
         vcs: Option<VcsHandle>,
         pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
         device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
@@ -213,10 +243,13 @@ impl ApiServerActor {
             skills_registry,
             #[cfg(unix)]
             suggestions,
+            #[cfg(unix)]
+            maestro,
             vcs,
             pairing,
             device_manager,
             auth_issuer,
+            vcs_privacy_resolver: None,
         }
     }
 }
@@ -254,7 +287,9 @@ impl Actor for ApiServerActor {
                     scheduler: self.scheduler.clone(),
                     skills_registry: self.skills_registry.clone(),
                     suggestions: self.suggestions.clone(),
+                    maestro: self.maestro.clone(),
                     vcs: self.vcs.clone(),
+                    vcs_privacy_resolver: self.vcs_privacy_resolver.clone(),
                 };
                 let (listener, bound) = crate::connect_bridge::bind(&bridge_cfg).await?;
                 tracing::info!(
@@ -278,10 +313,12 @@ impl Actor for ApiServerActor {
                 self.scheduler,
                 self.skills_registry,
                 self.suggestions,
+                self.maestro,
                 self.vcs,
                 self.pairing,
                 self.device_manager,
                 self.auth_issuer,
+                self.vcs_privacy_resolver,
                 ctx.shutdown.clone(),
             );
 
@@ -313,6 +350,7 @@ impl Actor for ApiServerActor {
                 self.pairing,
                 self.device_manager,
                 self.auth_issuer,
+                self.vcs_privacy_resolver,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -342,10 +380,12 @@ async fn run_uds(
     scheduler: Option<SchedulerHandle>,
     skills_registry: Option<SkillsRegistryHandle>,
     suggestions: Option<SuggestionEngineHandle>,
+    maestro: Option<crate::maestro::MaestroHandle>,
     vcs: Option<VcsHandle>,
     pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
     auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
+    vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -449,7 +489,9 @@ async fn run_uds(
         scheduler,
         skills_registry,
         suggestions,
+        maestro,
         vcs,
+        vcs_privacy_resolver,
         pairing,
         device_manager,
         auth_issuer,
@@ -512,7 +554,18 @@ pub struct CoreServiceSet {
     pub skills_registry: Option<SkillsRegistryHandle>,
     #[cfg(unix)]
     pub suggestions: Option<SuggestionEngineHandle>,
+    /// The live Maestro handle (Task 401.5 — frozen seam; 414 threads the real
+    /// one). `#[cfg(unix)]` because `MaestroHandle` lives in the `#[cfg(unix)]`
+    /// `maestro` module (over the agent supervisor, like `suggestions`).
+    /// `None` everywhere in 401.5 ⇒ the `Maestro` service is registered but
+    /// returns `Status::unimplemented`.
+    #[cfg(unix)]
+    pub maestro: Option<crate::maestro::MaestroHandle>,
     pub vcs: Option<VcsHandle>,
+    /// The `enterprise_data_privacy` resolver the `Vcs.FetchIssueByUrl` D10 path
+    /// consults (Task 411). `None` ⇒ the pre-resolver default (`false`).
+    /// Threaded alongside the `vcs` handle (additive; distinct field).
+    pub vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
     pub pairing: Option<Arc<crate::security::pairing::PairingCoordinator>>,
     pub device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
     pub auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
@@ -546,7 +599,10 @@ impl CoreServiceSet {
             skills_registry: None,
             #[cfg(unix)]
             suggestions: None,
+            #[cfg(unix)]
+            maestro: None,
             vcs: None,
+            vcs_privacy_resolver: None,
             pairing: None,
             device_manager: None,
             auth_issuer: None,
@@ -601,7 +657,10 @@ where
         skills_registry,
         #[cfg(unix)]
         suggestions,
+        #[cfg(unix)]
+        maestro,
         vcs,
+        vcs_privacy_resolver,
         pairing,
         device_manager,
         auth_issuer: _auth_issuer,
@@ -644,10 +703,12 @@ where
     // absent (the Iroh server serves the cross-platform subset).
     #[cfg(unix)]
     {
+        use crate::handlers::maestro::MaestroHandler;
         use crate::handlers::schedules::SchedulesHandler;
         use crate::handlers::sessions::SessionsHandler;
         use crate::handlers::streams::StreamsHandler;
         use crate::handlers::suggestions::SuggestionsHandler;
+        use concerto_proto::v1::maestro_server::MaestroServer;
         use concerto_proto::v1::schedules_server::SchedulesServer;
         use concerto_proto::v1::sessions_server::SessionsServer;
         use concerto_proto::v1::streams_server::StreamsServer;
@@ -678,6 +739,12 @@ where
             if let Some(vcs) = vcs.as_ref() {
                 handler = handler.with_vcs_events(vcs.checks_sender());
             }
+            // Task 414: wire the live Maestro's `maestro.events` producer so the
+            // `maestro.events` subject streams real events. `None` (Maestro
+            // disabled) leaves the subject valid-but-empty.
+            if let Some(maestro) = maestro.as_ref() {
+                handler = handler.with_maestro_events(maestro.events_sender());
+            }
             let streams_service = StreamsServer::new(handler);
             builder = builder.add_service(streams_service);
         }
@@ -689,13 +756,19 @@ where
             let suggestions_service = SuggestionsServer::new(SuggestionsHandler::new(suggestions));
             builder = builder.add_service(suggestions_service);
         }
+        // Task 401.5 (D8 site 1 of 2): the `Maestro` service is ALWAYS
+        // registered (so 415 can dial it), with a possibly-`None` handle. The
+        // handler returns `Status::unimplemented` until Task 414 threads a real
+        // `MaestroHandle` here (the `maestro: None` → `Some(handle)` flip). The
+        // second site is `connect_bridge::build_and_serve`.
+        let maestro_service = MaestroServer::new(MaestroHandler::new(maestro));
+        builder = builder.add_service(maestro_service);
     }
     if let Some(skills_registry) = skills_registry {
         let skills_service = SkillsServer::new(SkillsHandler::new(skills_registry));
         builder = builder.add_service(skills_service);
     }
     if let Some(vcs) = vcs {
-        #[allow(unused_mut)]
         let mut vcs_handler = VcsHandler::new(vcs);
         // Task 316: the "Send to agent" sink needs the `#[cfg(unix)]` agent
         // supervisor. On a non-unix Core the sink stays `None` and
@@ -705,6 +778,12 @@ where
             use crate::handlers::vcs::AgentSupervisorSink;
             vcs_handler = vcs_handler
                 .with_session_sink(std::sync::Arc::new(AgentSupervisorSink::new(supervisor)));
+        }
+        // Task 411 (D10): attach the `enterprise_data_privacy` resolver so
+        // `FetchIssueByUrl` enforces the per-workspace / managed-floor privacy
+        // gate instead of the hardcoded `false`.
+        if let Some(resolver) = vcs_privacy_resolver {
+            vcs_handler = vcs_handler.with_privacy_resolver(resolver);
         }
         let vcs_service = VcsServer::new(vcs_handler);
         builder = builder.add_service(vcs_service);

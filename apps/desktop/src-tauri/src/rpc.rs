@@ -12,6 +12,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use concerto_proto::v1::maestro_client::MaestroClient;
 use concerto_proto::v1::repositories_client::RepositoriesClient;
 use concerto_proto::v1::runtime_client::RuntimeClient;
 use concerto_proto::v1::schedules_client::SchedulesClient;
@@ -24,11 +25,12 @@ use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
     AddRepoRequest, CreatePrRequest, CreateSessionRequest, CreateWorkareaRequest,
     CreateWorkspaceRequest, EstimateConeSizeRequest, EstimateRepoSizeRequest, GetChecksRequest,
-    GetDiffRequest, GetPrRequest, ListRepositoriesRequest, ListSchedulesRequest,
-    ListSessionsRequest, ListSkillsRequest, ListTreeRequest, ListWorkareaReposRequest,
-    ListWorkareasRequest, ListWorkspacesRequest, McpScopeRequest, MergePrRequest, PermissionMode,
-    ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest,
-    SetRepoConeDefaultsRequest, StopSessionRequest, SubscribeRequest, UpdateWorkspaceRequest,
+    GetDiffRequest, GetDigestRequest, GetPrRequest, GetStateRequest, ListRepositoriesRequest,
+    ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest, ListTreeRequest,
+    ListWorkareaReposRequest, ListWorkareasRequest, ListWorkspacesRequest, MaestroAttachment,
+    MaestroMessageRequest, McpScopeRequest, MergePrRequest, PermissionMode, ResizeSessionRequest,
+    SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest, SetRepoConeDefaultsRequest,
+    StopSessionRequest, SubscribeRequest, UpdateWorkspaceRequest, VisibilityRequest,
     WorkareaId as ProtoWorkareaId, WorkspaceId as ProtoWorkspaceId, WorkspaceRepoSpec,
 };
 use serde::Deserialize;
@@ -271,6 +273,37 @@ struct MergePullRequestPayload {
     pr_number: i64,
     #[serde(default)]
     method: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MaestroAttachmentPayload {
+    #[serde(default)]
+    kind: String,
+    // `ref` is a Rust keyword; accept the wire `ref` (raw-ident on the proto
+    // side is `r#ref`) and the serde-default keeps V1.0's empty-seam callers
+    // (`attachments: []`) working.
+    #[serde(default, rename = "ref")]
+    r#ref: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SendToMaestroPayload {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    attachments: Vec<MaestroAttachmentPayload>,
+    // Task 8 scope hint: the active workspace the composer is showing. Absent
+    // ⇒ the Core falls back to the default (most-recent) workspace.
+    #[serde(default)]
+    workspace_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetWorkareaVisibilityPayload {
+    workarea_id: String,
+    // `MaestroVisibility` enum tag (prost serializes the enum as its i32
+    // ordinal on the wire).
+    visibility: i32,
 }
 
 /// Dispatch one unary `"<Service>.<Rpc>"` call over an already-resolved channel.
@@ -718,6 +751,57 @@ where
                     repository_id: req.repository_id,
                     pr_number: req.pr_number,
                     method: req.method,
+                })
+                .await
+                .map(|_| Value::Null)
+        }
+        "Maestro.SendToMaestro" => {
+            let req: SendToMaestroPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for SendToMaestro: {e}"))
+            })?;
+            let mut client = MaestroClient::new(channel);
+            client
+                .send_to_maestro(MaestroMessageRequest {
+                    text: req.text,
+                    attachments: req
+                        .attachments
+                        .into_iter()
+                        .map(|a| MaestroAttachment {
+                            kind: a.kind,
+                            r#ref: a.r#ref,
+                        })
+                        .collect(),
+                    // Task 8 scope hint from the active workspace; `None` ⇒
+                    // the Core defaults to the most-recent workspace.
+                    workspace_id: req.workspace_id,
+                })
+                .await
+                .map(|_| Value::Null)
+        }
+        "Maestro.GetDigest" => {
+            let mut client = MaestroClient::new(channel);
+            client
+                .get_digest(GetDigestRequest {})
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Maestro.GetState" => {
+            let mut client = MaestroClient::new(channel);
+            client
+                .get_state(GetStateRequest {})
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Maestro.SetWorkareaVisibility" => {
+            let req: SetWorkareaVisibilityPayload =
+                serde_json::from_value(payload).map_err(|e| {
+                    CoreClientError::Rpc(format!("invalid payload for SetWorkareaVisibility: {e}"))
+                })?;
+            let mut client = MaestroClient::new(channel);
+            client
+                .set_workarea_visibility(VisibilityRequest {
+                    workarea_id: req.workarea_id,
+                    visibility: req.visibility,
                 })
                 .await
                 .map(|_| Value::Null)

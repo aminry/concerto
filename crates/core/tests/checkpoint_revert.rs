@@ -187,6 +187,7 @@ async fn spawn_echo_session(
             cwd: cwd.to_path_buf(),
             permission_mode: None,
             resume_session_id: None,
+            chat_id: None,
         })
         .await
         .expect("start_session");
@@ -400,6 +401,7 @@ async fn two_turns_create_two_monotonic_refs_and_revert_resets_branch() {
                 created_at: cp1.created_at + 100,
                 parent_id: None,
                 superseded_by: None,
+                metadata: None,
             },
         )
         .await

@@ -63,6 +63,27 @@ pub static TOOL_CLASSES: LazyLock<HashMap<&'static str, ToolClass>> = LazyLock::
     // in the parser pack and the Task 43 intercept.
     m.insert("Delete", ToolClass::Dangerous);
 
+    // Task 402 (PHASE4_PLANNING §4.8 / D4): the 11 read-only Maestro MCP
+    // tools (design/08 §5.1). They classify `ReadOnly` so the Maestro's
+    // strict-mode session auto-approves them (the one strict loosening),
+    // while the 5 write tools (`route_prompt_to_session`,
+    // `fanout_to_sessions`, `create_workspace`, `create_workarea`,
+    // `set_workarea_paused`) + the side-channels (`propose_chip`,
+    // `notify_user`) are deliberately left UNclassified ⇒ `classify_tool`
+    // falls through to `Restricted` ⇒ strict ⇒ `MustAsk` ⇒ the existing
+    // `AwaitingApproval`/`ResolveApproval` confirmation-chip flow (Task 406).
+    m.insert("list_workspaces", ToolClass::ReadOnly);
+    m.insert("list_workareas", ToolClass::ReadOnly);
+    m.insert("list_sessions", ToolClass::ReadOnly);
+    m.insert("get_workspace_summary", ToolClass::ReadOnly);
+    m.insert("get_workarea_summary", ToolClass::ReadOnly);
+    m.insert("list_recent_activity", ToolClass::ReadOnly);
+    m.insert("list_active_schedules", ToolClass::ReadOnly);
+    m.insert("read_inbox_summary", ToolClass::ReadOnly);
+    m.insert("read_pr_set_for_workarea", ToolClass::ReadOnly);
+    m.insert("get_workarea_recent_commits", ToolClass::ReadOnly);
+    m.insert("cross_workarea_search", ToolClass::ReadOnly);
+
     m
 });
 
@@ -103,5 +124,55 @@ mod tests {
         // The Claude Code pack emits "Read" (capital R); a lowercase
         // "read" is treated as unknown and falls through to Restricted.
         assert_eq!(classify_tool("read"), ToolClass::Restricted);
+    }
+
+    /// Task 402: the 11 Maestro read tools (design/08 §5.1) all classify
+    /// `ReadOnly` so the strict Maestro session auto-approves them.
+    #[test]
+    fn maestro_read_tools_classify_read_only() {
+        const READ_TOOLS: [&str; 11] = [
+            "list_workspaces",
+            "list_workareas",
+            "list_sessions",
+            "get_workspace_summary",
+            "get_workarea_summary",
+            "list_recent_activity",
+            "list_active_schedules",
+            "read_inbox_summary",
+            "read_pr_set_for_workarea",
+            "get_workarea_recent_commits",
+            "cross_workarea_search",
+        ];
+        for tool in READ_TOOLS {
+            assert_eq!(
+                classify_tool(tool),
+                ToolClass::ReadOnly,
+                "{tool} must classify ReadOnly"
+            );
+        }
+    }
+
+    /// Task 402: the 5 write tools + the side-channels are UNclassified, so
+    /// they fall through to `Restricted` (⇒ strict ⇒ `MustAsk` ⇒ the
+    /// confirmation-chip flow). Asserting the fallthrough guards against a
+    /// later accidental `ReadOnly` mis-classification of a write tool.
+    #[test]
+    fn maestro_write_and_side_channel_tools_fall_through_to_restricted() {
+        const NON_READ_TOOLS: [&str; 7] = [
+            "route_prompt_to_session",
+            "fanout_to_sessions",
+            "create_workspace",
+            "create_workarea",
+            "set_workarea_paused",
+            "propose_chip",
+            "notify_user",
+        ];
+        for tool in NON_READ_TOOLS {
+            assert_eq!(
+                classify_tool(tool),
+                ToolClass::Restricted,
+                "{tool} must fall through to Restricted (not ReadOnly)"
+            );
+        }
     }
 }

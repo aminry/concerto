@@ -42,6 +42,13 @@ members = [
     # workspace so `cargo test --workspace` builds its self-tests but
     # nothing in the production build links against it.
     "crates/test-harness",
+    # Task 401 (Maestro live-integration): the bridge binary the Claude CLI
+    # spawns (named in the Maestro `.mcp.json`). It connects to the Core's
+    # Maestro-MCP unix socket and relays bytes both directions — stdin →
+    # socket, socket → stdout. Zero MCP knowledge; framing passes through
+    # transparently. Unix-only at runtime (`UnixStream`), but the crate
+    # builds everywhere.
+    "crates/maestro-bridge",
 ]
 default-members = ["crates/core", "crates/cli"]
 # Task 208: the cargo-fuzz crate (`crates/identity/fuzz`) is EXCLUDED from the
@@ -407,3 +414,19 @@ graphql_client = { version = "0.16", default-features = false }
 # its tree (`http-types`/`deadpool`/`assert-json-diff`) is permissive, vetted
 # cargo-deny-clean. Pure-Rust, cross-platform.
 wiremock = "0.6"
+# Task 401: `rmcp` — the official Rust SDK for the Model Context Protocol
+# (https://github.com/modelcontextprotocol/rust-sdk). It backs the FIRST MCP
+# *server* in the codebase: the in-process `concerto-maestro-mcp` stdio server
+# (`crates/core/src/maestro/mcp.rs`) the spawned Maestro CLI dials via its own
+# `--mcp-config` + `--strict-mcp-config` (design/08 §3.2, PHASE4_PLANNING D3/§4.1).
+# We enable only `server` (the `ServerHandler` trait + tool registry), `macros`
+# (the `#[tool_router]`/`#[tool_handler]` attribute macros), and `transport-io`
+# (the stdio/`AsyncRead`+`AsyncWrite` duplex transport the in-process pipe-pair
+# rides). NO `reqwest`/`*-http`/`native-tls` features — Maestro's MCP channel is
+# a local stdio pipe to the agent host, not a network listener — so the tree
+# stays openssl-free (`cargo tree -i openssl-sys` stays EMPTY, Task 112 posture).
+# License `Apache-2.0` (clears `deny.toml`'s allow-list); its transitive tree
+# (`schemars`/`serde`/`tokio`/`pin-project-lite`/`pastey`/…) is all permissive
+# MIT/Apache-2.0, already ratified. `cargo deny check` is run on the resolved
+# tree before commit; any new SPDX or advisory is an operator Stop-and-ask.
+rmcp = { version = "1", default-features = false, features = ["server", "macros", "transport-io"] }

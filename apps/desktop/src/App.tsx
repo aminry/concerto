@@ -12,6 +12,7 @@ import { useEffect, useRef } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AppLayout } from "./components/AppLayout";
+import { MaestroChat } from "./components/maestro/MaestroChat";
 import { ConnectCorePicker } from "./components/ConnectCorePicker";
 import { EditWorkspaceModal } from "./components/EditWorkspaceModal";
 import { NewWorkspaceModal } from "./components/NewWorkspaceModal";
@@ -42,8 +43,14 @@ function App(): JSX.Element {
   useThemeController();
   return (
     <QueryClientProvider client={queryClient}>
-      <div className="h-screen w-screen bg-background text-foreground font-sans">
-        <AppLayout />
+      <div className="flex h-screen w-screen flex-col bg-background text-foreground font-sans">
+        {/* The always-present Concerto chat top bar (Task 415, design/08 §1)
+            sits ABOVE the three-panel split so it persists across
+            workspace/workarea selection. */}
+        <MaestroChat />
+        <div className="min-h-0 flex-1">
+          <AppLayout />
+        </div>
         <NewWorkspaceModal />
         <EditWorkspaceModal />
         <SettingsPanel />

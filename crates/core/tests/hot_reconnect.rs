@@ -210,6 +210,7 @@ fn adopts_surviving_host_after_supervisor_restart() {
                 cwd: cwd.clone(),
                 permission_mode: None,
                 resume_session_id: None,
+                chat_id: None,
             })
             .await
             .expect("start_session via A");

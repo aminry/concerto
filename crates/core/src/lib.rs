@@ -28,6 +28,12 @@ pub mod llm;
 pub mod log_fields;
 pub mod log_filter;
 pub mod logging;
+// Task 401: the Maestro Agent subsystem (cluster-M root) — the in-process
+// `concerto-maestro-mcp` MCP server + the FROZEN 16-tool registry. `cfg(unix)`
+// because it sits over the `cfg(unix)` agent supervisor (mirrors
+// `agent_supervisor`/`scheduler`/`suggestions`); the Windows lane omits it.
+#[cfg(unix)]
+pub mod maestro;
 pub mod pid_file;
 pub mod repo_manager;
 pub mod runtime;

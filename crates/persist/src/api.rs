@@ -747,6 +747,36 @@ pub struct ScheduleRun {
 }
 
 // ---------------------------------------------------------------------------
+// Maestro state (Task 403).
+//
+// The persistence root of the Maestro budget + lifecycle state. The schema is
+// locked by migration 0015 (`design/08 §4.1`) as a `CHECK (id = 1)` singleton:
+// exactly one row ever exists. This is the FIRST daily-counter/budget table —
+// `schedules` (0004) deferred its token columns, so there is no precedent.
+//
+// FROZEN per `tasks/v1.0/PHASE4_PLANNING.md §4.6` (D6). Task 412 consumes the
+// budget counters via [`crate::maestro_state::bump_daily_counters`] /
+// [`crate::maestro_state::reset_budget`] / [`crate::maestro_state::get`];
+// Task 414 reads `enabled`/`last_digest_at`; Task 410 attaches daily summaries
+// to the `chats(kind='maestro')` row bootstrapped by
+// [`crate::maestro_state::ensure_maestro_chat`].
+// ---------------------------------------------------------------------------
+
+/// Row-shaped projection of the singleton `maestro_state` row (migration
+/// 0015 / `design/08 §4.1`). Always `id = 1`. `enabled` maps the stored
+/// `INTEGER` 0/1 to a `bool`; `last_digest_at` is `None` until the first
+/// digest. All timestamps are unix-ms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaestroState {
+    pub id: i64,
+    pub daily_in_today: i64,
+    pub daily_out_today: i64,
+    pub budget_resets_at: i64,
+    pub last_digest_at: Option<i64>,
+    pub enabled: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Skills (Task 39).
 //
 // V0.1 surface: discovery (personal + workspace scopes) + per-(scope,

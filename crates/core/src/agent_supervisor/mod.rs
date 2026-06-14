@@ -55,6 +55,9 @@ pub use actor::{
     AgentKind, AgentSupervisorActor, AgentSupervisorConfig, AgentSupervisorHandle, SessionIoChunk,
     StartSessionRequest,
 };
+// Task 402: the Maestro spawn-config constructor pre-seeds its scratch-dir
+// trust via the same helper workarea sessions use.
+pub(crate) use actor::ensure_claude_trusts_dir;
 pub use adopt::adopt_orphans;
 pub use cold_resume::{cold_resume_session, maybe_auto_resume};
 pub use events::{AgentEvent, MessageRole};

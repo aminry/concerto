@@ -47,6 +47,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "checkpoints",
     "tool_approvals",
     "devices",
+    "maestro_state",
 ];
 
 /// Every index the design doc names.
@@ -331,6 +332,27 @@ async fn insert_and_read_back_every_table() {
     .await
     .expect("insert tool_approvals");
 
+    // ----- maestro_state (migration 0015) -----------------------------------
+    // The `id = 1` singleton (CHECK (id = 1)). PK is an INTEGER, not the TEXT
+    // id every other table uses, so it gets a dedicated scalar read-back below
+    // rather than an entry in the String-keyed `counts` vec.
+    sqlx::query("INSERT INTO maestro_state (id, budget_resets_at) VALUES (1, ?)")
+        .bind(1_700_000_010_000_i64)
+        .execute(&mut *w)
+        .await
+        .expect("insert maestro_state");
+
+    // The singleton CHECK must reject any id other than 1.
+    let bad_singleton =
+        sqlx::query("INSERT INTO maestro_state (id, budget_resets_at) VALUES (2, ?)")
+            .bind(1_700_000_011_000_i64)
+            .execute(&mut *w)
+            .await;
+    assert!(
+        bad_singleton.is_err(),
+        "maestro_state CHECK(id = 1) must reject id = 2; got Ok"
+    );
+
     // ----- read back each ---------------------------------------------------
     // One representative `SELECT` per table catches column-name drift.
     let counts: Vec<(&str, &str)> = vec![
@@ -374,6 +396,13 @@ async fn insert_and_read_back_every_table() {
     .await
     .expect("read workarea_repos");
     assert_eq!(n_war, 1);
+
+    // ----- read back the maestro_state singleton (INTEGER PK) ---------------
+    let maestro_id: i64 = sqlx::query_scalar("SELECT id FROM maestro_state WHERE id = 1")
+        .fetch_one(&mut *w)
+        .await
+        .expect("read maestro_state singleton");
+    assert_eq!(maestro_id, 1, "maestro_state singleton id round-trip");
 }
 
 /// Foreign-key enforcement must fire on `workareas.workspace_id`. This

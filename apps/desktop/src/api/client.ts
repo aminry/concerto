@@ -41,6 +41,15 @@ export type RpcMethod =
   // strings match the Rust shell dispatch table exactly.
   | "Repositories.ListTree"
   | "Repositories.SetRepoConeDefaults"
+  // Task 418 — plan-mode cone suggestion (Task 411's FROZEN
+  // `Repositories.SuggestCones` RPC: `SuggestConesRequest{repository_id,
+  // issue_text}` → `SuggestConesResponse{cone_paths}`). Backs the
+  // create-workspace-from-description front door (design/08 §3.8). The string
+  // matches the Rust shell dispatch table (`<Service>.<Rpc>`) exactly; 411's
+  // arm is merged. This arm is kept in its OWN Task-418 region, disjoint from
+  // the `Maestro.*` block below (Task 417's territory), so a later rebase
+  // auto-merges.
+  | "Repositories.SuggestCones"
   | "Sessions.ListSessions"
   | "Sessions.GetSession"
   | "Sessions.CreateSession"
@@ -48,6 +57,11 @@ export type RpcMethod =
   | "Sessions.StopSession"
   | "Sessions.DeleteSession"
   | "Sessions.ResizeSession"
+  // Task 33 — resolve a pending tool-approval gate (`AwaitingApproval` →
+  // `ResolveApprovalRequest`). The renderer surfaces the gate and sends the
+  // user's decision back; Task 415's Maestro write-tool confirmation chip
+  // reuses this exact path (no new RPC). Matches the Rust shell dispatch arm.
+  | "Sessions.ResolveApproval"
   | "Sessions.ListMcpServers"
   | "Schedules.ListSchedules"
   | "Skills.ListSkills"
@@ -67,7 +81,27 @@ export type RpcMethod =
   | "Workareas.SetMergeOrder"
   | "Workareas.GetWorkareaMergePlan"
   | "Workareas.RevertWorkareaPrSet"
-  | "Workareas.MergeWorkareaPrSet";
+  | "Workareas.MergeWorkareaPrSet"
+  // Task 415 — the Maestro chat surface (the always-present "Concerto chat"
+  // top bar). These strings are the renderer↔shell contract for the
+  // `service Maestro` FROZEN by Task 401.5 (`maestro.proto`:
+  // SendToMaestro / GetDigest / SetWorkareaVisibility). They are listed here
+  // as a pure additive TS type so `src/api/maestro.ts` can call `callRpc`;
+  // the matching Rust shell dispatch arm in `src-tauri/src/commands.rs` is
+  // Task 414's work (it fills 401.5's `Status::unimplemented` handler and
+  // wires live data). Until 414 lands the renderer drives these against a
+  // mocked `invoke` double (the Tier-2 spine — see `maestro.test.ts`).
+  | "Maestro.SendToMaestro"
+  | "Maestro.GetDigest"
+  // Task 416 — the additive `Maestro.GetState` read-model RPC (the live
+  // budget counters/caps + inert state + the Maestro singleton session id).
+  // Task 417's binding consumes it to feed `<BudgetBanner>`/`<DigestPanel>`
+  // and to discover the session whose write-tool `AwaitingApproval` frames
+  // become confirmation chips. Kept in the Maestro region so a rebase against
+  // sibling task 418 (which appends `Repositories.SuggestCones` in the
+  // Repositories region) auto-merges.
+  | "Maestro.GetState"
+  | "Maestro.SetWorkareaVisibility";
 
 export async function callRpc<TRequest, TResponse>(
   method: RpcMethod,

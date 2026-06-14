@@ -18,7 +18,8 @@ use concerto_proto::v1::{
     AddRepoRequest, CloneProgress, CloneRequest, ConeStats, EstimateConeSizeRequest,
     EstimateRepoSizeRequest, ListRepositoriesRequest, ListRepositoriesResponse, ListTreeRequest,
     ListTreeResponse, PrewarmProgress, PrewarmRequest, Repository, SetConesRequest,
-    SetConesResponse, SetRepoConeDefaultsRequest, SizeReport, TreeEntry,
+    SetConesResponse, SetRepoConeDefaultsRequest, SizeReport, SuggestConesRequest,
+    SuggestConesResponse, TreeEntry,
 };
 use futures::Stream;
 use tokio::sync::mpsc;
@@ -363,6 +364,31 @@ impl RepositoriesService for RepositoriesHandler {
         Ok(Response::new(ListRepositoriesResponse {
             repositories: rows.into_iter().map(repository_to_proto).collect(),
         }))
+    }
+
+    #[tracing::instrument(skip_all, name = "Repositories::SuggestCones")]
+    async fn suggest_cones(
+        &self,
+        request: Request<SuggestConesRequest>,
+    ) -> Result<Response<SuggestConesResponse>, Status> {
+        let req = request.into_inner();
+        if req.repository_id.is_empty() {
+            return Err(Status::invalid_argument("repository_id is required"));
+        }
+        let repo = RepositoryId(req.repository_id);
+        // Task 411: delegate to the seam Task 305 froze. With no
+        // Maestro-backed `ConeSuggester` injected (a Core built without the
+        // boot wiring, or a unit test that omits it) the seam returns
+        // `ConeSuggestError::Unwired`, which the FROZEN
+        // `cone_suggest_error_to_status` maps to `UNIMPLEMENTED` — NOT an
+        // empty success. With one injected (the LIVE P4 path) the suggested
+        // cone set is returned.
+        let cones = self
+            .repo_manager
+            .suggest_cones(&repo, &req.issue_text)
+            .await
+            .map_err(cone_suggest_error_to_status)?;
+        Ok(Response::new(SuggestConesResponse { cone_paths: cones }))
     }
 }
 

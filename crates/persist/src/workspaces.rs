@@ -100,12 +100,21 @@ pub async fn get(pool: &SqlitePool, id: &WorkspaceId) -> Result<Option<Workspace
 
 /// List every workspace (read-only). Sorted by `name` for deterministic
 /// UI / test output.
+///
+/// The reserved system workspace (`MAESTRO_SYSTEM_WORKSPACE_ID`) is always
+/// excluded — it is an internal sentinel and must never appear in user-facing
+/// lists or in the Maestro's own `list_workspaces` read tool.
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Workspace>> {
     let rows = sqlx::query(
         "SELECT id, name, slug, icon, description,
                 permission_mode, created_at, archived_at
-         FROM workspaces ORDER BY name",
+         FROM workspaces
+         WHERE id != ?
+         ORDER BY name",
     )
+    // Bind the sentinel value from the crate-level const so the literal
+    // lives in exactly one place.
+    .bind(crate::MAESTRO_SYSTEM_WORKSPACE_ID)
     .fetch_all(pool)
     .await
     .map_err(|e| Error::Sqlx(Box::new(e)))?;
@@ -265,6 +274,78 @@ pub async fn set_settings_json(
     Ok(())
 }
 
+/// Set a single key on a workspace's `settings_json` object **without
+/// clobbering sibling keys** — the read-modify-write counterpart to
+/// [`set_settings_json`] (which overwrites the whole blob).
+///
+/// Task 413 (`design/08 §3.3`): the workspace-grain mirror of
+/// [`crate::workareas::set_settings_json_key`], used for the new
+/// `concerto_chat_full_chat_access` bool (no column, no migration). The
+/// existing blob is parsed as a JSON object, `key` is set to `value`, and the
+/// merged object is re-serialized + persisted — preserving `permission_mode`
+/// overrides and any future keys. A malformed/empty/non-object existing blob
+/// is treated defensively as `{}` (the bad value is discarded, the one key is
+/// written onto a fresh object).
+///
+/// Takes `&mut SqliteConnection` so the SELECT + UPDATE run on the same
+/// connection (the caller scopes the writer); the read uses the writer
+/// connection so a concurrent writer cannot interleave between read and write.
+pub async fn set_settings_json_key(
+    conn: &mut SqliteConnection,
+    id: &WorkspaceId,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<()> {
+    let existing: Option<String> = sqlx::query("SELECT settings_json FROM workspaces WHERE id = ?")
+        .bind(&id.0)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?
+        .map(|r| r.get::<String, _>("settings_json"));
+
+    let mut obj = match existing.as_deref() {
+        Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
+            // Only an object is a valid settings blob; anything else
+            // (malformed, a bare scalar, an array) is discarded → `{}`.
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        },
+        None => serde_json::Map::new(),
+    };
+    obj.insert(key.to_string(), value);
+
+    let payload = serde_json::to_string(&serde_json::Value::Object(obj))
+        .map_err(|e| Error::Internal(format!("serialize settings_json: {e}")))?;
+    sqlx::query("UPDATE workspaces SET settings_json = ? WHERE id = ?")
+        .bind(&payload)
+        .bind(&id.0)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(())
+}
+
+/// Read one bool key from `workspaces.settings_json`. Returns `None` when the
+/// row is absent, the key is absent, or the stored value is not a JSON bool —
+/// the caller defaults to `false` (e.g. `concerto_chat_full_chat_access`,
+/// Task 413). This layer stays dumb storage; the policy default lives in the
+/// caller (see `maestro::privacy`).
+pub async fn get_settings_json_bool(
+    pool: &SqlitePool,
+    id: &WorkspaceId,
+    key: &str,
+) -> Result<Option<bool>> {
+    let raw: Option<String> = get_settings_json(pool, id).await?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let obj = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => return Ok(None),
+    };
+    Ok(obj.get(key).and_then(serde_json::Value::as_bool))
+}
+
 /// True iff the provided sqlx error wraps SQLite's
 /// `SQLITE_CONSTRAINT_UNIQUE` (extended code `2067`). The workspace
 /// manager uses this to drive its slug auto-suffix retry.
@@ -368,6 +449,83 @@ fn row_to_workspace(row: sqlx::sqlite::SqliteRow) -> Workspace {
         permission_mode: row.get::<Option<String>, _>("permission_mode"),
         created_at: row.get::<i64, _>("created_at"),
         archived_at: row.get::<Option<i64>, _>("archived_at"),
+    }
+}
+
+#[cfg(test)]
+mod sentinel_tests {
+    use super::*;
+    use crate::{
+        api::{NewWorkspace, WorkspaceId},
+        MAESTRO_SYSTEM_WORKSPACE_ID,
+    };
+    use sqlx::SqlitePool;
+
+    async fn pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    async fn seed_ws(pool: &SqlitePool, id: &str, name: &str, slug: &str) {
+        let mut conn = pool.acquire().await.unwrap();
+        insert(
+            &mut conn,
+            NewWorkspace {
+                id: WorkspaceId(id.into()),
+                name: name.into(),
+                slug: slug.into(),
+                icon: None,
+                description: None,
+                permission_mode: None,
+                created_at: 0,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// `list_all` must exclude the reserved system workspace sentinel.
+    #[tokio::test]
+    async fn list_all_excludes_system_sentinel() {
+        let pool = pool().await;
+        // Insert one normal workspace and the reserved sentinel.
+        seed_ws(&pool, "ws-normal", "Normal Workspace", "normal-ws").await;
+        seed_ws(
+            &pool,
+            MAESTRO_SYSTEM_WORKSPACE_ID,
+            "Maestro (system)",
+            "__maestro_system__",
+        )
+        .await;
+
+        let all = list_all(&pool).await.unwrap();
+
+        // Only the normal workspace should appear; the sentinel is hidden.
+        assert_eq!(
+            all.len(),
+            1,
+            "expected 1 workspace, got {:?}",
+            all.iter().map(|w| &w.id.0).collect::<Vec<_>>()
+        );
+        assert_eq!(all[0].id.0, "ws-normal");
+    }
+
+    /// `get` by id must still return the sentinel (non-list queries unaffected).
+    #[tokio::test]
+    async fn get_still_returns_sentinel_by_id() {
+        let pool = pool().await;
+        seed_ws(
+            &pool,
+            MAESTRO_SYSTEM_WORKSPACE_ID,
+            "Maestro (system)",
+            "__maestro_system__",
+        )
+        .await;
+        let ws = get(&pool, &WorkspaceId(MAESTRO_SYSTEM_WORKSPACE_ID.into()))
+            .await
+            .unwrap();
+        assert!(ws.is_some(), "get by id must still return the sentinel row");
     }
 }
 
@@ -500,5 +658,87 @@ mod metadata_tests {
         assert_eq!(got[0].1, "[\"src\"]");
         assert_eq!(got[1].0 .0, "repoB");
         assert_eq!(got[1].1, "[]");
+    }
+
+    #[tokio::test]
+    async fn settings_json_key_round_trips_and_does_not_clobber() {
+        let pool = pool().await;
+        seed_ws(&pool, "ws-k", "N", "s-k").await;
+        let id = WorkspaceId("ws-k".into());
+
+        // Absent key ⇒ None (caller defaults to false).
+        assert_eq!(
+            get_settings_json_bool(&pool, &id, "concerto_chat_full_chat_access")
+                .await
+                .unwrap(),
+            None
+        );
+
+        // Set an unrelated key first, then the access key — both must survive.
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            set_settings_json_key(
+                &mut conn,
+                &id,
+                "permission_mode",
+                serde_json::Value::String("strict".into()),
+            )
+            .await
+            .unwrap();
+            set_settings_json_key(
+                &mut conn,
+                &id,
+                "concerto_chat_full_chat_access",
+                serde_json::Value::Bool(true),
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            get_settings_json_bool(&pool, &id, "concerto_chat_full_chat_access")
+                .await
+                .unwrap(),
+            Some(true)
+        );
+        // Non-clobber: the sibling key is intact.
+        let blob = get_settings_json(&pool, &id).await.unwrap().unwrap();
+        let obj: serde_json::Value = serde_json::from_str(&blob).unwrap();
+        assert_eq!(obj["permission_mode"], "strict");
+        assert_eq!(obj["concerto_chat_full_chat_access"], true);
+    }
+
+    #[tokio::test]
+    async fn settings_json_bool_rejects_non_bool_and_missing_row() {
+        let pool = pool().await;
+        seed_ws(&pool, "ws-b", "N", "s-b").await;
+        let id = WorkspaceId("ws-b".into());
+
+        // A non-bool stored value reads back as None (caller defaults false).
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            set_settings_json_key(
+                &mut conn,
+                &id,
+                "concerto_chat_full_chat_access",
+                serde_json::Value::String("yes".into()),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            get_settings_json_bool(&pool, &id, "concerto_chat_full_chat_access")
+                .await
+                .unwrap(),
+            None
+        );
+
+        // A non-existent workspace row ⇒ None (no panic).
+        assert_eq!(
+            get_settings_json_bool(&pool, &WorkspaceId("ghost".into()), "k")
+                .await
+                .unwrap(),
+            None
+        );
     }
 }

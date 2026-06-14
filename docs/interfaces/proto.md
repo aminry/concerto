@@ -319,6 +319,126 @@ message FileEntry {
 }
 ```
 
+## `crates/proto/proto/concerto/v1/maestro.proto`
+
+- package: `concerto.v1`
+
+### service `Maestro`
+
+```proto
+service Maestro {
+  // Send the user's chat input to the Maestro. V1.0 is text-only
+  // (design/08 R-9); `attachments` is a frozen-but-empty seam.
+  rpc SendToMaestro(MaestroMessageRequest) returns (google.protobuf.Empty);
+  // The digest rendered above the chat composer (design/08 §3.6). Task 414
+  // wires the live handle; Task 409 generates the digest content.
+  rpc GetDigest(GetDigestRequest) returns (Digest);
+  // Per-workarea Maestro visibility toggle (design/08 §3.3). Task 413
+  // enforces the summary blanking this drives.
+  rpc SetWorkareaVisibility(VisibilityRequest) returns (google.protobuf.Empty);
+  // Read the live Maestro state (budget counters + caps, enabled/inert,
+  // last-digest cursor, and the live Maestro session id) so the Desktop can
+  // render the budget meter (80% amber / 100% red) and subscribe to the
+  // Maestro session's write-tool approvals (Task 417). Task 416: ADDITIVE
+  // GetState — existing field numbers above are unchanged.
+  rpc GetState(GetStateRequest) returns (MaestroState);
+}
+```
+
+### message `MaestroMessageRequest`
+
+```proto
+message MaestroMessageRequest {
+  string text = 1;
+  repeated MaestroAttachment attachments = 2;
+  // Scope hint (Task 8): resolve a bare `@composer` within this workspace
+  // first; absent ⇒ fall back to the default (most-recent) workspace. The
+  // Maestro stays global — this only sets the DEFAULT scope for unqualified
+  // names. `optional` ⇒ `Option<String>` in the generated Rust struct.
+  optional string workspace_id = 3;
+}
+```
+
+### message `MaestroAttachment`
+
+```proto
+message MaestroAttachment {
+  string kind = 1;   // e.g. "diff" | "commit_url" (V1.5)
+  string ref = 2;    // opaque reference resolved by the consumer
+}
+```
+
+### message `GetDigestRequest`
+
+```proto
+message GetDigestRequest {}
+```
+
+### message `Digest`
+
+```proto
+message Digest {
+  string text = 1;
+  repeated MaestroChip chips = 2;
+  int64 generated_at_ms = 3;   // unix epoch ms (no google.protobuf.Timestamp)
+  bool stale = 4;              // R-7: last-good digest shown with a stale badge when inert
+}
+```
+
+### message `MaestroChip`
+
+```proto
+message MaestroChip {
+  string rule_id = 1;
+  string workarea_id = 2;
+  string title = 3;
+  int32 priority = 4;
+  int64 created_at_ms = 5;
+  string action = 6;
+}
+```
+
+### message `VisibilityRequest`
+
+```proto
+message VisibilityRequest {
+  string workarea_id = 1;
+  MaestroVisibility visibility = 2;
+}
+```
+
+### enum `MaestroVisibility`
+
+```proto
+enum MaestroVisibility {
+  MAESTRO_VISIBILITY_UNSPECIFIED = 0;
+  MAESTRO_VISIBILITY_FULL = 1;
+  MAESTRO_VISIBILITY_HARD_FACTS_ONLY = 2;
+}
+```
+
+### message `GetStateRequest`
+
+```proto
+message GetStateRequest {}
+```
+
+### message `MaestroState`
+
+```proto
+message MaestroState {
+  bool enabled = 1;             // Maestro enabled (vs disabled by user/policy).
+  int64 daily_in_today = 2;     // Input tokens spent today (cumulative).
+  int64 daily_out_today = 3;    // Output tokens spent today (cumulative).
+  int64 in_cap = 4;             // Daily input cap (412: 200K).
+  int64 out_cap = 5;            // Daily output cap (412: 50K).
+  int64 last_digest_at_ms = 6;  // Unix-ms of last digest; 0 ⇒ never.
+  bool inert = 7;               // True when the LLM path is inert (budget/policy).
+  string inert_reason = 8;      // "" | "budget_exhausted" | "disabled_by_policy".
+  string maestro_session_id = 9; // Live Maestro session id; "" when none.
+}
+```
+
 ## `crates/proto/proto/concerto/v1/repositories.proto`
 
 - package: `concerto.v1`
@@ -514,6 +634,23 @@ message SetRepoConeDefaultsRequest {
 }
 ```
 
+### message `SuggestConesRequest`
+
+```proto
+message SuggestConesRequest {
+  string repository_id = 1;
+  string issue_text = 2;
+}
+```
+
+### message `SuggestConesResponse`
+
+```proto
+message SuggestConesResponse {
+  repeated string cone_paths = 1;
+}
+```
+
 ### service `Repositories`
 
 ```proto
@@ -527,6 +664,7 @@ service Repositories {
   rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
   rpc ListTree(ListTreeRequest) returns (ListTreeResponse);
   rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (Repository);
+  rpc SuggestCones(SuggestConesRequest) returns (SuggestConesResponse);
 }
 ```
 
@@ -1650,6 +1788,10 @@ message FetchIssueByUrlRequest {
   // A full issue URL (e.g. `https://linear.app/acme/issue/ENG-123/...`,
   // `https://acme.atlassian.net/browse/PROJ-45`, or a github.com issue URL).
   string url = 1;
+  // Workspace scope for the enterprise_data_privacy resolver (Task 411, D10).
+  // Empty ⇒ the Core-wide ManagedPolicy floor. Additive; existing callers
+  // (which sent only `url`) keep working — they get the managed floor.
+  string workspace_id = 2;
 }
 ```
 

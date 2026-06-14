@@ -224,6 +224,23 @@ message SetRepoConeDefaultsRequest {
   repeated string cone_defaults = 2;
 }
 
+// Inputs for `Repositories.SuggestCones` (Task 411, design/08 §3.8). The
+// plan-mode cone suggestion the Maestro `create_workspace_from_description`
+// flow calls: given an added repository and the parsed issue/description
+// text, the Repo Mgr delegates to the injected Maestro-backed ConeSuggester
+// (Task 305's FROZEN trait seam). With no suggester injected the RPC returns
+// UNIMPLEMENTED (via cone_suggest_error_to_status). FROZEN by PHASE4_PLANNING.
+message SuggestConesRequest {
+  string repository_id = 1;
+  string issue_text = 2;
+}
+
+// Suggested cone set (forward-slash, repo-root-relative directory prefixes),
+// the same shape `SetCones`/the cone-picker consume.
+message SuggestConesResponse {
+  repeated string cone_paths = 1;
+}
+
 service Repositories {
   rpc AddRepository(AddRepoRequest) returns (Repository);
   rpc Clone(CloneRequest) returns (stream CloneProgress);
@@ -234,4 +251,5 @@ service Repositories {
   rpc EstimateConeSize(EstimateConeSizeRequest) returns (ConeStats);
   rpc ListTree(ListTreeRequest) returns (ListTreeResponse);
   rpc SetRepoConeDefaults(SetRepoConeDefaultsRequest) returns (Repository);
+  rpc SuggestCones(SuggestConesRequest) returns (SuggestConesResponse);
 }

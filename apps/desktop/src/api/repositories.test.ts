@@ -15,6 +15,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   addRepository,
   estimateRepoSize,
+  suggestCones,
   type SizeReport,
 } from "./repositories";
 
@@ -55,6 +56,39 @@ describe("estimateRepoSize binding", () => {
       estimateRepoSize("git@private:repo.git"),
     ).rejects.toMatchObject({
       message: expect.stringContaining("authentication required"),
+    });
+  });
+});
+
+describe("suggestCones binding (Task 418 / 411 backend)", () => {
+  it("dispatches Repositories.SuggestCones with the repo id + issue text", async () => {
+    invoke.mockResolvedValueOnce({ cone_paths: ["src/auth", "packages/sso"] });
+
+    const result = await suggestCones("repo-a", "add SSO to the API");
+
+    expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
+      method: "Repositories.SuggestCones",
+      payload: { repository_id: "repo-a", issue_text: "add SSO to the API" },
+    });
+    expect(result).toEqual(["src/auth", "packages/sso"]);
+  });
+
+  it("normalizes a missing cone_paths to []", async () => {
+    invoke.mockResolvedValueOnce({});
+
+    const result = await suggestCones("repo-a", "freeform");
+
+    expect(result).toEqual([]);
+  });
+
+  it("propagates UNIMPLEMENTED from a suggester-less Core", async () => {
+    invoke.mockRejectedValueOnce({
+      kind: "not_implemented",
+      message: "suggest_cones is wired in P4 (Maestro, Task 411)",
+    });
+
+    await expect(suggestCones("repo-a", "x")).rejects.toMatchObject({
+      message: expect.stringContaining("suggest_cones"),
     });
   });
 });

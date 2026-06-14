@@ -109,6 +109,7 @@ impl SessionsService for SessionsHandler {
                 cwd,
                 permission_mode,
                 resume_session_id: None,
+                chat_id: None,
             })
             .await
             .map_err(error_to_status)?;
@@ -406,11 +407,15 @@ fn parse_agent_kind(s: &str) -> Result<AgentKind, Status> {
     match s {
         "echo" => Ok(AgentKind::Echo),
         "claude" => Ok(AgentKind::Claude),
+        // Task 402: a wire `agent_kind="maestro"` round-trips to the new kind
+        // (the boot-time lifecycle spawn is 414's wiring; this keeps the parser
+        // honest + round-trippable with `as_db_kind`).
+        "maestro" => Ok(AgentKind::Maestro),
         "codex" | "gemini" => Err(Status::invalid_argument(format!(
             "agent.unsupported: agent_kind {s:?} is not implemented in V0.1"
         ))),
         other => Err(Status::invalid_argument(format!(
-            "agent.unsupported: agent_kind {other:?} must be one of echo|claude"
+            "agent.unsupported: agent_kind {other:?} must be one of echo|claude|maestro"
         ))),
     }
 }
@@ -477,5 +482,23 @@ fn permission_mode_to_i32(s: &str) -> i32 {
         "auto" => PermissionMode::Auto as i32,
         "yolo" => PermissionMode::Yolo as i32,
         _ => PermissionMode::Unspecified as i32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task 402: a wire `agent_kind="maestro"` parses to `AgentKind::Maestro`
+    /// (round-trips with `as_db_kind`/`from_db_kind`); `echo`/`claude` are
+    /// unchanged; `codex`/`gemini` + garbage still reject.
+    #[test]
+    fn parse_agent_kind_accepts_maestro() {
+        assert_eq!(parse_agent_kind("maestro").unwrap(), AgentKind::Maestro);
+        assert_eq!(parse_agent_kind("echo").unwrap(), AgentKind::Echo);
+        assert_eq!(parse_agent_kind("claude").unwrap(), AgentKind::Claude);
+        assert!(parse_agent_kind("codex").is_err());
+        assert!(parse_agent_kind("gemini").is_err());
+        assert!(parse_agent_kind("bogus").is_err());
     }
 }

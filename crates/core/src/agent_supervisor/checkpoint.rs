@@ -237,6 +237,7 @@ pub async fn insert_turn_message(persistence: &Persistence, chat_id: &str) -> Re
             created_at: now_ms,
             parent_id: None,
             superseded_by: None,
+            metadata: None,
         },
     )
     .await?;

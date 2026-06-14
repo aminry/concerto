@@ -47,6 +47,50 @@ fn iroh_listener_enabled() -> bool {
     }
 }
 
+/// Classify a managed-policy `default_model` as **external** (off-box public
+/// provider) for the Maestro D1 privacy gate (`design/08 §3.10`). Conservative:
+/// an empty/unset model is treated as local (the CLI default, which passes the
+/// gate). A model whose name signals the public Anthropic/OpenAI/Google APIs is
+/// external; the on-prem markers (Bedrock-VPC / Vertex / Azure-Foundry / local)
+/// are NOT. This is the V1.0 heuristic over the parsed-but-otherwise-unread
+/// `default_model`; the richer on-prem locality classification (412's
+/// `MaestroProvider`) supersedes it when it lands.
+#[cfg(unix)]
+fn is_external_maestro_model(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    if m.is_empty() {
+        return false;
+    }
+    // On-prem / local markers re-enable the Maestro under enterprise privacy.
+    const ONPREM_MARKERS: &[&str] = &[
+        "bedrock", "vpc", "vertex", "azure", "foundry", "local", "onprem", "on-prem", "ollama",
+    ];
+    if ONPREM_MARKERS.iter().any(|marker| m.contains(marker)) {
+        return false;
+    }
+    // Public-provider markers ⇒ external (the disabled case under privacy).
+    const EXTERNAL_MARKERS: &[&str] =
+        &["claude", "gpt", "openai", "anthropic", "gemini", "o1", "o3"];
+    EXTERNAL_MARKERS.iter().any(|marker| m.contains(marker))
+}
+
+/// Resolve the absolute path to the `concerto-maestro-bridge` binary, which is
+/// built into the same target directory as `concerto-agent-host`. We reuse the
+/// agent-host resolver (`$CONCERTO_AGENT_HOST_BIN` override → co-located →
+/// bounded dev-layout walk) and then take its parent directory and join the
+/// bridge's name, so the bridge tracks the same dev/packaged layouts the rest of
+/// the supervisor already handles.
+///
+/// Returns `None` (never panics) if the agent-host bin — and thus its parent
+/// directory — cannot be resolved; the caller logs and degrades Maestro to
+/// inert.
+#[cfg(unix)]
+fn resolve_maestro_bridge_bin() -> Option<PathBuf> {
+    let host = crate::agent_supervisor::spawn::resolve_host_binary().ok()?;
+    let dir = host.parent()?;
+    Some(dir.join("concerto-maestro-bridge"))
+}
+
 /// The live Iroh-transport seam a booted Core exposes (Task 217.5). Held by
 /// [`RunningCore`] when the listener is enabled so the split-host smoke driver
 /// (Task 220) + the Tier-2 loopback test can dial the endpoint, drive a pairing,
@@ -274,6 +318,24 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     // and fire unconditionally for blobless repos.
     let repo_handle =
         repo_handle.with_prewarm_signals(crate::repo_manager::prefetch::signals::host_signals());
+
+    // Task 411: inject the Maestro-backed `ConeSuggester` (the LIVE wiring of
+    // 305's seam, through 312's `OneShotLlm` / `DeterministicOneShot` fallback)
+    // so `RepoManager::suggest_cones` + the `Repositories.SuggestCones` RPC +
+    // the `create_from_description` planner return a live cone set instead of
+    // `UNIMPLEMENTED`. The suggester reads the repo's REAL top-level tree (via a
+    // pre-suggester clone of the handle), so a suggested cone is always a valid
+    // path. `#[cfg(unix)]` because `MaestroConeSuggester` lives in the
+    // `#[cfg(unix)]` maestro module; on Windows the seam stays unwired
+    // (`SuggestCones` → `UNIMPLEMENTED`), exactly as before this task.
+    #[cfg(unix)]
+    let repo_handle = {
+        let suggester = crate::maestro::MaestroConeSuggester::new(
+            repo_handle.clone(),
+            crate::maestro::digest::default_oneshot(),
+        );
+        repo_handle.with_cone_suggester(Arc::new(suggester))
+    };
 
     // Task 206: establish the Core's Ed25519 identity (`design/12 §3.1`).
     // Runs AFTER the audit writer (so a first-launch generation can emit
@@ -849,6 +911,207 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         Err(e) => tracing::warn!(error = %e, "workspace-settings boot resolution failed"),
     }
 
+    // Task 411 (D10 fix): build the `enterprise_data_privacy` resolver the
+    // `Vcs.FetchIssueByUrl` path consults, from the SAME managed-policy /
+    // opt-out / persistence inputs the settings boot step loads above. A
+    // workspace scope routes through `build_resolver_for_workspace`; an empty
+    // scope falls back to the Core-wide `ManagedPolicy` floor. Threaded
+    // additively into the api-server (UDS + Iroh) + the Connect-Web bridge
+    // alongside the existing `vcs` handle, replacing the prior hardcoded
+    // `enterprise_data_privacy = false` (the privacy floor is now enforced).
+    // Built as its OWN self-contained `let` (it does not interleave with 414's
+    // maestro-handle block above).
+    let vcs_privacy_resolver: Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver> = {
+        let managed =
+            crate::security::managed::load_managed_policy(config_dir.as_path()).unwrap_or_default();
+        let opt_out =
+            crate::settings::workspace_file::OptOutConfig::load(settings_home_concerto.as_path());
+        Arc::new(crate::handlers::vcs::CorePrivacyResolver::new(
+            Arc::clone(&persistence),
+            managed,
+            opt_out,
+        ))
+    };
+    let factory_vcs_privacy_resolver = vcs_privacy_resolver.clone();
+
+    // Task 414: construct the live Maestro handle, gated on the Maestro being
+    // enabled (403's `maestro_state.enabled`, §4.6) AND a managed-policy model
+    // permission (D1: `enterpriseDataPrivacy=true` + an external `default_model`
+    // ⇒ the Maestro LLM is disabled, design/08 §3.10). When the gate is closed
+    // the handle is left `None` (no spawn, logged) and the service replies
+    // `disabled_by_policy`; the `maestro.events` subject stays valid-but-empty.
+    //
+    // The CLI backends (Claude/Codex/Gemini, D1) are local and pass the gate;
+    // the disabled case is Direct-API + external under enterprise privacy (and
+    // Direct-API is itself a frozen-unwired seam per 412). The handle stitches
+    // 408's routing, 409's digest over a fresh 404 summary cache, 413's
+    // visibility toggle, and 414's `maestro.events` producer.
+    #[cfg(unix)]
+    let maestro_handle: Option<crate::maestro::MaestroHandle> = {
+        // Bootstrap the `maestro_state` singleton + the `chats(kind='maestro')`
+        // row (403) so `GetDigest` has a persistence anchor (409's D11 chips).
+        {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let mut w = persistence.writer().await;
+            if let Err(e) =
+                concerto_persist::maestro_state::ensure_initialized(&mut w, now_ms).await
+            {
+                tracing::warn!(error = %e, "maestro_state init failed; Maestro disabled");
+            }
+            if let Err(e) = concerto_persist::maestro_state::ensure_maestro_chat(
+                &mut w,
+                &uuid::Uuid::now_v7().to_string(),
+                now_ms,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "maestro chat bootstrap failed");
+            }
+        }
+
+        let enabled = concerto_persist::maestro_state::get(persistence.readers())
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.enabled)
+            .unwrap_or(false);
+
+        // The managed-policy model gate (D1). `default_model` is the org's
+        // chosen Maestro model; under `enterpriseDataPrivacy` an external model
+        // disables the LLM (the on-prem/local case re-enables it — Tier-3). In
+        // V1.0 the practical external case is Direct-API, which is unwired (412),
+        // so a CLI default passes. A model whose name signals a public provider
+        // under privacy is the disabled case.
+        let managed =
+            crate::security::managed::load_managed_policy(config_dir.as_path()).unwrap_or_default();
+        let privacy = managed.enterprise_data_privacy().unwrap_or(false);
+        let model_external = managed
+            .default_model()
+            .map(is_external_maestro_model)
+            .unwrap_or(false);
+        let disabled_by_policy =
+            crate::maestro::PrivacyPolicy::maestro_disabled_by_policy(privacy, model_external);
+
+        if !enabled {
+            tracing::info!(
+                target: "concerto::maestro",
+                reason = "disabled",
+                "maestro disabled at boot (maestro_state.enabled = false)"
+            );
+            None
+        } else if disabled_by_policy {
+            tracing::info!(
+                target: "concerto::maestro",
+                reason = "enterprise_data_privacy",
+                "maestro disabled at boot (enterpriseDataPrivacy + external default_model — D1)"
+            );
+            None
+        } else {
+            let summary_cache = Arc::new(tokio::sync::Mutex::new(
+                crate::maestro::summary::SummaryCache::with_system_clock(),
+            ));
+            let oneshot = crate::maestro::digest::default_oneshot();
+            let events = crate::maestro::MaestroEventSender::new();
+            tracing::info!(target: "concerto::maestro", "maestro enabled at boot");
+
+            let handle = crate::maestro::MaestroHandle::new(
+                Arc::clone(&persistence),
+                workarea_handle.clone(),
+                agent_supervisor_handle.clone(),
+                // Clone: the same cache instance also backs the MCP read tools
+                // (the digest and the `read` MCP tools see one cache).
+                Arc::clone(&summary_cache),
+                oneshot,
+                events,
+            );
+
+            // --- live Maestro spine (Tasks 1-6). Best-effort: any failure logs
+            // a warning and leaves the Maestro inert; boot NEVER fails here. ---
+            match crate::maestro::maestro_mcp_socket_path() {
+                Ok(socket) => {
+                    if let Some(parent) = socket.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+
+                    // 1. Serve the MCP server over its dedicated UDS. Detached:
+                    //    dropping the `JoinHandle` does NOT abort the task, so it
+                    //    runs for the runtime's lifetime (accept-loops, 0600,
+                    //    survives transient accept errors).
+                    let template = crate::maestro::mcp::MaestroMcpServer::with_read_handles(
+                        Arc::clone(&persistence),
+                        Arc::clone(&summary_cache),
+                    );
+                    let listen_socket = socket.clone();
+                    let _listener = tokio::spawn(async move {
+                        if let Err(e) =
+                            crate::maestro::mcp::serve_maestro_mcp_listener(listen_socket, template)
+                                .await
+                        {
+                            tracing::warn!(
+                                target: "concerto::maestro",
+                                error = %e,
+                                "maestro mcp listener exited"
+                            );
+                        }
+                    });
+
+                    // 2. Write `.mcp.json` pointing the CLI at the bridge (which
+                    //    sits next to the agent-host bin).
+                    match (
+                        crate::maestro::ensure_maestro_scratch_dir(),
+                        resolve_maestro_bridge_bin(),
+                    ) {
+                        (Ok(scratch), Some(bridge)) => {
+                            if let Err(e) =
+                                crate::maestro::write_maestro_mcp_json(&scratch, &bridge, &socket)
+                            {
+                                tracing::warn!(
+                                    target: "concerto::maestro",
+                                    error = %e,
+                                    "failed to write maestro .mcp.json"
+                                );
+                            }
+                        }
+                        (scratch_res, bridge_opt) => {
+                            tracing::warn!(
+                                target: "concerto::maestro",
+                                scratch_ok = scratch_res.is_ok(),
+                                bridge_found = bridge_opt.is_some(),
+                                "skipping .mcp.json (scratch or bridge bin unavailable) — maestro tools unavailable"
+                            );
+                        }
+                    }
+
+                    // 3. Spawn the long-lived Maestro session (idempotent). Inert
+                    //    (logged, not fatal) when the CLI can't be resolved/spawned
+                    //    — e.g. CI with no `claude` binary present.
+                    match handle.spawn_maestro_session().await {
+                        Ok(sid) => tracing::info!(
+                            target: "concerto::maestro",
+                            session = %sid.0,
+                            "maestro session live"
+                        ),
+                        Err(e) => tracing::warn!(
+                            target: "concerto::maestro",
+                            error = %e,
+                            "maestro session not spawned (inert) — chat/digest read paths still available once a session starts"
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    target: "concerto::maestro",
+                    error = %e,
+                    "could not resolve maestro mcp socket path — maestro inert"
+                ),
+            }
+
+            Some(handle)
+        }
+    };
+
     // Task 13: spawn the gRPC server as the next supervised actor.
     // Handles captured by the factory closure are cheap `Arc::clone`s
     // (plus a single `RepoManager::clone` / `WorkspaceManager::clone`
@@ -873,6 +1136,8 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let factory_skills_handle = skills_handle.clone();
     #[cfg(unix)]
     let factory_suggestions_handle = suggestions_handle.clone();
+    #[cfg(unix)]
+    let factory_maestro_handle = maestro_handle.clone();
     let factory_vcs_handle = vcs_handle.clone();
     let factory_pairing = pairing_coordinator.clone();
     let factory_device_manager = device_manager.clone();
@@ -896,11 +1161,20 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     Some(factory_skills_handle.clone()),
                     #[cfg(unix)]
                     Some(factory_suggestions_handle.clone()),
+                    // Task 414: the live Maestro handle (or `None` when the boot
+                    // gate is closed — disabled / disabled-by-policy). Threaded
+                    // through `with_managers` → `run_uds`/`add_core_services`
+                    // AND the bridge `BridgeServices` (D8 two-site serve).
+                    #[cfg(unix)]
+                    factory_maestro_handle.clone(),
                     Some(factory_vcs_handle.clone()),
                     factory_pairing.clone(),
                     factory_device_manager.clone(),
                     factory_auth_issuer.clone(),
                 )
+                // Task 411 (D10): attach the privacy resolver additively after
+                // `with_managers` (kept off the long ctor arg list).
+                .with_vcs_privacy_resolver(factory_vcs_privacy_resolver.clone())
             },
             ApiServerConfig {
                 socket_path: socket_path.clone(),
@@ -936,7 +1210,13 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
             skills_registry: Some(skills_handle.clone()),
             #[cfg(unix)]
             suggestions: Some(suggestions_handle.clone()),
+            // Task 414: the live Maestro handle on the Iroh serve path (or
+            // `None` when the boot gate is closed).
+            #[cfg(unix)]
+            maestro: maestro_handle.clone(),
             vcs: Some(vcs_handle.clone()),
+            // Task 411 (D10): the privacy resolver on the Iroh serve path too.
+            vcs_privacy_resolver: Some(vcs_privacy_resolver.clone()),
             pairing: pairing_coordinator.clone(),
             device_manager: device_manager.clone(),
             auth_issuer: auth_issuer.clone(),
