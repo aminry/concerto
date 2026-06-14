@@ -259,6 +259,33 @@ mod unix {
         })
     }
 
+    /// Environment variable names that identify *this host's own* parent Claude
+    /// Code session, and so must NOT leak into a spawned `claude` agent.
+    ///
+    /// When `claude` sees `CLAUDECODE=1` / `CLAUDE_CODE_*` in its environment it
+    /// assumes it is a nested Claude Code SDK subprocess and switches off plain
+    /// `stream-json` stdin handling — it waits for an SDK control channel that
+    /// never arrives, so the agent hangs silently (the Maestro session accepts
+    /// input but never replies). The Core usually has none of these set, but it
+    /// inherits them whenever it is itself launched from inside a Claude Code
+    /// session (e.g. during development), and passes them straight through to
+    /// this host and on to the agent. Stripping them at the spawn boundary makes
+    /// agent launches robust regardless of how the Core was started.
+    ///
+    /// Computed from the live process environment so it also catches any future
+    /// `CLAUDE_CODE_*` additions. `CLAUDE_CONFIG_DIR` / `ANTHROPIC_*` are NOT
+    /// matched (the agent legitimately needs them).
+    fn parent_claude_session_env_keys() -> Vec<String> {
+        std::env::vars()
+            .map(|(k, _)| k)
+            .filter(|k| {
+                k == "CLAUDECODE"
+                    || k == "CLAUDE_AGENT_SDK_VERSION"
+                    || k.starts_with("CLAUDE_CODE_")
+            })
+            .collect()
+    }
+
     /// Body of the PTY supervisor. Runs on a blocking thread because
     /// `portable_pty` returns synchronous `Read`/`Write` handles for the
     /// master.
@@ -309,6 +336,10 @@ mod unix {
             cmd.arg(r);
         }
         cmd.cwd(&cwd);
+        // Don't leak this host's parent Claude Code session env into the agent.
+        for k in parent_claude_session_env_keys() {
+            cmd.env_remove(k);
+        }
 
         let mut child = match pair.slave.spawn_command(cmd) {
             Ok(c) => c,
@@ -471,6 +502,12 @@ mod unix {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Don't leak this host's parent Claude Code session env into the agent
+        // (`CLAUDECODE`/`CLAUDE_CODE_*` would put `claude` into nested-SDK mode
+        // and it would never process the stream-json stdin — see the helper).
+        for k in parent_claude_session_env_keys() {
+            cmd.env_remove(&k);
+        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -969,6 +1006,29 @@ mod unix {
             let mut withpipe: Vec<&str> = base.to_vec();
             withpipe.extend(["--io-mode", "pipe"]);
             assert_eq!(Cli::try_parse_from(withpipe).unwrap().io_mode, IoMode::Pipe);
+        }
+
+        #[test]
+        fn parent_claude_session_env_keys_matches_only_session_vars() {
+            // The parent Claude Code session markers must be selected so the
+            // spawn paths strip them (otherwise `claude` enters nested-SDK mode
+            // and the Maestro session hangs). Config/credential vars must NOT.
+            std::env::set_var("CLAUDECODE", "1");
+            std::env::set_var("CLAUDE_CODE_ENTRYPOINT", "sdk-ts");
+            std::env::set_var("CLAUDE_AGENT_SDK_VERSION", "0.3.170");
+            std::env::set_var("CLAUDE_CONFIG_DIR", "/tmp/cfg");
+
+            let keys = parent_claude_session_env_keys();
+            assert!(keys.iter().any(|k| k == "CLAUDECODE"));
+            assert!(keys.iter().any(|k| k == "CLAUDE_CODE_ENTRYPOINT"));
+            assert!(keys.iter().any(|k| k == "CLAUDE_AGENT_SDK_VERSION"));
+            // The agent legitimately needs these — they must survive.
+            assert!(!keys.iter().any(|k| k == "CLAUDE_CONFIG_DIR"));
+
+            std::env::remove_var("CLAUDECODE");
+            std::env::remove_var("CLAUDE_CODE_ENTRYPOINT");
+            std::env::remove_var("CLAUDE_AGENT_SDK_VERSION");
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
         }
     }
 }

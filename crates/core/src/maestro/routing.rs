@@ -598,12 +598,16 @@ impl Router {
     /// the assistant message or touch chat history (that is 414's job) — returns
     /// the per-route outcomes so 414 can render "Routed to …" + surface failures.
     pub async fn dispatch(&self, routes: &[ResolvedRoute], body: &str) -> Vec<DispatchResult> {
-        let bytes = body.as_bytes();
+        // Append a carriage return so the target agent SUBMITS the routed
+        // message (the Enter keypress) instead of leaving it typed-but-unsent in
+        // its input box. The workarea agents run in a PTY, where `\r` is Enter.
+        let mut payload = body.as_bytes().to_vec();
+        payload.push(b'\r');
         let mut results = Vec::with_capacity(routes.len());
         for route in routes {
             let outcome = match self
                 .sink
-                .send_input(&route.session_id, bytes.to_vec())
+                .send_input(&route.session_id, payload.clone())
                 .await
             {
                 Ok(()) => Ok(()),
@@ -1213,7 +1217,9 @@ mod tests {
         let sent = sink.sent.lock().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].0, "s-claude");
-        assert_eq!(sent[0].1, b"run the e2e suite".to_vec());
+        // Dispatch appends a carriage return so the target agent SUBMITS the
+        // routed message (Enter), rather than leaving it typed-but-unsent.
+        assert_eq!(sent[0].1, b"run the e2e suite\r".to_vec());
     }
 
     #[tokio::test]

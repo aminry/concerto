@@ -82,6 +82,11 @@ pub enum SendOutcome {
     /// `/pause` / `/new` recognized; the directive marker was handled (no LLM
     /// spend). The body is forwarded to the resolved session if any.
     SlashHandled,
+    /// `@workarea` routing targeted a workarea that EXISTS but has no live
+    /// session (or no live session of the requested agent kind) to receive the
+    /// message — a normal state, not an error. A `maestro.message` notice is
+    /// emitted in-chat instead of surfacing a red RPC error.
+    RoutingNoSession { composer: String },
 }
 
 /// The budget/policy disable reason a constructed handle may carry. A handle
@@ -322,10 +327,23 @@ impl MaestroHandle {
                             .resolve_targets_anywhere(&router, &scoped, &targets)
                             .await?
                         {
-                            Some(routes) => routes,
-                            None => return Err(routing_error_to_internal(e)),
+                            AnywhereResolution::Resolved(routes) => routes,
+                            // Found in another workspace but idle ⇒ in-chat notice.
+                            AnywhereResolution::NoSession(err) => {
+                                return Ok(self.notice_no_session(err))
+                            }
+                            AnywhereResolution::NotFound => {
+                                return Err(routing_error_to_internal(e))
+                            }
                         }
                     }
+                    // A workarea that exists but has no live session (or none of
+                    // the requested agent kind) is a NORMAL state, not an error:
+                    // tell the user in-chat instead of surfacing a red RPC error.
+                    Err(
+                        e @ (RoutingError::NoActiveAgent { .. }
+                        | RoutingError::NoMatchingSession { .. }),
+                    ) => return Ok(self.notice_no_session(e)),
                     Err(e) => return Err(routing_error_to_internal(e)),
                 };
                 router.dispatch(&routes, &body).await;
@@ -562,6 +580,43 @@ impl MaestroHandle {
             .await
     }
 
+    /// Turn a "nothing live to route to" routing error into an in-chat maestro
+    /// notice (a `maestro.message`) rather than a red RPC error. A workarea that
+    /// exists but has no active session — or no session of the requested agent
+    /// kind — is a normal state the user should simply be told about. Returns
+    /// the matching [`SendOutcome::RoutingNoSession`] so the handler stays Ok.
+    fn notice_no_session(&self, err: RoutingError) -> SendOutcome {
+        let (composer, text) = match err {
+            RoutingError::NoActiveAgent { composer } => {
+                let text = format!(
+                    "**{composer}** doesn't have an active session right now, so I \
+                     couldn't deliver that. Open the workarea and start a session, \
+                     then try again."
+                );
+                (composer, text)
+            }
+            RoutingError::NoMatchingSession {
+                composer,
+                agent_kind,
+            } => {
+                let text = format!(
+                    "**{composer}** has no active {agent_kind} session right now, so \
+                     I couldn't deliver that. Start one and try again."
+                );
+                (composer, text)
+            }
+            other => unreachable!(
+                "notice_no_session only handles no-session routing errors, got {other:?}"
+            ),
+        };
+        self.inner.events.emit(MaestroEvent::Message {
+            text,
+            message_id: String::new(),
+            role: "assistant".to_string(),
+        });
+        SendOutcome::RoutingNoSession { composer }
+    }
+
     /// Guard the LLM path against the inert state. Routing/tools never call
     /// this; only the freeform/LLM forward does (design/08 §3.5/§3.9/§3.10).
     /// Emits the matching event + returns a typed `Err` the handler maps to the
@@ -633,25 +688,43 @@ impl MaestroHandle {
     }
 
     /// Cross-workspace routing fallback: try `targets` in every workspace except
-    /// `already_tried`, returning the routes from the FIRST workspace that
-    /// resolves them all (workspaces are newest-first). `None` when no other
-    /// workspace resolves the targets. Used only when the desktop supplied NO
-    /// explicit workspace scope, so an `@composer` routes wherever it lives.
+    /// `already_tried` (workspaces are newest-first). Used only when the desktop
+    /// supplied NO explicit workspace scope, so an `@composer` routes wherever it
+    /// lives. Distinguishes three outcomes so the caller can tell "found but
+    /// idle" (→ in-chat notice) apart from "not found anywhere" (→ error):
+    /// - [`AnywhereResolution::Resolved`] — a workspace resolved them all live;
+    /// - [`AnywhereResolution::NoSession`] — the workarea (or agent kind) EXISTS
+    ///   in some workspace but has no live session to receive the message;
+    /// - [`AnywhereResolution::NotFound`] — no other workspace has it at all.
     async fn resolve_targets_anywhere(
         &self,
         router: &Router,
         already_tried: &WorkspaceId,
         targets: &[RoutingTarget],
-    ) -> Result<Option<Vec<ResolvedRoute>>> {
+    ) -> Result<AnywhereResolution> {
+        // Remember the first "exists but idle" error so a session-less workarea
+        // surfaces as a notice rather than collapsing to NotFound.
+        let mut idle: Option<RoutingError> = None;
         for ws in self.all_workspace_ids().await? {
             if &ws == already_tried {
                 continue;
             }
-            if let Ok(routes) = router.resolve_targets(&ws, targets).await {
-                return Ok(Some(routes));
+            match router.resolve_targets(&ws, targets).await {
+                Ok(routes) => return Ok(AnywhereResolution::Resolved(routes)),
+                Err(
+                    e @ (RoutingError::NoActiveAgent { .. }
+                    | RoutingError::NoMatchingSession { .. }),
+                ) => {
+                    idle.get_or_insert(e);
+                }
+                // NoSuchWorkarea / empty dynamic set here — keep searching.
+                Err(_) => {}
             }
         }
-        Ok(None)
+        Ok(match idle {
+            Some(e) => AnywhereResolution::NoSession(e),
+            None => AnywhereResolution::NotFound,
+        })
     }
 
     /// The `last_seen_at` the digest computes deltas since: the last digest
@@ -674,6 +747,18 @@ pub(crate) fn compose_user_envelope(body: &str) -> String {
         "{}\n",
         serde_json::to_string(&v).expect("serialize user envelope")
     )
+}
+
+/// Outcome of the cross-workspace routing fallback ([`MaestroHandle::resolve_targets_anywhere`]).
+enum AnywhereResolution {
+    /// A workspace resolved every target to a live session.
+    Resolved(Vec<ResolvedRoute>),
+    /// The workarea (or requested agent kind) exists in some workspace but has
+    /// no live session — carries the routing error so the caller can compose the
+    /// matching no-session notice.
+    NoSession(RoutingError),
+    /// No other workspace has the target at all.
+    NotFound,
 }
 
 /// Map a 408 `RoutingError` to a typed `Error::Internal` carrying the routing
@@ -1042,6 +1127,60 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn send_routing_to_workarea_without_session_emits_notice_not_error() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        // `bach` EXISTS but has no live session — a normal state, not an error.
+        // Routing to it must surface an in-chat maestro notice (so the user
+        // learns the workarea is idle), NOT a red RPC error.
+        insert_workarea(&persistence, "wa-1", "bach").await;
+        let mut rx = handle.inner.events.frame_sender().subscribe();
+        let outcome = handle
+            .send_to_maestro("@bach hi".into(), vec![], None)
+            .await
+            .expect("a session-less workarea is a notice, not an error");
+        assert_eq!(
+            outcome,
+            SendOutcome::RoutingNoSession {
+                composer: "bach".into()
+            }
+        );
+        let frame = rx.recv().await.expect("event");
+        let v: serde_json::Value = serde_json::from_slice(&frame.frame).unwrap();
+        assert_eq!(v["kind"], "maestro.message");
+        assert_eq!(v["role"], "assistant");
+        let text = v["text"].as_str().unwrap().to_lowercase();
+        assert!(text.contains("bach"), "notice names the workarea: {text}");
+        assert!(text.contains("session"), "notice mentions session: {text}");
+    }
+
+    #[tokio::test]
+    async fn send_routing_no_scope_finds_idle_workarea_in_other_workspace_as_notice() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        // The DEFAULT (most-recent) workspace has no matching workarea; `bach`
+        // lives in an OLDER workspace and has NO live session. With no explicit
+        // scope, the global fallback must recognize "found but idle" and surface
+        // the no-session NOTICE — not the original `NoSuchWorkarea` error (the
+        // bug: the fallback discarded session-less workareas).
+        insert_workspace(&persistence, "wsB", 100).await; // most-recent ⇒ default, empty
+        insert_workarea_in(&persistence, "ws", "wa-bach", "bach").await; // older ws, no session
+        let mut rx = handle.inner.events.frame_sender().subscribe();
+        let outcome = handle
+            .send_to_maestro("@bach hi".into(), vec![], None)
+            .await
+            .expect("an idle workarea in another workspace is a notice, not an error");
+        assert_eq!(
+            outcome,
+            SendOutcome::RoutingNoSession {
+                composer: "bach".into()
+            }
+        );
+        let frame = rx.recv().await.expect("event");
+        let v: serde_json::Value = serde_json::from_slice(&frame.frame).unwrap();
+        assert_eq!(v["kind"], "maestro.message");
+        assert_eq!(v["role"], "assistant");
     }
 
     #[tokio::test]
