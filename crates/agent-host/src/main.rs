@@ -1,4 +1,4 @@
-//! `concerto-agent-host` — per-session PTY helper binary.
+//! `concerto-agent-host` — per-session PTY/pipe agent-host binary.
 //!
 //! Spawned by the Core's Agent Supervisor, then detached (see Task 21
 //! Handoff Notes for the chosen Unix detachment strategy: Core-side
@@ -64,7 +64,7 @@ mod unix {
     #[derive(Parser, Debug)]
     #[command(
         name = "concerto-agent-host",
-        about = "Per-session PTY helper for the Concerto Core.",
+        about = "Per-session PTY/pipe helper for the Concerto Core.",
         version
     )]
     pub struct Cli {
@@ -101,7 +101,7 @@ mod unix {
         /// stdio wiring for the child (default `pty`). The Core passes `pipe` for the
         /// Maestro session.
         #[arg(long, value_enum, default_value_t = IoMode::Pty)]
-        io_mode: IoMode, // consumed in the pipe-mode dispatch (Task 4)
+        io_mode: IoMode,
     }
 
     /// Identifier for the "agent kind" surfaced in `Ready` frames. V0.1
