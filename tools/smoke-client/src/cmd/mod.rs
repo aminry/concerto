@@ -19,6 +19,7 @@ pub mod list_audit;
 pub mod list_loops;
 pub mod list_mcp;
 pub mod list_skills;
+pub mod maestro;
 pub mod new_workarea;
 pub mod new_workspace;
 pub mod send_message;
