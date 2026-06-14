@@ -437,12 +437,15 @@ impl MaestroHandle {
     /// survives a reload. Returns up to the most-recent 200 turns, oldest-first,
     /// as `(role, text, created_at_ms)`.
     ///
-    /// Two row kinds live in the maestro chat: the `{"text":...}` rows (user
-    /// turns from Task 7 + assistant turns the events bridge persists) and the
-    /// checkpoint/turn system's text-less `v0_1_turn_marker` assistant rows. We
-    /// keep ONLY the rows that carry a `content_json.text` — the marker rows are
-    /// SKIPPED (they have no renderable text; their text lives in the sibling
-    /// `{"text":...}` assistant row).
+    /// Three row kinds live in the maestro chat: the `{"text":...}` conversation
+    /// rows (user turns from Task 7 + assistant reply turns the events bridge
+    /// persists), the checkpoint/turn system's text-less `v0_1_turn_marker`
+    /// assistant rows, and the **digest** rows (`{"kind":"digest","text":...}`,
+    /// persisted by `generate_digest` per D11 for condensation). We return ONLY
+    /// the conversation rows: the marker rows are SKIPPED (no `text`), and the
+    /// digest rows are SKIPPED (they belong in the DigestPanel via `GetDigest`,
+    /// NOT the chat transcript — surfacing them here floods the conversation with
+    /// digest snapshots).
     pub async fn get_history(&self) -> Result<Vec<(String, String, i64)>> {
         let chat_id = self.ensure_maestro_chat().await?;
         let rows = concerto_persist::chat_messages::list_by_chat(
@@ -453,11 +456,15 @@ impl MaestroHandle {
         .await?;
         let mut turns = Vec::with_capacity(rows.len());
         for row in rows {
-            // Parse `content_json` as `{"text": String}`; SKIP rows with no
-            // `text` key (the `v0_1_turn_marker` assistant rows).
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&row.content_json) else {
                 continue;
             };
+            // Digest rows carry `"kind":"digest"` (D11) — they render in the
+            // DigestPanel, not the conversation transcript. Skip them.
+            if value.get("kind").and_then(|k| k.as_str()) == Some("digest") {
+                continue;
+            }
+            // SKIP rows with no `text` key (the `v0_1_turn_marker` assistant rows).
             let Some(text) = value.get("text").and_then(|t| t.as_str()) else {
                 continue;
             };
@@ -1381,12 +1388,20 @@ mod tests {
 
         // Explicit timestamps (10/20/30) so the ascending order is
         // deterministic regardless of wall-clock ms ties:
-        //   user(text)@10, assistant marker@20 (no text), assistant(text)@30.
+        //   user(text)@10, assistant marker@20 (no text), digest@25
+        //   ({"kind":"digest"}), assistant(text)@30. The marker AND the digest
+        //   row must be skipped — only the two conversation turns survive.
         {
             let mut w = persistence.writer().await;
             for (id, role, content, ts) in [
                 ("u-1", "user", r#"{"text":"hi"}"#, 10i64),
                 ("marker", "assistant", r#"{"v0_1_turn_marker":true}"#, 20),
+                (
+                    "digest",
+                    "assistant",
+                    r#"{"kind":"digest","text":"You are Concerto's maestro. Write a digest..."}"#,
+                    25,
+                ),
                 ("a-1", "assistant", r#"{"text":"hi back"}"#, 30),
             ] {
                 concerto_persist::chat_messages::insert(
@@ -1408,11 +1423,15 @@ mod tests {
         }
 
         let turns = handle.get_history().await.expect("history");
-        // Marker row dropped; the two text turns survive, oldest-first.
+        // Marker + digest rows dropped; the two conversation turns survive, oldest-first.
         let roles: Vec<&str> = turns.iter().map(|(r, _, _)| r.as_str()).collect();
         let texts: Vec<&str> = turns.iter().map(|(_, t, _)| t.as_str()).collect();
-        assert_eq!(roles, vec!["user", "assistant"], "marker skipped");
+        assert_eq!(roles, vec!["user", "assistant"], "marker + digest skipped");
         assert_eq!(texts, vec!["hi", "hi back"]);
+        assert!(
+            !texts.iter().any(|t| t.contains("digest")),
+            "digest rows must not appear in the chat transcript"
+        );
     }
 
     // -- compose_user_envelope: stream-json framing --------------------------
