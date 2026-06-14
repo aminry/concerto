@@ -14,6 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   decodeMaestroEvent,
   getDigest,
+  getHistory,
   getState,
   MAESTRO_EVENTS_SUBJECT,
   MaestroVisibility,
@@ -64,6 +65,28 @@ describe("maestro bindings", () => {
     expect(out.chips[0].rule_id).toBe("r1");
     expect(out.chips[0].created_at_ms).toBe(1717459200000);
     expect(out.generated_at_ms).toBe(1717459200000);
+  });
+
+  it("getHistory calls Maestro.GetHistory and returns the turns oldest-first", async () => {
+    invoke.mockResolvedValueOnce({
+      turns: [
+        { role: "user", text: "hi", created_at_ms: 10 },
+        { role: "assistant", text: "hi back", created_at_ms: 30 },
+      ],
+    });
+    const out = await getHistory();
+    expect(invoke).toHaveBeenCalledWith("concerto_rpc", {
+      method: "Maestro.GetHistory",
+      payload: {},
+    });
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual({ role: "user", text: "hi", created_at_ms: 10 });
+    expect(out[1].role).toBe("assistant");
+  });
+
+  it("getHistory tolerates a null/empty response (no persisted history yet)", async () => {
+    invoke.mockResolvedValueOnce(null);
+    expect(await getHistory()).toEqual([]);
   });
 
   it("getState calls Maestro.GetState with an empty request and returns the 9-field MaestroState", async () => {
@@ -151,6 +174,55 @@ describe("maestro.events decode", () => {
     expect(policy).toEqual({
       kind: "disabled_by_policy",
       reason: "enterprise_data_privacy",
+    });
+  });
+
+  it("decodes the LIVE flat kind-tagged frames (events.rs::to_frame shape)", () => {
+    // The real backend emits {"kind":"maestro.message", text, role, message_id}
+    // — a flat kind-tagged envelope, NOT a variant-keyed object. This is the
+    // exact shape the live UI receives; the variant-key tests above only cover
+    // the decoder's fallback path.
+    expect(
+      decodeMaestroEvent({
+        kind: "maestro.message",
+        text: "You have 1 workspace.",
+        role: "assistant",
+        message_id: "m-1",
+      }),
+    ).toEqual({ kind: "message", text: "You have 1 workspace.", role: "assistant" });
+
+    const route = decodeMaestroEvent({
+      kind: "maestro.routing_executed",
+      targets: ["bach"],
+      body: "go",
+    });
+    expect(route.kind).toBe("routing_executed");
+    if (route.kind === "routing_executed") {
+      expect(route.targets).toEqual(["bach"]);
+      expect(route.summary).toBe("go");
+    }
+
+    expect(
+      decodeMaestroEvent({ kind: "maestro.digest_generated", at_ms: 1, n_workareas: 0 })
+        .kind,
+    ).toBe("digest_generated");
+    expect(decodeMaestroEvent({ kind: "maestro.budget_exhausted" }).kind).toBe(
+      "budget_exhausted",
+    );
+    expect(
+      decodeMaestroEvent({ kind: "maestro.disabled_by_policy", reason: "x" }),
+    ).toEqual({ kind: "disabled_by_policy", reason: "x" });
+
+    // The same over the opaque checks_opaque byte carrier (the live wire path).
+    const bytes = Array.from(
+      new TextEncoder().encode(
+        JSON.stringify({ kind: "maestro.message", text: "from bytes", role: "user" }),
+      ),
+    );
+    expect(decodeMaestroEvent({ checks_opaque: bytes })).toEqual({
+      kind: "message",
+      text: "from bytes",
+      role: "user",
     });
   });
 

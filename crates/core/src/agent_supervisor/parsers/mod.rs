@@ -25,9 +25,11 @@ use crate::security::Decision;
 
 pub mod claude_code;
 pub mod echo;
-// Task 402: the Maestro's structured/no-op pack (its tool calls ride the
-// MCP channel, not the PTY scrape — so it is NOT `ClaudeCodePack`).
-pub mod maestro;
+// Task 5 (Maestro live-conversation): structured stream-json parser that
+// reads Claude's `--output-format stream-json` event lines and emits
+// `ParseEvent::Message` + `ParseEvent::TurnComplete`. Replaced the old
+// no-op MaestroPack (removed in Task 5).
+pub mod maestro_stream_json;
 
 /// Locked trait for per-CLI parser packs.
 ///

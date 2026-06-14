@@ -1,4 +1,4 @@
-//! `concerto-agent-host` — per-session PTY helper binary.
+//! `concerto-agent-host` — per-session PTY/pipe agent-host binary.
 //!
 //! Spawned by the Core's Agent Supervisor, then detached (see Task 21
 //! Handoff Notes for the chosen Unix detachment strategy: Core-side
@@ -49,11 +49,22 @@ mod unix {
     use tokio::task::JoinHandle;
     use tracing::{debug, error, info, warn};
 
+    /// How the agent-host wires the child's stdio. `Pty` (default) runs the agent
+    /// in a pseudo-terminal (interactive TUI agents). `Pipe` wires stdin/stdout as
+    /// plain pipes (a non-TTY) — required for `claude --print --input-format
+    /// stream-json`, which refuses a TTY. Selected by the Core per agent kind.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Default)]
+    pub enum IoMode {
+        #[default]
+        Pty,
+        Pipe,
+    }
+
     /// CLI surface locked by Task 21. See module docs for the rationale.
     #[derive(Parser, Debug)]
     #[command(
         name = "concerto-agent-host",
-        about = "Per-session PTY helper for the Concerto Core.",
+        about = "Per-session PTY/pipe helper for the Concerto Core.",
         version
     )]
     pub struct Cli {
@@ -87,6 +98,10 @@ mod unix {
         /// [`FinalInfo`] for the schema.
         #[arg(long)]
         final_info: PathBuf,
+        /// stdio wiring for the child (default `pty`). The Core passes `pipe` for the
+        /// Maestro session.
+        #[arg(long, value_enum, default_value_t = IoMode::Pty)]
+        io_mode: IoMode,
     }
 
     /// Identifier for the "agent kind" surfaced in `Ready` frames. V0.1
@@ -244,6 +259,33 @@ mod unix {
         })
     }
 
+    /// Environment variable names that identify *this host's own* parent Claude
+    /// Code session, and so must NOT leak into a spawned `claude` agent.
+    ///
+    /// When `claude` sees `CLAUDECODE=1` / `CLAUDE_CODE_*` in its environment it
+    /// assumes it is a nested Claude Code SDK subprocess and switches off plain
+    /// `stream-json` stdin handling — it waits for an SDK control channel that
+    /// never arrives, so the agent hangs silently (the Maestro session accepts
+    /// input but never replies). The Core usually has none of these set, but it
+    /// inherits them whenever it is itself launched from inside a Claude Code
+    /// session (e.g. during development), and passes them straight through to
+    /// this host and on to the agent. Stripping them at the spawn boundary makes
+    /// agent launches robust regardless of how the Core was started.
+    ///
+    /// Computed from the live process environment so it also catches any future
+    /// `CLAUDE_CODE_*` additions. `CLAUDE_CONFIG_DIR` / `ANTHROPIC_*` are NOT
+    /// matched (the agent legitimately needs them).
+    fn parent_claude_session_env_keys() -> Vec<String> {
+        std::env::vars()
+            .map(|(k, _)| k)
+            .filter(|k| {
+                k == "CLAUDECODE"
+                    || k == "CLAUDE_AGENT_SDK_VERSION"
+                    || k.starts_with("CLAUDE_CODE_")
+            })
+            .collect()
+    }
+
     /// Body of the PTY supervisor. Runs on a blocking thread because
     /// `portable_pty` returns synchronous `Read`/`Write` handles for the
     /// master.
@@ -254,7 +296,7 @@ mod unix {
         cwd: PathBuf,
         resume: Option<PathBuf>,
         state: Arc<State>,
-        mut stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
         mut resize_rx: tokio::sync::mpsc::UnboundedReceiver<(u16, u16)>,
         rt: tokio::runtime::Handle,
     ) -> (Option<i32>, Option<i32>) {
@@ -294,6 +336,10 @@ mod unix {
             cmd.arg(r);
         }
         cmd.cwd(&cwd);
+        // Don't leak this host's parent Claude Code session env into the agent.
+        for k in parent_claude_session_env_keys() {
+            cmd.env_remove(k);
+        }
 
         let mut child = match pair.slave.spawn_command(cmd) {
             Ok(c) => c,
@@ -313,7 +359,7 @@ mod unix {
         // EOF when the child exits.
         drop(pair.slave);
 
-        let mut reader = match pair.master.try_clone_reader() {
+        let reader = match pair.master.try_clone_reader() {
             Ok(r) => r,
             Err(e) => {
                 error!(error = %e, "clone PTY reader failed");
@@ -352,36 +398,11 @@ mod unix {
                 record_chunk(&state_for_record, chunk).await;
             }
         });
-        let reader_handle = std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if chunk_tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
-                }
-            }
-        });
+        let reader_handle = spawn_reader_thread(reader, chunk_tx);
 
         // Writer thread: pulls stdin from the channel, writes to PTY
         // master synchronously.
-        let writer_mutex = Arc::new(std::sync::Mutex::new(writer));
-        let writer_for_stdin = writer_mutex.clone();
-        let stdin_thread = std::thread::spawn(move || {
-            while let Some(data) = stdin_rx.blocking_recv() {
-                if let Ok(mut w) = writer_for_stdin.lock() {
-                    if w.write_all(&data).is_err() {
-                        break;
-                    }
-                    let _ = w.flush();
-                }
-            }
-        });
+        let stdin_thread = spawn_writer_thread(writer, stdin_rx);
 
         // Resize thread: applies resize requests to the PTY master.
         let master_for_resize = Arc::new(std::sync::Mutex::new(master));
@@ -425,6 +446,141 @@ mod unix {
         };
 
         // Wake the connection writer so it sees the exit flag.
+        let s = state.clone();
+        rt.block_on(async move {
+            *s.child_exited.lock().await = Some((exit_code, signal));
+            s.notify.notify_waiters();
+        });
+
+        (exit_code, signal)
+    }
+
+    /// Pipe-mode supervisor: spawn the child with plain piped stdio (a non-TTY) so
+    /// `claude --print --input-format stream-json` enters streaming multi-turn mode.
+    /// Reuses the shared reader/writer pumps; stderr is drained to the host log
+    /// (NOT the ring buffer — that feeds the stream-json stdout the parser reads);
+    /// resize requests are ignored (pipes don't resize).
+    fn spawn_pipe_task(
+        cli: &Cli,
+        state: Arc<State>,
+        stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        resize_rx: tokio::sync::mpsc::UnboundedReceiver<(u16, u16)>,
+    ) -> JoinHandle<(Option<i32>, Option<i32>)> {
+        let agent_bin = cli.agent_bin.clone();
+        let agent_args = cli.agent_arg.clone();
+        let cwd = cli.cwd.clone();
+        let resume = cli.resume_jsonl.clone();
+        let rt = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            run_pipe(
+                agent_bin, agent_args, cwd, resume, state, stdin_rx, resize_rx, rt,
+            )
+        })
+    }
+
+    /// Body of the pipe-mode supervisor. Runs on a blocking thread because
+    /// `std::process::ChildStdout`/`ChildStdin` are synchronous `Read`/`Write`.
+    #[allow(clippy::too_many_arguments)]
+    fn run_pipe(
+        agent_bin: PathBuf,
+        agent_args: Vec<String>,
+        cwd: PathBuf,
+        resume: Option<PathBuf>,
+        state: Arc<State>,
+        stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        mut resize_rx: tokio::sync::mpsc::UnboundedReceiver<(u16, u16)>,
+        rt: tokio::runtime::Handle,
+    ) -> (Option<i32>, Option<i32>) {
+        use std::process::Stdio;
+
+        let mut cmd = std::process::Command::new(&agent_bin);
+        cmd.args(&agent_args);
+        if let Some(r) = &resume {
+            cmd.arg("--resume").arg(r);
+        }
+        cmd.current_dir(&cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Don't leak this host's parent Claude Code session env into the agent
+        // (`CLAUDECODE`/`CLAUDE_CODE_*` would put `claude` into nested-SDK mode
+        // and it would never process the stream-json stdin — see the helper).
+        for k in parent_claude_session_env_keys() {
+            cmd.env_remove(&k);
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, bin = ?agent_bin, "spawn agent CLI (pipe mode) failed");
+                let s = state.clone();
+                rt.block_on(async move {
+                    record_chunk(
+                        &s,
+                        format!(
+                            "[concerto] Failed to start agent '{}': {}\n",
+                            agent_bin.display(),
+                            e
+                        )
+                        .into_bytes(),
+                    )
+                    .await;
+                    *s.child_exited.lock().await = Some((None, None));
+                    s.notify.notify_waiters();
+                });
+                return (None, None);
+            }
+        };
+
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+
+        // stdout → ring buffer (same record path as PTY → StdoutBytes frames).
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let state_for_record = state.clone();
+        rt.spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                record_chunk(&state_for_record, chunk).await;
+            }
+        });
+        let reader_handle = spawn_reader_thread(Box::new(stdout), chunk_tx);
+        let stdin_thread = spawn_writer_thread(Box::new(stdin), stdin_rx);
+
+        // stderr → host log ONLY (NOT the ring buffer — keeps stdout clean for the
+        // stream-json parser). Visible in Tier-3 via the agent-host's tracing.
+        let stderr_thread = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut r = std::io::BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match r.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        warn!(target: "concerto::agent_host", stderr = %line.trim_end(), "agent stderr (pipe mode)")
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Pipes don't resize — drain the channel so the sender side never blocks.
+        let resize_thread =
+            std::thread::spawn(move || while resize_rx.blocking_recv().is_some() {});
+
+        let status = child.wait().ok();
+        reader_handle.join().ok();
+        let _ = (stdin_thread, stderr_thread, resize_thread);
+
+        let exit_code = status.as_ref().and_then(|s| s.code());
+        let signal = {
+            use std::os::unix::process::ExitStatusExt;
+            status.as_ref().and_then(|s| s.signal())
+        };
+
+        // Mirror run_pty: set child_exited BEFORE returning so the accept loop
+        // and connection writer see the exit flag.
         let s = state.clone();
         rt.block_on(async move {
             *s.child_exited.lock().await = Some((exit_code, signal));
@@ -637,6 +793,47 @@ mod unix {
         info!("Core disconnected");
     }
 
+    /// Reader pump: blocking-read `reader` in 8 KiB chunks and forward each chunk
+    /// over `chunk_tx` (an async task records them onto the ring buffer). Returns
+    /// when the child closes its output (EOF) or the channel drops. Shared by the
+    /// PTY (master reader) and pipe (`ChildStdout`) sessions.
+    fn spawn_reader_thread(
+        mut reader: Box<dyn std::io::Read + Send>,
+        chunk_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if chunk_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        })
+    }
+
+    /// Writer pump: drain `stdin_rx` and write each payload to `writer` (the child's
+    /// stdin). Shared by the PTY (master writer) and pipe (`ChildStdin`) sessions.
+    fn spawn_writer_thread(
+        mut writer: Box<dyn std::io::Write + Send>,
+        mut stdin_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            while let Some(data) = stdin_rx.blocking_recv() {
+                if writer.write_all(&data).is_err() {
+                    break;
+                }
+                let _ = writer.flush();
+            }
+        })
+    }
+
     pub async fn main(cli: Cli) -> std::io::Result<i32> {
         // Decode cookie up front; bail fast on bad input.
         let cookie = decode_cookie(&cli.cookie)
@@ -657,7 +854,10 @@ mod unix {
         info!(socket = ?cli.socket, "host bridge listening");
 
         let agent_kind = agent_kind_from_bin(&cli.agent_bin);
-        let pty_handle = spawn_pty_task(&cli, state.clone(), stdin_rx, resize_rx);
+        let session_handle = match cli.io_mode {
+            IoMode::Pty => spawn_pty_task(&cli, state.clone(), stdin_rx, resize_rx),
+            IoMode::Pipe => spawn_pipe_task(&cli, state.clone(), stdin_rx, resize_rx),
+        };
 
         // Accept loop. Runs concurrently with the PTY supervisor and
         // exits once the child is gone AND no Core is connected.
@@ -719,11 +919,11 @@ mod unix {
             }
         });
 
-        // Wait for the PTY supervisor to return.
-        let (exit_code, signal) = match pty_handle.await {
+        // Wait for the session supervisor (PTY or pipe) to return.
+        let (exit_code, signal) = match session_handle.await {
             Ok(pair) => pair,
             Err(e) => {
-                error!(error = %e, "pty supervisor join failed");
+                error!(error = %e, "session supervisor join failed");
                 (None, None)
             }
         };
@@ -779,6 +979,57 @@ mod unix {
 
     pub fn parse_cli() -> Cli {
         Cli::parse()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use clap::Parser;
+
+        #[test]
+        fn io_mode_defaults_to_pty_and_parses_pipe() {
+            let base = [
+                "concerto-agent-host",
+                "--agent-bin",
+                "/bin/echo",
+                "--cwd",
+                "/tmp",
+                "--socket",
+                "/tmp/s.sock",
+                "--cookie",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "--final-info",
+                "/tmp/f.json",
+            ];
+            let cli = Cli::try_parse_from(base).expect("parse base");
+            assert_eq!(cli.io_mode, IoMode::Pty);
+            let mut withpipe: Vec<&str> = base.to_vec();
+            withpipe.extend(["--io-mode", "pipe"]);
+            assert_eq!(Cli::try_parse_from(withpipe).unwrap().io_mode, IoMode::Pipe);
+        }
+
+        #[test]
+        fn parent_claude_session_env_keys_matches_only_session_vars() {
+            // The parent Claude Code session markers must be selected so the
+            // spawn paths strip them (otherwise `claude` enters nested-SDK mode
+            // and the Maestro session hangs). Config/credential vars must NOT.
+            std::env::set_var("CLAUDECODE", "1");
+            std::env::set_var("CLAUDE_CODE_ENTRYPOINT", "sdk-ts");
+            std::env::set_var("CLAUDE_AGENT_SDK_VERSION", "0.3.170");
+            std::env::set_var("CLAUDE_CONFIG_DIR", "/tmp/cfg");
+
+            let keys = parent_claude_session_env_keys();
+            assert!(keys.iter().any(|k| k == "CLAUDECODE"));
+            assert!(keys.iter().any(|k| k == "CLAUDE_CODE_ENTRYPOINT"));
+            assert!(keys.iter().any(|k| k == "CLAUDE_AGENT_SDK_VERSION"));
+            // The agent legitimately needs these — they must survive.
+            assert!(!keys.iter().any(|k| k == "CLAUDE_CONFIG_DIR"));
+
+            std::env::remove_var("CLAUDECODE");
+            std::env::remove_var("CLAUDE_CODE_ENTRYPOINT");
+            std::env::remove_var("CLAUDE_AGENT_SDK_VERSION");
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
     }
 }
 

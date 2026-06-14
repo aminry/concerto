@@ -48,8 +48,8 @@ use crate::agent_supervisor::bridge::{
 };
 use crate::agent_supervisor::events::{AgentEvent, MessageRole};
 use crate::agent_supervisor::parsers::{
-    claude_code::ClaudeCodePack, echo::EchoPack, maestro::MaestroPack, MsgRole, ParseEvent,
-    ParserPack,
+    claude_code::ClaudeCodePack, echo::EchoPack, maestro_stream_json::MaestroStreamJsonPack,
+    MsgRole, ParseEvent, ParserPack,
 };
 use crate::agent_supervisor::spawn::{spawn_host, wait_for_socket, SOCKET_POLL_BUDGET};
 use crate::maestro::MaestroProvider;
@@ -74,7 +74,7 @@ pub enum AgentKind {
     /// agent. Runs as a strict-mode PTY-CLI session whose tools are served by
     /// the in-process `concerto-maestro-mcp` server (Task 401), dialed via the
     /// CLI's `--mcp-config` + `--strict-mcp-config`. Uses the no-op/structured
-    /// [`MaestroPack`](crate::agent_supervisor::parsers::maestro::MaestroPack)
+    /// [`MaestroStreamJsonPack`](crate::agent_supervisor::parsers::maestro_stream_json::MaestroStreamJsonPack)
     /// parser (its tool calls ride MCP, not the PTY scrape) and a scratch cwd
     /// (`~/concerto/maestro/`), NOT a worktree.
     Maestro,
@@ -604,6 +604,7 @@ impl AgentSupervisorHandle {
             &cookie_hex,
             &final_info,
             req.resume_session_id.as_deref(),
+            &req.agent_kind,
         )
         .map_err(|e| Error::Internal(format!("spawn agent-host: {e}")))?;
         let host_pid = child.id().map(|p| p as i64).unwrap_or(-1);
@@ -697,10 +698,10 @@ impl AgentSupervisorHandle {
         let parser: Arc<dyn ParserPack> = match req.agent_kind {
             AgentKind::Echo => Arc::new(EchoPack::new()),
             AgentKind::Claude => Arc::new(ClaudeCodePack::new()),
-            // Task 402: the Maestro's tool calls ride the MCP channel, NOT the
-            // PTY scrape — use the no-op/structured MaestroPack, never the
+            // Task 5: the Maestro's tool calls ride the MCP channel, NOT the
+            // PTY scrape — use the structured stream-json pack, never the
             // fragile ClaudeCodePack scraper.
-            AgentKind::Maestro => Arc::new(MaestroPack::new()),
+            AgentKind::Maestro => Arc::new(MaestroStreamJsonPack::new()),
             AgentKind::Codex | AgentKind::Gemini => unreachable!("rejected above"),
         };
         let pending_approvals: Arc<Mutex<PendingApprovals>> =
@@ -1348,6 +1349,7 @@ impl AgentSupervisorHandle {
             &cookie_hex,
             &final_info,
             Some(resume_token),
+            &agent_kind,
         )
         .map_err(|e| Error::Internal(format!("spawn agent-host: {e}")))?;
         let host_pid = child.id().map(|p| p as i64).unwrap_or(-1);
@@ -1432,9 +1434,9 @@ impl AgentSupervisorHandle {
         let parser: Arc<dyn ParserPack> = match agent_kind {
             AgentKind::Echo => Arc::new(EchoPack::new()),
             AgentKind::Claude => Arc::new(ClaudeCodePack::new()),
-            // Task 402: the Maestro uses the no-op/structured MaestroPack on
-            // cold-resume too (tool calls ride MCP, not the PTY scrape).
-            AgentKind::Maestro => Arc::new(MaestroPack::new()),
+            // Task 5: the Maestro uses the stream-json pack on cold-resume
+            // too (tool calls ride MCP, not the PTY scrape).
+            AgentKind::Maestro => Arc::new(MaestroStreamJsonPack::new()),
             AgentKind::Codex | AgentKind::Gemini => unreachable!("rejected above"),
         };
         let pending_approvals: Arc<Mutex<PendingApprovals>> =
@@ -2724,10 +2726,10 @@ pub async fn adopt_resume_session(
     // practice only the claude pack ever runs here in V0.1.
     let parser: Arc<dyn ParserPack> = match row.agent_kind.as_str() {
         "claude" => Arc::new(ClaudeCodePack::new()),
-        // Task 402: explicit Maestro arm (belt-and-suspenders — the `_ =>`
+        // Task 5: explicit Maestro arm (belt-and-suspenders — the `_ =>`
         // already falls to EchoPack, but the Maestro's MCP-not-PTY tool channel
-        // is honest about using the dedicated no-op/structured MaestroPack).
-        "maestro" => Arc::new(MaestroPack::new()),
+        // uses the structured stream-json pack).
+        "maestro" => Arc::new(MaestroStreamJsonPack::new()),
         _ => Arc::new(EchoPack::new()),
     };
 

@@ -40,7 +40,7 @@ use crate::security::managed::ManagedPolicy;
 
 /// Default Maestro model when no org-pinned `defaultModel` is present
 /// (design/08 R-1: Sonnet-class default).
-pub const DEFAULT_MAESTRO_MODEL: &str = "claude-4.6-sonnet";
+pub const DEFAULT_MAESTRO_MODEL: &str = "claude-sonnet-4-6";
 
 /// Fallback Claude CLI binary name resolved on `$PATH` when no org-pinned
 /// `claudeExecutablePath` is configured.
@@ -218,9 +218,25 @@ fn resolve_cli_launch_spec(ctx: &MaestroLaunchContext, bin: String) -> MaestroLa
     let args = vec![
         "--model".to_string(),
         model.clone(),
+        // `--input-format stream-json` REQUIRES `--print` (claude CLI). With
+        // stream-json input, `--print` is the *streaming* multi-turn mode: it
+        // reads a stream of newline-delimited user-message envelopes from stdin
+        // and stays alive responding to each — exactly the long-lived Maestro
+        // session model (NOT the one-shot `-p "<prompt>"` form).
+        "--print".to_string(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
         "--mcp-config".to_string(),
         mcp_config,
         "--strict-mcp-config".to_string(),
+        // M1: auto-approve the live read tools (whole server; the 5 write + 2
+        // side-channel tools return typed-unimplemented, so nothing to gate yet).
+        // M2 replaces this with --permission-prompt-tool → PermissionResolver chips.
+        "--allowedTools".to_string(),
+        "mcp__concerto-maestro-mcp".to_string(),
         "--append-system-prompt".to_string(),
         MAESTRO_PREAMBLE.to_string(),
     ];
@@ -459,6 +475,35 @@ mod tests {
             PathBuf::from("/home/user/concerto/maestro"),
             PathBuf::from("/home/user/concerto/maestro/.mcp.json"),
         )
+    }
+
+    #[test]
+    fn maestro_launch_is_headless_stream_json_with_read_tools_allowed() {
+        let spec = ClaudeCliProvider::new()
+            .resolve_launch(&ctx_with(ManagedPolicy::default()))
+            .expect("spec");
+        // `--input-format stream-json` REQUIRES `--print` (claude CLI errors out
+        // without it); `--print` + stream-json input is the streaming multi-turn
+        // mode, not the one-shot prompt form.
+        assert!(spec.args.iter().any(|a| a == "--print"));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--input-format", "stream-json"]));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--output-format", "stream-json"]));
+        assert!(spec.args.iter().any(|a| a == "--verbose"));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|w| w == ["--allowedTools", "mcp__concerto-maestro-mcp"]));
+        assert!(spec.args.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(!spec
+            .args
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions"));
     }
 
     #[test]

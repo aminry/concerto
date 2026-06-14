@@ -40,7 +40,9 @@ use crate::agent_supervisor::AgentSupervisorHandle;
 use crate::llm::oneshot::OneShotLlm;
 use crate::maestro::digest::{generate_digest, Digest as DigestModel};
 use crate::maestro::events::{MaestroEvent, MaestroEventSender};
-use crate::maestro::routing::{pre_parse, ParseOutcome, Router, SlashDirective};
+use crate::maestro::routing::{
+    pre_parse, ParseOutcome, ResolvedRoute, Router, RoutingError, RoutingTarget, SlashDirective,
+};
 use crate::maestro::summary::{SummaryCache, GET_DIGEST_STALE_MS};
 use crate::workspace_manager::WorkareaManager;
 
@@ -80,6 +82,11 @@ pub enum SendOutcome {
     /// `/pause` / `/new` recognized; the directive marker was handled (no LLM
     /// spend). The body is forwarded to the resolved session if any.
     SlashHandled,
+    /// `@workarea` routing targeted a workarea that EXISTS but has no live
+    /// session (or no live session of the requested agent kind) to receive the
+    /// message — a normal state, not an error. A `maestro.message` notice is
+    /// emitted in-chat instead of surfacing a red RPC error.
+    RoutingNoSession { composer: String },
 }
 
 /// The budget/policy disable reason a constructed handle may carry. A handle
@@ -252,9 +259,23 @@ impl MaestroHandle {
         if let Err(e) = crate::maestro::ensure_maestro_scratch_trusted(&scratch) {
             tracing::warn!(error = %e, "maestro: folder-trust preseed failed (best-effort)");
         }
+        // Best-effort MCP-server trust preseed so the strict Maestro session
+        // never blocks on Claude's interactive "trust this MCP server?" gate.
+        // Mirrors the folder-trust preseed above; a failure must NOT block spawn.
+        if let Err(e) = crate::maestro::ensure_maestro_mcp_trusted(&scratch) {
+            tracing::warn!(error = %e, "maestro: MCP-server trust preseed failed (best-effort)");
+        }
         let mut req = crate::maestro::maestro_start_request(wa_id, scratch);
-        req.chat_id = Some(chat_id);
-        self.inner.supervisor.start_session(req).await
+        req.chat_id = Some(chat_id.clone());
+        let sid = self.inner.supervisor.start_session(req).await?;
+        crate::maestro::events_bridge::spawn_maestro_events_bridge(
+            self.inner.supervisor.clone(),
+            self.inner.events.clone(),
+            sid.clone(),
+            Arc::clone(&self.inner.persistence),
+            chat_id,
+        );
+        Ok(sid)
     }
 
     /// Send the user's chat input to the Maestro (design/08 §5.2 / §6.1). Runs
@@ -283,10 +304,14 @@ impl MaestroHandle {
         match pre_parse(&text) {
             ParseOutcome::Routing { targets, body } => {
                 // Deterministic routing — NEVER gated on the LLM inert state.
-                // Resolve bare `@composer` within the hinted workspace when the
-                // desktop supplies its active workspace (Task 9); otherwise fall
-                // back to the most-recent workspace.
-                let workspace_id = match workspace_id {
+                // When the desktop supplies an explicit scope (Task 9), resolve
+                // `@composer` STRICTLY within it (disambiguation). When it does
+                // NOT (no workspace selected — `workspace_id` absent), resolve in
+                // the default workspace first, then fall back to a GLOBAL search
+                // so `@composer` routes wherever it lives instead of erroring with
+                // empty suggestions.
+                let explicit_scope = workspace_id.is_some();
+                let scoped = match workspace_id {
                     Some(ws) => ws,
                     None => self.default_workspace_id().await?,
                 };
@@ -295,10 +320,32 @@ impl MaestroHandle {
                     self.inner.supervisor.clone(),
                     Arc::clone(&self.inner.persistence),
                 );
-                let routes = router
-                    .resolve_targets(&workspace_id, &targets)
-                    .await
-                    .map_err(routing_error_to_internal)?;
+                let routes = match router.resolve_targets(&scoped, &targets).await {
+                    Ok(routes) => routes,
+                    Err(e @ RoutingError::NoSuchWorkarea { .. }) if !explicit_scope => {
+                        match self
+                            .resolve_targets_anywhere(&router, &scoped, &targets)
+                            .await?
+                        {
+                            AnywhereResolution::Resolved(routes) => routes,
+                            // Found in another workspace but idle ⇒ in-chat notice.
+                            AnywhereResolution::NoSession(err) => {
+                                return Ok(self.notice_no_session(err))
+                            }
+                            AnywhereResolution::NotFound => {
+                                return Err(routing_error_to_internal(e))
+                            }
+                        }
+                    }
+                    // A workarea that exists but has no live session (or none of
+                    // the requested agent kind) is a NORMAL state, not an error:
+                    // tell the user in-chat instead of surfacing a red RPC error.
+                    Err(
+                        e @ (RoutingError::NoActiveAgent { .. }
+                        | RoutingError::NoMatchingSession { .. }),
+                    ) => return Ok(self.notice_no_session(e)),
+                    Err(e) => return Err(routing_error_to_internal(e)),
+                };
                 router.dispatch(&routes, &body).await;
                 let resolved: Vec<String> = routes.iter().map(|r| r.composer.clone()).collect();
                 self.inner.events.emit(MaestroEvent::RoutingExecuted {
@@ -333,6 +380,10 @@ impl MaestroHandle {
             ParseOutcome::Freeform(body) => {
                 // Freeform goes to the Maestro LLM — gated on the inert state.
                 self.guard_llm().await?;
+                // Echo + persist the user turn (Task 7) before forwarding so
+                // the chat bubble appears immediately; best-effort, never
+                // blocks the forward.
+                self.record_user_turn(&body).await;
                 self.forward_freeform(&body).await?;
                 Ok(SendOutcome::Forwarded)
             }
@@ -415,6 +466,46 @@ impl MaestroHandle {
             .unwrap_or_default()
     }
 
+    /// Load the persisted Maestro chat history (Task 8) so the conversation
+    /// survives a reload. Returns up to the most-recent 200 turns, oldest-first,
+    /// as `(role, text, created_at_ms)`.
+    ///
+    /// Three row kinds live in the maestro chat: the `{"text":...}` conversation
+    /// rows (user turns from Task 7 + assistant reply turns the events bridge
+    /// persists), the checkpoint/turn system's text-less `v0_1_turn_marker`
+    /// assistant rows, and the **digest** rows (`{"kind":"digest","text":...}`,
+    /// persisted by `generate_digest` per D11 for condensation). We return ONLY
+    /// the conversation rows: the marker rows are SKIPPED (no `text`), and the
+    /// digest rows are SKIPPED (they belong in the DigestPanel via `GetDigest`,
+    /// NOT the chat transcript — surfacing them here floods the conversation with
+    /// digest snapshots).
+    pub async fn get_history(&self) -> Result<Vec<(String, String, i64)>> {
+        let chat_id = self.ensure_maestro_chat().await?;
+        let rows = concerto_persist::chat_messages::list_by_chat(
+            self.inner.persistence.readers(),
+            &chat_id,
+            200,
+        )
+        .await?;
+        let mut turns = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&row.content_json) else {
+                continue;
+            };
+            // Digest rows carry `"kind":"digest"` (D11) — they render in the
+            // DigestPanel, not the conversation transcript. Skip them.
+            if value.get("kind").and_then(|k| k.as_str()) == Some("digest") {
+                continue;
+            }
+            // SKIP rows with no `text` key (the `v0_1_turn_marker` assistant rows).
+            let Some(text) = value.get("text").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            turns.push((row.role, text.to_string(), row.created_at));
+        }
+        Ok(turns)
+    }
+
     // -- internals ----------------------------------------------------------
 
     /// Generate the digest model (shared by `GetDigest` + the `/digest` slash
@@ -445,6 +536,34 @@ impl MaestroHandle {
         .await
     }
 
+    /// Publish the user's turn to `maestro.events` (immediate bubble,
+    /// `role="user"`) and persist it to the maestro chat.  Best-effort: a
+    /// persistence hiccup must not block the forward.
+    async fn record_user_turn(&self, body: &str) {
+        self.inner
+            .events
+            .emit(crate::maestro::events::MaestroEvent::Message {
+                text: body.to_string(),
+                message_id: String::new(),
+                role: "user".to_string(),
+            });
+        if let Ok(chat_id) = self.ensure_maestro_chat().await {
+            if let Err(e) = concerto_persist::chat_messages::insert_user_message(
+                &self.inner.persistence,
+                &chat_id,
+                body,
+            )
+            .await
+            {
+                tracing::warn!(
+                    target: "concerto::maestro",
+                    error = %e,
+                    "failed to persist maestro user turn"
+                );
+            }
+        }
+    }
+
     /// Forward freeform text to the live Maestro session's stdin via the agent
     /// supervisor. The Maestro session is `AgentKind::Maestro`; its streamed
     /// assistant output is surfaced as `maestro.message` events by the session
@@ -454,10 +573,48 @@ impl MaestroHandle {
             return Ok(());
         }
         let session_id = self.maestro_session_id().await?;
+        let line = compose_user_envelope(body);
         self.inner
             .supervisor
-            .send_input(&session_id, body.as_bytes().to_vec())
+            .send_input(&session_id, line.into_bytes())
             .await
+    }
+
+    /// Turn a "nothing live to route to" routing error into an in-chat maestro
+    /// notice (a `maestro.message`) rather than a red RPC error. A workarea that
+    /// exists but has no active session — or no session of the requested agent
+    /// kind — is a normal state the user should simply be told about. Returns
+    /// the matching [`SendOutcome::RoutingNoSession`] so the handler stays Ok.
+    fn notice_no_session(&self, err: RoutingError) -> SendOutcome {
+        let (composer, text) = match err {
+            RoutingError::NoActiveAgent { composer } => {
+                let text = format!(
+                    "**{composer}** doesn't have an active session right now, so I \
+                     couldn't deliver that. Open the workarea and start a session, \
+                     then try again."
+                );
+                (composer, text)
+            }
+            RoutingError::NoMatchingSession {
+                composer,
+                agent_kind,
+            } => {
+                let text = format!(
+                    "**{composer}** has no active {agent_kind} session right now, so \
+                     I couldn't deliver that. Start one and try again."
+                );
+                (composer, text)
+            }
+            other => unreachable!(
+                "notice_no_session only handles no-session routing errors, got {other:?}"
+            ),
+        };
+        self.inner.events.emit(MaestroEvent::Message {
+            text,
+            message_id: String::new(),
+            role: "assistant".to_string(),
+        });
+        SendOutcome::RoutingNoSession { composer }
     }
 
     /// Guard the LLM path against the inert state. Routing/tools never call
@@ -516,6 +673,60 @@ impl MaestroHandle {
             .ok_or_else(|| Error::NotFound("no active workspace for the Maestro".to_string()))
     }
 
+    /// All non-archived, non-sentinel workspace ids (newest first) — the search
+    /// space for the cross-workspace routing fallback.
+    async fn all_workspace_ids(&self) -> Result<Vec<WorkspaceId>> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM workspaces WHERE archived_at IS NULL AND id != ?
+             ORDER BY created_at DESC",
+        )
+        .bind(concerto_persist::MAESTRO_SYSTEM_WORKSPACE_ID)
+        .fetch_all(self.inner.persistence.readers())
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        Ok(rows.into_iter().map(WorkspaceId).collect())
+    }
+
+    /// Cross-workspace routing fallback: try `targets` in every workspace except
+    /// `already_tried` (workspaces are newest-first). Used only when the desktop
+    /// supplied NO explicit workspace scope, so an `@composer` routes wherever it
+    /// lives. Distinguishes three outcomes so the caller can tell "found but
+    /// idle" (→ in-chat notice) apart from "not found anywhere" (→ error):
+    /// - [`AnywhereResolution::Resolved`] — a workspace resolved them all live;
+    /// - [`AnywhereResolution::NoSession`] — the workarea (or agent kind) EXISTS
+    ///   in some workspace but has no live session to receive the message;
+    /// - [`AnywhereResolution::NotFound`] — no other workspace has it at all.
+    async fn resolve_targets_anywhere(
+        &self,
+        router: &Router,
+        already_tried: &WorkspaceId,
+        targets: &[RoutingTarget],
+    ) -> Result<AnywhereResolution> {
+        // Remember the first "exists but idle" error so a session-less workarea
+        // surfaces as a notice rather than collapsing to NotFound.
+        let mut idle: Option<RoutingError> = None;
+        for ws in self.all_workspace_ids().await? {
+            if &ws == already_tried {
+                continue;
+            }
+            match router.resolve_targets(&ws, targets).await {
+                Ok(routes) => return Ok(AnywhereResolution::Resolved(routes)),
+                Err(
+                    e @ (RoutingError::NoActiveAgent { .. }
+                    | RoutingError::NoMatchingSession { .. }),
+                ) => {
+                    idle.get_or_insert(e);
+                }
+                // NoSuchWorkarea / empty dynamic set here — keep searching.
+                Err(_) => {}
+            }
+        }
+        Ok(match idle {
+            Some(e) => AnywhereResolution::NoSession(e),
+            None => AnywhereResolution::NotFound,
+        })
+    }
+
     /// The `last_seen_at` the digest computes deltas since: the last digest
     /// instant, or 0 (everything is "new") when none yet (403's
     /// `last_digest_at`).
@@ -523,6 +734,31 @@ impl MaestroHandle {
         let state = concerto_persist::maestro_state::get(self.inner.persistence.readers()).await?;
         Ok(state.and_then(|s| s.last_digest_at).unwrap_or(0))
     }
+}
+
+/// Frame a freeform user message as a Claude `stream-json` input line.
+/// (`--input-format stream-json` reads one JSON object per line.)
+pub(crate) fn compose_user_envelope(body: &str) -> String {
+    let v = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": body }] }
+    });
+    format!(
+        "{}\n",
+        serde_json::to_string(&v).expect("serialize user envelope")
+    )
+}
+
+/// Outcome of the cross-workspace routing fallback ([`MaestroHandle::resolve_targets_anywhere`]).
+enum AnywhereResolution {
+    /// A workspace resolved every target to a live session.
+    Resolved(Vec<ResolvedRoute>),
+    /// The workarea (or requested agent kind) exists in some workspace but has
+    /// no live session — carries the routing error so the caller can compose the
+    /// matching no-session notice.
+    NoSession(RoutingError),
+    /// No other workspace has the target at all.
+    NotFound,
 }
 
 /// Map a 408 `RoutingError` to a typed `Error::Internal` carrying the routing
@@ -894,6 +1130,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_routing_to_workarea_without_session_emits_notice_not_error() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        // `bach` EXISTS but has no live session — a normal state, not an error.
+        // Routing to it must surface an in-chat maestro notice (so the user
+        // learns the workarea is idle), NOT a red RPC error.
+        insert_workarea(&persistence, "wa-1", "bach").await;
+        let mut rx = handle.inner.events.frame_sender().subscribe();
+        let outcome = handle
+            .send_to_maestro("@bach hi".into(), vec![], None)
+            .await
+            .expect("a session-less workarea is a notice, not an error");
+        assert_eq!(
+            outcome,
+            SendOutcome::RoutingNoSession {
+                composer: "bach".into()
+            }
+        );
+        let frame = rx.recv().await.expect("event");
+        let v: serde_json::Value = serde_json::from_slice(&frame.frame).unwrap();
+        assert_eq!(v["kind"], "maestro.message");
+        assert_eq!(v["role"], "assistant");
+        let text = v["text"].as_str().unwrap().to_lowercase();
+        assert!(text.contains("bach"), "notice names the workarea: {text}");
+        assert!(text.contains("session"), "notice mentions session: {text}");
+    }
+
+    #[tokio::test]
+    async fn send_routing_no_scope_finds_idle_workarea_in_other_workspace_as_notice() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        // The DEFAULT (most-recent) workspace has no matching workarea; `bach`
+        // lives in an OLDER workspace and has NO live session. With no explicit
+        // scope, the global fallback must recognize "found but idle" and surface
+        // the no-session NOTICE — not the original `NoSuchWorkarea` error (the
+        // bug: the fallback discarded session-less workareas).
+        insert_workspace(&persistence, "wsB", 100).await; // most-recent ⇒ default, empty
+        insert_workarea_in(&persistence, "ws", "wa-bach", "bach").await; // older ws, no session
+        let mut rx = handle.inner.events.frame_sender().subscribe();
+        let outcome = handle
+            .send_to_maestro("@bach hi".into(), vec![], None)
+            .await
+            .expect("an idle workarea in another workspace is a notice, not an error");
+        assert_eq!(
+            outcome,
+            SendOutcome::RoutingNoSession {
+                composer: "bach".into()
+            }
+        );
+        let frame = rx.recv().await.expect("event");
+        let v: serde_json::Value = serde_json::from_slice(&frame.frame).unwrap();
+        assert_eq!(v["kind"], "maestro.message");
+        assert_eq!(v["role"], "assistant");
+    }
+
+    #[tokio::test]
     async fn send_routing_executed_emits_event_and_dispatches() {
         let (_tmp, handle, persistence) = live_handle().await;
         insert_workarea(&persistence, "wa-1", "bach").await;
@@ -1006,15 +1296,17 @@ mod tests {
         );
     }
 
-    /// Absent hint ⇒ exact current behavior: routing falls back to
-    /// `default_workspace_id()` (workspace B, the most-recent), so `@beta`
-    /// resolves and `@alpha` (which lives in A) does NOT.
+    /// Absent hint ⇒ resolve in `default_workspace_id()` (workspace B, the
+    /// most-recent) FIRST, then fall back GLOBALLY: `@beta` resolves directly in
+    /// B, and `@alpha` (which lives only in A) resolves via the cross-workspace
+    /// fallback instead of erroring. (When the desktop sends NO scope, an
+    /// `@composer` routes wherever it lives — see `resolve_targets_anywhere`.)
     #[tokio::test]
-    async fn send_without_hint_falls_back_to_default_workspace() {
+    async fn send_without_hint_resolves_in_default_then_falls_back_globally() {
         let (_tmp, handle, persistence) = live_handle().await;
         let (_a, _b) = two_workspace_fixture(&persistence).await;
 
-        // Default workspace is B ⇒ `@beta` resolves.
+        // Default workspace is B ⇒ `@beta` resolves directly.
         let outcome = handle
             .send_to_maestro("@beta run it".into(), vec![], None)
             .await
@@ -1025,12 +1317,18 @@ mod tests {
                 targets: vec!["beta".into()]
             }
         );
-        // ...and `@alpha` (workspace A only) is NOT found under the B default.
-        let err = handle
+        // `@alpha` (workspace A only) is absent in the default B ⇒ the unscoped
+        // global fallback finds it in A and routes (no longer a NotFound).
+        let outcome = handle
             .send_to_maestro("@alpha run it".into(), vec![], None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, Error::NotFound(_)));
+            .expect("unscoped @alpha resolves via the cross-workspace fallback");
+        assert_eq!(
+            outcome,
+            SendOutcome::Routed {
+                targets: vec!["alpha".into()]
+            }
+        );
     }
 
     // -- get_state round-trips the maestro_state singleton ------------------
@@ -1232,6 +1530,121 @@ mod tests {
         assert_eq!(
             state.maestro_session_id, "maestro-sess",
             "live session id is load-bearing for 417"
+        );
+    }
+
+    // -- Task 7: record_user_turn emits + persists ---------------------------
+
+    /// `record_user_turn` emits a `role:"user"` `maestro.message` frame on the
+    /// events channel and persists the text as a `chat_messages` row in the
+    /// maestro chat. This tests both the event side (subscriber receives the
+    /// frame with `role:"user"`) and the DB side (the row is readable via
+    /// `list_in_day_range`).
+    #[tokio::test]
+    async fn record_user_turn_emits_event_and_persists_row() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        let mut rx = handle.inner.events.frame_sender().subscribe();
+
+        handle
+            .record_user_turn("what are my workareas doing?")
+            .await;
+
+        // -- event side --
+        let frame = rx.recv().await.expect("frame received");
+        let v: serde_json::Value = serde_json::from_slice(&frame.frame).expect("json");
+        assert_eq!(v["kind"], "maestro.message");
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["text"], "what are my workareas doing?");
+        assert_eq!(v["message_id"], "", "user echoes carry empty message_id");
+
+        // -- DB side: the row must be visible via `list_in_day_range` --
+        let chat_id = handle.ensure_maestro_chat().await.expect("chat id");
+        let rows = concerto_persist::chat_messages::list_in_day_range(
+            persistence.readers(),
+            &chat_id,
+            0,
+            i64::MAX,
+        )
+        .await
+        .expect("list");
+        assert_eq!(rows.len(), 1, "one persisted user-turn row");
+        assert_eq!(rows[0].role, "user");
+        let content: serde_json::Value =
+            serde_json::from_str(&rows[0].content_json).expect("content_json");
+        assert_eq!(content["text"], "what are my workareas doing?");
+    }
+
+    // -- Task 8: get_history loads persisted turns + skips marker rows -------
+
+    /// `get_history` returns the persisted user + assistant text turns oldest-
+    /// first AND skips the checkpoint `v0_1_turn_marker` assistant rows (which
+    /// carry no `content_json.text`). Proves the round-trip a reload depends on.
+    #[tokio::test]
+    async fn get_history_loads_text_turns_and_skips_markers() {
+        let (_tmp, handle, persistence) = live_handle().await;
+        let chat_id = handle.ensure_maestro_chat().await.expect("chat id");
+
+        // Explicit timestamps (10/20/30) so the ascending order is
+        // deterministic regardless of wall-clock ms ties:
+        //   user(text)@10, assistant marker@20 (no text), digest@25
+        //   ({"kind":"digest"}), assistant(text)@30. The marker AND the digest
+        //   row must be skipped — only the two conversation turns survive.
+        {
+            let mut w = persistence.writer().await;
+            for (id, role, content, ts) in [
+                ("u-1", "user", r#"{"text":"hi"}"#, 10i64),
+                ("marker", "assistant", r#"{"v0_1_turn_marker":true}"#, 20),
+                (
+                    "digest",
+                    "assistant",
+                    r#"{"kind":"digest","text":"You are Concerto's maestro. Write a digest..."}"#,
+                    25,
+                ),
+                ("a-1", "assistant", r#"{"text":"hi back"}"#, 30),
+            ] {
+                concerto_persist::chat_messages::insert(
+                    &mut w,
+                    concerto_persist::chat_messages::NewChatMessage {
+                        id: id.into(),
+                        chat_id: chat_id.clone(),
+                        role: role.into(),
+                        content_json: content.into(),
+                        created_at: ts,
+                        parent_id: None,
+                        superseded_by: None,
+                        metadata: None,
+                    },
+                )
+                .await
+                .expect("insert row");
+            }
+        }
+
+        let turns = handle.get_history().await.expect("history");
+        // Marker + digest rows dropped; the two conversation turns survive, oldest-first.
+        let roles: Vec<&str> = turns.iter().map(|(r, _, _)| r.as_str()).collect();
+        let texts: Vec<&str> = turns.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant"], "marker + digest skipped");
+        assert_eq!(texts, vec!["hi", "hi back"]);
+        assert!(
+            !texts.iter().any(|t| t.contains("digest")),
+            "digest rows must not appear in the chat transcript"
+        );
+    }
+
+    // -- compose_user_envelope: stream-json framing --------------------------
+
+    #[test]
+    fn user_envelope_is_newline_terminated_stream_json() {
+        let line = compose_user_envelope("what are my workareas doing?");
+        assert!(line.ends_with('\n'));
+        let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        assert_eq!(v["message"]["content"][0]["type"], "text");
+        assert_eq!(
+            v["message"]["content"][0]["text"],
+            "what are my workareas doing?"
         );
     }
 

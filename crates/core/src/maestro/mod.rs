@@ -149,6 +149,18 @@ pub mod cone_suggester;
 pub mod system_workarea;
 // ===========================================================================
 
+// ===========================================================================
+// Task 2 (Maestro Live-Integration) region — DISTINCT additive zone
+// (design Fork B1). Kept in its OWN clearly-labeled block so it auto-merges
+// against the sibling soft-seam lines above.
+//
+// Pre-seed Claude's per-project MCP-server approval so the Maestro session
+// never blocks on the interactive "trust this MCP server?" gate. Mirrors
+// `agent_supervisor::ensure_claude_trusts_dir` (folder-trust preseed) but
+// targets `projects.<scratch>.enabledMcpjsonServers`.
+pub mod mcp_trust;
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
 // Public surface re-exports (the cluster-M root's `pub use` zone).
 // ---------------------------------------------------------------------------
@@ -176,6 +188,22 @@ pub use cone_suggester::MaestroConeSuggester;
 pub use system_workarea::{
     ensure_system_workspace_and_workarea, SYSTEM_WORKAREA_ID, SYSTEM_WORKSPACE_ID,
 };
+
+// Task 2 (Maestro Live-Integration) — re-export the MCP-server trust preseed
+// (distinct region; see the `pub mod mcp_trust;` block above). The spawn path
+// calls `ensure_maestro_mcp_trusted` after the scratch dir is ensured.
+pub use mcp_trust::ensure_maestro_mcp_trusted;
+
+// ===========================================================================
+// Task 6 (Maestro Live-Conversation) region — DISTINCT additive zone.
+// Kept in its OWN clearly-labeled block so it auto-merges against the sibling
+// soft-seam lines above.
+//
+// Bridges the Maestro session's `AgentEvent::Message` + `AgentEvent::TurnComplete`
+// onto `maestro.events` as `MaestroEvent::Message` bubbles the chat UI renders.
+// One bubble per completed turn (M1; delta streaming is later polish).
+pub mod events_bridge;
+// ===========================================================================
 
 // Task 402 re-exports (distinct region — see above).
 pub use provider::{

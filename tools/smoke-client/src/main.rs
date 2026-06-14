@@ -222,6 +222,28 @@ enum Command {
         #[arg(long)]
         kind: Option<String>,
     },
+    /// Call `Maestro.SendToMaestro` — forward a chat turn (freeform,
+    /// `@workarea`, or a slash directive). Prints `sent`.
+    MaestroSend {
+        #[arg(long)]
+        text: String,
+        /// Optional workspace scope hint (a bare `@composer` resolves here).
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Call `Maestro.GetState` — print the 9-field read-model as JSON.
+    MaestroState,
+    /// Call `Maestro.GetHistory` — print one `role\ttext` line per turn.
+    MaestroHistory,
+    /// Call `Maestro.GetDigest` — print the digest text + chip count.
+    MaestroDigest,
+    /// Subscribe to `maestro.events` and print each decoded frame until
+    /// the timeout fires. Used to assert replies / routing notices.
+    MaestroWatch {
+        /// Wall-clock budget, seconds.
+        #[arg(long, default_value_t = 20)]
+        timeout: u64,
+    },
 }
 
 fn main() -> ExitCode {
@@ -356,6 +378,26 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
         }
         Command::ListAudit { data_dir, kind } => {
             cmd::list_audit::run(&data_dir, kind.as_deref()).await
+        }
+        Command::MaestroSend { text, workspace } => {
+            let socket = require_socket(cli.socket)?;
+            cmd::maestro::send(&socket, &text, workspace).await
+        }
+        Command::MaestroState => {
+            let socket = require_socket(cli.socket)?;
+            cmd::maestro::state(&socket).await
+        }
+        Command::MaestroHistory => {
+            let socket = require_socket(cli.socket)?;
+            cmd::maestro::history(&socket).await
+        }
+        Command::MaestroDigest => {
+            let socket = require_socket(cli.socket)?;
+            cmd::maestro::digest(&socket).await
+        }
+        Command::MaestroWatch { timeout } => {
+            let socket = require_socket(cli.socket)?;
+            cmd::maestro::watch(&socket, timeout).await
         }
     }
 }

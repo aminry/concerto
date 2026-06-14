@@ -24,6 +24,9 @@ tracing.workspace = true
 # `workarea_repos.sparse_cones_json`. Workspace pin already in the dep tree
 # via `concerto-core`; cargo-deny-clean (no new workspace pin).
 serde_json.workspace = true
+# Task 7: user-turn echo persists via `chat_messages::insert_user_message`.
+# UUIDv7 keeps `created_at` ordering deterministic; mirrors core's uuid usage.
+uuid = { workspace = true, features = ["v7"] }
 # `home` for `home::home_dir()`; matches `crates/core/src/logging.rs`'s pattern.
 # The task originally said `dirs::data_dir()`, but `dirs` pulls in MPL-2.0
 # `option-ext` (banned by design/00 §6.11). See Task 05 / Task 08 Handoff.

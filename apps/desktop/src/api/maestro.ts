@@ -91,6 +91,22 @@ export type MaestroState = {
   maestro_session_id: string; // = 9 ("" ⇒ no live Maestro session)
 };
 
+/// Mirrors `concerto.v1.MaestroTurn` (maestro.proto) — one persisted chat turn
+/// returned by `Maestro.GetHistory` (Task 8). `role` is `"user" | "assistant"`;
+/// `created_at_ms` is `int64` unix-ms. The text-less checkpoint `v0_1_turn_marker`
+/// rows are filtered out server-side, so every turn here carries renderable text.
+export type MaestroTurn = {
+  role: string; // = 1
+  text: string; // = 2
+  created_at_ms?: number; // = 3 (int64 unix ms)
+};
+
+/// Mirrors `concerto.v1.MaestroHistory` (maestro.proto) — the persisted Maestro
+/// chat history (Task 8), most-recent turns oldest-first.
+export type MaestroHistory = {
+  turns: MaestroTurn[]; // = 1
+};
+
 // ── RPC request/response shapes (FROZEN field names, maestro.proto) ──────────
 
 /// Mirrors `concerto.v1.MaestroMessageRequest` (maestro.proto:36).
@@ -148,6 +164,18 @@ export async function getState(): Promise<MaestroState> {
   return callRpc<Record<string, never>, MaestroState>("Maestro.GetState", {});
 }
 
+/// Load the persisted Maestro chat history (`Maestro.GetHistory`, Task 8) so
+/// the conversation survives a reload. Returns the most-recent turns oldest-
+/// first; the chat seeds its transcript with these on mount, then appends live
+/// `maestro.events` messages. The request message `GetHistoryRequest` is empty.
+export async function getHistory(): Promise<MaestroTurn[]> {
+  const history = await callRpc<Record<string, never>, MaestroHistory>(
+    "Maestro.GetHistory",
+    {},
+  );
+  return history?.turns ?? [];
+}
+
 /// Toggle a workarea's Maestro visibility (`Maestro.SetWorkareaVisibility`,
 /// design/08 §3.3 privacy toggle). Task 413 enforces the summary blanking this
 /// drives. Returns `google.protobuf.Empty`.
@@ -201,6 +229,33 @@ export function decodeMaestroEvent(payload: unknown): MaestroEvent {
     return { kind: "unknown", raw: payload };
   }
   const obj = frame as Record<string, unknown>;
+
+  // The LIVE backend (`events.rs::MaestroEvent::to_frame`) emits a FLAT
+  // kind-tagged envelope — `{"kind":"maestro.message"|"maestro.routing_executed"
+  // |"maestro.digest_generated"|..., <payload fields>}`. Dispatch on that first;
+  // the oneof-variant shapes below remain as a fallback for legacy/test doubles.
+  if (typeof obj.kind === "string") {
+    switch (obj.kind) {
+      case "maestro.message":
+        return {
+          kind: "message",
+          text: asString(obj.text),
+          role: optString(obj.role),
+        };
+      case "maestro.routing_executed":
+        return {
+          kind: "routing_executed",
+          targets: asStringArray(obj.targets),
+          summary: optString(obj.body),
+        };
+      case "maestro.digest_generated":
+        return { kind: "digest_generated", digest: undefined };
+      case "maestro.budget_exhausted":
+        return { kind: "budget_exhausted" };
+      case "maestro.disabled_by_policy":
+        return { kind: "disabled_by_policy", reason: optString(obj.reason) };
+    }
+  }
 
   const message = oneofVariant<{ text?: unknown; role?: unknown }>(
     obj,

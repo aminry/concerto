@@ -22,18 +22,27 @@
 // resulting empty-state renders (no digest / no messages) are the DELIBERATE
 // UX seam, NOT stubs — they light up with zero rework when 414 wires live data.
 
-import { useCallback, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   decodeMaestroEvent,
   getDigest,
+  getHistory,
   getState,
   MAESTRO_EVENTS_SUBJECT,
   type Digest,
   type MaestroEvent,
   type MaestroState,
+  type MaestroTurn,
 } from "../../api/maestro";
 import { useEventSubscription } from "../../hooks/useEventSubscription";
 import { useMaestroStore } from "../../state/useMaestroStore";
@@ -43,7 +52,10 @@ import { DigestPanel } from "./DigestPanel";
 import { MaestroComposer } from "./MaestroComposer";
 import {
   eventsToLines,
+  historyToLines,
+  isNearBottom,
   MaestroTranscript,
+  waitingAfterEvent,
   type TranscriptLine,
 } from "./MaestroTranscript";
 import { useMaestroConfirmations } from "./useMaestroConfirmations";
@@ -79,6 +91,19 @@ export function MaestroChat(): JSX.Element {
 
   // Conversational events accumulated off the live stream (server-canonical).
   const [events, setEvents] = useState<MaestroEvent[]>([]);
+  // The persisted chat history (Task 8), loaded ONCE on mount so the
+  // conversation survives a reload. Live `message`/`routing_executed` events
+  // append AFTER these history lines. Loading once (rather than merging on
+  // every event) keeps the seed deterministic; a transient duplicate of a
+  // just-sent turn that lands in BOTH the history fetch and a live event is
+  // acceptable (and rare — the fetch resolves on mount, before new turns).
+  const [history, setHistory] = useState<MaestroTurn[]>([]);
+  // True between forwarding the user's turn to the model and the streamed reply
+  // landing — drives the "Maestro is working" indicator. Derived from the event
+  // stream (a `role:"user"` message turns it on; the assistant reply / routing /
+  // budget|policy stop turns it off) so it tracks the real round-trip, not just
+  // the (instant) `SendToMaestro` ack.
+  const [waitingForReply, setWaitingForReply] = useState(false);
   const [exhaustedByEvent, setExhaustedByEvent] = useState(false);
   const [policyDisabledReason, setPolicyDisabledReason] = useState<
     string | null
@@ -127,6 +152,9 @@ export function MaestroChat(): JSX.Element {
   const onFrame = useCallback(
     (payload: unknown) => {
       const ev = decodeMaestroEvent(payload);
+      // Flip the working indicator on the user→assistant round-trip.
+      const waiting = waitingAfterEvent(ev);
+      if (waiting !== null) setWaitingForReply(waiting);
       switch (ev.kind) {
         case "message":
         case "routing_executed":
@@ -165,14 +193,61 @@ export function MaestroChat(): JSX.Element {
   );
   useEventSubscription<unknown>(MAESTRO_EVENTS_SUBJECT, onFrame);
 
+  // Seed the transcript with the persisted history ONCE on mount (Task 8). The
+  // Core skips the text-less checkpoint marker rows, so every turn here renders.
+  // `getHistory` rejects with `Status::unimplemented`/policy-disabled behind the
+  // mocked shell until the Maestro is live — we swallow the error and start
+  // empty (the deliberate seam; live events still populate the transcript).
+  useEffect(() => {
+    let cancelled = false;
+    void getHistory()
+      .then((turns) => {
+        if (!cancelled) setHistory(turns);
+      })
+      .catch(() => {
+        /* no persisted history (policy-disabled / not yet live) — start empty */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // History (persisted, oldest-first) seeds the top; live events append below.
   const lines: TranscriptLine[] = useMemo(
-    () => eventsToLines(events),
-    [events],
+    () => [...historyToLines(history), ...eventsToLines(events)],
+    [history, events],
   );
 
   const refreshDigest = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: MAESTRO_DIGEST_QUERY_KEY });
   }, [queryClient]);
+
+  // Auto-scroll the transcript to the newest message — but ONLY when the user
+  // is already pinned to the bottom, so appending a reply never yanks someone
+  // who has scrolled up to read earlier history. `pinnedRef` starts true so the
+  // initial history seed lands at the latest turn. `useLayoutEffect` scrolls
+  // before paint to avoid a visible jump.
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
+  const onTranscriptScroll = useCallback(() => {
+    const el = transcriptRef.current;
+    if (el) pinnedRef.current = isNearBottom(el);
+  }, []);
+  useLayoutEffect(() => {
+    const el = transcriptRef.current;
+    if (el && pinnedRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [lines, waitingForReply]);
+
+  // Safety net: if a reply never lands (model hang / dropped stream), clear the
+  // working indicator after a generous window so it never spins forever. Each
+  // new turn (waiting → true) resets the timer.
+  useEffect(() => {
+    if (!waitingForReply) return;
+    const t = setTimeout(() => setWaitingForReply(false), 180_000);
+    return () => clearTimeout(t);
+  }, [waitingForReply]);
 
   return (
     <div
@@ -212,8 +287,12 @@ export function MaestroChat(): JSX.Element {
             onRefresh={refreshDigest}
             refreshing={digestQuery.isFetching}
           />
-          <div className="max-h-48 overflow-auto">
-            <MaestroTranscript lines={lines} />
+          <div
+            ref={transcriptRef}
+            onScroll={onTranscriptScroll}
+            className="max-h-64 min-h-[88px] overflow-auto"
+          >
+            <MaestroTranscript lines={lines} busy={waitingForReply} />
           </div>
           {pendingConfirmation && (
             <div className="px-3 pb-1">

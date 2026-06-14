@@ -23,6 +23,8 @@ use std::time::Duration;
 use concerto_error::{Error, Result};
 use tokio::process::{Child, Command};
 
+use crate::agent_supervisor::actor::AgentKind;
+
 /// Default budget for the socket-appearance poll. Matches the
 /// 10-second value called out in `design/04 §6.1` and Task 22's
 /// implementation notes.
@@ -196,6 +198,7 @@ pub fn spawn_host(
     cookie_hex: &str,
     final_info: &Path,
     resume_jsonl: Option<&str>,
+    agent_kind: &AgentKind,
 ) -> Result<Child> {
     let mut cmd = Command::new(host_bin);
     cmd.arg("--agent-bin").arg(agent_bin);
@@ -216,6 +219,12 @@ pub fn spawn_host(
     // wrapped agent CLI receives a plain `--resume <token>`.
     if let Some(token) = resume_jsonl {
         cmd.arg("--resume-jsonl").arg(token);
+    }
+    // The Maestro runs claude headless `--print --input-format stream-json`,
+    // which refuses a TTY — so it needs pipe-mode stdio. Every other kind
+    // stays PTY (omit the flag → default).
+    if *agent_kind == AgentKind::Maestro {
+        cmd.arg("--io-mode").arg("pipe");
     }
 
     // Detach via setsid so the host outlives the Core. The closure is

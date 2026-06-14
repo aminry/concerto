@@ -101,6 +101,10 @@ export type RpcMethod =
   // sibling task 418 (which appends `Repositories.SuggestCones` in the
   // Repositories region) auto-merges.
   | "Maestro.GetState"
+  // Task 8 — the additive `Maestro.GetHistory` read RPC: the persisted Maestro
+  // chat history the chat seeds its transcript with on mount so the
+  // conversation survives a reload (live `maestro.events` messages append after).
+  | "Maestro.GetHistory"
   | "Maestro.SetWorkareaVisibility";
 
 export async function callRpc<TRequest, TResponse>(

@@ -535,18 +535,21 @@ pub async fn generate_digest(
         }
     }
 
-    // (4) Build the templated prompt + run it through the one-shot seam. Pass
-    // the built prompt as BOTH `prompt` and `context` so `DeterministicOneShot`'s
-    // `_ =>` echo arm returns the grouped scaffold as the LIVE digest text,
-    // while 412's real provider reads `prompt`.
+    // (4) Build the templated prompt + run it through the one-shot seam. The
+    // real provider (Task 412) reads `prompt`; the `DeterministicOneShot` `_ =>`
+    // echo arm returns `context` — so `context` is a CLEAN grounded summary of
+    // the grouped state (NOT the raw instruction prompt, which would leak the
+    // "You are Concerto's maestro… Write a concise digest…" preamble into the
+    // user-facing digest panel).
     let prompt = build_digest_prompt(&active, &deltas, away_minutes);
+    let grounded = compose_grounded_digest(&finished, &blocked, &working);
     // The maestro digest is workspace-global; the repo id is not meaningful, so
     // the workspace id is the scope tag (matches 410's chat-id-as-scope choice).
     let req = OneShotRequest::new(
         ActionKind::DigestSummary,
         workspace_id.0.clone(),
-        prompt.clone(),
         prompt,
+        grounded,
     );
     let (text, mut degraded) = match llm.suggest(req).await {
         Ok(out) if !out.trim().is_empty() => (out, false),
@@ -590,6 +593,40 @@ cannot persist digest chips (D11)"
     }
 
     Ok(digest)
+}
+
+/// Compose a clean, grounded digest body from the already-classified groups —
+/// the DETERMINISTIC summary (no LLM, no I/O). It names the real workareas under
+/// Finished / Blocked / Still-working headings. Passed to the one-shot seam as
+/// `context` so the deterministic path returns THIS (a real summary) rather than
+/// echoing the raw instruction prompt; the real provider (Task 412) reads
+/// `prompt` instead. Never leaks the prompt; never empty.
+fn compose_grounded_digest(
+    finished: &[DigestEntry],
+    blocked: &[DigestEntry],
+    working: &[DigestEntry],
+) -> String {
+    if finished.is_empty() && blocked.is_empty() && working.is_empty() {
+        return "No active workareas right now.".to_string();
+    }
+    let names = |entries: &[DigestEntry]| {
+        entries
+            .iter()
+            .map(|e| e.composer_name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !finished.is_empty() {
+        parts.push(format!("Finished: {}.", names(finished)));
+    }
+    if !blocked.is_empty() {
+        parts.push(format!("Blocked: {}.", names(blocked)));
+    }
+    if !working.is_empty() {
+        parts.push(format!("Still working: {}.", names(working)));
+    }
+    parts.join(" ")
 }
 
 /// Minutes the user was away (`last_seen_at` → `now`), clamped at 0. Used both
@@ -918,6 +955,40 @@ mod tests {
             .expect("get")
             .expect("present");
         assert_eq!(state.last_digest_at, Some(digest.generated_at));
+    }
+
+    #[tokio::test]
+    async fn digest_text_with_deterministic_llm_is_grounded_not_prompt_echo() {
+        // With the deterministic (non-LLM) path, the digest text must be a
+        // grounded summary of the real workarea state — NOT the raw LLM prompt
+        // echoed back (the bug the chat E2E harness caught: the digest panel
+        // showed "You are Concerto's maestro... Write a concise digest...").
+        let (_dir, persist) = fresh_with_maestro_chat().await;
+        let cache = six_workarea_cache(60_000);
+        let llm = default_oneshot(); // DeterministicOneShot
+        let digest = generate_digest(&ws_id(), 0, &cache, &llm, &persist)
+            .await
+            .expect("digest");
+        assert!(
+            !digest.text.contains("You are Concerto's maestro"),
+            "digest leaks the prompt preamble: {}",
+            digest.text
+        );
+        assert!(
+            !digest.text.contains("Write a concise"),
+            "digest leaks the prompt instructions: {}",
+            digest.text
+        );
+        // It is grounded: names a real workarea from the fixture.
+        assert!(
+            digest.text.contains("bach"),
+            "digest should name a workarea: {}",
+            digest.text
+        );
+        assert!(
+            !digest.degraded,
+            "deterministic grounded text is not degraded"
+        );
     }
 
     // --- missing maestro chat → typed NotFound, not a panic ----------------
