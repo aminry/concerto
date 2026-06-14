@@ -40,7 +40,9 @@ use crate::agent_supervisor::AgentSupervisorHandle;
 use crate::llm::oneshot::OneShotLlm;
 use crate::maestro::digest::{generate_digest, Digest as DigestModel};
 use crate::maestro::events::{MaestroEvent, MaestroEventSender};
-use crate::maestro::routing::{pre_parse, ParseOutcome, Router, SlashDirective};
+use crate::maestro::routing::{
+    pre_parse, ParseOutcome, ResolvedRoute, RoutingError, RoutingTarget, Router, SlashDirective,
+};
 use crate::maestro::summary::{SummaryCache, GET_DIGEST_STALE_MS};
 use crate::workspace_manager::WorkareaManager;
 
@@ -297,10 +299,14 @@ impl MaestroHandle {
         match pre_parse(&text) {
             ParseOutcome::Routing { targets, body } => {
                 // Deterministic routing — NEVER gated on the LLM inert state.
-                // Resolve bare `@composer` within the hinted workspace when the
-                // desktop supplies its active workspace (Task 9); otherwise fall
-                // back to the most-recent workspace.
-                let workspace_id = match workspace_id {
+                // When the desktop supplies an explicit scope (Task 9), resolve
+                // `@composer` STRICTLY within it (disambiguation). When it does
+                // NOT (no workspace selected — `workspace_id` absent), resolve in
+                // the default workspace first, then fall back to a GLOBAL search
+                // so `@composer` routes wherever it lives instead of erroring with
+                // empty suggestions.
+                let explicit_scope = workspace_id.is_some();
+                let scoped = match workspace_id {
                     Some(ws) => ws,
                     None => self.default_workspace_id().await?,
                 };
@@ -309,10 +315,19 @@ impl MaestroHandle {
                     self.inner.supervisor.clone(),
                     Arc::clone(&self.inner.persistence),
                 );
-                let routes = router
-                    .resolve_targets(&workspace_id, &targets)
-                    .await
-                    .map_err(routing_error_to_internal)?;
+                let routes = match router.resolve_targets(&scoped, &targets).await {
+                    Ok(routes) => routes,
+                    Err(e @ RoutingError::NoSuchWorkarea { .. }) if !explicit_scope => {
+                        match self
+                            .resolve_targets_anywhere(&router, &scoped, &targets)
+                            .await?
+                        {
+                            Some(routes) => routes,
+                            None => return Err(routing_error_to_internal(e)),
+                        }
+                    }
+                    Err(e) => return Err(routing_error_to_internal(e)),
+                };
                 router.dispatch(&routes, &body).await;
                 let resolved: Vec<String> = routes.iter().map(|r| r.composer.clone()).collect();
                 self.inner.events.emit(MaestroEvent::RoutingExecuted {
@@ -601,6 +616,42 @@ impl MaestroHandle {
         .map_err(|e| Error::Sqlx(Box::new(e)))?;
         row.map(WorkspaceId)
             .ok_or_else(|| Error::NotFound("no active workspace for the Maestro".to_string()))
+    }
+
+    /// All non-archived, non-sentinel workspace ids (newest first) — the search
+    /// space for the cross-workspace routing fallback.
+    async fn all_workspace_ids(&self) -> Result<Vec<WorkspaceId>> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM workspaces WHERE archived_at IS NULL AND id != ?
+             ORDER BY created_at DESC",
+        )
+        .bind(concerto_persist::MAESTRO_SYSTEM_WORKSPACE_ID)
+        .fetch_all(self.inner.persistence.readers())
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        Ok(rows.into_iter().map(WorkspaceId).collect())
+    }
+
+    /// Cross-workspace routing fallback: try `targets` in every workspace except
+    /// `already_tried`, returning the routes from the FIRST workspace that
+    /// resolves them all (workspaces are newest-first). `None` when no other
+    /// workspace resolves the targets. Used only when the desktop supplied NO
+    /// explicit workspace scope, so an `@composer` routes wherever it lives.
+    async fn resolve_targets_anywhere(
+        &self,
+        router: &Router,
+        already_tried: &WorkspaceId,
+        targets: &[RoutingTarget],
+    ) -> Result<Option<Vec<ResolvedRoute>>> {
+        for ws in self.all_workspace_ids().await? {
+            if &ws == already_tried {
+                continue;
+            }
+            if let Ok(routes) = router.resolve_targets(&ws, targets).await {
+                return Ok(Some(routes));
+            }
+        }
+        Ok(None)
     }
 
     /// The `last_seen_at` the digest computes deltas since: the last digest
@@ -1106,15 +1157,17 @@ mod tests {
         );
     }
 
-    /// Absent hint ⇒ exact current behavior: routing falls back to
-    /// `default_workspace_id()` (workspace B, the most-recent), so `@beta`
-    /// resolves and `@alpha` (which lives in A) does NOT.
+    /// Absent hint ⇒ resolve in `default_workspace_id()` (workspace B, the
+    /// most-recent) FIRST, then fall back GLOBALLY: `@beta` resolves directly in
+    /// B, and `@alpha` (which lives only in A) resolves via the cross-workspace
+    /// fallback instead of erroring. (When the desktop sends NO scope, an
+    /// `@composer` routes wherever it lives — see `resolve_targets_anywhere`.)
     #[tokio::test]
-    async fn send_without_hint_falls_back_to_default_workspace() {
+    async fn send_without_hint_resolves_in_default_then_falls_back_globally() {
         let (_tmp, handle, persistence) = live_handle().await;
         let (_a, _b) = two_workspace_fixture(&persistence).await;
 
-        // Default workspace is B ⇒ `@beta` resolves.
+        // Default workspace is B ⇒ `@beta` resolves directly.
         let outcome = handle
             .send_to_maestro("@beta run it".into(), vec![], None)
             .await
@@ -1125,12 +1178,18 @@ mod tests {
                 targets: vec!["beta".into()]
             }
         );
-        // ...and `@alpha` (workspace A only) is NOT found under the B default.
-        let err = handle
+        // `@alpha` (workspace A only) is absent in the default B ⇒ the unscoped
+        // global fallback finds it in A and routes (no longer a NotFound).
+        let outcome = handle
             .send_to_maestro("@alpha run it".into(), vec![], None)
             .await
-            .unwrap_err();
-        assert!(matches!(err, Error::NotFound(_)));
+            .expect("unscoped @alpha resolves via the cross-workspace fallback");
+        assert_eq!(
+            outcome,
+            SendOutcome::Routed {
+                targets: vec!["alpha".into()]
+            }
+        );
     }
 
     // -- get_state round-trips the maestro_state singleton ------------------
