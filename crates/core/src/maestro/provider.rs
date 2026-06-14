@@ -40,7 +40,7 @@ use crate::security::managed::ManagedPolicy;
 
 /// Default Maestro model when no org-pinned `defaultModel` is present
 /// (design/08 R-1: Sonnet-class default).
-pub const DEFAULT_MAESTRO_MODEL: &str = "claude-4.6-sonnet";
+pub const DEFAULT_MAESTRO_MODEL: &str = "claude-sonnet-4-6";
 
 /// Fallback Claude CLI binary name resolved on `$PATH` when no org-pinned
 /// `claudeExecutablePath` is configured.

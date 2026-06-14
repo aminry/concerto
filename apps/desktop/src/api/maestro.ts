@@ -230,6 +230,33 @@ export function decodeMaestroEvent(payload: unknown): MaestroEvent {
   }
   const obj = frame as Record<string, unknown>;
 
+  // The LIVE backend (`events.rs::MaestroEvent::to_frame`) emits a FLAT
+  // kind-tagged envelope — `{"kind":"maestro.message"|"maestro.routing_executed"
+  // |"maestro.digest_generated"|..., <payload fields>}`. Dispatch on that first;
+  // the oneof-variant shapes below remain as a fallback for legacy/test doubles.
+  if (typeof obj.kind === "string") {
+    switch (obj.kind) {
+      case "maestro.message":
+        return {
+          kind: "message",
+          text: asString(obj.text),
+          role: optString(obj.role),
+        };
+      case "maestro.routing_executed":
+        return {
+          kind: "routing_executed",
+          targets: asStringArray(obj.targets),
+          summary: optString(obj.body),
+        };
+      case "maestro.digest_generated":
+        return { kind: "digest_generated", digest: undefined };
+      case "maestro.budget_exhausted":
+        return { kind: "budget_exhausted" };
+      case "maestro.disabled_by_policy":
+        return { kind: "disabled_by_policy", reason: optString(obj.reason) };
+    }
+  }
+
   const message = oneofVariant<{ text?: unknown; role?: unknown }>(
     obj,
     "Message",

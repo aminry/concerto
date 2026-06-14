@@ -177,6 +177,55 @@ describe("maestro.events decode", () => {
     });
   });
 
+  it("decodes the LIVE flat kind-tagged frames (events.rs::to_frame shape)", () => {
+    // The real backend emits {"kind":"maestro.message", text, role, message_id}
+    // — a flat kind-tagged envelope, NOT a variant-keyed object. This is the
+    // exact shape the live UI receives; the variant-key tests above only cover
+    // the decoder's fallback path.
+    expect(
+      decodeMaestroEvent({
+        kind: "maestro.message",
+        text: "You have 1 workspace.",
+        role: "assistant",
+        message_id: "m-1",
+      }),
+    ).toEqual({ kind: "message", text: "You have 1 workspace.", role: "assistant" });
+
+    const route = decodeMaestroEvent({
+      kind: "maestro.routing_executed",
+      targets: ["bach"],
+      body: "go",
+    });
+    expect(route.kind).toBe("routing_executed");
+    if (route.kind === "routing_executed") {
+      expect(route.targets).toEqual(["bach"]);
+      expect(route.summary).toBe("go");
+    }
+
+    expect(
+      decodeMaestroEvent({ kind: "maestro.digest_generated", at_ms: 1, n_workareas: 0 })
+        .kind,
+    ).toBe("digest_generated");
+    expect(decodeMaestroEvent({ kind: "maestro.budget_exhausted" }).kind).toBe(
+      "budget_exhausted",
+    );
+    expect(
+      decodeMaestroEvent({ kind: "maestro.disabled_by_policy", reason: "x" }),
+    ).toEqual({ kind: "disabled_by_policy", reason: "x" });
+
+    // The same over the opaque checks_opaque byte carrier (the live wire path).
+    const bytes = Array.from(
+      new TextEncoder().encode(
+        JSON.stringify({ kind: "maestro.message", text: "from bytes", role: "user" }),
+      ),
+    );
+    expect(decodeMaestroEvent({ checks_opaque: bytes })).toEqual({
+      kind: "message",
+      text: "from bytes",
+      role: "user",
+    });
+  });
+
   it("decodes an opaque checks_opaque byte frame (the 414 carrier shape)", () => {
     const inner = JSON.stringify({ message: { text: "from bytes" } });
     const bytes = Array.from(new TextEncoder().encode(inner));
