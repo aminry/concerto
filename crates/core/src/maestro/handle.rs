@@ -41,7 +41,7 @@ use crate::llm::oneshot::OneShotLlm;
 use crate::maestro::digest::{generate_digest, Digest as DigestModel};
 use crate::maestro::events::{MaestroEvent, MaestroEventSender};
 use crate::maestro::routing::{
-    pre_parse, ParseOutcome, ResolvedRoute, RoutingError, RoutingTarget, Router, SlashDirective,
+    pre_parse, ParseOutcome, ResolvedRoute, Router, RoutingError, RoutingTarget, SlashDirective,
 };
 use crate::maestro::summary::{SummaryCache, GET_DIGEST_STALE_MS};
 use crate::workspace_manager::WorkareaManager;

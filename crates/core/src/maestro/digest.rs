@@ -985,7 +985,10 @@ mod tests {
             "digest should name a workarea: {}",
             digest.text
         );
-        assert!(!digest.degraded, "deterministic grounded text is not degraded");
+        assert!(
+            !digest.degraded,
+            "deterministic grounded text is not degraded"
+        );
     }
 
     // --- missing maestro chat → typed NotFound, not a panic ----------------

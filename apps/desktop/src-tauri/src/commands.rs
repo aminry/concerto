@@ -173,13 +173,15 @@ pub async fn concerto_subscribe(
     // The closure takes its own copy; `event_name` stays available below to key
     // the registry's per-channel reload-leak guard.
     let sink_event_name = event_name.clone();
-    let sink = StreamSink::new(move |frame: &Value| match app.emit(&sink_event_name, frame) {
-        Ok(()) => true,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to emit subscription event; dropping stream");
-            false
-        }
-    });
+    let sink = StreamSink::new(
+        move |frame: &Value| match app.emit(&sink_event_name, frame) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to emit subscription event; dropping stream");
+                false
+            }
+        },
+    );
 
     let filter_value = filter.map(Value::String).unwrap_or(Value::Null);
     let sub = client.start_stream(&subject, filter_value, sink).await?;
@@ -415,26 +417,15 @@ mod tests {
         // (the "every message repeated twice" doubling came from N stale
         // forwarders all emitting to the one event name).
         let reg = SubscriptionRegistry::new();
-        reg.insert(
-            "idA".into(),
-            "concerto/maestro/events".into(),
-            idle_task(),
-        );
-        reg.insert(
-            "idB".into(),
-            "concerto/maestro/events".into(),
-            idle_task(),
-        );
+        reg.insert("idA".into(), "concerto/maestro/events".into(), idle_task());
+        reg.insert("idB".into(), "concerto/maestro/events".into(), idle_task());
         // idA (stale) was evicted by idB's re-subscribe to the same channel.
         assert!(
             reg.remove("idA").is_none(),
             "stale forwarder should have been evicted"
         );
         // idB is the single live forwarder for the channel.
-        assert!(
-            reg.remove("idB").is_some(),
-            "newest forwarder stays active"
-        );
+        assert!(reg.remove("idB").is_some(), "newest forwarder stays active");
     }
 
     #[tokio::test]
@@ -442,16 +433,8 @@ mod tests {
         // Different subjects map to different event names and must NOT evict
         // each other.
         let reg = SubscriptionRegistry::new();
-        reg.insert(
-            "idA".into(),
-            "concerto/maestro/events".into(),
-            idle_task(),
-        );
-        reg.insert(
-            "idB".into(),
-            "concerto/session/io/s1".into(),
-            idle_task(),
-        );
+        reg.insert("idA".into(), "concerto/maestro/events".into(), idle_task());
+        reg.insert("idB".into(), "concerto/session/io/s1".into(), idle_task());
         assert!(reg.remove("idA").is_some());
         assert!(reg.remove("idB").is_some());
     }
