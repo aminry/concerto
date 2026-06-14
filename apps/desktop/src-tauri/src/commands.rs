@@ -37,13 +37,30 @@ use crate::core_client::{default_socket_path, get_or_connect, reset_channel, Cor
 use crate::cores_registry::{CoresRegistry, PairedCore, TransportKind};
 use crate::transport::{CoreClient, StreamSink, UdsCoreClient};
 
-/// Process-wide registry mapping `SubscriptionId` → forwarder task
-/// handle. The registry is wrapped in a sync `Mutex` because the only
-/// operations are insert-on-subscribe and remove-on-unsubscribe — no
-/// awaits while holding the guard.
+/// Process-wide registry of live stream forwarder tasks. Wrapped in a sync
+/// `Mutex` because the only operations are insert-on-subscribe and
+/// remove-on-unsubscribe — no awaits while holding the guard.
+///
+/// Keyed BOTH by subscription id (so `concerto_unsubscribe` can abort one) AND
+/// by Tauri event name (`concerto/<subject>`). The event-name index is the
+/// reload-leak guard: a webview reload (HMR full-reload, Cmd+R, reconnect)
+/// re-subscribes WITHOUT running the renderer's `unsubscribe` cleanup, so the
+/// stale forwarder would keep emitting to the same `concerto/<subject>` event
+/// alongside the new one — and the reloaded page's single listener would then
+/// receive EVERY frame twice (N reloads → N+1 copies; the "every message
+/// repeated" bug). Registering a forwarder for an event name that already has
+/// one ABORTS the stale forwarder first, so at most one survives per channel.
 #[derive(Default)]
 pub struct SubscriptionRegistry {
-    inner: Mutex<HashMap<String, JoinHandle<()>>>,
+    inner: Mutex<RegistryInner>,
+}
+
+#[derive(Default)]
+struct RegistryInner {
+    /// subscription id → (event name, forwarder task).
+    by_id: HashMap<String, (String, JoinHandle<()>)>,
+    /// event name → the id of the CURRENTLY-active forwarder for that channel.
+    active: HashMap<String, String>,
 }
 
 impl SubscriptionRegistry {
@@ -51,14 +68,28 @@ impl SubscriptionRegistry {
         Self::default()
     }
 
-    fn insert(&self, id: String, handle: JoinHandle<()>) {
-        let mut map = self.inner.lock().expect("subscription registry poisoned");
-        map.insert(id, handle);
+    /// Register `handle` as the forwarder for `event_name`, aborting (and
+    /// dropping) any prior forwarder for the SAME channel — the reload-leak
+    /// guard that keeps each `concerto/<subject>` event delivered exactly once.
+    fn insert(&self, id: String, event_name: String, handle: JoinHandle<()>) {
+        let mut g = self.inner.lock().expect("subscription registry poisoned");
+        if let Some(stale_id) = g.active.insert(event_name.clone(), id.clone()) {
+            if let Some((_, stale_handle)) = g.by_id.remove(&stale_id) {
+                stale_handle.abort();
+            }
+        }
+        g.by_id.insert(id, (event_name, handle));
     }
 
     fn remove(&self, id: &str) -> Option<JoinHandle<()>> {
-        let mut map = self.inner.lock().expect("subscription registry poisoned");
-        map.remove(id)
+        let mut g = self.inner.lock().expect("subscription registry poisoned");
+        let (event_name, handle) = g.by_id.remove(id)?;
+        // Clear the active pointer only if this id is still the active one (a
+        // later re-subscribe may have already replaced it).
+        if g.active.get(&event_name).map(String::as_str) == Some(id) {
+            g.active.remove(&event_name);
+        }
+        Some(handle)
     }
 }
 
@@ -139,7 +170,10 @@ pub async fn concerto_subscribe(
     // (`concerto/session/io/<sid>`). MUST stay in sync with the renderer in
     // `apps/desktop/src/api/client.ts` (`eventNameForSubject`).
     let event_name = format!("concerto/{}", subject.replace('.', "/"));
-    let sink = StreamSink::new(move |frame: &Value| match app.emit(&event_name, frame) {
+    // The closure takes its own copy; `event_name` stays available below to key
+    // the registry's per-channel reload-leak guard.
+    let sink_event_name = event_name.clone();
+    let sink = StreamSink::new(move |frame: &Value| match app.emit(&sink_event_name, frame) {
         Ok(()) => true,
         Err(e) => {
             tracing::warn!(error = %e, "failed to emit subscription event; dropping stream");
@@ -149,7 +183,7 @@ pub async fn concerto_subscribe(
 
     let filter_value = filter.map(Value::String).unwrap_or(Value::Null);
     let sub = client.start_stream(&subject, filter_value, sink).await?;
-    subscriptions.insert(sub.id.clone(), sub.join);
+    subscriptions.insert(sub.id.clone(), event_name, sub.join);
     Ok(sub.id)
 }
 
@@ -359,9 +393,68 @@ pub fn manage_cores_registry<R: tauri::Runtime, M: Manager<R>>(
 
 #[cfg(test)]
 mod tests {
+    use super::SubscriptionRegistry;
     use crate::cores_registry::CoresRegistry;
     use crate::transport::{CoreClient, UdsCoreClient};
     use serde_json::json;
+    use std::time::Duration;
+
+    fn idle_task() -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn resubscribe_same_event_evicts_stale_forwarder() {
+        // A webview reload re-subscribes to the same channel WITHOUT running the
+        // renderer's unsubscribe. The registry must abort+drop the stale
+        // forwarder so each `concerto/<subject>` event is delivered exactly once
+        // (the "every message repeated twice" doubling came from N stale
+        // forwarders all emitting to the one event name).
+        let reg = SubscriptionRegistry::new();
+        reg.insert(
+            "idA".into(),
+            "concerto/maestro/events".into(),
+            idle_task(),
+        );
+        reg.insert(
+            "idB".into(),
+            "concerto/maestro/events".into(),
+            idle_task(),
+        );
+        // idA (stale) was evicted by idB's re-subscribe to the same channel.
+        assert!(
+            reg.remove("idA").is_none(),
+            "stale forwarder should have been evicted"
+        );
+        // idB is the single live forwarder for the channel.
+        assert!(
+            reg.remove("idB").is_some(),
+            "newest forwarder stays active"
+        );
+    }
+
+    #[tokio::test]
+    async fn distinct_channels_coexist() {
+        // Different subjects map to different event names and must NOT evict
+        // each other.
+        let reg = SubscriptionRegistry::new();
+        reg.insert(
+            "idA".into(),
+            "concerto/maestro/events".into(),
+            idle_task(),
+        );
+        reg.insert(
+            "idB".into(),
+            "concerto/session/io/s1".into(),
+            idle_task(),
+        );
+        assert!(reg.remove("idA").is_some());
+        assert!(reg.remove("idB").is_some());
+    }
 
     #[tokio::test]
     async fn uds_client_unknown_method_or_transport() {
