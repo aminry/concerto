@@ -282,10 +282,12 @@ active-viewing seam), **505** (ActOnChip + prefs), **506** (privacy proptest), *
 + notify() orchestration), **507b-1** (notification.events subject + producer bridge), **507b-2**
 (Notifications gRPC service + handler), **507b-3 b3-i** (live Notifications service registered on
 UDS+Iroh + `notification.events` producer — verified end-to-end over a real Core), **507b-ii a** (live
-`read_inbox_summary`). ⏳ remaining Track A finishing items: **notify_user live sink** (Maestro
-side-channel dispatch wiring + sync→async sink + boot injection), **smoke capability**, **connect-bridge
-web registration** (→ Task 520). Then **507.5 / 519–523** (Track B), **508 / 509 / 509.5 / 510–518**
-(Track C).
+`read_inbox_summary`). **Track B started:** **507.5** (pnpm monorepo + buf/connect-es TS codegen + `@concerto/client`
+`DataClient` seam), **519** (`apps/web` notifications-inbox SPA + Playwright UI-E2E + screenshots +
+web CI workflow). ⏳ remaining Track A finishing items: **notify_user live sink**, **smoke capability**,
+**connect-bridge web registration** (→ 520). ⏳ Track B: **520** (connect-web data client + bridge-on),
+**521** (LAN TLS/relay), **522** (ephemeral pairing), **523** (inbox/notification UI live vs spawned
+Core). ⏳ Track C: **508 / 509 / 509.5 / 510–518**.
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
