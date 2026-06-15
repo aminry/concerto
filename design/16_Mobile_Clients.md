@@ -2,6 +2,13 @@
 
 *Sub-system design doc. Inherits locked decisions from `00_Architecture_Overview.md` §6.9 (React Native + Expo for V1.0, Expo Push wrapping APNs/FCM, on-device voice, custom RN diff renderer, EAS Build). V1.5 native (SwiftUI + Compose + KMP) is an explicit escape hatch.*
 
+> **Amendment (2026-06-14 — Phase-5 planning reconciliation).** Reconciles this doc with built reality + the Phase-5 plan (`tasks/v1.0/PHASE5_PLANNING.md §1`). These bullets govern where they conflict with the prose.
+> - **Native module is iroh-ffi-first (D12):** Task 509 evaluates `iroh-ffi` (iroh's official uniffi Swift/Kotlin bindings) as the base and hand-rolls Rust→C→JSI / Rust→JNI only if it cannot carry our `connect_channel` gRPC-over-Iroh + Noise-IK + `0x03` pairing. The generic `rpcUnary/rpcStream(method, bytes)` surface (§3.2) is a tonic `Grpc<Channel>` passthrough codec, not per-service stubs. Packaging (XCFramework/.aar + Expo plugin + cross-compile lane) is split into Task 509.5; on-device load/run is Tier-3.
+> - **User-facing chat tab is "Concerto" (D14):** the bottom tab the prose sometimes calls "Maestro" is labelled **Concerto** (Maestro is the internal service name; Desktop already renamed it). §3.4 tab order: Concerto / Workspaces / Inbox.
+> - **No project tier (D14):** the Project→Workspace collapse (2026-06-08) is done in code — there is no `Project` entity. §1/§3.6's "workspaces grouped by project" is obsolete; the drill-down is Workspace → Workarea (Task 513).
+> - **Shared code boundary (D11):** mobile (RN) consumes only `@concerto/client` (proto-client + `DataClient` + the native-module transport); it does **not** reuse the Desktop React-DOM renderer (that is `@concerto/ui`, web-only). The §3.7 RN diff renderer is a from-scratch rewrite (no Monaco).
+> - **RN diff perf verdict PENDING:** the spike-103 budget (1000-line diff <1.5 s, 60 fps on iPhone13+/Pixel6+) has no recorded on-device number yet (`design/spikes/rn-diff-findings.md`); Task 514 ships the RN renderer behind the documented V1.5 native-diff fallback and the GO/NO-GO is a Tier-3 checklist line, not a phase-entry blocker.
+
 ---
 
 ## 1. Purpose & scope
