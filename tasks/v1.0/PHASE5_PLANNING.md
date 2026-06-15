@@ -280,9 +280,12 @@ reconciliation), **501** (model + 0017 + frozen proto), **502** (de-dup + retent
 + Expo/Mock + WakeupBody + UpdateDevicePushToken + 0018), **504** (fan-out + post-wakeup fetch +
 active-viewing seam), **505** (ActOnChip + prefs), **506** (privacy proptest), **507a** (NotificationHandle
 + notify() orchestration), **507b-1** (notification.events subject + producer bridge), **507b-2**
-(Notifications gRPC service + handler). ⏳ **507b-3** (boot construction + two-site registration +
-StreamsHandler producer + live notify_user/read_inbox_summary sink + smoke — the final wiring pass),
-**507.5 / 519–523** (Track B), **508 / 509 / 509.5 / 510–518** (Track C) pending.
+(Notifications gRPC service + handler), **507b-3 b3-i** (live Notifications service registered on
+UDS+Iroh + `notification.events` producer — verified end-to-end over a real Core), **507b-ii a** (live
+`read_inbox_summary`). ⏳ remaining Track A finishing items: **notify_user live sink** (Maestro
+side-channel dispatch wiring + sync→async sink + boot injection), **smoke capability**, **connect-bridge
+web registration** (→ Task 520). Then **507.5 / 519–523** (Track B), **508 / 509 / 509.5 / 510–518**
+(Track C).
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
