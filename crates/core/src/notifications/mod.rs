@@ -18,7 +18,9 @@
 //! Each later task adds its own `pub mod X;` line below in a distinct region
 //! (additive; auto-merges on rebase).
 
+pub mod chip_dispatch;
 pub mod dedup;
 pub mod fanout;
 pub mod model;
+pub mod prefs;
 pub mod push;
