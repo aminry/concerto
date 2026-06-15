@@ -308,6 +308,39 @@ pub async fn update_body_and_at(
     Ok(res.rows_affected())
 }
 
+/// The eligible push targets (Task 504, design/14 §3.4): active devices
+/// (`revoked_at IS NULL`) that have a push token + platform and are not currently
+/// in Do-Not-Disturb (`now < dnd_until`). Returns `(device_id, push_token,
+/// push_platform)`; the core fan-out maps these to `PushTarget`, dropping any row
+/// whose stored platform is not a known variant.
+pub async fn list_pushable_devices(
+    pool: &SqlitePool,
+    now: i64,
+) -> Result<Vec<(String, String, String)>> {
+    let rows = sqlx::query(
+        "SELECT id, push_token, push_platform FROM devices
+          WHERE revoked_at IS NULL
+            AND push_token IS NOT NULL
+            AND push_platform IS NOT NULL
+            AND (dnd_until IS NULL OR dnd_until <= ?)
+          ORDER BY id ASC",
+    )
+    .bind(now)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get::<String, _>("id"),
+                r.get::<String, _>("push_token"),
+                r.get::<String, _>("push_platform"),
+            )
+        })
+        .collect())
+}
+
 /// Count notifications older than `before` (retention/archival reporting,
 /// `design/14 §3.9 R-9`: 90-day default; kept, not deleted in V1.0).
 pub async fn count_older_than(pool: &SqlitePool, before: i64) -> Result<i64> {

@@ -19,5 +19,6 @@
 //! (additive; auto-merges on rebase).
 
 pub mod dedup;
+pub mod fanout;
 pub mod model;
 pub mod push;

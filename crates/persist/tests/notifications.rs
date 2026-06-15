@@ -396,3 +396,36 @@ async fn migration_0018_widens_push_platform_and_adds_dnd_until() {
         .unwrap();
     assert_eq!(dnd, Some(1700000099000));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_pushable_devices_filters_eligibility() {
+    let (_dir, persist) = fresh_db().await;
+    let mut w = persist.writer().await;
+    let now = 1700000100000_i64;
+    // eligible: active, has token+platform, no DND.
+    sqlx::query("INSERT INTO devices (id,name,public_key,paired_at,push_token,push_platform) VALUES ('ok','P',?,1,'tok-ok','expo')")
+        .bind(vec![0u8;32]).execute(&mut *w).await.unwrap();
+    // revoked → excluded.
+    sqlx::query("INSERT INTO devices (id,name,public_key,paired_at,revoked_at,push_token,push_platform) VALUES ('rev','P',?,1,5,'tok-rev','expo')")
+        .bind(vec![0u8;32]).execute(&mut *w).await.unwrap();
+    // no token → excluded.
+    sqlx::query("INSERT INTO devices (id,name,public_key,paired_at,push_platform) VALUES ('notok','P',?,1,'expo')")
+        .bind(vec![0u8;32]).execute(&mut *w).await.unwrap();
+    // DND active (dnd_until in the future) → excluded.
+    sqlx::query("INSERT INTO devices (id,name,public_key,paired_at,push_token,push_platform,dnd_until) VALUES ('dnd','P',?,1,'tok-dnd','expo',?)")
+        .bind(vec![0u8;32]).bind(now + 10_000).execute(&mut *w).await.unwrap();
+    // DND expired (dnd_until in the past) → included.
+    sqlx::query("INSERT INTO devices (id,name,public_key,paired_at,push_token,push_platform,dnd_until) VALUES ('dnd_old','P',?,1,'tok-dnd-old','expo',?)")
+        .bind(vec![0u8;32]).bind(now - 10_000).execute(&mut *w).await.unwrap();
+    drop(w);
+
+    let pushable = concerto_persist::notifications::list_pushable_devices(persist.readers(), now)
+        .await
+        .unwrap();
+    let ids: Vec<&str> = pushable.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["dnd_old", "ok"],
+        "only active, tokened, non-DND devices"
+    );
+}
