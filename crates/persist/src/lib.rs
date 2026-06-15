@@ -20,6 +20,7 @@ pub mod api;
 pub mod chat_messages;
 pub mod checkpoints;
 pub mod maestro_state;
+pub mod notifications;
 pub mod pull_requests;
 pub mod repositories;
 pub mod schedule_runs;

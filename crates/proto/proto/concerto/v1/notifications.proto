@@ -1,0 +1,108 @@
+// Notifications & Push wire surface (Task 501; design/14 §4/§5, PHASE5_PLANNING §4.1).
+//
+// Phase-5 contract-first root. This file freezes the notification MESSAGE
+// types + enums so the persist layer (501), the push/fan-out logic (503/504),
+// and the inbox UI (523) build against a stable shape before the service
+// exists. The `Notifications` gRPC SERVICE (GetNotification / GetInbox /
+// MarkRead / ActOnChip / UpdateWorkspaceSettings / RegisterDevicePushToken) is
+// added later by Task 507, which also registers the handler at BOTH front-door
+// sites (add_core_services + connect_bridge) and adds the `notification.events`
+// stream subject.
+//
+// Chips reuse `suggestions.proto`'s `Chip` (the top-3 suggestion chips per
+// design/14 §3.5) — imported, not copied (cross-proto imports are an
+// established pattern: streams.proto imports suggestions.proto).
+//
+// All timestamps are `int64` unix-epoch milliseconds (the Maestro
+// `generated_at_ms` precedent; NO google.protobuf.Timestamp).
+//
+// Field numbers + enum values in this file are FROZEN as of Task 501.
+
+syntax = "proto3";
+
+package concerto.v1;
+
+import "concerto/v1/suggestions.proto";
+
+// The six notification kinds (design/14 §3.1). Each maps to a default delivery
+// channel + severity in the Core; the wire carries only the kind. The DB stores
+// the snake_case string form (`tool_approval_needed` …); core/model.rs maps.
+enum NotificationKind {
+  NOTIFICATION_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_KIND_TOOL_APPROVAL_NEEDED = 1;
+  NOTIFICATION_KIND_AGENT_COMPLETED_WITH_MESSAGE = 2;
+  NOTIFICATION_KIND_AGENT_CRASHED = 3;
+  NOTIFICATION_KIND_PR_STATE_CHANGED = 4;
+  NOTIFICATION_KIND_CHECK_RUN_FAILED = 5;
+  NOTIFICATION_KIND_SCHEDULE_RUN_COMPLETED = 6;
+}
+
+// What a notification is about (PHASE5_PLANNING D3). Reconciles design/14 §4's
+// `{workspace|agent_session|pr|schedule_run}` with §3.3's workarea-common-case
+// + the FK columns: `WORKAREA` is first-class and it is `SESSION`, not
+// `agent_session`.
+enum NotificationSubjectKind {
+  NOTIFICATION_SUBJECT_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_SUBJECT_KIND_WORKSPACE = 1;
+  NOTIFICATION_SUBJECT_KIND_WORKAREA = 2;
+  NOTIFICATION_SUBJECT_KIND_SESSION = 3;
+  NOTIFICATION_SUBJECT_KIND_PULL_REQUEST = 4;
+  NOTIFICATION_SUBJECT_KIND_SCHEDULE_RUN = 5;
+}
+
+// The tool-approval payload attached to a `tool_approval_needed` notification
+// so a phone/web client can render + resolve the approval after a wakeup
+// (design/14 §3.3). The `approval_id` is the EXISTING `tool_approvals.id` — the
+// single first-wins guard (PHASE5_PLANNING D5); `ActOnChip` resolves through
+// `Sessions.ResolveApproval` keyed on it, never a second guard.
+message ToolApprovalContext {
+  string approval_id = 1;
+  string session_id = 2;
+  string tool_name = 3;
+  string payload_json = 4;
+  bool urgent = 5;
+  optional string destructive_label = 6;
+}
+
+// One notification — the canonical shape returned by both `GetInbox` (the
+// chronological feed) and `GetNotification` (the post-wakeup fetch, design/14
+// §3.3's `NotificationPayload`). It is a superset of the design's payload so a
+// single message serves both. `chips` are the top-3 suggestion chips
+// (`ActOnChip` keys on `Chip.rule_id`, PHASE5_PLANNING D4).
+message Notification {
+  string id = 1;                            // ULID
+  NotificationKind kind = 2;
+  NotificationSubjectKind subject_kind = 3;
+  string subject_id = 4;
+  optional string workspace_id = 5;
+  optional string workarea_id = 6;          // most notifications are workarea-scoped
+  optional string session_id = 7;
+  string title = 8;
+  string body = 9;                          // short; full content via GetNotification
+  repeated Chip chips = 10;                 // top suggestion chips (suggestions.proto)
+  string severity = 11;                     // "low" | "medium" | "high"
+  int64 created_at_ms = 12;
+  optional int64 read_at_ms = 13;
+  optional string superseded_by = 14;       // de-dup self-reference
+  optional string action_taken = 15;        // chip rule_id or "opened"
+  optional int64 action_taken_at_ms = 16;
+  optional string action_taken_by_device_id = 17;
+  optional ToolApprovalContext approval = 18;  // set iff kind == TOOL_APPROVAL_NEEDED
+}
+
+// One per-device delivery record (design/14 §4 `notification_deliveries`).
+message NotificationDelivery {
+  string notification_id = 1;
+  string device_id = 2;
+  optional int64 delivered_at_ms = 3;
+  optional int64 fetched_at_ms = 4;
+}
+
+// Filter for the inbox feed (design/14 §5.1 `InboxFilter`). An absent
+// workspace/workarea means "across all"; `limit == 0` ⇒ the Core default.
+message InboxFilter {
+  optional string workspace_id = 1;
+  optional string workarea_id = 2;
+  bool unread_only = 3;
+  uint32 limit = 4;
+}

@@ -408,3 +408,55 @@ CREATE TABLE maestro_state (
 ## `crates/persist/migrations/0016_chat_messages_metadata.sql`
 
 
+## `crates/persist/migrations/0017_notifications.sql`
+
+```sql
+CREATE TABLE notifications (
+    id              TEXT PRIMARY KEY,                  -- ULID
+    kind            TEXT NOT NULL CHECK (kind IN (
+        'tool_approval_needed','agent_completed_with_message','agent_crashed',
+        'pr_state_changed','check_run_failed','schedule_run_completed'
+    )),
+    subject_kind    TEXT NOT NULL CHECK (subject_kind IN (
+        'workspace','workarea','session','pull_request','schedule_run'
+    )),
+    subject_id      TEXT NOT NULL,
+    workspace_id    TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    workarea_id     TEXT REFERENCES workareas(id) ON DELETE CASCADE,
+    session_id      TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    chips_json      TEXT,
+    approval_json   TEXT,
+    severity        TEXT NOT NULL CHECK (severity IN ('low','medium','high')),
+    created_at      INTEGER NOT NULL,
+    read_at         INTEGER,
+    superseded_by   TEXT REFERENCES notifications(id),
+    action_taken    TEXT,
+    action_taken_at INTEGER,
+    action_taken_by_device_id TEXT REFERENCES devices(id)
+);
+```
+
+```sql
+CREATE INDEX idx_notifications_inbox ON notifications(workarea_id, read_at) WHERE read_at IS NULL;
+```
+
+```sql
+CREATE INDEX idx_notifications_workspace ON notifications(workspace_id, read_at) WHERE read_at IS NULL;
+```
+
+```sql
+CREATE INDEX idx_notifications_created ON notifications(created_at);
+```
+
+```sql
+CREATE TABLE notification_deliveries (
+    notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    device_id       TEXT NOT NULL REFERENCES devices(id),
+    delivered_at    INTEGER,
+    fetched_at      INTEGER,
+    PRIMARY KEY (notification_id, device_id)
+);
+```
+

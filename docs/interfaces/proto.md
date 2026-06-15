@@ -468,6 +468,97 @@ message MaestroTurn {
 }
 ```
 
+## `crates/proto/proto/concerto/v1/notifications.proto`
+
+- package: `concerto.v1`
+
+### enum `NotificationKind`
+
+```proto
+enum NotificationKind {
+  NOTIFICATION_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_KIND_TOOL_APPROVAL_NEEDED = 1;
+  NOTIFICATION_KIND_AGENT_COMPLETED_WITH_MESSAGE = 2;
+  NOTIFICATION_KIND_AGENT_CRASHED = 3;
+  NOTIFICATION_KIND_PR_STATE_CHANGED = 4;
+  NOTIFICATION_KIND_CHECK_RUN_FAILED = 5;
+  NOTIFICATION_KIND_SCHEDULE_RUN_COMPLETED = 6;
+}
+```
+
+### enum `NotificationSubjectKind`
+
+```proto
+enum NotificationSubjectKind {
+  NOTIFICATION_SUBJECT_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_SUBJECT_KIND_WORKSPACE = 1;
+  NOTIFICATION_SUBJECT_KIND_WORKAREA = 2;
+  NOTIFICATION_SUBJECT_KIND_SESSION = 3;
+  NOTIFICATION_SUBJECT_KIND_PULL_REQUEST = 4;
+  NOTIFICATION_SUBJECT_KIND_SCHEDULE_RUN = 5;
+}
+```
+
+### message `ToolApprovalContext`
+
+```proto
+message ToolApprovalContext {
+  string approval_id = 1;
+  string session_id = 2;
+  string tool_name = 3;
+  string payload_json = 4;
+  bool urgent = 5;
+  optional string destructive_label = 6;
+}
+```
+
+### message `Notification`
+
+```proto
+message Notification {
+  string id = 1;                            // ULID
+  NotificationKind kind = 2;
+  NotificationSubjectKind subject_kind = 3;
+  string subject_id = 4;
+  optional string workspace_id = 5;
+  optional string workarea_id = 6;          // most notifications are workarea-scoped
+  optional string session_id = 7;
+  string title = 8;
+  string body = 9;                          // short; full content via GetNotification
+  repeated Chip chips = 10;                 // top suggestion chips (suggestions.proto)
+  string severity = 11;                     // "low" | "medium" | "high"
+  int64 created_at_ms = 12;
+  optional int64 read_at_ms = 13;
+  optional string superseded_by = 14;       // de-dup self-reference
+  optional string action_taken = 15;        // chip rule_id or "opened"
+  optional int64 action_taken_at_ms = 16;
+  optional string action_taken_by_device_id = 17;
+  optional ToolApprovalContext approval = 18;  // set iff kind == TOOL_APPROVAL_NEEDED
+}
+```
+
+### message `NotificationDelivery`
+
+```proto
+message NotificationDelivery {
+  string notification_id = 1;
+  string device_id = 2;
+  optional int64 delivered_at_ms = 3;
+  optional int64 fetched_at_ms = 4;
+}
+```
+
+### message `InboxFilter`
+
+```proto
+message InboxFilter {
+  optional string workspace_id = 1;
+  optional string workarea_id = 2;
+  bool unread_only = 3;
+  uint32 limit = 4;
+}
+```
+
 ## `crates/proto/proto/concerto/v1/repositories.proto`
 
 - package: `concerto.v1`

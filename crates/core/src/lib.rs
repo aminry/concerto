@@ -34,6 +34,7 @@ pub mod logging;
 // `agent_supervisor`/`scheduler`/`suggestions`); the Windows lane omits it.
 #[cfg(unix)]
 pub mod maestro;
+pub mod notifications;
 pub mod pid_file;
 pub mod repo_manager;
 pub mod runtime;
