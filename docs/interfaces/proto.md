@@ -189,6 +189,23 @@ service Devices {
   // Return the Core's identity + host/version (design/12 §5.2). Read-only; the
   // `core_pubkey` clients carry from pairing.
   rpc GetCoreInfo(google.protobuf.Empty) returns (CoreInfo);
+  // Phase 5 (Task 503): register or refresh a device's push token + platform —
+  // writes the already-existing `devices.push_token` / `devices.push_platform`
+  // columns (the DEFERRED RPC noted above). Idempotent; an unknown device id
+  // fails `NOT_FOUND`; a `push_platform` outside {apns,fcm,expo} fails
+  // `INVALID_ARGUMENT`. Appended AFTER GetCoreInfo with a new rpc number; the
+  // RPCs above are untouched.
+  rpc UpdateDevicePushToken(UpdateDevicePushTokenRequest) returns (google.protobuf.Empty);
+}
+```
+
+### message `UpdateDevicePushTokenRequest`
+
+```proto
+message UpdateDevicePushTokenRequest {
+  string device_id = 1;
+  string push_token = 2;
+  string push_platform = 3;
 }
 ```
 

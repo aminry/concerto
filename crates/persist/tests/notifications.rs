@@ -360,3 +360,39 @@ async fn dedup_query_matches_within_key_and_ignores_others() {
     assert_eq!(updated.body, "fresh body");
     assert_eq!(updated.created_at, 1700000050000);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn migration_0018_widens_push_platform_and_adds_dnd_until() {
+    let (_dir, persist) = fresh_db().await;
+    let mut w = persist.writer().await;
+    // 'expo' is now accepted (widened CHECK) + dnd_until is writable.
+    sqlx::query(
+        "INSERT INTO devices (id, name, public_key, paired_at, push_token, push_platform, dnd_until)
+         VALUES ('d-expo','Phone',?,1,'ExponentPushToken[x]','expo',1700000099000)",
+    )
+    .bind(vec![0u8; 32])
+    .execute(&mut *w)
+    .await
+    .expect("expo platform + dnd_until must be accepted post-0018");
+    // apns/fcm still accepted.
+    sqlx::query("INSERT INTO devices (id, name, public_key, paired_at, push_platform) VALUES ('d-apns','P',?,1,'apns')")
+        .bind(vec![0u8; 32])
+        .execute(&mut *w)
+        .await
+        .expect("apns still accepted");
+    // a bogus platform is still rejected by the widened CHECK.
+    let bad = sqlx::query("INSERT INTO devices (id, name, public_key, paired_at, push_platform) VALUES ('d-bad','P',?,1,'telegram')")
+        .bind(vec![0u8; 32])
+        .execute(&mut *w)
+        .await;
+    assert!(
+        bad.is_err(),
+        "push_platform CHECK must still reject unknown platforms"
+    );
+
+    let dnd: Option<i64> = sqlx::query_scalar("SELECT dnd_until FROM devices WHERE id='d-expo'")
+        .fetch_one(persist.readers())
+        .await
+        .unwrap();
+    assert_eq!(dnd, Some(1700000099000));
+}

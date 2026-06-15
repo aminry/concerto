@@ -234,6 +234,40 @@ impl DeviceManager {
             .await
     }
 
+    /// Register or refresh a device's push token + platform (Task 503,
+    /// `Devices.UpdateDevicePushToken`). Writes the existing
+    /// `devices.push_token` / `devices.push_platform` columns. Validates the
+    /// platform against the `0018` widened CHECK set (`apns`/`fcm`/`expo`) →
+    /// `Validation` (`INVALID_ARGUMENT`); an unknown device id → `NotFound`.
+    /// Idempotent (re-registering the same token is a no-op success).
+    pub async fn update_push_token(
+        &self,
+        device_id_hex: &str,
+        push_token: &str,
+        push_platform: &str,
+    ) -> Result<()> {
+        if !matches!(push_platform, "apns" | "fcm" | "expo") {
+            return Err(Error::Validation(format!(
+                "device.push_platform.invalid: {push_platform}"
+            )));
+        }
+        let affected = {
+            let mut writer = self.persistence.writer().await;
+            sqlx::query("UPDATE devices SET push_token = ?, push_platform = ? WHERE id = ?")
+                .bind(push_token)
+                .bind(push_platform)
+                .bind(device_id_hex)
+                .execute(&mut *writer)
+                .await
+                .map_err(|e| Error::Sqlx(Box::new(e)))?
+                .rows_affected()
+        };
+        if affected == 0 {
+            return Err(Error::NotFound(format!("device.unknown: {device_id_hex}")));
+        }
+        Ok(())
+    }
+
     /// Clock-injected core of [`Self::revoke_device`] (tests pin `now` so the
     /// persisted `revoked_at` is deterministic).
     pub async fn revoke_device_at(&self, device_id_hex: &str, now: SystemTime) -> Result<()> {
