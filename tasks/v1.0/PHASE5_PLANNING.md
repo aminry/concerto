@@ -275,7 +275,9 @@ re-dispatch the later task fresh.** Eligibility = **dependency-ready (per §6 / 
 write-set-disjoint on a hard seam from every in-flight task.** Tracks run **A → B → C** (§0);
 within a track the DAG defines overlap.
 
-**Completion state (update as you go):** 500–523 + 507.5/509.5 all **pending**.
+**Completion state (update as you go):** ✅ **500** (design reconciliation), **501** (model + 0017 +
+frozen proto messages), **502** (de-dup + retention) — merged green. ⏳ **503–507** (Track A remainder),
+**507.5 / 519–523** (Track B), **508 / 509 / 509.5 / 510–518** (Track C) pending.
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
