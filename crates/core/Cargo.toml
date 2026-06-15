@@ -201,6 +201,9 @@ notify = { version = "8" }
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# Task 506: property-based privacy test (no PII in WakeupPayload). Test-only;
+# never enters the production graph. cargo-deny-vetted (PHASE5_PLANNING D13).
+proptest = "1"
 # Task 315: the inbound-webhook Tier-2 tests drive `VcsHandle::ingest_webhook`
 # against 313's `testkit` `FakeGitHub` (the targeted-invalidation re-fetch +
 # emit side) + compute reference HMAC signatures with `hmac`/`sha2`. `testkit`
