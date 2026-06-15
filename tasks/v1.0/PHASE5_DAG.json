@@ -1,0 +1,256 @@
+{
+  "$comment": "Machine-readable Phase-5 (Notifications, Mobile & Web) task graph for the auto-execute loop. The orchestrator (AUTO_EXECUTE_PROMPT.md) computes the next eligible task set from this: a task is ELIGIBLE when every dep is merged (or in-flight ahead of it in merge order) AND its write_set shares no hard-to-merge path with any in-flight task. Merges stay serialized in dependency order. Execution proceeds verifiable-first by track (A=notifications -> B=foundation+web -> C=mobile); see PHASE5_PLANNING.md §0. Prose source of truth: PHASE5_PLANNING.md (esp. §6 deps, §8 waves). On any conflict, PHASE5_PLANNING.md wins. Update completion state in PHASE5_PLANNING.md §8 as tasks merge.",
+  "phase": 5,
+  "name": "Notifications, Mobile & Web",
+  "gate": "Iroh-NAT spike = GO (design/spikes/iroh-nat-findings.md:11, 80% direct). README V4 gate CLEARED; relay is load-bearing (spike Note A).",
+  "concurrency": {
+    "K": 3,
+    "note": "Phase 5 keeps the orchestrator default K=3 (Track A serializes on the new notifications module+proto+migrations; the 507.5 monorepo scaffold is a single high-churn root). Merges remain serialized + dependency-ordered; main stays green; in-flight branches rebase onto each new main; substantive rebase conflict => re-dispatch the later task fresh; drop to K=1 on any disjointness ambiguity."
+  },
+  "execution_order": ["A_notifications", "B_foundation_web", "C_mobile"],
+  "hard_seam_globs": [
+    "**/*.proto",
+    "crates/*/src/lib.rs",
+    "**/mod.rs",
+    "crates/core/src/boot.rs",
+    "crates/core/src/api_server.rs",
+    "crates/core/src/connect_bridge.rs",
+    "crates/core/src/handlers/streams.rs",
+    "crates/persist/migrations/*.sql",
+    "pnpm-workspace.yaml",
+    "packages/@concerto/*/src/index.ts"
+  ],
+  "trivially_mergeable_globs": [
+    "Cargo.lock",
+    "pnpm-lock.yaml",
+    "docs/interfaces/*",
+    "scripts/smoke.manifest"
+  ],
+  "soft_seam_note": "crates/core/src/notifications/mod.rs is touched by many Track-A tasks (additive `pub mod X;` lines => usually auto-merges). 501 owns the initial mod.rs. apps/web + @concerto/ui index files (Track B) and apps/mobile nav/index (Track C) are the analogous soft seams. Watch-on-rebase, not a hard block; serialize only if two in-flight tasks edit the same region.",
+  "tasks": [
+    {
+      "id": "500", "slug": "phase5-architecture-reconciliation", "type": "doc", "tier": 3,
+      "size": "small", "track": "A_notifications", "cluster": "N", "deps": [],
+      "title": "Phase-5 architecture reconciliation (design amendment to 14/16/17)",
+      "write_set": ["design/14_Notifications_Push.md", "design/16_Mobile_Clients.md", "design/17_Web_Client.md"],
+      "fanout": "solo (doc)",
+      "unblocks": ["501"]
+    },
+    {
+      "id": "501", "slug": "notification-model", "type": "rust", "tier": 1,
+      "size": "medium", "track": "A_notifications", "cluster": "N", "deps": ["500"],
+      "title": "notifications.proto messages FROZEN + notifications/notification_deliveries tables (0017) + 6 kinds + subject taxonomy",
+      "write_set": ["crates/proto/proto/concerto/v1/notifications.proto", "crates/persist/migrations/0017_notifications.sql", "crates/persist/src/notifications.rs", "crates/persist/src/lib.rs", "crates/persist/src/api.rs", "crates/core/src/notifications/mod.rs", "crates/core/src/notifications/model.rs", "crates/persist/tests/initial_schema.rs", "docs/interfaces/proto.md", "docs/interfaces/schema.md"],
+      "fanout": "proto-messages+regen || migration+persist-accessors || notifications-module-skeleton",
+      "unblocks": ["502", "503", "504", "505", "506", "507"]
+    },
+    {
+      "id": "502", "slug": "inbox-feed-dedup", "type": "rust", "tier": 1,
+      "size": "medium", "track": "A_notifications", "cluster": "N", "deps": ["501"],
+      "title": "SQLite inbox + chronological feed + 5-min dedup window + 90-day retention/archive helper",
+      "write_set": ["crates/core/src/notifications/dedup.rs", "crates/core/src/notifications/mod.rs", "crates/persist/src/notifications.rs"],
+      "fanout": "inbox-feed-queries || dedup-engine(synthetic-time) || retention/archive-helper",
+      "unblocks": ["507"]
+    },
+    {
+      "id": "503", "slug": "push-backend-expo", "type": "rust", "tier": 2,
+      "size": "medium", "track": "A_notifications", "cluster": "N", "deps": ["501"],
+      "title": "PushBackend trait + ExpoPushBackend + MockPushBackend + ID-only WakeupPayload fields FROZEN + UpdateDevicePushToken RPC + push_platform widen (0018)",
+      "write_set": ["crates/core/src/notifications/push/mod.rs", "crates/core/src/notifications/push/expo.rs", "crates/core/src/notifications/push/mock.rs", "crates/proto/proto/concerto/v1/devices.proto", "crates/persist/migrations/0018_push_platform_expo.sql", "crates/core/src/handlers/devices.rs", "crates/core/src/security/managed.rs", "docs/interfaces/proto.md", "docs/interfaces/schema.md"],
+      "fanout": "PushBackend-trait+Expo-impl || MockPushBackend+WakeupPayload-shape || UpdateDevicePushToken-RPC+push_platform-widen",
+      "unblocks": ["504", "506", "516"]
+    },
+    {
+      "id": "504", "slug": "wakeup-fanout-firstwins", "type": "rust", "tier": 2,
+      "size": "medium", "track": "A_notifications", "cluster": "N", "deps": ["503", "209"],
+      "title": "Post-wakeup GetNotification over E2EE + multi-device fan-out + first-to-approve-wins (over tool_approvals) + active-viewing detection",
+      "write_set": ["crates/core/src/notifications/fanout.rs", "crates/core/src/notifications/mod.rs"],
+      "fanout": "fanout-planner+active-viewing || first-wins(tool_approvals-guard) || GetNotification-fetch-path",
+      "unblocks": ["505", "507"]
+    },
+    {
+      "id": "505", "slug": "act-on-chip-prefs", "type": "rust", "tier": 1,
+      "size": "medium", "track": "A_notifications", "cluster": "N", "deps": ["504"],
+      "title": "ActOnChip -> ResolveApproval/SendMessage (action-token map) + per-workspace opt-out + prefs hierarchy",
+      "write_set": ["crates/core/src/notifications/chip_dispatch.rs", "crates/core/src/notifications/mod.rs", "crates/persist/src/workspaces.rs"],
+      "fanout": "action-token->dispatch-map || prefs-hierarchy-resolver || per-workspace-optout(settings_json)",
+      "unblocks": ["507"]
+    },
+    {
+      "id": "506", "slug": "privacy-property-test", "type": "rust", "tier": 1,
+      "size": "small", "track": "A_notifications", "cluster": "N", "deps": ["503"],
+      "title": "Privacy property test (proptest): no PII in WakeupPayload; no body for enterprise-private workspaces",
+      "write_set": ["crates/core/tests/notifications_privacy.rs", "Cargo.toml", "deny.toml", "Cargo.lock"],
+      "fanout": "solo (test + proptest dep; cargo-deny vet = Stop-and-ask)",
+      "unblocks": []
+    },
+    {
+      "id": "507", "slug": "notifications-grpc-service", "type": "rust", "tier": 1,
+      "size": "medium", "track": "A_notifications", "cluster": "N", "deps": ["504", "407"],
+      "title": "Notifications gRPC service + NotificationHandle + notification.events subject + live notify_user + live read_inbox_summary + smoke.d capability",
+      "write_set": ["crates/core/src/notifications/handle.rs", "crates/proto/proto/concerto/v1/notifications.proto", "crates/core/src/handlers/mod.rs", "crates/core/src/handlers/notifications.rs", "crates/core/src/handlers/streams.rs", "crates/core/src/api_server.rs", "crates/core/src/connect_bridge.rs", "crates/core/src/boot.rs", "crates/core/src/maestro/tools/side.rs", "crates/core/src/maestro/tools/read.rs", "scripts/smoke.d/96-notifications.sh", "scripts/smoke.manifest", "docs/interfaces/proto.md"],
+      "fanout": "service-handler+NotificationHandle || notification.events-subject+two-site-registration || live-notify_user/read_inbox_summary+smoke",
+      "unblocks": ["523"]
+    },
+    {
+      "id": "507.5", "slug": "js-monorepo-ts-codegen-dataclient", "type": "web-ts", "tier": 2,
+      "size": "medium", "track": "B_foundation_web", "cluster": "F", "deps": ["218"],
+      "title": "JS monorepo (pnpm-workspace) + TS proto codegen (buf+connect-es, gRPC-Web binary) + DataClient seam + @concerto/client + desktop refactor",
+      "write_set": ["pnpm-workspace.yaml", "package.json", "buf.gen.yaml", "buf.yaml", "packages/@concerto/client/**", "apps/desktop/src/api/client.ts", "apps/desktop/package.json"],
+      "fanout": "buf+codegen-pipeline || DataClient-interface+createTauriDataClient || desktop-client.ts-refactor(keep-39-vitest-green)",
+      "unblocks": ["508", "510", "519", "520"]
+    },
+    {
+      "id": "519", "slug": "web-spa-ui-extraction-harness", "type": "web-ts", "tier": 2,
+      "size": "medium", "track": "B_foundation_web", "cluster": "W", "deps": ["507.5", "218"],
+      "title": "apps/web SPA + @concerto/ui renderer extraction + createConnectWebDataClient + Playwright UI-E2E/screenshot harness + web-e2e/run-vitest CI jobs",
+      "write_set": ["apps/web/**", "packages/@concerto/ui/**", "apps/desktop/src/**", ".github/workflows/web.yml", "playwright.config.ts"],
+      "fanout": "@concerto/ui-extraction || apps/web-shell+ConnectWebDataClient || Playwright-harness+screenshots+CI-jobs",
+      "verification_override": "pnpm -C apps/web typecheck|lint|test|build + pnpm -C apps/web e2e (Playwright vs real core + CONCERTO_CONNECT_BRIDGE=1); desktop renderer regression via @concerto/ui consumers",
+      "unblocks": ["520", "521", "522", "523"]
+    },
+    {
+      "id": "520", "slug": "connect-web-data-client", "type": "web-ts", "tier": 2,
+      "size": "medium", "track": "B_foundation_web", "cluster": "W", "deps": ["204", "519"],
+      "title": "Connect-Web data client (HTTP/2 + SSE fallback) + AckOffset polling + bridge-on posture",
+      "write_set": ["apps/web/src/data/**", "packages/@concerto/client/transport/**"],
+      "fanout": "unary+server-streaming-over-HTTP2 || SSE-fallback || AckOffset-polling",
+      "unblocks": ["521", "522", "523"]
+    },
+    {
+      "id": "521", "slug": "lan-tls-relay-noise", "type": "web-ts", "tier": 2,
+      "size": "medium", "track": "B_foundation_web", "cluster": "W", "deps": ["215", "520"],
+      "title": "LAN-direct loopback TLS pinned to Core identity + remote WSS-via-relay Noise IK",
+      "write_set": ["apps/web/src/data/tls.ts", "apps/web/src/data/relay.ts", "apps/web/e2e/relay.spec.ts"],
+      "fanout": "LAN-TLS-pin || WSS-via-relay-Noise-IK || stub-relay-e2e",
+      "unblocks": []
+    },
+    {
+      "id": "522", "slug": "ephemeral-pairing", "type": "web-ts", "tier": 2,
+      "size": "medium", "track": "B_foundation_web", "cluster": "W", "deps": ["520"],
+      "title": "Ephemeral pairing (phone-signed 8h session cert, IndexedDB, cleared on tab close) + remember-browser",
+      "write_set": ["apps/web/src/pairing/**", "apps/web/src/data/**", "apps/web/e2e/pairing.spec.ts"],
+      "fanout": "8h-session-cert+IndexedDB || stub-phone-signer-double || remember-browser-promote",
+      "note": "Tier-2 uses a stub-phone signer (PHASE5_PLANNING §2); the real phone-mediated flow needs mobile 511 (Tier-3).",
+      "unblocks": []
+    },
+    {
+      "id": "523", "slug": "inbox-notification-ui", "type": "web-ts", "tier": 2,
+      "size": "medium", "track": "B_foundation_web", "cluster": "W", "deps": ["507", "519", "520"],
+      "title": "Inbox / notification-center / prefs UI (shared @concerto/ui; desktop+web) + live notification.events + UI-E2E vs real Core",
+      "write_set": ["packages/@concerto/ui/notifications/**", "apps/web/e2e/notifications.spec.ts", "apps/desktop/src/**"],
+      "fanout": "inbox-feed+unread-badges || notification.events-subscription+confirmation-chips || prefs-opt-out+E2E-screenshots",
+      "note": "The Track-A -> UI verification bridge: notifications proven end-to-end through the browser against the LIVE 507 service.",
+      "unblocks": []
+    },
+    {
+      "id": "508", "slug": "mobile-expo-scaffold", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["507.5"],
+      "title": "apps/mobile Expo scaffold + EAS config + jest/RN-Testing-Library harness + mobile CI lane (consumes @concerto/client)",
+      "write_set": ["apps/mobile/**", ".github/workflows/mobile.yml"],
+      "fanout": "expo-app+EAS-config || @concerto/client-wiring || jest/RN-TL-harness+CI-job",
+      "unblocks": ["509", "510"]
+    },
+    {
+      "id": "509", "slug": "concerto-iroh-native-module", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["212", "508"],
+      "title": "ConcertoIroh native module (iroh-ffi-first; cdylib + uniffi + host build + loopback Rust integration test)",
+      "write_set": ["crates/concerto-iroh-ffi/**", "Cargo.toml", "rust-toolchain.toml", "deny.toml", "Cargo.lock"],
+      "fanout": "iroh-ffi-eval+cdylib || generic-Grpc-passthrough(openSession/rpcUnary/rpcStream) || 0x03-pairing-primitive+host-loopback-test",
+      "note": "iroh-ffi/uniffi add = cargo-deny Stop-and-ask (313/401 precedent).",
+      "unblocks": ["509.5", "510"]
+    },
+    {
+      "id": "509.5", "slug": "native-module-packaging", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["509"],
+      "title": "XCFramework (iOS) + .aar (Android) packaging + Expo config plugin + cross-compile CI lane (Tier-2 builds; on-device run = Tier-3)",
+      "write_set": ["crates/concerto-iroh-ffi/build/**", "apps/mobile/modules/**", ".github/workflows/mobile-native.yml", "rust-toolchain.toml"],
+      "fanout": "XCFramework+aar-packaging || Expo-config-plugin || cross-compile-lane(aarch64-apple-ios/linux-android-link-check)",
+      "unblocks": ["510"]
+    },
+    {
+      "id": "510", "slug": "native-data-client", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["509", "509.5"],
+      "title": "Connect-Web TS client adapted to call the native module (createNativeDataClient)",
+      "write_set": ["apps/mobile/src/data/**", "packages/@concerto/client/transport/native.ts"],
+      "fanout": "native-DataClient-binding || encode/decode-bridge || stream-event-emitter",
+      "unblocks": ["511", "517", "518"]
+    },
+    {
+      "id": "511", "slug": "mobile-pairing", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["510", "207"],
+      "title": "Pairing QR scanner + expo-secure-store key/cert storage + multi-Core",
+      "write_set": ["apps/mobile/src/pairing/**", "apps/mobile/src/data/cores.ts"],
+      "fanout": "QR-scanner(expo-camera) || expo-secure-store-keystore || multi-Core-registry",
+      "unblocks": ["512", "516", "522"]
+    },
+    {
+      "id": "512", "slug": "mobile-bottom-tab-nav", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["511"],
+      "title": "Bottom-tab nav (Concerto default landing / Workspaces / Inbox)",
+      "write_set": ["apps/mobile/src/nav/**", "apps/mobile/src/screens/{concerto,workspaces,inbox}/**"],
+      "fanout": "tab-nav(expo-router) || Concerto-default-landing || inbox-screen",
+      "unblocks": ["513", "515"]
+    },
+    {
+      "id": "513", "slug": "mobile-workspaces-drilldown", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["512"],
+      "title": "Workspaces drill-down + workarea detail (Sessions / Code & PRs swipe; no project tier)",
+      "write_set": ["apps/mobile/src/screens/workspaces/**", "apps/mobile/src/screens/workarea/**"],
+      "fanout": "workspaces->workareas-drilldown || workarea-detail-segmented || sessions/code-PRs-swipe",
+      "unblocks": ["514"]
+    },
+    {
+      "id": "514", "slug": "mobile-touch-diff-renderer", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["103", "513"],
+      "title": "Touch-first RN diff renderer (spike-103 perf budget; documented V1.5 native fallback)",
+      "write_set": ["apps/mobile/src/diff/**"],
+      "fanout": "per-file-pager+pinch-zoom || syntax-highlight || long-press-comment",
+      "note": "spike-103 on-device verdict PENDING (operator field measurement) = Tier-3 line, not a phase blocker.",
+      "unblocks": []
+    },
+    {
+      "id": "515", "slug": "mobile-voice-dictation", "type": "rn-mobile", "tier": 2,
+      "size": "small", "track": "C_mobile", "cluster": "M", "deps": ["512"],
+      "title": "Voice dictation input (hold-to-talk, review-before-send)",
+      "write_set": ["apps/mobile/src/voice/**"],
+      "fanout": "solo (small)",
+      "unblocks": []
+    },
+    {
+      "id": "516", "slug": "mobile-push-lockscreen", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["503", "511"],
+      "title": "Push registration + post-wakeup fetch + lock-screen action chips + biometric gate",
+      "write_set": ["apps/mobile/src/push/**"],
+      "fanout": "expo-notifications-registration || post-wakeup-GetNotification || lock-screen-chips+biometric",
+      "note": "Real push to a locked device + lock-screen chips + biometric = Tier-3 (operator checklist).",
+      "unblocks": []
+    },
+    {
+      "id": "517", "slug": "mobile-localhost-tunnel", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["510"],
+      "title": "Localhost preview tunnel WebView (StartLocalhostTunnel)",
+      "write_set": ["apps/mobile/src/preview/**"],
+      "fanout": "solo",
+      "unblocks": []
+    },
+    {
+      "id": "518", "slug": "mobile-lite-mode-handoff", "type": "rn-mobile", "tier": 2,
+      "size": "medium", "track": "C_mobile", "cluster": "M", "deps": ["510"],
+      "title": "Lite-mode cellular streaming + cross-device handoff + background lifecycle",
+      "write_set": ["apps/mobile/src/lifecycle/**", "apps/mobile/src/data/**"],
+      "fanout": "lite-mode-payloads || continue-on-desktop-handoff || background-lifecycle",
+      "unblocks": []
+    }
+  ],
+  "waves_illustrative": [
+    {"wave": 1, "start": ["500"], "rationale": "doc reconciliation runs first; blocks 501"},
+    {"wave": 2, "start": ["501"], "rationale": "contract-first root: notifications.proto messages + tables (0017); serializes module/proto seam"},
+    {"wave": 3, "start": ["502", "503", "506"], "rationale": "disjoint-ish over 501; watch notifications/mod.rs soft seam"},
+    {"wave": 4, "start": ["504", "505", "507"], "rationale": "504<-503/209, 505<-504, 507<-504/407 (proto service + two-site reg + streams)"},
+    {"wave": 5, "start": ["507.5", "519"], "rationale": "Track B: monorepo foundation alone, then web shell + @concerto/ui + Playwright harness"},
+    {"wave": 6, "start": ["520", "521", "522", "523"], "rationale": "data client; TLS/relay; ephemeral pairing (stub-phone); LIVE notifications UI E2E"},
+    {"wave": 7, "start": ["508", "509", "509.5", "510"], "rationale": "Track C: Expo scaffold -> native module -> packaging -> native DataClient"},
+    {"wave": 8, "start": ["511", "512", "513", "514", "515", "516", "517", "518"], "rationale": "Track-C screens; serialize on shared mobile nav/index"}
+  ]
+}
