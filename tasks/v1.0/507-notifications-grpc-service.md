@@ -78,3 +78,30 @@ Refs: tasks/v1.0/507-notifications-grpc-service.md
 - 507b is the focused wiring pass (the highest-break-risk seams: two-site registration + boot). It
   reuses the maestro precedents verbatim (`with_maestro_events` → `with_notification_events`; the
   unimplemented-then-fill service pattern). The `NotifySink` swap drains 407's `NotifyRecorder`.
+
+### 507b progress (this session)
+- **507b-1 DONE (5546877):** `notification.events` subject (`Subject::NotificationEvents` +
+  `parse_subject` + `with_notification_events` + `map_notification_event`) + `NotificationStreamEvent`
+  carrier + `notifications::events::{to_frame, NotificationEventSender, channel}` bridge. Streams +
+  events tests green.
+- **507b-2 DONE (9716b03):** `Notifications` gRPC service in `notifications.proto`
+  (GetInbox/GetNotification/MarkRead/ActOnChip/UpdateWorkspaceSettings) + `handlers/notifications.rs`
+  (delegates to `NotificationHandle`) + `NotificationHandle::set_workspace_opt_out`. Compiles; not
+  registered.
+- **507b-3 PREP DONE (12bad56):** `NotificationHandle::with_event_channel()` + `events_sender()`
+  accessors (the live producer seam).
+
+### 507b-3 remaining wiring sequence (the deterministic plan — execute as ONE focused pass, build after each step)
+The handle must be built ONCE in boot + shared so the `Notifications` service, the `notification.events`
+producer, and the maestro `notify_user` sink all use the SAME `notification.events` channel. Mirror the
+`maestro_handle` threading exactly. Touch order:
+1. **boot.rs (~before the ApiServer spawn, ~1115):** `let notification_handle = Some(NotificationHandle::new(Arc::clone(&persistence), Arc::new(crate::notifications::push::ExpoPushBackend::new(None)), Arc::new(crate::notifications::handle::NoEvents)).with_event_channel());` + `let factory_notification_handle = notification_handle.clone();`.
+2. **api_server.rs `CoreServiceSet`:** add `pub notifications: Option<NotificationHandle>` (NO cfg) + `notifications: None` in `runtime_only`.
+3. **api_server.rs `ApiServerActor` + `with_managers`:** add a `notifications` param (mirror `maestro`) → store on the actor → thread into `run_uds` + the bridge `BridgeServices`.
+4. **api_server.rs `run_uds`:** add `notifications` param → set it in the `481` `CoreServiceSet` literal.
+5. **boot.rs `serve_iroh` literal (~1199/1216):** add `notifications: notification_handle.clone(),`.
+6. **api_server.rs `add_core_services` destructure (~646) + apply chain:** register `NotificationsServer::new(NotificationsHandler::new(n.clone()))` (cross-platform, near devices/repositories) when `notifications` is `Some`; inside the `#[cfg(unix)]` streams block add `if let Some(tx) = notifications.as_ref().and_then(|n| n.events_sender()) { handler = handler.with_notification_events(tx); }`.
+7. **connect_bridge.rs `BridgeServices` (~182) + `serve`:** add the `notifications` field + register the service + the streams producer (D9 site 2). *(May be deferred to Task 520 when the web bridge is first exercised — note it if so.)*
+8. **507b-ii — maestro `notify_user` live sink:** in boot, build a `NotificationHandle`-backed `NotifySink` (the SAME `notification_handle`) and pass it where 407 wired `NotifyRecorder` (`maestro/tools` boot site); make `read_inbox_summary` (`maestro/tools/read.rs`) call `notification_handle.get_inbox(...)`.
+9. **507b-iii — smoke:** add `scripts/smoke.d/NN-notifications.sh` (create via the handle → `GetInbox` over loopback → `ActOnChip`) + append to `scripts/smoke.manifest`.
+Verify: full `cargo test -p concerto-core` (esp. `auth_middleware`/`device_revocation`/`pairing` + a new `CoreUnderTest` notifications round-trip) + `cargo check --workspace` + `scripts/smoke.sh --only notifications`.
