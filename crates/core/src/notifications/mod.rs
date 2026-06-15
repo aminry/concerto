@@ -18,4 +18,5 @@
 //! Each later task adds its own `pub mod X;` line below in a distinct region
 //! (additive; auto-merges on rebase).
 
+pub mod dedup;
 pub mod model;

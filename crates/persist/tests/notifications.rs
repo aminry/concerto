@@ -280,3 +280,83 @@ async fn deliveries_upsert_and_cascade() {
         "deliveries cascade on notification delete"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dedup_query_matches_within_key_and_ignores_others() {
+    let (_dir, persist) = fresh_db().await;
+    seed_parents(&persist).await;
+    {
+        let mut w = persist.writer().await;
+        // A second workarea so we can prove the key is workarea-scoped.
+        sqlx::query(
+            "INSERT INTO workareas (id, workspace_id, composer_name, branch_name, worktree_root, status, created_at)
+             VALUES ('wa-2','ws-1','bee','concerto/bee','/tmp/wa-2','active',1700000001000)",
+        )
+        .execute(&mut *w)
+        .await
+        .unwrap();
+
+        let mut n = sample("n-1", 1700000010000);
+        n.kind = "check_run_failed".into();
+        notifications::insert(&mut w, n).await.unwrap();
+        // Same key but READ — must be ignored by the de-dup query.
+        let mut n_read = sample("n-read", 1700000011000);
+        n_read.kind = "check_run_failed".into();
+        notifications::insert(&mut w, n_read).await.unwrap();
+        notifications::mark_read(&mut w, "n-read", 1700000012000)
+            .await
+            .unwrap();
+        // Same key but a DIFFERENT workarea — must be ignored.
+        let mut n_other = sample("n-other", 1700000013000);
+        n_other.kind = "check_run_failed".into();
+        n_other.workarea_id = Some("wa-2".into());
+        notifications::insert(&mut w, n_other).await.unwrap();
+    }
+    let pool = persist.readers();
+    // Within window (floor below the row's created_at): hits n-1.
+    let hit = notifications::find_unread_for_dedup_key(
+        pool,
+        Some("ws-1"),
+        Some("wa-1"),
+        "check_run_failed",
+        "wa-1",
+        1700000000000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        hit.map(|r| r.id),
+        Some("n-1".into()),
+        "de-dup hits the unread same-key row"
+    );
+
+    // Floor above the row's created_at: no hit (outside window).
+    let miss = notifications::find_unread_for_dedup_key(
+        pool,
+        Some("ws-1"),
+        Some("wa-1"),
+        "check_run_failed",
+        "wa-1",
+        1700000099000,
+    )
+    .await
+    .unwrap();
+    assert!(
+        miss.is_none(),
+        "rows older than the window floor are not de-dup candidates"
+    );
+
+    // update_body_and_at refreshes in place.
+    {
+        let mut w = persist.writer().await;
+        assert_eq!(
+            notifications::update_body_and_at(&mut w, "n-1", "fresh body", 1700000050000)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+    let updated = notifications::get(pool, "n-1").await.unwrap().unwrap();
+    assert_eq!(updated.body, "fresh body");
+    assert_eq!(updated.created_at, 1700000050000);
+}

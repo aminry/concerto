@@ -244,6 +244,81 @@ pub async fn list_deliveries(pool: &SqlitePool, notification_id: &str) -> Result
         .collect())
 }
 
+/// Find the most-recent UNREAD, non-superseded notification matching the de-dup
+/// key created at or after `since` (the de-dup window floor). The key is
+/// `(workarea_id, kind, subject_id)` when a workarea is set, else
+/// `(workspace_id, kind, subject_id)` with `workarea_id IS NULL`
+/// (`design/14 §3.7`). Task 502.
+pub async fn find_unread_for_dedup_key(
+    pool: &SqlitePool,
+    workspace_id: Option<&str>,
+    workarea_id: Option<&str>,
+    kind: &str,
+    subject_id: &str,
+    since: i64,
+) -> Result<Option<NotificationRow>> {
+    // Two scopings: workarea-keyed vs workspace-keyed (workarea NULL).
+    let sql = if workarea_id.is_some() {
+        format!(
+            "SELECT {COLS} FROM notifications
+              WHERE workarea_id = ?1 AND kind = ?2 AND subject_id = ?3
+                AND created_at >= ?4 AND read_at IS NULL AND superseded_by IS NULL
+              ORDER BY created_at DESC LIMIT 1"
+        )
+    } else {
+        format!(
+            "SELECT {COLS} FROM notifications
+              WHERE workspace_id = ?1 AND workarea_id IS NULL AND kind = ?2 AND subject_id = ?3
+                AND created_at >= ?4 AND read_at IS NULL AND superseded_by IS NULL
+              ORDER BY created_at DESC LIMIT 1"
+        )
+    };
+    let key1 = if workarea_id.is_some() {
+        workarea_id
+    } else {
+        workspace_id
+    };
+    let row = sqlx::query(&sql)
+        .bind(key1)
+        .bind(kind)
+        .bind(subject_id)
+        .bind(since)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(row.map(row_to_notification))
+}
+
+/// Refresh a de-dup-hit notification's `body` + `created_at` in place instead of
+/// inserting a new row (`design/14 §3.7`: update, do not re-wakeup). Returns
+/// rows-affected.
+pub async fn update_body_and_at(
+    conn: &mut SqliteConnection,
+    id: &str,
+    body: &str,
+    at: i64,
+) -> Result<u64> {
+    let res = sqlx::query("UPDATE notifications SET body = ?, created_at = ? WHERE id = ?")
+        .bind(body)
+        .bind(at)
+        .bind(id)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(res.rows_affected())
+}
+
+/// Count notifications older than `before` (retention/archival reporting,
+/// `design/14 §3.9 R-9`: 90-day default; kept, not deleted in V1.0).
+pub async fn count_older_than(pool: &SqlitePool, before: i64) -> Result<i64> {
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE created_at < ?")
+        .bind(before)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(n)
+}
+
 fn row_to_notification(row: sqlx::sqlite::SqliteRow) -> NotificationRow {
     NotificationRow {
         id: row.get::<String, _>("id"),
