@@ -285,4 +285,18 @@ impl NotificationHandle {
         }
         Ok(outcome)
     }
+
+    /// Set the per-workspace notification opt-out (design/14 §3.8 — the
+    /// enterprise-private switch). RMW key on `workspaces.settings_json`
+    /// (`notifications_opt_out`), the `exclude_from_maestro` precedent.
+    pub async fn set_workspace_opt_out(&self, workspace_id: &str, opt_out: bool) -> Result<()> {
+        let mut w = self.persist.writer().await;
+        workspaces::set_settings_json_key(
+            &mut w,
+            &WorkspaceId(workspace_id.to_string()),
+            "notifications_opt_out",
+            serde_json::Value::Bool(opt_out),
+        )
+        .await
+    }
 }

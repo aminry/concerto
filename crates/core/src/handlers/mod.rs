@@ -9,6 +9,7 @@ pub mod devices;
 pub mod files;
 #[cfg(unix)]
 pub mod maestro;
+pub mod notifications;
 pub mod repositories;
 pub mod runtime;
 #[cfg(unix)]

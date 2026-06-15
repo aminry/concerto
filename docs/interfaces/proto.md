@@ -576,6 +576,87 @@ message InboxFilter {
 }
 ```
 
+### service `Notifications`
+
+```proto
+service Notifications {
+  // The chronological inbox feed (design/14 §5.1). Newest-first; de-dup-
+  // superseded rows are excluded.
+  rpc GetInbox(InboxFilter) returns (InboxResponse);
+  // Post-wakeup fetch of one notification's full payload over the E2EE channel
+  // (design/14 §3.3); records the per-device `fetched_at`.
+  rpc GetNotification(GetNotificationRequest) returns (Notification);
+  // Mark a notification read (idempotent; syncs via `notification.read`).
+  rpc MarkRead(MarkReadRequest) returns (google.protobuf.Empty);
+  // Act on an action chip (design/14 §3.5/§6.3): resolve approval / send
+  // message / navigate. First-wins via the existing tool_approvals guard (D5);
+  // the loser gets `already_resolved = true`.
+  rpc ActOnChip(ActOnChipRequest) returns (ActOnChipResponse);
+  // Per-workspace notification opt-out (design/14 §3.8 — enterprise-private).
+  rpc UpdateWorkspaceSettings(UpdateWorkspaceNotifyRequest) returns (google.protobuf.Empty);
+}
+```
+
+### message `InboxResponse`
+
+```proto
+message InboxResponse {
+  repeated Notification notifications = 1;
+}
+```
+
+### message `GetNotificationRequest`
+
+```proto
+message GetNotificationRequest {
+  string id = 1;
+  // The acting device (records `notification_deliveries.fetched_at`).
+  string device_id = 2;
+}
+```
+
+### message `MarkReadRequest`
+
+```proto
+message MarkReadRequest {
+  string id = 1;
+}
+```
+
+### message `ActOnChipRequest`
+
+```proto
+message ActOnChipRequest {
+  string notification_id = 1;
+  // The chip's `rule_id` (D4).
+  string chip_id = 2;
+  string device_id = 3;
+}
+```
+
+### message `ActOnChipResponse`
+
+```proto
+message ActOnChipResponse {
+  // True iff this device lost the first-wins race (already acted on).
+  bool already_resolved = 1;
+  // The dispatch the chip resolved to: "resolve_approval" | "send_message" |
+  // "navigate" (design/14 §6.3).
+  string dispatch_kind = 2;
+  // The dispatch argument (decision token / prompt / navigate target).
+  string dispatch_arg = 3;
+}
+```
+
+### message `UpdateWorkspaceNotifyRequest`
+
+```proto
+message UpdateWorkspaceNotifyRequest {
+  string workspace_id = 1;
+  bool opt_out = 2;
+}
+```
+
 ## `crates/proto/proto/concerto/v1/repositories.proto`
 
 - package: `concerto.v1`
