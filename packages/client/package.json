@@ -1,0 +1,29 @@
+{
+  "name": "@concerto/client",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Shared Concerto data client: generated proto types + the transport-agnostic DataClient seam (Task 507.5).",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gen/*": "./src/gen/*"
+  },
+  "scripts": {
+    "generate": "buf generate",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.2.0",
+    "@connectrpc/connect": "^2.0.0",
+    "@connectrpc/connect-web": "^2.0.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.47.2",
+    "@bufbuild/protoc-gen-es": "^2.2.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "concerto-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Concerto JS/TS workspace root (Phase 5).",
+  "packageManager": "pnpm@10.5.0",
+  "license": "MIT",
+  "pnpm": {
+    "onlyBuiltDependencies": ["@bufbuild/buf", "esbuild"]
+  }
+}
