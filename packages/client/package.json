@@ -8,7 +8,7 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./gen/*": "./src/gen/*"
+    "./gen/*": "./src/gen/*.ts"
   },
   "scripts": {
     "generate": "buf generate",

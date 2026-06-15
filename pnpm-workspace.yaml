@@ -8,3 +8,4 @@
 # when it migrates onto `@concerto/client`); its current build is unaffected.
 packages:
   - 'packages/*'
+  - 'apps/web'

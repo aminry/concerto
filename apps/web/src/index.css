@@ -1,0 +1,321 @@
+/* Concerto Web Client — design system (Task 519).
+   Modern, restrained, high-contrast. System fonts, soft surfaces, a single
+   indigo accent, severity-coded notification cards. Dark by default with a
+   light-mode fallback via prefers-color-scheme. */
+
+:root {
+  --bg: #0b0d12;
+  --surface: #14171f;
+  --surface-2: #1b1f29;
+  --border: #262b37;
+  --text: #e7e9ee;
+  --text-dim: #9aa3b2;
+  --text-faint: #6b7280;
+  --accent: #6366f1;
+  --accent-hover: #7c7ff4;
+  --high: #ef4444;
+  --medium: #f59e0b;
+  --low: #38bdf8;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.25);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: radial-gradient(1200px 600px at 50% -10%, #161a24 0%, var(--bg) 60%);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Top bar ---------------------------------------------------------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 24px;
+  background: rgba(11, 13, 18, 0.8);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.brand-mark {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, var(--accent), #a855f7);
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.6);
+  align-self: center;
+}
+.brand-name {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-size: 16px;
+}
+.brand-sub {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.connect {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.url {
+  width: 260px;
+  max-width: 42vw;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.url:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+
+.btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 550;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn.primary {
+  background: var(--accent);
+  color: white;
+}
+.btn.primary:hover {
+  background: var(--accent-hover);
+}
+.btn.ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+.btn.ghost:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+/* ---- Content --------------------------------------------------------- */
+.content {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+  flex: 1;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.title {
+  font-size: 22px;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.toggle input {
+  accent-color: var(--accent);
+}
+
+.banner {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.banner.error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+.banner code {
+  font-family: ui-monospace, monospace;
+  color: inherit;
+}
+
+.empty {
+  text-align: center;
+  padding: 72px 24px;
+  color: var(--text-dim);
+}
+.empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+.empty-sub {
+  font-size: 14px;
+  margin: 0;
+}
+
+/* ---- Feed ------------------------------------------------------------ */
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 18px 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.card.read {
+  opacity: 0.62;
+}
+.accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--low);
+}
+.sev-high .accent {
+  background: var(--high);
+}
+.sev-medium .accent {
+  background: var(--medium);
+}
+.card-body {
+  flex: 1;
+  min-width: 0;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.kind {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.dot {
+  color: var(--text-faint);
+}
+.sev-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+.sev-tag.high {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+.sev-tag.medium {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fcd34d;
+}
+.sev-tag.low {
+  background: rgba(56, 189, 248, 0.13);
+  color: #7dd3fc;
+}
+.spacer {
+  flex: 1;
+}
+.time {
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 2px;
+  line-height: 1.35;
+}
+.card-text {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #f0f2f5;
+    --border: #e3e6eb;
+    --text: #14171f;
+    --text-dim: #515b6b;
+    --text-faint: #8a93a3;
+    color-scheme: light;
+  }
+  body {
+    background: radial-gradient(1200px 600px at 50% -10%, #eef1f6 0%, var(--bg) 60%);
+  }
+  .topbar {
+    background: rgba(246, 247, 249, 0.8);
+  }
+}
