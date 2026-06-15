@@ -21,6 +21,7 @@
 pub mod chip_dispatch;
 pub mod dedup;
 pub mod fanout;
+pub mod handle;
 pub mod model;
 pub mod prefs;
 pub mod push;

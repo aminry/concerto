@@ -341,6 +341,18 @@ pub async fn list_pushable_devices(
         .collect())
 }
 
+/// Clear a device's `push_token` (Task 504/507): called when the push backend
+/// reports `DeviceNotRegistered` (the OS rotated/dropped the token, design/14
+/// §8). The next registration repopulates it.
+pub async fn clear_push_token(conn: &mut SqliteConnection, device_id: &str) -> Result<u64> {
+    let res = sqlx::query("UPDATE devices SET push_token = NULL WHERE id = ?")
+        .bind(device_id)
+        .execute(conn)
+        .await
+        .map_err(|e| Error::Sqlx(Box::new(e)))?;
+    Ok(res.rows_affected())
+}
+
 /// Count notifications older than `before` (retention/archival reporting,
 /// `design/14 §3.9 R-9`: 90-day default; kept, not deleted in V1.0).
 pub async fn count_older_than(pool: &SqlitePool, before: i64) -> Result<i64> {
