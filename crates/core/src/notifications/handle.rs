@@ -15,9 +15,12 @@ use concerto_error::Result;
 use concerto_persist::notifications::{self, NewDelivery, NewNotification};
 use concerto_persist::{workspaces, Persistence, WorkspaceId};
 use concerto_proto::v1 as pb;
+use tokio::sync::broadcast;
 
+use crate::handlers::streams::NotificationStreamEvent;
 use crate::notifications::chip_dispatch::{self, ActOutcome};
 use crate::notifications::dedup::{self, DedupDecision, DEDUP_WINDOW_MS};
+use crate::notifications::events::NotificationEventSender;
 use crate::notifications::fanout::{self, ActiveViewing, NoActiveViewing};
 use crate::notifications::model::{row_to_proto, NotifyRequest};
 use crate::notifications::prefs;
@@ -73,6 +76,10 @@ pub struct NotificationHandle {
     push: Arc<dyn PushBackend>,
     active_viewing: Arc<dyn ActiveViewing>,
     events: Arc<dyn NotificationEvents>,
+    /// The `notification.events` broadcast sender (when wired live via
+    /// [`Self::with_event_sender`]); fed to `StreamsHandler::with_notification_events`
+    /// so the subject streams this handle's events. `None` for test handles.
+    events_tx: Option<broadcast::Sender<NotificationStreamEvent>>,
     clock: Arc<dyn Clock>,
     dedup_window_ms: i64,
 }
@@ -88,9 +95,28 @@ impl NotificationHandle {
             push,
             active_viewing: Arc::new(NoActiveViewing),
             events,
+            events_tx: None,
             clock: Arc::new(SystemClock),
             dedup_window_ms: DEDUP_WINDOW_MS,
         }
+    }
+
+    /// Wire the live `notification.events` producer: the handle emits onto a
+    /// fresh broadcast channel; [`Self::events_sender`] hands the matching sender
+    /// to `StreamsHandler::with_notification_events`. Replaces any prior events
+    /// sink. Boot uses this so notify()/mark_read/act_on_chip stream to clients.
+    pub fn with_event_channel(mut self) -> Self {
+        let (tx, _rx) = crate::notifications::events::channel();
+        self.events = Arc::new(NotificationEventSender::new(tx.clone()));
+        self.events_tx = Some(tx);
+        self
+    }
+
+    /// The `notification.events` broadcast sender, when wired live
+    /// ([`Self::with_event_channel`]). `None` for test handles. Hand this to
+    /// `StreamsHandler::with_notification_events`.
+    pub fn events_sender(&self) -> Option<broadcast::Sender<NotificationStreamEvent>> {
+        self.events_tx.clone()
     }
 
     /// Override the active-viewing oracle (wired once the device-tagged
