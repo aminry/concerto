@@ -421,15 +421,41 @@ fn schedule_json(s: &Schedule) -> Value {
 }
 
 /// `read_inbox_summary() → InboxSummary { unread, items }` — the typed **empty
-/// stub** (`{ unread: 0, items: [] }`).
-///
-/// Notifications do not exist until P5 (Task 507 wires the live inbox). This is
-/// deliberate, documented debt — a real typed value that validates against
-/// 401's frozen `InboxSummary` schema, NOT `todo!()`/`unimplemented!()` and NOT
-/// a fabricated count (the README "stubbed-until-the-consuming-phase" precedent,
-/// like `notify_user`).
+/// stub** kept for the handle-less sync dispatch path (`tools::dispatch`) + the
+/// registration tests. The LIVE path is [`read_inbox_summary_live`] (Task 507).
 pub fn read_inbox_summary() -> Value {
     json!({ "unread": 0, "items": [] })
+}
+
+/// `read_inbox_summary` — LIVE (Task 507): the up-to-20 most-recent UNREAD
+/// notifications across all workspaces, newest-first, as the frozen
+/// `InboxSummary { unread, items }` shape. Wired into [`dispatch_read`] (which
+/// has the `Persistence` handle); the Maestro digest/chat consumes it.
+pub async fn read_inbox_summary_live(persist: &Persistence) -> Result<Value, McpError> {
+    const SUMMARY_LIMIT: u32 = 20;
+    let rows = concerto_persist::notifications::list_inbox(
+        persist.readers(),
+        None,
+        None,
+        true,
+        SUMMARY_LIMIT,
+    )
+    .await
+    .map_err(|e| McpError::internal_error(format!("read_inbox_summary: {e}"), None))?;
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "kind": r.kind,
+                "title": r.title,
+                "severity": r.severity,
+                "created_at_ms": r.created_at,
+                "workarea_id": r.workarea_id,
+            })
+        })
+        .collect();
+    Ok(json!({ "unread": rows.len(), "items": items }))
 }
 
 /// `read_pr_set_for_workarea(workarea_id) → PrSetStatus`.
@@ -605,7 +631,7 @@ pub async fn dispatch_read(
         "get_workarea_summary" => get_workarea_summary(cache, req_str(&args, "workarea_id")?),
         "list_recent_activity" => list_recent_activity(persist, req_i64(&args, "since")?).await,
         "list_active_schedules" => list_active_schedules(persist, now_ms).await,
-        "read_inbox_summary" => Ok(read_inbox_summary()),
+        "read_inbox_summary" => read_inbox_summary_live(persist).await,
         "read_pr_set_for_workarea" => {
             read_pr_set_for_workarea(persist, req_str(&args, "workarea_id")?).await
         }
