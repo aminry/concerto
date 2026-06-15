@@ -6,6 +6,9 @@ import { defineConfig } from "vite";
 // (5173).
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5174 },
+  // Bind IPv4 explicitly so the Playwright harness (and curl) reach it at
+  // 127.0.0.1 — `localhost` resolves to ::1 on some machines.
+  server: { host: "127.0.0.1", port: 5174, strictPort: true },
+  preview: { host: "127.0.0.1", port: 4173, strictPort: true },
   build: { outDir: "dist", target: "es2022" },
 });

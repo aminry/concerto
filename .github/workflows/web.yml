@@ -1,0 +1,41 @@
+# Web client + shared-client CI (Task 519, decision D13). Runs the TS
+# typecheck + unit tests for @concerto/client and apps/web, the web build, and
+# the Playwright UI-E2E suite — the gates the README §5.3 web-ts command set
+# promises (none of which ran in CI before Phase 5).
+name: web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: install
+        run: pnpm install --frozen-lockfile
+      - name: codegen drift check
+        run: |
+          pnpm -C packages/client generate
+          git diff --exit-code packages/client/src/gen \
+            || (echo "::error::generated proto TS is stale — run 'pnpm -C packages/client generate'"; exit 1)
+      - name: client typecheck + test
+        run: |
+          pnpm -C packages/client typecheck
+          pnpm -C packages/client test
+      - name: web typecheck + build
+        run: |
+          pnpm -C apps/web typecheck
+          pnpm -C apps/web build
+      - name: web UI-E2E (Playwright)
+        run: |
+          pnpm -C apps/web exec playwright install --with-deps chromium
+          pnpm -C apps/web e2e
