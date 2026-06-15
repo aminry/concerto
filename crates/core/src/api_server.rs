@@ -667,6 +667,21 @@ where
         nat_stats,
     } = services;
 
+    // Task 507: the notifications handle, built from the shared `Persistence`.
+    // `add_core_services` is the single chain BOTH transports (UDS + Iroh) run,
+    // so building here registers the `Notifications` service + wires the
+    // `notification.events` producer on every transport. `with_event_channel`
+    // gives this handle a live producer; `events_sender()` feeds the streams
+    // subject below. `None` persistence ⇒ no service (the runtime-only case).
+    let notif_handle = persistence.as_ref().map(|p| {
+        crate::notifications::handle::NotificationHandle::new(
+            Arc::clone(p),
+            Arc::new(crate::notifications::push::ExpoPushBackend::new(None)),
+            Arc::new(crate::notifications::handle::NoEvents),
+        )
+        .with_event_channel()
+    });
+
     // Build the Runtime handler, attaching the live transport-backed NAT-stats
     // source only when present (the Iroh serve path). With `None` (the UDS path)
     // the handler keeps its `NoNatStats` default — `GetNatStats` stays answerable
@@ -697,6 +712,16 @@ where
     if let Some(workarea_manager) = workarea_manager.clone() {
         let workareas_service = WorkareasServer::new(WorkareasHandler::new(workarea_manager));
         builder = builder.add_service(workareas_service);
+    }
+    // Task 507: the `Notifications` service (cross-platform — `NotificationHandle`
+    // needs only persist + push). The `notification.events` producer is wired
+    // into the `Streams` handler in the `#[cfg(unix)]` block below.
+    if let Some(h) = notif_handle.as_ref() {
+        use concerto_proto::v1::notifications_server::NotificationsServer;
+
+        use crate::handlers::notifications::NotificationsHandler;
+        let notifications_service = NotificationsServer::new(NotificationsHandler::new(h.clone()));
+        builder = builder.add_service(notifications_service);
     }
     // `Sessions` + `Streams` need the `#[cfg(unix)]` agent supervisor; on a
     // non-unix target these handles don't exist, so the services are simply
@@ -744,6 +769,12 @@ where
             // disabled) leaves the subject valid-but-empty.
             if let Some(maestro) = maestro.as_ref() {
                 handler = handler.with_maestro_events(maestro.events_sender());
+            }
+            // Task 507: wire this transport's notifications handle as the
+            // `notification.events` producer so the subject streams live
+            // created/updated/read/acted events.
+            if let Some(tx) = notif_handle.as_ref().and_then(|h| h.events_sender()) {
+                handler = handler.with_notification_events(tx);
             }
             let streams_service = StreamsServer::new(handler);
             builder = builder.add_service(streams_service);

@@ -38,8 +38,8 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 pub use crate::clients::{
-    ClientError, RepositoriesClient, RuntimeClient, SessionsClient, StreamsClient, WorkareasClient,
-    WorkspacesClient,
+    ClientError, DevicesClient, NotificationsClient, RepositoriesClient, RuntimeClient,
+    SessionsClient, StreamsClient, WorkareasClient, WorkspacesClient,
 };
 pub use crate::process::ProcessError;
 
@@ -188,6 +188,20 @@ impl CoreUnderTest {
     /// Same connection semantics as [`Self::runtime_client`].
     pub async fn streams_client(&self) -> Result<StreamsClient> {
         Ok(clients::streams_client(self.socket_path.clone()).await?)
+    }
+
+    /// Connect a Tonic [`NotificationsClient`] to the running Core (Task 507).
+    ///
+    /// Same connection semantics as [`Self::runtime_client`].
+    pub async fn notifications_client(&self) -> Result<NotificationsClient> {
+        Ok(clients::notifications_client(self.socket_path.clone()).await?)
+    }
+
+    /// Connect a Tonic [`DevicesClient`] to the running Core (Task 209/503).
+    ///
+    /// Same connection semantics as [`Self::runtime_client`].
+    pub async fn devices_client(&self) -> Result<DevicesClient> {
+        Ok(clients::devices_client(self.socket_path.clone()).await?)
     }
 
     /// Open a read-only [`sqlx::SqlitePool`] to the Core's database.
