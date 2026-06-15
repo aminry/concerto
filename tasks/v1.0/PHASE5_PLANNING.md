@@ -275,9 +275,13 @@ re-dispatch the later task fresh.** Eligibility = **dependency-ready (per §6 / 
 write-set-disjoint on a hard seam from every in-flight task.** Tracks run **A → B → C** (§0);
 within a track the DAG defines overlap.
 
-**Completion state (update as you go):** ✅ **500** (design reconciliation), **501** (model + 0017 +
-frozen proto messages), **502** (de-dup + retention) — merged green. ⏳ **503–507** (Track A remainder),
-**507.5 / 519–523** (Track B), **508 / 509 / 509.5 / 510–518** (Track C) pending.
+**Completion state (update as you go):** ✅ Track A backend logic complete & green — **500** (design
+reconciliation), **501** (model + 0017 + frozen proto), **502** (de-dup + retention), **503** (PushBackend
++ Expo/Mock + WakeupBody + UpdateDevicePushToken + 0018), **504** (fan-out + post-wakeup fetch +
+active-viewing seam), **505** (ActOnChip + prefs), **506** (privacy proptest), **507a** (NotificationHandle
++ notify() orchestration). ⏳ **507b** (gRPC service + two-site registration + boot wiring + live
+notify_user/read_inbox_summary + smoke), **507.5 / 519–523** (Track B), **508 / 509 / 509.5 / 510–518**
+(Track C) pending.
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
