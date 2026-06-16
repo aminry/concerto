@@ -222,6 +222,17 @@ enum Command {
         #[arg(long)]
         kind: Option<String>,
     },
+    /// Task 507: call `Notifications.GetInbox` and print one JSON object per
+    /// returned notification (newest-first). The `notifications` smoke check
+    /// greps the output for a seeded id to prove the live service round-trips.
+    GetInbox {
+        /// Only return unread notifications (default: all).
+        #[arg(long, default_value_t = false)]
+        unread_only: bool,
+        /// Max rows to return; `0` ⇒ the Core default.
+        #[arg(long, default_value_t = 0)]
+        limit: u32,
+    },
     /// Call `Maestro.SendToMaestro` — forward a chat turn (freeform,
     /// `@workarea`, or a slash directive). Prints `sent`.
     MaestroSend {
@@ -378,6 +389,10 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
         }
         Command::ListAudit { data_dir, kind } => {
             cmd::list_audit::run(&data_dir, kind.as_deref()).await
+        }
+        Command::GetInbox { unread_only, limit } => {
+            let socket = require_socket(cli.socket)?;
+            cmd::get_inbox::run(&socket, unread_only, limit).await
         }
         Command::MaestroSend { text, workspace } => {
             let socket = require_socket(cli.socket)?;

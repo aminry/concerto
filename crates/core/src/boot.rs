@@ -1040,10 +1040,27 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     //    dropping the `JoinHandle` does NOT abort the task, so it
                     //    runs for the runtime's lifetime (accept-loops, 0600,
                     //    survives transient accept errors).
+                    // Task 507b-ii: wire the LIVE side-channel handles so
+                    // `notify_user` lands a real notification (via sub-system 14's
+                    // `NotificationHandle`) and `propose_chip` appends to the
+                    // Maestro-owned slate. The `NotificationHandle` mirrors the
+                    // `add_core_services` construction (persist + Expo push + no
+                    // events sink — the inbox/streams producer is wired on the
+                    // gRPC handle, not this fire-and-forget tool sink). The
+                    // subject id falls back to the `"maestro"` sentinel; the live
+                    // session id is not resolved on this fire-and-forget path.
+                    let notify_handle = crate::notifications::handle::NotificationHandle::new(
+                        Arc::clone(&persistence),
+                        Arc::new(crate::notifications::push::ExpoPushBackend::new(None)),
+                        Arc::new(crate::notifications::handle::NoEvents),
+                    );
+                    let live_sink =
+                        crate::maestro::tools::side::LiveNotifySink::new(notify_handle, None);
                     let template = crate::maestro::mcp::MaestroMcpServer::with_read_handles(
                         Arc::clone(&persistence),
                         Arc::clone(&summary_cache),
-                    );
+                    )
+                    .with_side_handles(live_sink, crate::maestro::tools::side::ChipSlate::new());
                     let listen_socket = socket.clone();
                     let _listener = tokio::spawn(async move {
                         if let Err(e) =
