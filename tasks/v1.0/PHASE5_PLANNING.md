@@ -284,10 +284,12 @@ active-viewing seam), **505** (ActOnChip + prefs), **506** (privacy proptest), *
 UDS+Iroh + `notification.events` producer — verified end-to-end over a real Core), **507b-ii a** (live
 `read_inbox_summary`). **Track B started:** **507.5** (pnpm monorepo + buf/connect-es TS codegen + `@concerto/client`
 `DataClient` seam), **519** (`apps/web` notifications-inbox SPA + Playwright UI-E2E + screenshots +
-web CI workflow). ⏳ remaining Track A finishing items: **notify_user live sink**, **smoke capability**,
-**connect-bridge web registration** (→ 520). ⏳ Track B: **520** (connect-web data client + bridge-on),
-**521** (LAN TLS/relay), **522** (ephemeral pairing), **523** (inbox/notification UI live vs spawned
-Core). ⏳ Track C: **508 / 509 / 509.5 / 510–518**.
+web CI workflow). **520** (Notifications on the connect-web bridge — D9 site 2, verified gRPC-Web `GetInbox`), **523 core**
+(live web inbox vs a running Core — real notifications rendered in a browser, Playwright-screenshotted
+via `scripts/web-live-demo.sh`). ⏳ remaining Track A finishing items: **notify_user live sink**,
+**smoke capability**. ⏳ Track B: **520 refinements** (SSE fallback + AckOffset), **521** (LAN TLS/relay),
+**522** (ephemeral pairing), **523 full** (`@concerto/ui` inbox shared with desktop). ⏳ Track C: **508
+/ 509 / 509.5 / 510–518**.
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
