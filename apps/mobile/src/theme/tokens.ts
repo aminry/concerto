@@ -14,6 +14,12 @@ export const colors = {
   sevLow: "#3fb950",
   sevMedium: "#d29922",
   sevHigh: "#f85149",
+  // Status/state tints reused by the Workspaces drill-down (Task 513).
+  success: "#3fb950",
+  warning: "#d29922",
+  danger: "#f85149",
+  info: "#58a6ff",
+  merged: "#a371f7",
 } as const;
 
 export const spacing = {
@@ -39,5 +45,46 @@ export function severityColor(severity: string): string {
       return colors.sevMedium;
     default:
       return colors.sevLow;
+  }
+}
+
+/**
+ * Map a workarea/session `status` string to a status-pill tint (Task 513).
+ * Workarea statuses ∈ created|active|running|awaiting|paused|finished|partial|
+ * archived|crashed; session statuses ∈ starting|running|awaiting|finished|crashed.
+ */
+export function statusColor(status: string): string {
+  switch (status) {
+    case "running":
+    case "active":
+    case "starting":
+      return colors.success;
+    case "awaiting":
+    case "paused":
+    case "partial":
+      return colors.warning;
+    case "crashed":
+      return colors.danger;
+    case "finished":
+      return colors.info;
+    default:
+      return colors.textMuted;
+  }
+}
+
+/**
+ * Map a PR `state` string to a tint (Task 513). GitHub provider states ∈
+ * open|closed|merged|draft.
+ */
+export function prStateColor(state: string): string {
+  switch (state) {
+    case "open":
+      return colors.success;
+    case "merged":
+      return colors.merged;
+    case "closed":
+      return colors.danger;
+    default:
+      return colors.textMuted;
   }
 }
