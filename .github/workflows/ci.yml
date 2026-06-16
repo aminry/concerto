@@ -39,13 +39,15 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+          # apps/desktop is now a member of the root pnpm workspace (Task 523 —
+          # it consumes @concerto/ui + @concerto/client), so install from the
+          # root lockfile, not apps/desktop's (which no longer exists).
+          cache-dependency-path: pnpm-lock.yaml
       - name: Build desktop frontend (Tauri build.rs requires Vite dist)
         if: matrix.os != 'windows-latest'
-        working-directory: apps/desktop
         run: |
           pnpm install --frozen-lockfile
-          pnpm build
+          pnpm -C apps/desktop build
       - uses: Swatinem/rust-cache@v2
       # Cross-platform Core lanes (design/18 §3.3, design/00 §10):
       #   * macOS + Linux build/lint/test the FULL workspace, agent-host

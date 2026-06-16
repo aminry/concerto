@@ -2,10 +2,11 @@
 #
 # `packages/*` holds the shared, transport-agnostic code: `@concerto/client`
 # (generated proto types + the DataClient seam) consumed by web + mobile, and
-# (Task 519) `@concerto/ui` (the extracted React-DOM renderer) consumed by
-# desktop + web. `apps/web` (519) and `apps/mobile` (508) join as they are
-# scaffolded. `apps/desktop` stays a standalone pnpm project for now (folded in
-# when it migrates onto `@concerto/client`); its current build is unaffected.
+# `@concerto/ui` (Task 523, decision D11 — the extracted React-DOM inbox
+# renderer) consumed by desktop + web. `apps/web` (519) and `apps/desktop` (523)
+# both consume `@concerto/ui`; `apps/mobile` (508) joins as it is scaffolded and
+# shares only `@concerto/client` (it builds its own RN tree, D11).
 packages:
   - 'packages/*'
   - 'apps/web'
+  - 'apps/desktop'

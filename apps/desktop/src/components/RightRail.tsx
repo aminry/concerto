@@ -13,6 +13,7 @@ import {
   ListChecks,
   Blocks,
   Folder,
+  Bell,
   GitCompare,
   CircleCheck,
   GitPullRequest,
@@ -25,6 +26,7 @@ import { SkillsTab } from "./right-rail/SkillsTab";
 import { TodosTab } from "./right-rail/TodosTab";
 import { McpTab } from "./right-rail/McpTab";
 import { FilesTab } from "./right-rail/FilesTab";
+import { InboxPanel } from "./InboxPanel";
 import { CodePrRegion } from "./center/CodePrRegion";
 
 type TabSpec = { id: RightRailTab; label: string; Icon: LucideIcon };
@@ -35,6 +37,8 @@ const TABS: readonly TabSpec[] = [
   { id: "todos", label: "Todos", Icon: ListChecks },
   { id: "mcp", label: "MCP", Icon: Blocks },
   { id: "files", label: "Files", Icon: Folder },
+  // Notifications inbox — the shared `@concerto/ui` renderer (Task 523).
+  { id: "inbox", label: "Inbox", Icon: Bell },
   // Code & PRs — moved here from the center panel's bottom region so the
   // session terminal occupies the full center height.
   { id: "diff", label: "Diff", Icon: GitCompare },
@@ -116,6 +120,8 @@ function RightRailBody({ tab }: { tab: RightRailTab }): JSX.Element {
       return <McpTab />;
     case "files":
       return <FilesTab />;
+    case "inbox":
+      return <InboxPanel />;
     case "diff":
     case "checks":
     case "pr":

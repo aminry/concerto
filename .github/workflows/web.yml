@@ -1,7 +1,7 @@
-# Web client + shared-client CI (Task 519, decision D13). Runs the TS
-# typecheck + unit tests for @concerto/client and apps/web, the web build, and
-# the Playwright UI-E2E suite — the gates the README §5.3 web-ts command set
-# promises (none of which ran in CI before Phase 5).
+# Web client + shared-package CI (Task 519, decision D13; extended in 523). Runs
+# the TS typecheck + unit tests for @concerto/client, @concerto/ui, and apps/web,
+# the web build, and the Playwright UI-E2E suite — the gates the README §5.3
+# web-ts command set promises (none of which ran in CI before Phase 5).
 name: web
 
 on:
@@ -31,6 +31,10 @@ jobs:
         run: |
           pnpm -C packages/client typecheck
           pnpm -C packages/client test
+      - name: ui typecheck + test
+        run: |
+          pnpm -C packages/ui typecheck
+          pnpm -C packages/ui test
       - name: web typecheck + build
         run: |
           pnpm -C apps/web typecheck

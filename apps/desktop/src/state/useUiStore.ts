@@ -25,6 +25,9 @@ export type RightRailTab =
   | "todos"
   | "mcp"
   | "files"
+  // The notifications inbox (Task 523) — renders the shared `@concerto/ui`
+  // `Inbox` so desktop + web show the identical inbox surface.
+  | "inbox"
   | "diff"
   | "checks"
   | "pr";
@@ -175,6 +178,7 @@ function isRightRailTab(value: unknown): value is RightRailTab {
     value === "todos" ||
     value === "mcp" ||
     value === "files" ||
+    value === "inbox" ||
     value === "diff" ||
     value === "checks" ||
     value === "pr"
