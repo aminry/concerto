@@ -60,6 +60,21 @@ export function kindLabel(kind: NotificationKind): string {
   return KIND_LABEL[kind] ?? "Notification";
 }
 
+/** The defined severity buckets the inbox styles + renders. */
+export type Severity = "low" | "medium" | "high";
+
+/**
+ * Normalize a free-form wire `severity` string (`notifications.proto`'s
+ * `string severity`) to a known bucket. The Core promises `"low" | "medium" |
+ * "high"`, but it is an open wire string — an unexpected value (`"critical"`,
+ * `"info"`, whitespace, empty) would otherwise yield an unstyled accent + pill
+ * AND inject the raw string as the tag text. Anything outside the known set
+ * collapses to `"low"`, so the card always renders a defined bucket.
+ */
+export function severityBucket(severity: string): Severity {
+  return severity === "low" || severity === "medium" || severity === "high" ? severity : "low";
+}
+
 /** One severity-coded notification card with its mark-read affordance. */
 export function NotificationCard({
   notification: n,
@@ -68,9 +83,12 @@ export function NotificationCard({
   notification: Notification;
   onMarkRead: (id: string) => void;
 }) {
+  // Normalize the free-form wire severity to a defined bucket so an unexpected
+  // value (e.g. "critical") still styles + renders as a known severity.
+  const sev = severityBucket(n.severity);
   return (
     <li
-      className={`card sev-${n.severity || "low"}${n.readAtMs ? " read" : ""}`}
+      className={`card sev-${sev}${n.readAtMs ? " read" : ""}`}
       data-testid="notification"
     >
       <span className="accent" aria-hidden="true" />
@@ -80,7 +98,7 @@ export function NotificationCard({
           <span className="dot" aria-hidden="true">
             ·
           </span>
-          <span className={`sev-tag ${n.severity || "low"}`}>{n.severity || "low"}</span>
+          <span className={`sev-tag ${sev}`}>{sev}</span>
           <span className="spacer" />
           <time className="time">{relativeTime(n.createdAtMs)}</time>
         </div>
@@ -125,15 +143,21 @@ export function Inbox({ items, status, unreadOnly, onUnreadOnlyChange, onMarkRea
         </div>
       )}
 
+      {status.kind === "loading" && items.length === 0 && (
+        <div className="empty" role="status" aria-live="polite" data-testid="loading">
+          <p className="empty-sub">Loading…</p>
+        </div>
+      )}
+
       {status.kind === "idle" && (
-        <div className="empty" data-testid="idle">
+        <div className="empty" role="status" aria-live="polite" data-testid="idle">
           <p className="empty-title">Connect to a Core</p>
           <p className="empty-sub">Connect to your Core to load the inbox.</p>
         </div>
       )}
 
       {status.kind === "ok" && items.length === 0 && (
-        <div className="empty" data-testid="empty">
+        <div className="empty" role="status" aria-live="polite" data-testid="empty">
           <p className="empty-title">You’re all caught up</p>
           <p className="empty-sub">No {unreadOnly ? "unread " : ""}notifications.</p>
         </div>

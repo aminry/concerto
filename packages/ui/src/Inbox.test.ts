@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { NotificationKind } from "@concerto/client/gen/concerto/v1/notifications_pb";
 
-import { kindLabel, relativeTime } from "./Inbox";
+import { kindLabel, relativeTime, severityBucket } from "./Inbox";
 
 // Unit tests for the inbox's pure rendering helpers — the severity/kind/time
 // logic shared by desktop + web. The component render itself is exercised by the
@@ -21,6 +21,25 @@ describe("kindLabel", () => {
 
   it("falls back to 'Notification' for the unspecified kind", () => {
     expect(kindLabel(NotificationKind.UNSPECIFIED)).toBe("Notification");
+  });
+});
+
+describe("severityBucket", () => {
+  it("passes through the known severity buckets", () => {
+    expect(severityBucket("low")).toBe("low");
+    expect(severityBucket("medium")).toBe("medium");
+    expect(severityBucket("high")).toBe("high");
+  });
+
+  it("normalizes unknown / garbage severities to 'low'", () => {
+    // The Core sends a free-form wire string; anything outside the known set
+    // (an unexpected bucket, whitespace, or empty) collapses to 'low' so the
+    // card never renders an unstyled accent/pill or injects the raw value.
+    expect(severityBucket("critical")).toBe("low");
+    expect(severityBucket("info")).toBe("low");
+    expect(severityBucket(" ")).toBe("low");
+    expect(severityBucket("")).toBe("low");
+    expect(severityBucket("HIGH")).toBe("low");
   });
 });
 

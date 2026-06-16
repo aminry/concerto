@@ -53,4 +53,72 @@ describe("InboxPanel", () => {
     await userEvent.click(toggle);
     expect(toggle).toBeChecked();
   });
+
+  it("renders an announced loading surface while the first fetch is in flight", () => {
+    // On a host's first connect the status is { kind: "loading" } with no items
+    // yet — the shared inbox must show a Loading… surface (not a dead blank
+    // panel), and it must be a polite live region for screen readers.
+    render(<InboxPanel status={{ kind: "loading" }} />);
+    const loading = screen.getByTestId("loading");
+    expect(loading).toBeInTheDocument();
+    expect(loading).toHaveTextContent("Loading…");
+    expect(loading).toHaveAttribute("role", "status");
+    expect(loading).toHaveAttribute("aria-live", "polite");
+    // An in-flight refetch must not blank an idle/empty surface as well.
+    expect(screen.queryByTestId("idle")).not.toBeInTheDocument();
+  });
+
+  it("keeps showing the existing feed during an in-place refetch", () => {
+    // A refetch over an already-loaded feed (loading + items present) must keep
+    // the current list visible rather than swap it for the Loading… surface.
+    const items = [
+      create(NotificationSchema, {
+        id: "n1",
+        kind: NotificationKind.PR_STATE_CHANGED,
+        title: "PR #7 merged",
+        severity: "low",
+        createdAtMs: BigInt(Date.now()),
+      }),
+    ];
+    render(<InboxPanel items={items} status={{ kind: "loading" }} />);
+    expect(screen.getByTestId("feed")).toBeInTheDocument();
+    expect(screen.getByText("PR #7 merged")).toBeInTheDocument();
+    expect(screen.queryByTestId("loading")).not.toBeInTheDocument();
+  });
+
+  it("normalizes an unknown wire severity to the 'low' bucket", () => {
+    // `severity` is a free-form wire string; an unexpected value ("critical")
+    // must collapse to a defined bucket so the card stays styled and the raw
+    // string is never injected as the pill text.
+    const items = [
+      create(NotificationSchema, {
+        id: "n2",
+        kind: NotificationKind.AGENT_CRASHED,
+        title: "Agent died",
+        severity: "critical",
+        createdAtMs: BigInt(Date.now()),
+      }),
+    ];
+    render(<InboxPanel items={items} status={{ kind: "ok", count: items.length }} />);
+    const card = screen.getByTestId("notification");
+    // Normalized className + pill, never the raw "critical".
+    expect(card.className).toContain("sev-low");
+    expect(card.className).not.toContain("sev-critical");
+    expect(screen.getByText("low")).toBeInTheDocument();
+    expect(screen.queryByText("critical")).not.toBeInTheDocument();
+  });
+
+  it("announces the idle and 'all caught up' surfaces as live regions", () => {
+    // idle (default) and the filter-emptied 'all caught up' state must be polite
+    // live regions so a screen-reader user gets feedback when the list changes.
+    const { rerender } = render(<InboxPanel />);
+    const idle = screen.getByTestId("idle");
+    expect(idle).toHaveAttribute("role", "status");
+    expect(idle).toHaveAttribute("aria-live", "polite");
+
+    rerender(<InboxPanel items={[]} status={{ kind: "ok", count: 0 }} />);
+    const empty = screen.getByTestId("empty");
+    expect(empty).toHaveAttribute("role", "status");
+    expect(empty).toHaveAttribute("aria-live", "polite");
+  });
 });

@@ -90,10 +90,6 @@
   border: 1px solid rgba(239, 68, 68, 0.35);
   color: #fca5a5;
 }
-.inbox .banner code {
-  font-family: ui-monospace, monospace;
-  color: inherit;
-}
 
 .inbox .empty {
   text-align: center;

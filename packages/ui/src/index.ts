@@ -8,5 +8,5 @@
 //! - Co-located styling lives in `@concerto/ui/inbox.css` — the consumer imports
 //!   it once (web inherits it; desktop scopes it under its own surface).
 
-export { Inbox, NotificationCard, relativeTime, kindLabel } from "./Inbox";
-export type { InboxProps, InboxStatus } from "./Inbox";
+export { Inbox, NotificationCard, relativeTime, kindLabel, severityBucket } from "./Inbox";
+export type { InboxProps, InboxStatus, Severity } from "./Inbox";
