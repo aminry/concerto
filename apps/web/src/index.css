@@ -86,6 +86,62 @@ body {
   font-size: 13px;
 }
 
+/* Live-updates indicator (Task 520) — a subtle pill in the shell chrome that
+   shows whether new notifications arrive via the `notification.events` stream
+   ("Live") or the AckOffset polling fallback ("Polling"). It is shell chrome,
+   deliberately NOT part of the @concerto/ui inbox. */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  margin-left: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+.live-badge .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.live-badge.live {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.4);
+}
+.live-badge.live .live-dot {
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.7);
+  animation: live-pulse 1.8s ease-in-out infinite;
+}
+.live-badge.polling {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.4);
+}
+.live-badge.polling .live-dot {
+  background: #fbbf24;
+}
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-badge.live .live-dot {
+    animation: none;
+  }
+}
+
 .connect {
   display: flex;
   gap: 8px;
