@@ -35,8 +35,8 @@ use concerto_core::boot::{self, BootOutcome};
 use concerto_core::runtime::RuntimeConfig;
 use concerto_proto::v1::event::Body;
 use concerto_proto::v1::{
-    AckOffsetRequest, CreateWorkspaceRequest, Event, ServerCapabilities, SubscribeRequest,
-    TransportKind, Workspace,
+    AckOffsetRequest, CreateWorkspaceRequest, Event, InboxFilter, InboxResponse,
+    ServerCapabilities, SubscribeRequest, TransportKind, Workspace,
 };
 use prost::Message;
 use tokio::process::Command;
@@ -309,6 +309,21 @@ async fn connect_web_bridge_serves_grpc_web() {
     );
     assert_eq!(caps.schema_version, "concerto.v1");
     assert_eq!(caps.core_host_os, std::env::consts::OS);
+
+    // ---- Notifications service is served on the web bridge (Task 520, D9 site
+    // 2): browser → gRPC-Web → Notifications → DB. A fresh Core has an empty
+    // inbox; the round-trip succeeding is the proof the service is registered.
+    let inbox: InboxResponse = grpc_web_unary(
+        &http,
+        &base,
+        "/concerto.v1.Notifications/GetInbox",
+        &InboxFilter::default(),
+    )
+    .await;
+    assert!(
+        inbox.notifications.is_empty(),
+        "fresh Core has an empty inbox over the connect-web bridge"
+    );
 
     // Seed a project + repo so CreateWorkspace has something to reference.
     let db_path = data_dir.join("concerto.db");

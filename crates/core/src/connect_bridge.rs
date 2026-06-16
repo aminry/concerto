@@ -259,6 +259,19 @@ async fn build_and_serve(
         vcs_privacy_resolver,
     } = services;
 
+    // Task 520 (D9 site 2): the notifications handle on the Connect-Web bridge —
+    // built from the same `Persistence` as the UDS/Iroh path so the web client
+    // reaches the live `Notifications` service + the `notification.events`
+    // producer. Mirrors `add_core_services`; `None` persistence ⇒ no service.
+    let notif_handle = persistence.as_ref().map(|p| {
+        crate::notifications::handle::NotificationHandle::new(
+            Arc::clone(p),
+            Arc::new(crate::notifications::push::ExpoPushBackend::new(None)),
+            Arc::new(crate::notifications::handle::NoEvents),
+        )
+        .with_event_channel()
+    });
+
     let runtime_service = RuntimeServer::new(RuntimeHandler::new(started_at, supervisor_view));
 
     // `accept_http1(true)` + `GrpcWebLayer` are the gRPC-Web essentials;
@@ -295,6 +308,16 @@ async fn build_and_serve(
     if let Some(workarea_manager) = workarea_manager.clone() {
         let workareas_service = WorkareasServer::new(WorkareasHandler::new(workarea_manager));
         builder = builder.add_service(workareas_service);
+    }
+    // Task 520 (D9 site 2): the `Notifications` service on the web bridge
+    // (cross-platform). The `notification.events` producer is wired into the
+    // `Streams` handler in the `#[cfg(unix)]` block below.
+    if let Some(h) = notif_handle.as_ref() {
+        use concerto_proto::v1::notifications_server::NotificationsServer;
+
+        use crate::handlers::notifications::NotificationsHandler;
+        let notifications_service = NotificationsServer::new(NotificationsHandler::new(h.clone()));
+        builder = builder.add_service(notifications_service);
     }
 
     // `Sessions` / `Streams` / `Schedules` / `Suggestions` need the
@@ -335,6 +358,10 @@ async fn build_and_serve(
             // `None` (Maestro disabled) leaves the subject valid-but-empty.
             if let Some(maestro) = maestro.as_ref() {
                 handler = handler.with_maestro_events(maestro.events_sender());
+            }
+            // Task 520: the `notification.events` producer on the web bridge.
+            if let Some(tx) = notif_handle.as_ref().and_then(|h| h.events_sender()) {
+                handler = handler.with_notification_events(tx);
             }
             let streams_service = StreamsServer::new(handler);
             builder = builder.add_service(streams_service);
