@@ -56,7 +56,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 12px 16px;
   padding: 14px 24px;
   background: rgba(11, 13, 18, 0.8);
   backdrop-filter: blur(12px);
@@ -140,6 +141,60 @@ body {
   .live-badge.live .live-dot {
     animation: none;
   }
+}
+
+/* Ephemeral browser pairing (Task 522) — session status chip + remember opt-out.
+   Shell chrome only; the @concerto/ui inbox is untouched. */
+.session {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.session-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+.session-badge .session-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.session-badge.paired {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.4);
+}
+.session-badge.paired .session-dot {
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.7);
+}
+.session-badge.cleared {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.4);
+}
+.session-badge.cleared .session-dot {
+  background: #fbbf24;
+}
+.remember {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.remember input {
+  accent-color: var(--accent);
 }
 
 .connect {

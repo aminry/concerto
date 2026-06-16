@@ -8,7 +8,7 @@
 // server stream. Auth headers / TLS pinning / relay routing are layered onto the
 // transport by Tasks 520–522.
 
-import { createClient, type Transport } from "@connectrpc/connect";
+import { createClient, type Interceptor, type Transport } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
 import type { Event } from "./gen/concerto/v1/streams_pb";
@@ -39,6 +39,13 @@ export interface ConnectWebOptions {
   baseUrl: string;
   /** Optional `fetch` override (Tasks 521/522 inject auth + TLS-pinned fetch). */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Connect-es interceptors applied to EVERY rpc + subscribe (Task 522 attaches
+   * the `concerto-device-cert` ephemeral-session header via
+   * `createSessionInterceptor`). The interceptor at the end of the array runs
+   * first (connect's onion ordering).
+   */
+  interceptors?: Interceptor[];
 }
 
 /**
@@ -50,6 +57,7 @@ export function createConnectWebDataClient(opts: ConnectWebOptions): DataClient 
   const transport = createGrpcWebTransport({
     baseUrl: opts.baseUrl,
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
+    ...(opts.interceptors ? { interceptors: opts.interceptors } : {}),
   });
   return dataClientFromTransport(transport);
 }

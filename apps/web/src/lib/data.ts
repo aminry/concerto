@@ -6,6 +6,7 @@
 import {
   createClient,
   createConnectWebDataClient,
+  createSessionInterceptor,
   type DataClient,
   type LiveStatus,
   subscribeNotificationsLive,
@@ -13,6 +14,8 @@ import {
 } from "@concerto/client";
 import type { Notification } from "@concerto/client/gen/concerto/v1/notifications_pb";
 import { Notifications } from "@concerto/client/gen/concerto/v1/notifications_pb";
+
+import { sessionManager } from "./session";
 
 export type { LiveStatus } from "@concerto/client";
 
@@ -28,12 +31,23 @@ declare global {
   }
 }
 
-/** Build a web data client against the Core's connect-web bridge at `baseUrl`. */
+/**
+ * Build a web data client against the Core's connect-web bridge at `baseUrl`.
+ *
+ * Task 522: the connect-web transport carries the ephemeral-session interceptor,
+ * which attaches the FROZEN `concerto-device-cert` header (STANDARD base64 of the
+ * signed `web_ephemeral` cert) on EVERY rpc + subscribe. The interceptor reads
+ * the live cert per call via `sessionManager.getCert`, so a freshly minted /
+ * cleared session is reflected without rebuilding the client.
+ */
 export function makeDataClient(baseUrl: string): DataClient {
   if (typeof window !== "undefined" && window.__CONCERTO_TEST_DATA_CLIENT__) {
     return window.__CONCERTO_TEST_DATA_CLIENT__;
   }
-  return createConnectWebDataClient({ baseUrl });
+  return createConnectWebDataClient({
+    baseUrl,
+    interceptors: [createSessionInterceptor(sessionManager.getCert)],
+  });
 }
 
 /** Fetch the inbox feed (newest-first) over the live Notifications service. */

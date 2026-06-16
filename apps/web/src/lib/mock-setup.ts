@@ -7,10 +7,18 @@
 //! the new item appears WITHOUT a manual refresh.
 
 import {
+  DEVICE_CERT_METADATA_KEY,
+  decodeCertHeader,
+  encodeCertHeader,
+  type EphemeralCertClaims,
+} from "@concerto/client";
+import {
   createMockDataClient,
   type MockDataClientHandle,
   mockNotificationEvent,
 } from "@concerto/client/testing";
+
+import { sessionManager } from "./session";
 
 declare global {
   interface Window {
@@ -21,6 +29,18 @@ declare global {
       /** Force the live stream to error so the app drops to the polling fallback. */
       failStream: () => void;
       handle: MockDataClientHandle;
+    };
+    /** Session driver for the Task 522 Playwright spec (test-only). */
+    __session?: {
+      /**
+       * The `concerto-device-cert` header the live session would attach — proves
+       * the minted cert is header-ready in a REAL browser (decodes the kind).
+       */
+      headerForCurrentSession: () => {
+        key: string;
+        hasHeader: boolean;
+        deviceKind: string | null;
+      };
     };
   }
 }
@@ -46,6 +66,17 @@ export function installMock(): void {
     },
     failStream() {
       handle.failStream();
+    },
+  };
+
+  window.__session = {
+    headerForCurrentSession() {
+      const cert = sessionManager.getCert();
+      if (!cert) return { key: DEVICE_CERT_METADATA_KEY, hasHeader: false, deviceKind: null };
+      // Encode → decode round-trips the exact header the interceptor attaches.
+      const decoded = decodeCertHeader(encodeCertHeader(cert));
+      const claims = JSON.parse(decoded.claimsJson) as EphemeralCertClaims;
+      return { key: DEVICE_CERT_METADATA_KEY, hasHeader: true, deviceKind: claims.deviceKind };
     },
   };
 }

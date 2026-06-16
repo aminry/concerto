@@ -11,6 +11,7 @@
 
 export * from "./data-client";
 export * from "./notifications";
+export * from "./session";
 
 export { createClient } from "@connectrpc/connect";
 export type { Client, Transport } from "@connectrpc/connect";
