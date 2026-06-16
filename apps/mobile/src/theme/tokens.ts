@@ -20,6 +20,23 @@ export const colors = {
   danger: "#f85149",
   info: "#58a6ff",
   merged: "#a371f7",
+  // Unified-diff tints (Task 514). Background washes + line-number gutters tuned
+  // for the dark-first surface; foreground text stays `text` for contrast.
+  diffAddBg: "#12261c",
+  diffAddGutter: "#1f3d2b",
+  diffAddMarker: "#3fb950",
+  diffRemoveBg: "#2a1518",
+  diffRemoveGutter: "#43202a",
+  diffRemoveMarker: "#f85149",
+  diffHunkBg: "#161d2e",
+  diffHunkText: "#8b9bbd",
+} as const;
+
+/** Monospace font family per platform (Task 514 diff renderer). */
+export const mono = {
+  fontFamily: "monospace",
+  // RN maps "monospace" to Menlo on iOS / monospace on Android; explicit so the
+  // diff renderer doesn't fall back to the proportional system font.
 } as const;
 
 export const spacing = {

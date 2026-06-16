@@ -43,3 +43,17 @@ jest.mock("expo-camera", () => {
     ]),
   };
 });
+
+// react-native-webview (Task 517): the WebView is a NATIVE view — real page
+// loads are Tier-3. The mock renders a host element preserving `source`/`testID`
+// + the load callbacks so specs can assert the URL and drive onLoad*/onError
+// (e.g. `props.onLoadEnd?.()`) deterministically.
+jest.mock("react-native-webview", () => {
+  const React = require("react");
+  return {
+    __esModule: true,
+    WebView: jest.fn((props: Record<string, unknown>) =>
+      React.createElement("WebView", props),
+    ),
+  };
+});

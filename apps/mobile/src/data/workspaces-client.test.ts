@@ -40,6 +40,15 @@ describe("mockWorkspacesClient", () => {
     expect(prs[0].prNumber).toBe(482n);
   });
 
+  it("returns a PR's unified-diff text and '' for an unknown PR (Task 514)", async () => {
+    const client = mockWorkspacesClient(demoWorkspacesFixture());
+    const diff = await client.getPrDiff("pr-1");
+    expect(diff).toContain("diff --git");
+    expect(diff).toContain("+++ b/README.md");
+    // A PR with no diff fixture resolves to the empty string (no diff).
+    await expect(client.getPrDiff("pr-missing")).resolves.toBe("");
+  });
+
   it("getWorkarea throws for an unknown id", async () => {
     const client = mockWorkspacesClient(demoWorkspacesFixture());
     await expect(client.getWorkarea("nope")).rejects.toThrow(/not found/);
@@ -51,5 +60,6 @@ describe("mockWorkspacesClient", () => {
     await expect(client.listWorkareas("ws-web")).rejects.toThrow("core unreachable");
     await expect(client.listSessions("wa-aria")).rejects.toThrow("core unreachable");
     await expect(client.getWorkareaPrSet("wa-aria")).rejects.toThrow("core unreachable");
+    await expect(client.getPrDiff("pr-1")).rejects.toThrow("core unreachable");
   });
 });

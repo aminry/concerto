@@ -32,6 +32,14 @@ export interface WorkspacesClient {
   listSessions(workareaId: string): Promise<Session[]>;
   /** The workarea's PR set (the "Code & PRs" segment). */
   getWorkareaPrSet(workareaId: string): Promise<PullRequest[]>;
+  /**
+   * The unified-diff TEXT for a PR (Task 514's Code & PRs diff drill-down).
+   * Returns the raw `git diff` patch the RN `DiffView` parses. NOTE: there is no
+   * generated proto service for PR diffs yet, so the live transport (Task 516)
+   * will route this through whichever Vcs/Files RPC the Core exposes; until then
+   * the mock serves a typed fixture. Resolves "" when the PR has no diff.
+   */
+  getPrDiff(prId: string): Promise<string>;
 }
 
 /** In-memory fixture shape backing [`mockWorkspacesClient`]. */
@@ -43,6 +51,8 @@ export interface WorkspacesFixture {
   sessions: Record<string, Session[]>;
   /** PRs keyed by workarea id. */
   pullRequests: Record<string, PullRequest[]>;
+  /** Unified-diff text keyed by PR id (Task 514). Missing key -> "" (no diff). */
+  prDiffs?: Record<string, string>;
 }
 
 /** Options for [`mockWorkspacesClient`]. */
@@ -64,6 +74,7 @@ const EMPTY_FIXTURE: WorkspacesFixture = {
   workareas: {},
   sessions: {},
   pullRequests: {},
+  prDiffs: {},
 };
 
 function settle<T>(value: () => T, opts: MockOptions): Promise<T> {
@@ -129,6 +140,9 @@ export function mockWorkspacesClient(
     },
     getWorkareaPrSet(workareaId) {
       return settle(() => data.pullRequests[workareaId] ?? [], opts);
+    },
+    getPrDiff(prId) {
+      return settle(() => data.prDiffs?.[prId] ?? "", opts);
     },
   };
 }

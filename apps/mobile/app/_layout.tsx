@@ -16,6 +16,9 @@ export default function RootLayout() {
         <Stack.Screen name="workspace/[id]" />
         <Stack.Screen name="pair" options={{ presentation: "modal" }} />
         <Stack.Screen name="cores" options={{ presentation: "modal" }} />
+        {/* Task 514 diff renderer demo + Task 517 localhost preview tunnel. */}
+        <Stack.Screen name="diff-demo" />
+        <Stack.Screen name="preview/[id]" />
       </Stack>
     </SafeAreaProvider>
   );

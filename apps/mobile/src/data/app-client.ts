@@ -13,6 +13,7 @@
 //      this factory changes, the screens (which take the seam as a prop) do not.
 import { createNativeDataClient } from "./native-data-client";
 import { mockWorkspacesClient, type WorkspacesClient } from "./workspaces-client";
+import { mockTunnelClient, type TunnelClient } from "../preview/tunnel-client";
 import { demoWorkspacesFixture } from "./fixtures";
 import { mockChatClient, type ChatClient } from "../chat/chat-client";
 import { demoChatFixture } from "../chat/chat-fixtures";
@@ -79,4 +80,19 @@ export function appChatClient(): ChatClient {
     cachedChat = mockChatClient(demoChatFixture());
   }
   return cachedChat;
+}
+
+let cachedTunnels: TunnelClient | undefined;
+
+/**
+ * The app-wide TunnelClient (Task 517). Fixture-backed until the Core grows a
+ * `StartLocalhostTunnel` RPC; the live implementation (a later task) swaps this
+ * factory body to a `DataClient`-backed client — the Preview screen (which takes
+ * the seam as a prop) does not change.
+ */
+export function appTunnelClient(): TunnelClient {
+  if (!cachedTunnels) {
+    cachedTunnels = mockTunnelClient();
+  }
+  return cachedTunnels;
 }

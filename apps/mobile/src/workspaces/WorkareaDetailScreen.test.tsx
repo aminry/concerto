@@ -48,6 +48,27 @@ describe("WorkareaDetailScreen", () => {
     expect(screen.queryByTestId("sessions-list")).toBeNull();
   });
 
+  it("expands a PR's diff inline when its card is tapped (Task 514)", async () => {
+    const client = mockWorkspacesClient(demoWorkspacesFixture());
+    render(<WorkareaDetailScreen client={client} workspaceId="ws-web" />);
+
+    await screen.findByTestId("sessions-list");
+    fireEvent.press(screen.getByTestId("seg-code"));
+    await screen.findByTestId("code-list");
+
+    // The diff is not mounted until the PR card is tapped.
+    expect(screen.queryByTestId("pr-diff-view-pr-1")).toBeNull();
+    fireEvent.press(screen.getByTestId("pr-toggle-pr-1"));
+
+    // The DiffView mounts and renders the fixture diff's content.
+    expect(await screen.findByTestId("pr-diff-view-pr-1")).toBeOnTheScreen();
+    expect(screen.getByText("README.md")).toBeOnTheScreen();
+
+    // Tapping again collapses it.
+    fireEvent.press(screen.getByTestId("pr-toggle-pr-1"));
+    expect(screen.queryByTestId("pr-diff-view-pr-1")).toBeNull();
+  });
+
   it("shows the empty PR state for a workarea with no PRs", async () => {
     const client = mockWorkspacesClient(demoWorkspacesFixture());
     render(<WorkareaDetailScreen client={client} workspaceId="ws-core" />);

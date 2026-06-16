@@ -24,6 +24,7 @@ import type { PullRequest } from "@concerto/client/gen/concerto/v1/vcs_pb";
 import { colors, prStateColor, radius, spacing, statusColor } from "../theme/tokens";
 import type { WorkspacesClient } from "../data/workspaces-client";
 import { SegmentedControl } from "./SegmentedControl";
+import { PrDiff } from "./PrDiff";
 
 export interface WorkareaDetailScreenProps {
   client: WorkspacesClient;
@@ -127,6 +128,8 @@ function CodeSegment({
   workareaId: string;
 }) {
   const [state, setState] = useState<Phase<PullRequest[]>>({ phase: "loading" });
+  // Which PR's diff is expanded inline (Task 514). One open at a time.
+  const [openPrId, setOpenPrId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -171,21 +174,35 @@ function CodeSegment({
       contentContainerStyle={styles.cardList}
       renderItem={({ item }) => {
         const tint = prStateColor(item.state);
+        const expanded = openPrId === item.id;
         return (
           <View style={styles.card} testID={`pr-${item.id}`}>
-            <View style={styles.cardHead}>
-              <Text style={styles.cardMeta}>#{item.prNumber.toString()}</Text>
-              <View style={styles.spacer} />
-              <View style={[styles.pill, { borderColor: tint }]}>
-                <Text style={[styles.pillText, { color: tint }]}>{item.state}</Text>
+            <Pressable
+              testID={`pr-toggle-${item.id}`}
+              onPress={() => setOpenPrId((prev) => (prev === item.id ? null : item.id))}
+              accessibilityRole="button"
+              accessibilityState={{ expanded }}
+              accessibilityLabel={`${expanded ? "Hide" : "Show"} diff for PR ${item.title}`}
+              style={({ pressed }) => [pressed && styles.pressed]}
+            >
+              <View style={styles.cardHead}>
+                <Text style={styles.cardMeta}>#{item.prNumber.toString()}</Text>
+                <View style={styles.spacer} />
+                <View style={[styles.pill, { borderColor: tint }]}>
+                  <Text style={[styles.pillText, { color: tint }]}>{item.state}</Text>
+                </View>
               </View>
-            </View>
-            <Text style={styles.cardTitle} numberOfLines={2}>
-              {item.title}
-            </Text>
-            <Text style={styles.cardSub} numberOfLines={1}>
-              {item.repositoryFullName} · {item.headRef} → {item.baseRef}
-            </Text>
+              <Text style={styles.cardTitle} numberOfLines={2}>
+                {item.title}
+              </Text>
+              <Text style={styles.cardSub} numberOfLines={1}>
+                {item.repositoryFullName} · {item.headRef} → {item.baseRef}
+              </Text>
+              <Text style={styles.diffToggleHint}>
+                {expanded ? "▾ Hide diff" : "▸ View diff"}
+              </Text>
+            </Pressable>
+            {expanded ? <PrDiff client={client} prId={item.id} /> : null}
           </View>
         );
       }}
@@ -447,6 +464,13 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 12,
     fontVariant: ["tabular-nums"],
+  },
+  diffToggleHint: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: spacing.sm,
+    minHeight: 24,
   },
   pill: {
     flexDirection: "row",

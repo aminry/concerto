@@ -15,6 +15,7 @@ import { SessionSchema, type Session } from "@concerto/client/gen/concerto/v1/se
 import { PullRequestSchema, type PullRequest } from "@concerto/client/gen/concerto/v1/vcs_pb";
 
 import type { WorkspacesFixture } from "./workspaces-client";
+import { SAMPLE_DIFF } from "../diff/diff-fixtures";
 
 type WorkspaceInit = MessageInitShape<typeof WorkspaceSchema>;
 type WorkareaInit = MessageInitShape<typeof WorkareaSchema>;
@@ -131,5 +132,11 @@ export function demoWorkspacesFixture(): WorkspacesFixture {
     "wa-bee": [],
   };
 
-  return { workspaces, workareas, sessions, pullRequests };
+  // Task 514: a representative unified diff for the one open PR so the Code & PRs
+  // segment's diff drill-down has something real to render in the app shell.
+  const prDiffs: Record<string, string> = {
+    "pr-1": SAMPLE_DIFF,
+  };
+
+  return { workspaces, workareas, sessions, pullRequests, prDiffs };
 }
