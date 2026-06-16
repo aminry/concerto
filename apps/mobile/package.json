@@ -15,9 +15,12 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.2.0",
     "@concerto/client": "workspace:*",
+    "@connectrpc/connect": "^2.0.0",
     "expo": "54.0.35",
+    "expo-camera": "~17.0.10",
     "expo-constants": "~18.0.13",
     "expo-router": "~6.0.24",
+    "expo-secure-store": "~15.0.8",
     "expo-status-bar": "~3.0.9",
     "expo-system-ui": "~6.0.9",
     "react": "19.1.0",

@@ -15,7 +15,23 @@
       "package": "com.concerto.app",
       "edgeToEdgeEnabled": true
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Concerto uses the camera to scan the pairing QR code shown by your Core."
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true,
+          "faceIDPermission": "Concerto uses Face ID to protect your paired-Core credentials."
+        }
+      ],
+      "./plugins/withConcertoIroh"
+    ],
     "experiments": {
       "typedRoutes": true
     }
