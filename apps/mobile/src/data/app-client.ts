@@ -14,6 +14,8 @@
 import { createNativeDataClient } from "./native-data-client";
 import { mockWorkspacesClient, type WorkspacesClient } from "./workspaces-client";
 import { demoWorkspacesFixture } from "./fixtures";
+import { mockChatClient, type ChatClient } from "../chat/chat-client";
+import { demoChatFixture } from "../chat/chat-fixtures";
 import { activeCore } from "../pairing/core-store";
 import {
   getNativeConcertoIroh,
@@ -61,4 +63,20 @@ export function appWorkspacesClient(): WorkspacesClient {
     cachedWorkspaces = mockWorkspacesClient(demoWorkspacesFixture());
   }
   return cachedWorkspaces;
+}
+
+let cachedChat: ChatClient | undefined;
+
+/**
+ * The app-wide Concerto ChatClient (Task 512), memoised so the landing tab keeps
+ * one transcript across remounts. Fixture-backed in the app shell; Task 512's
+ * live path swaps this body to `createLiveChatClient(await openNativeDataClient())`
+ * once the `maestro.events` token contract is verified against a live Core
+ * (Tier-3) — the screen (which takes the seam as a prop) does not change.
+ */
+export function appChatClient(): ChatClient {
+  if (!cachedChat) {
+    cachedChat = mockChatClient(demoChatFixture());
+  }
+  return cachedChat;
 }

@@ -1,27 +1,25 @@
-// Concerto tab — the default landing (design/16 §3.4). The live chat surface
-// lands in Task 512+; for the scaffold it is a placeholder PLUS the Task 511
-// "Pair a Core" / "Manage Cores" entry points so a fresh install can pair before
-// the chat exists.
-import { View } from "react-native";
+// Concerto tab — the default landing (design/16 §3.4 / D14: "Concerto" is the
+// user-facing name for the Maestro chat). Mounts the `ChatScreen` over the app's
+// `ChatClient` seam (Task 512), chooses the unpaired Pair-CTA empty state when no
+// Core is paired (reusing the Task 511 pairing entry), and forwards the app's
+// (Tier-3) voice recognizer to the composer's mic (Task 515).
 import { useRouter } from "expo-router";
 
-import { Placeholder } from "../../src/Placeholder";
-import { PairEntry } from "../../src/pairing/PairEntry";
+import { ChatScreen } from "../../src/chat/ChatScreen";
+import { appChatClient } from "../../src/data/app-client";
+import { useHasActiveCore } from "../../src/pairing/useActiveCore";
+import { appRecognizer } from "../../src/voice/app-recognizer";
 
 export default function ConcertoTab() {
   const router = useRouter();
+  const hasCore = useHasActiveCore();
   return (
-    <View style={{ flex: 1 }}>
-      <Placeholder
-        title="Concerto"
-        subtitle="Your chat with Concerto lands here. Pair a Core to get started."
-      />
-      <View style={{ position: "absolute", bottom: 48, left: 0, right: 0 }}>
-        <PairEntry
-          onPair={() => router.push("/pair")}
-          onManageCores={() => router.push("/cores")}
-        />
-      </View>
-    </View>
+    <ChatScreen
+      client={appChatClient()}
+      hasCore={hasCore ?? false}
+      onPair={() => router.push("/pair")}
+      onManageCores={() => router.push("/cores")}
+      recognizer={appRecognizer()}
+    />
   );
 }
