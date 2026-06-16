@@ -103,13 +103,6 @@ export function App() {
   const [session, setSession] = useState<SessionStatus>({ kind: "none" });
   const [remember, setRemember] = useState(loadRememberPref);
 
-  // Subscribe to session-manager status + restore a remembered session on boot.
-  useEffect(() => {
-    const unsub = sessionManager.onStatus(setSession);
-    void sessionManager.restore();
-    return unsub;
-  }, []);
-
   const onRememberChange = useCallback(
     (value: boolean) => {
       setRemember(value);
@@ -130,6 +123,19 @@ export function App() {
     liveUnsub.current = null;
     setLive(null);
   }, []);
+
+  // Subscribe to session-manager status + restore a remembered session on boot.
+  // When the session is cleared (tab hidden/closed clear-on-close, or expiry),
+  // tear down the live subscription too — otherwise the poll fallback keeps
+  // hitting the Core with no `concerto-device-cert` after the cert was wiped.
+  useEffect(() => {
+    const unsub = sessionManager.onStatus((s) => {
+      setSession(s);
+      if (s.kind === "cleared") stopLive();
+    });
+    void sessionManager.restore();
+    return unsub;
+  }, [stopLive]);
 
   const refresh = useCallback(
     async (next: { unreadOnly?: boolean } = {}) => {

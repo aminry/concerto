@@ -150,6 +150,29 @@ export interface InboxPoller {
 }
 
 /**
+ * A dedup set bounded to the most-recent `cap` ids (insertion-ordered eviction).
+ * The live poller / orchestrator runs for the lifetime of an 8h inbox tab, so an
+ * unbounded `Set` would accumulate every notification id ever seen on a
+ * high-volume Core. `cap` ids is far more than any realistic in-flight window;
+ * an evicted id can at worst be re-emitted once (harmless — callers dedup on
+ * prepend by id), which is strictly better than unbounded growth.
+ */
+function boundedIdSet(cap = 2048): { has: (id: string) => boolean; add: (id: string) => void } {
+  const ids = new Set<string>();
+  return {
+    has: (id) => ids.has(id),
+    add: (id) => {
+      if (ids.has(id)) return;
+      ids.add(id);
+      if (ids.size > cap) {
+        const oldest = ids.values().next().value;
+        if (oldest !== undefined) ids.delete(oldest);
+      }
+    },
+  };
+}
+
+/**
  * AckOffset-based polling FALLBACK: re-call `GetInbox` from a cursor on an
  * interval, deduping by id so callers only ever see notifications they have not
  * seen. This is the Connect-Web fallback for live updates when the
@@ -168,7 +191,7 @@ export function pollInbox(dc: DataClient, opts: PollInboxOptions): InboxPoller {
   const notifications = createClient(Notifications, dc.transport);
   const streams = createClient(Streams, dc.transport);
 
-  const seen = new Set<string>();
+  const seen = boundedIdSet();
   let ackOffset = 0n;
   let stopped = false;
   let handle: ReturnType<typeof globalThis.setInterval> | undefined;
@@ -251,7 +274,7 @@ export function subscribeNotificationsLive(
   opts: LiveInboxOptions,
 ): Unsubscribe {
   const notifications = createClient(Notifications, dc.transport);
-  const seen = new Set<string>();
+  const seen = boundedIdSet();
   let unsubStream: Unsubscribe | undefined;
   let poller: (InboxPoller & { advanceAck?: (o: bigint) => void }) | undefined;
   let lastOffset = 0n;

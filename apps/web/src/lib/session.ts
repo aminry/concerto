@@ -16,6 +16,7 @@ import {
   createMemorySessionStore,
   createStubPhoneSigner,
   type EphemeralSession,
+  isExpired,
   loadValidSession,
   mintEphemeralSession,
   type SessionStore,
@@ -55,8 +56,13 @@ export class SessionManager {
     this.store = store;
   }
 
-  /** Read the live cert (for the connect interceptor's per-call `getCert`). */
-  getCert = (): SignedEphemeralCert | null => this.current?.cert ?? null;
+  /**
+   * Read the live cert (for the connect interceptor's per-call `getCert`).
+   * Returns null once the cert has expired so an 8h-stale `web_ephemeral` cert
+   * is never attached — the next Connect re-mints.
+   */
+  getCert = (): SignedEphemeralCert | null =>
+    this.current && !isExpired(this.current) ? this.current.cert : null;
 
   /** Subscribe to status changes; returns an unsubscribe. */
   onStatus(fn: (s: SessionStatus) => void): () => void {
@@ -143,6 +149,12 @@ export class SessionManager {
       // further request can attach it; clear the (memory or IDB) store too.
       this.current = null;
       void this.store.clear();
+      // Mirror clear(): tear down the handlers + notify listeners so the status
+      // chip flips to "cleared" and the App tears down its live subscription
+      // (no cert-less poller keeps running). Without this emit the chip would
+      // keep showing "Paired" while getCert() now returns null.
+      this.disarmTabClose();
+      this.emit({ kind: "cleared" });
     };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") onClose();
