@@ -305,9 +305,17 @@ Core-free mock; web Playwright proves a streamed item appears with no refresh + 
 fixture-backed mock, Workspace→Workarea per D14 (no project tier), JS-only `SegmentedControl`
 Sessions/Code&PRs to stay Tier-2; 22 tests/5 suites). **Post-520/513 combined re-verify — all green:**
 client 11, ui 5, web build + e2e (5 pass / 1 live-Core skip), mobile 22, desktop 227. ⏳ Track B: **521**
-(LAN TLS/relay), **522** (ephemeral pairing — Tier-2 stub signer). 🔜 Track C: **509** (native module —
-**hand-rolled `uniffi` cdylib over `concerto-transport`, the D12 fallback**: iroh-ffi is unusable — git-only,
-no 0.98.x release, forces a colliding second iroh; in progress), then **509.5 / 510–518**.
+(LAN TLS/relay), **522** (ephemeral pairing — Tier-2 stub signer). **509 done** (`crates/concerto-iroh-ffi`
+— **hand-rolled `uniffi` cdylib over `concerto-transport`, the D12 fallback**: iroh-ffi is unusable — git-only,
+no 0.98.x release, forces a colliding second iroh. Thin facade over the spike-validated seam `tools/pair-dial`
+proves: `connect_channel` Noise-IK API channel, `pair_over_iroh` ported verbatim (0x03 tag), generic
+byte-passthrough `rpcUnary`/`rpcStream` via an identity tonic codec, client-side `natStats`. uniffi 0.28
+MPL-2.0 already allow-listed → cargo-deny clean, no new advisory; single iroh 0.98.2, no iroh-ffi; out of
+default-members. Adversarial review verdict **solid**. Verified: clippy clean, unit 12/12 + **live loopback**
+(real Core: 0x03 pair→openSession→rpcUnary `GetServerCapabilities`==IROH→rpcStream event→natStats==Lan→close),
+fmt clean). 🔜 Track C: **509.5** (XCFramework/.aar + cross-compile lane), **510** (connect-es DataClient on
+the native module), **511/512/514–518** (RN screens). Tier-3 (on-device, NAT diversity, native bindings load)
+deferred to the phase gate.
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
