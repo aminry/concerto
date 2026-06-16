@@ -286,12 +286,19 @@ UDS+Iroh + `notification.events` producer — verified end-to-end over a real Co
 `DataClient` seam), **519** (`apps/web` notifications-inbox SPA + Playwright UI-E2E + screenshots +
 web CI workflow). **520** (Notifications on the connect-web bridge — D9 site 2, verified gRPC-Web `GetInbox`), **523 core**
 (live web inbox vs a running Core — real notifications rendered in a browser, Playwright-screenshotted
-via `scripts/web-live-demo.sh`). ⏳ remaining Track A finishing items: **notify_user live sink**,
-**smoke capability**. ⏳ Track B: **520 refinements** (SSE fallback + AckOffset), **521** (LAN TLS/relay),
-**522** (ephemeral pairing), **523 full** (`@concerto/ui` inbox shared with desktop). **Track C started:**
-**508** (`apps/mobile` Expo + RN + TS scaffold: expo-router bottom-tab shell Concerto/Workspaces/Inbox,
-Inbox wired to `@concerto/client` notif types, jest + RN-Testing-Library harness + mobile CI lane;
-native module / `expo prebuild` / EAS native builds are Tier-3). ⏳ Track C: **509 / 509.5 / 510–518**.
+via `scripts/web-live-demo.sh`). **507b-ii + b-iii** (`notify_user` LIVE sink — Maestro `notify_user`
+routes through `LiveNotifySink`→`NotificationHandle.notify` (kind=`AgentCompletedWithMessage`), wired in
+`boot.rs`; `scripts/smoke.d/92-notifications.sh` + `smoke-client get-inbox`, `smoke --only notifications`
+PASS). **Track A is now functionally complete.** **523 full** (`@concerto/ui` extracted — shared
+React-DOM `Inbox` consumed by **both** `apps/web` and `apps/desktop`; desktop folded into the root pnpm
+workspace, RightRail Inbox tab, 227 desktop tests green). **Track C started:** **508** (`apps/mobile`
+Expo SDK 54 + RN + TS scaffold: expo-router bottom-tab shell Concerto/Workspaces/Inbox, Inbox wired to
+`@concerto/client` notif types, jest + RN-Testing-Library harness + mobile CI lane; native module /
+`expo prebuild` / EAS native builds are Tier-3). **Combined-tree re-verify after integrating the three
+worktree branches — all green:** TS (client 4, ui 5, web typecheck+build, mobile 2, desktop 227) + Rust
+(clippy `-D warnings` clean, fmt clean, notifications lib 27, `maestro_notify_user` 2). ⏳ Track B: **520
+refinements** (SSE fallback + AckOffset), **521** (LAN TLS/relay), **522** (ephemeral pairing). ⏳ Track
+C: **509 / 509.5 / 510–518** (native module is Tier-3; remaining RN screens are Tier-1/2).
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
