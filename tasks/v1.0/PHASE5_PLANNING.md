@@ -313,9 +313,36 @@ byte-passthrough `rpcUnary`/`rpcStream` via an identity tonic codec, client-side
 MPL-2.0 already allow-listed → cargo-deny clean, no new advisory; single iroh 0.98.2, no iroh-ffi; out of
 default-members. Adversarial review verdict **solid**. Verified: clippy clean, unit 12/12 + **live loopback**
 (real Core: 0x03 pair→openSession→rpcUnary `GetServerCapabilities`==IROH→rpcStream event→natStats==Lan→close),
-fmt clean). 🔜 Track C: **509.5** (XCFramework/.aar + cross-compile lane), **510** (connect-es DataClient on
-the native module), **511/512/514–518** (RN screens). Tier-3 (on-device, NAT diversity, native bindings load)
-deferred to the phase gate.
+fmt clean).
+
+**✅ ALL 26 PHASE-5 TASKS IMPLEMENTED & INTEGRATED (Waves 1–2 landed; 42 commits ahead of `main`).**
+**Track B finished:** **521** (LAN-direct TLS — `connect_bridge_tls.rs` derives a rustls cert deterministically
+from the Core identity pubkey, publishes the SPKI fingerprint for pinning, opt-in `CONCERTO_CONNECT_BRIDGE_TLS`
+default-OFF; `connect_bridge_tls` 3/3 incl. impostor-pin reject; relay WSS Noise-IK `relay_noise_ik` 2/2; no new
+external crate). **522** (ephemeral pairing — `@concerto/client` session machinery: Web-Crypto Ed25519 stub-phone
+signer, 8h `web_ephemeral` cert, IndexedDB store, clear-on-tab-close + remember-browser, connect interceptor;
+client 27 tests, web e2e session 4/4 + screenshots). **Track C finished:** **509.5** (uniffi-bindgen emits Swift+Kotlin
+on the host = Tier-2 proof; XCFramework + .aar packaging scripts (shellcheck-clean); `.github/workflows/native.yml`
+cross-compile lane (actionlint-clean); off-by-default `cli` feature keeps the shipped cdylib lean — local target
+link-check is an honest Tier-3 deferral). **510** (`createNativeDataClient` adapts the connect-es `DataClient` over
+the 509 opaque-bytes module — toBinary→rpcUnary→fromBinary unary + rpcStream→async-iterable subscribe). **511**
+(pairing QR scanner `expo-camera` + connect-blob parse + `expo-secure-store` device-seed/cert persistence +
+multi-Core add/list/switch). **512** (Concerto chat landing tab — real generated `maestro_pb` types via a `ChatClient`
+seam, streaming assistant bubbles, composer, paired/empty/error states; live `getHistory`/`sendToMaestro` Tier-2,
+`maestro.events` token stream a Tier-3 seam). **514** (pure-RN touch-first unified-diff renderer — virtualized
+FlatList, collapsible hunks, spike-103 perf budget documented; surfaced in the Code&PRs segment + a demo route).
+**515** (voice-dictation composer mic over a `SpeechRecognizer` seam; real STT Tier-3). **516** (push registration →
+`Devices.UpdateDevicePushToken` `expo`, ID-only D6 wakeup → post-wakeup fetch, lock-screen Approve/Dismiss chips →
+`ActOnChip`, fail-closed biometric gate). **517** (localhost preview tunnel WebView over a `TunnelClient` seam,
+`react-native-webview`). **518** (AppState background→`closeSession` / foreground→reopen+re-subscribe with
+`since_offset`; `expo-network` cellular→lite-mode; cross-device handoff token round-trip).
+**Combined verification (merged tree, all green):** Rust — clippy `-D warnings` clean, fmt clean, cargo-deny ok
+(no new advisory), bridge-TLS 3/3, relay Noise-IK 2/2, iroh-ffi 12 unit + live loopback, bindgen emits Swift+Kotlin;
+TS — `@concerto/client` 27, `@concerto/ui` 5, web build + Playwright (session 4/4 + live 2/2), **mobile 25 suites /
+154 tests**, desktop 227. **Remaining: Wave 3** — comprehensive adversarial review across the whole Phase-5 surface
+→ fix every finding → final full verification. **Tier-3** (real on-device run, native-bindings load, real camera /
+Keychain / biometric / push delivery, NAT diversity, on-device diff perf, live cross-device handoff, the Core trusting
+the web_ephemeral cert) is deferred to the operator phase gate by design (Track C's Tier-2 ceiling + the D15 posture).
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
