@@ -296,9 +296,18 @@ Expo SDK 54 + RN + TS scaffold: expo-router bottom-tab shell Concerto/Workspaces
 `@concerto/client` notif types, jest + RN-Testing-Library harness + mobile CI lane; native module /
 `expo prebuild` / EAS native builds are Tier-3). **Combined-tree re-verify after integrating the three
 worktree branches — all green:** TS (client 4, ui 5, web typecheck+build, mobile 2, desktop 227) + Rust
-(clippy `-D warnings` clean, fmt clean, notifications lib 27, `maestro_notify_user` 2). ⏳ Track B: **520
-refinements** (SSE fallback + AckOffset), **521** (LAN TLS/relay), **522** (ephemeral pairing). ⏳ Track
-C: **509 / 509.5 / 510–518** (native module is Tier-3; remaining RN screens are Tier-1/2).
+(clippy `-D warnings` clean, fmt clean, notifications lib 27, `maestro_notify_user` 2). **520 full** (live
+web inbox — `@concerto/client` `subscribeNotificationsLive` decodes the FROZEN opaque `Event.checks_opaque`
+frames, stream-first → AckOffset polling fallback with a Live/Polling badge; `@concerto/client/testing`
+Core-free mock; web Playwright proves a streamed item appears with no refresh + the polling-fallback path,
++ screenshots; client 11 tests, web e2e 5-pass). **513** (mobile workspaces drill-down + workarea detail
+— `WorkspacesScreen` over a `WorkspacesClient` seam with real `@concerto/client` proto types via a
+fixture-backed mock, Workspace→Workarea per D14 (no project tier), JS-only `SegmentedControl`
+Sessions/Code&PRs to stay Tier-2; 22 tests/5 suites). **Post-520/513 combined re-verify — all green:**
+client 11, ui 5, web build + e2e (5 pass / 1 live-Core skip), mobile 22, desktop 227. ⏳ Track B: **521**
+(LAN TLS/relay), **522** (ephemeral pairing — Tier-2 stub signer). 🔜 Track C: **509** (native module —
+**hand-rolled `uniffi` cdylib over `concerto-transport`, the D12 fallback**: iroh-ffi is unusable — git-only,
+no 0.98.x release, forces a colliding second iroh; in progress), then **509.5 / 510–518**.
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 
