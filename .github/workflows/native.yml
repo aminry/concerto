@@ -1,0 +1,121 @@
+# Native module CI (Task 509.5) — the cross-compile link-check + uniffi bindgen
+# lane for `crates/concerto-iroh-ffi` (the ConcertoIroh React Native native
+# module, an out-of-default-members uniffi cdylib over concerto-transport).
+#
+# What this lane proves (Tier-2):
+#   * bindgen     — the cdylib's uniffi metadata is valid: build the host
+#                   cdylib, then `uniffi-bindgen generate --library` emits the
+#                   Swift + Kotlin bindings. If the proc-macro metadata were
+#                   malformed this fails here. This is the load-bearing gate.
+#   * link-check  — the crate LINKS for the real mobile targets
+#                   (aarch64-apple-ios* on macOS, *-linux-android on Linux),
+#                   i.e. the cdylib/staticlib compile + link with the
+#                   cross-linker. NOT an on-device run.
+#
+# What stays Tier-3 (phase-gate, NOT in this lane):
+#   * the full XCFramework (`xcodebuild -create-xcframework`) and the Android
+#     .aar (`gradlew assembleRelease`) — those need the full iOS/Android SDK
+#     toolchains, which default CI does not assume. The packaging scripts
+#     (crates/concerto-iroh-ffi/packaging/*.sh) build them on a host that has
+#     those toolchains; they exit cleanly with a Tier-3 message otherwise.
+#   * on-device load / run of the Swift + Kotlin bindings (a real iOS/Android
+#     device or simulator).
+#
+# Gating: the android link-check uses the NDK that the ubuntu-latest runner
+# ships ($ANDROID_NDK_LATEST_HOME); the ios link-check uses the Xcode the
+# macos-latest runner ships. Neither needs an extra SDK download. The crate is
+# out of `default-members`, so the Core/CLI ci.yml lanes never compile it — this
+# is the ONLY lane that does.
+name: native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "crates/concerto-iroh-ffi/**"
+      - ".github/workflows/native.yml"
+
+jobs:
+  # The load-bearing Tier-2 proof: the cdylib's uniffi metadata generates valid
+  # Swift + Kotlin bindings. Host-only — no mobile SDK required.
+  bindgen:
+    name: uniffi bindgen (swift + kotlin)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: generate bindings
+        run: ./crates/concerto-iroh-ffi/packaging/gen-bindings.sh
+      - name: assert bindings produced
+        run: |
+          set -euo pipefail
+          swift="target/uniffi-bindings/swift/concerto_iroh_ffi.swift"
+          kotlin="target/uniffi-bindings/kotlin/uniffi/concerto_iroh_ffi/concerto_iroh_ffi.kt"
+          test -s "$swift"  || { echo "missing $swift"  >&2; exit 1; }
+          test -s "$kotlin" || { echo "missing $kotlin" >&2; exit 1; }
+          echo "bindgen OK: $swift, $kotlin"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uniffi-bindings
+          path: target/uniffi-bindings/
+
+  # Cross-compile LINK-CHECK for the real mobile targets. `cargo build` (not
+  # just check) so the cdylib/staticlib actually LINK with the cross-linker.
+  # NOT an on-device run.
+  link-check:
+    name: link-check / ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # iOS: device + simulator slices, on a macOS runner (Xcode present).
+          - name: ios-device
+            os: macos-latest
+            target: aarch64-apple-ios
+          - name: ios-sim-arm64
+            os: macos-latest
+            target: aarch64-apple-ios-sim
+          # Android: the arm64 device floor + the x86_64 emulator, on a Linux
+          # runner. cargo-ndk wires up the NDK linker that ubuntu-latest ships.
+          - name: android-arm64
+            os: ubuntu-latest
+            target: aarch64-linux-android
+          - name: android-x86_64
+            os: ubuntu-latest
+            target: x86_64-linux-android
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      # cargo-ndk drives the android cross-link with the runner's bundled NDK.
+      - name: install cargo-ndk
+        if: startsWith(matrix.target, 'aarch64-linux-android') || startsWith(matrix.target, 'x86_64-linux-android')
+        run: cargo install cargo-ndk --locked
+      - name: link-check (android via cargo-ndk)
+        if: startsWith(matrix.target, 'aarch64-linux-android') || startsWith(matrix.target, 'x86_64-linux-android')
+        run: |
+          set -euo pipefail
+          # ubuntu-latest exports ANDROID_NDK_LATEST_HOME (and ANDROID_NDK_HOME)
+          # for the bundled NDK; cargo-ndk reads ANDROID_NDK_HOME. Fall back to
+          # the LATEST var so the step is robust across runner-image revisions.
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+          echo "using NDK: $ANDROID_NDK_HOME"
+          abi="arm64-v8a"
+          [ "${{ matrix.target }}" = "x86_64-linux-android" ] && abi="x86_64"
+          cargo ndk -t "$abi" --platform 24 build -p concerto-iroh-ffi
+      - name: link-check (ios)
+        if: startsWith(matrix.target, 'aarch64-apple-ios')
+        run: cargo build -p concerto-iroh-ffi --target ${{ matrix.target }}

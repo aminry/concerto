@@ -75,6 +75,38 @@ getrandom = { workspace = true }
 # allow-list (consumed unmodified, so the copyleft trigger never fires).
 uniffi = { version = "0.28", default-features = false }
 
+# Task 509.5: the bindings generator. uniffi 0.28's `cli` feature gates
+# `uniffi::uniffi_bindgen_main()` (the `generate --library` CLI) behind
+# `clap` + `camino` + `uniffi_bindgen` — deps the SHIPPED cdylib must never
+# carry. So it lives behind an OFF-by-default `cli` feature (below) that flips
+# the SAME `uniffi` dep above into its `cli` mode, plus a dedicated
+# `[[bin]] uniffi-bindgen` (compiled only when that feature is on, exactly like
+# the uniffi book's "setup for crates using only proc-macros" recipe). The
+# default `cargo build -p concerto-iroh-ffi` (and the mobile cross-compile)
+# stay lean — clap/camino/uniffi_bindgen are pulled ONLY by `cargo run
+# --features cli --bin uniffi-bindgen`, which the host-side bindgen script
+# (crates/concerto-iroh-ffi/packaging/gen-bindings.sh) invokes against the
+# already-built cdylib. The version pin stays `0.28` and the runtime build
+# keeps `default-features = false` in either case.
+
+[features]
+# OFF by default. Enables the `uniffi-bindgen` helper bin by turning on
+# `uniffi/cli` (which adds clap/camino/uniffi_bindgen). The host bindgen script
+# (crates/concerto-iroh-ffi/packaging/gen-bindings.sh) turns it on; the
+# cdylib/staticlib the mobile linkers consume never do.
+cli = ["uniffi/cli"]
+
+[[bin]]
+# The bindings generator. `cargo run -p concerto-iroh-ffi --features cli
+# --bin uniffi-bindgen -- generate --library <cdylib> --language swift|kotlin`
+# emits the Swift/Kotlin bindings from the cdylib's embedded uniffi metadata
+# (proc-macro mode → `--library`, no UDL). `required-features = ["cli"]` means
+# a plain `cargo build` / `cargo build --all-targets` never compiles it (so the
+# default lanes never pull clap/camino), but `--features cli` does.
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
 [dev-dependencies]
 # The loopback Tier-2 test boots an Iroh-enabled Core in-process (mirrors
 # tools/split-host-loopback). DEV-only — NEVER linked into the shipped mobile
