@@ -94,6 +94,98 @@ rename to new/name.ts
     }
   });
 
+  it("emits a header-only row for a pure rename with no @@ hunk", () => {
+    // A 100%-similarity rename ships no `@@` hunk — only `diff --git` + rename
+    // metadata. The file must still render (as a rename header) and not vanish,
+    // even when a normal file follows it.
+    const diff = `diff --git a/old/name.ts b/new/name.ts
+similarity index 100%
+rename from old/name.ts
+rename to new/name.ts
+diff --git a/src/app.ts b/src/app.ts
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,1 +1,1 @@
+-a
++b
+`;
+    const rows = parseUnifiedDiff(diff);
+    const files = rows.filter((r) => r.kind === "file");
+    expect(files).toHaveLength(2);
+
+    const renamed = files[0];
+    if (renamed?.kind === "file") {
+      expect(renamed.path).toBe("new/name.ts");
+      expect(renamed.oldPath).toBe("old/name.ts");
+    } else {
+      throw new Error("expected the renamed file row");
+    }
+
+    // The following normal file still renders its hunk + body.
+    const app = files[1];
+    if (app?.kind === "file") expect(app.path).toBe("src/app.ts");
+    const summary = summarizeRows(rows);
+    expect(summary.files).toBe(2);
+    expect(summary.hunks).toBe(1);
+    expect(summary.added).toBe(1);
+    expect(summary.removed).toBe(1);
+  });
+
+  it("emits a header-only row for a binary file (no @@ hunk)", () => {
+    // Binary files ship a `Binary files … differ` line and no `@@` hunk; the file
+    // must still surface a header row rather than being silently dropped — even
+    // when it precedes a normal text file.
+    const diff = `diff --git a/logo.png b/logo.png
+index 1111111..2222222 100644
+Binary files a/logo.png and b/logo.png differ
+diff --git a/src/app.ts b/src/app.ts
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,1 +1,1 @@
+-a
++b
+`;
+    const rows = parseUnifiedDiff(diff);
+    const files = rows.filter((r) => r.kind === "file");
+    expect(files).toHaveLength(2);
+
+    const binary = files[0];
+    if (binary?.kind === "file") {
+      expect(binary.path).toBe("logo.png");
+      // Same path both sides => not surfaced as a rename.
+      expect(binary.oldPath).toBeUndefined();
+    } else {
+      throw new Error("expected the binary file row");
+    }
+
+    const app = files[1];
+    if (app?.kind === "file") expect(app.path).toBe("src/app.ts");
+    const summary = summarizeRows(rows);
+    expect(summary.files).toBe(2);
+    expect(summary.hunks).toBe(1);
+  });
+
+  it("emits a header-only row for a trailing binary file (end-of-parse flush)", () => {
+    // A binary file as the LAST file in the diff exercises the end-of-parse flush
+    // (there's no following `diff --git` boundary to trigger the per-file flush).
+    const diff = `diff --git a/src/app.ts b/src/app.ts
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,1 +1,1 @@
+-a
++b
+diff --git a/logo.png b/logo.png
+index 1111111..2222222 100644
+Binary files a/logo.png and b/logo.png differ
+`;
+    const rows = parseUnifiedDiff(diff);
+    const files = rows.filter((r) => r.kind === "file");
+    expect(files).toHaveLength(2);
+    const last = files[files.length - 1];
+    if (last?.kind === "file") expect(last.path).toBe("logo.png");
+    else throw new Error("expected the trailing binary file row");
+  });
+
   it("gives every row a unique key", () => {
     const rows = parseUnifiedDiff(SAMPLE_DIFF);
     const keys = new Set(rows.map((r) => r.key));

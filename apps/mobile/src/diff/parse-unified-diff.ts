@@ -154,6 +154,10 @@ export function parseUnifiedDiff(text: string): DiffRow[] {
   };
 
   const startFile = () => {
+    // A previous file whose `diff --git` produced no `@@` hunk (a pure rename, a
+    // file-mode-only change, or a binary file) never flushed its captured paths.
+    // Flush a header-only row for it now so it isn't silently dropped.
+    if (fileIndex >= 0 && !fileHeaderEmitted) emitFileHeaderIfNeeded();
     fileIndex += 1;
     inHunk = false;
     pendingOldPath = undefined;
@@ -261,6 +265,10 @@ export function parseUnifiedDiff(text: string): DiffRow[] {
     }
     // Any other leading char inside a hunk is unexpected; skip it defensively.
   }
+
+  // Flush the final file's header if it had no `@@` hunk (trailing pure rename /
+  // mode-only / binary file), so it renders a header-only row instead of vanishing.
+  if (fileIndex >= 0) emitFileHeaderIfNeeded();
 
   return rows;
 }

@@ -6,6 +6,7 @@
 // (Task 512) mounts, and it accepts an optional `items` prop so tests render a
 // deterministic feed without a live Core.
 import { FlatList, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import type { Notification } from "@concerto/client/gen/concerto/v1/notifications_pb";
 
@@ -43,7 +44,7 @@ function NotificationCard({ item }: { item: Notification }) {
 
 export function InboxScreen({ items = [] }: InboxScreenProps) {
   return (
-    <View style={styles.screen} testID="inbox-screen">
+    <SafeAreaView style={styles.screen} edges={["top", "left", "right"]} testID="inbox-screen">
       <Text style={styles.title}>Notifications</Text>
       {items.length === 0 ? (
         <View style={styles.empty} testID="inbox-empty">
@@ -59,7 +60,7 @@ export function InboxScreen({ items = [] }: InboxScreenProps) {
           contentContainerStyle={styles.feed}
         />
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 

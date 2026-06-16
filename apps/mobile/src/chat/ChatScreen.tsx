@@ -139,6 +139,17 @@ export function ChatScreen({
   const seq = useRef(0);
   const nextId = (p: string) => `${p}-${(seq.current += 1)}`;
 
+  // Track mounted state so an in-flight token stream stops (and the underlying
+  // AssistantStream is return()-ed) when the screen unmounts on a tab switch /
+  // navigation, instead of running the unbounded for-await against a dead screen.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const loadHistory = useCallback(() => {
     let cancelled = false;
     setLoad({ phase: "loading" });
@@ -179,6 +190,10 @@ export function ChatScreen({
     async (assistantId: string, stream: AsyncIterable<string>) => {
       try {
         for await (const chunk of stream) {
+          // Stop the stream if the screen unmounted mid-flight. `break`-ing the
+          // for-await loop runs the iterator's `return()` per the async-iteration
+          // protocol, so the underlying AssistantStream is released.
+          if (!mounted.current) break;
           setMessages((prev) =>
             prev.map((m) => (m.id === assistantId ? { ...m, text: m.text + chunk } : m)),
           );
@@ -186,6 +201,7 @@ export function ChatScreen({
         }
       } catch {
         // Stream error: surface a short note in the assistant bubble.
+        if (!mounted.current) return;
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantId
@@ -195,6 +211,7 @@ export function ChatScreen({
         );
         return;
       }
+      if (!mounted.current) return;
       setMessages((prev) =>
         prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)),
       );
