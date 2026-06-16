@@ -223,6 +223,7 @@ async fn serve_tls_bridge(core_pubkey: &PublicKey) -> (SocketAddr, String, Cance
         maestro: None,
         vcs: None,
         vcs_privacy_resolver: None,
+        notif_handle: None,
     };
 
     let (listener, bound) = connect_bridge::bind(&cfg).await.expect("bind TLS bridge");

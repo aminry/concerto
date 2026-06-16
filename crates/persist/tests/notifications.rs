@@ -361,6 +361,70 @@ async fn dedup_query_matches_within_key_and_ignores_others() {
     assert_eq!(updated.created_at, 1700000050000);
 }
 
+/// Regression: when BOTH workspace_id and workarea_id are None (the dominant V1
+/// producer — maestro `notify_user` via LiveNotifySink), the de-dup query must
+/// match an existing unread same-key row. SQLite `col = NULL` is unknown (never
+/// true) even when the row's column is also NULL, so the both-None branch must
+/// use explicit `IS NULL` comparisons rather than binding a NULL into `col = ?`.
+#[tokio::test(flavor = "multi_thread")]
+async fn dedup_query_matches_when_both_ids_null() {
+    let (_dir, persist) = fresh_db().await;
+    seed_parents(&persist).await;
+    {
+        let mut w = persist.writer().await;
+        // Both ids NULL, subject sentinel "maestro" (as notify_user produces).
+        let mut n = sample("n-null", 1700000010000);
+        n.kind = "agent_completed_with_message".into();
+        n.subject_kind = "session".into();
+        n.subject_id = "maestro".into();
+        n.workspace_id = None;
+        n.workarea_id = None;
+        notifications::insert(&mut w, n).await.unwrap();
+        // A row WITH a workspace but same (kind, subject) — must NOT match the
+        // both-None key (proves the IS NULL scoping is honored both ways).
+        let mut n_ws = sample("n-ws", 1700000011000);
+        n_ws.kind = "agent_completed_with_message".into();
+        n_ws.subject_kind = "session".into();
+        n_ws.subject_id = "maestro".into();
+        n_ws.workspace_id = Some("ws-1".into());
+        n_ws.workarea_id = None;
+        notifications::insert(&mut w, n_ws).await.unwrap();
+    }
+    let pool = persist.readers();
+    let hit = notifications::find_unread_for_dedup_key(
+        pool,
+        None,
+        None,
+        "agent_completed_with_message",
+        "maestro",
+        1700000000000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        hit.map(|r| r.id),
+        Some("n-null".into()),
+        "both-None de-dup must hit the unread same-key both-None row"
+    );
+
+    // The workspace-scoped key still finds its own row, not the both-None one.
+    let ws_hit = notifications::find_unread_for_dedup_key(
+        pool,
+        Some("ws-1"),
+        None,
+        "agent_completed_with_message",
+        "maestro",
+        1700000000000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        ws_hit.map(|r| r.id),
+        Some("n-ws".into()),
+        "workspace-scoped de-dup must hit its own row, not the both-None one"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn migration_0018_widens_push_platform_and_adds_dnd_until() {
     let (_dir, persist) = fresh_db().await;

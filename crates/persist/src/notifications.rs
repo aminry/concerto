@@ -257,7 +257,29 @@ pub async fn find_unread_for_dedup_key(
     subject_id: &str,
     since: i64,
 ) -> Result<Option<NotificationRow>> {
-    // Two scopings: workarea-keyed vs workspace-keyed (workarea NULL).
+    // Three scopings: workarea-keyed, workspace-keyed (workarea NULL), or the
+    // both-NULL case. SQLite `col = NULL` is unknown (never true) even when the
+    // row's column is also NULL, so the both-NULL key must use explicit IS NULL
+    // comparisons and bind only (kind, subject_id, since) rather than binding a
+    // NULL into a `col = ?` (design/14 §3.7).
+    if workarea_id.is_none() && workspace_id.is_none() {
+        let sql = format!(
+            "SELECT {COLS} FROM notifications
+              WHERE workspace_id IS NULL AND workarea_id IS NULL
+                AND kind = ?1 AND subject_id = ?2
+                AND created_at >= ?3 AND read_at IS NULL AND superseded_by IS NULL
+              ORDER BY created_at DESC LIMIT 1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(kind)
+            .bind(subject_id)
+            .bind(since)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| Error::Sqlx(Box::new(e)))?;
+        return Ok(row.map(row_to_notification));
+    }
+    // Workarea-keyed vs workspace-keyed (workarea NULL).
     let sql = if workarea_id.is_some() {
         format!(
             "SELECT {COLS} FROM notifications

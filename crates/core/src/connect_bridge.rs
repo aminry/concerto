@@ -273,6 +273,14 @@ pub struct BridgeServices {
     /// consults (Task 411). `None` ⇒ the pre-resolver default (`false`).
     /// Threaded alongside the `vcs` handle (additive; distinct field).
     pub vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
+    /// The SHARED notifications handle (shared-event-channel fix). The bridge
+    /// uses the SAME `NotificationHandle` boot threads into the UDS + Iroh front
+    /// doors + the live `notify_user` sink, so it publishes onto / subscribes
+    /// from the ONE `notification.events` broadcast — a `notification.read`
+    /// (or created/updated/acted) emitted on ANY transport reaches the web
+    /// client, and vice-versa (design/14 R-8, §5.3). `None` ⇒ fall back to a
+    /// fresh per-bridge `with_event_channel` handle (prior behavior; tests).
+    pub notif_handle: Option<crate::notifications::handle::NotificationHandle>,
 }
 
 /// The address the bridge actually bound, reported back so tests (and a
@@ -409,19 +417,26 @@ async fn build_and_serve(
         maestro,
         vcs,
         vcs_privacy_resolver,
+        notif_handle: shared_notif_handle,
     } = services;
 
-    // Task 520 (D9 site 2): the notifications handle on the Connect-Web bridge —
-    // built from the same `Persistence` as the UDS/Iroh path so the web client
-    // reaches the live `Notifications` service + the `notification.events`
-    // producer. Mirrors `add_core_services`; `None` persistence ⇒ no service.
-    let notif_handle = persistence.as_ref().map(|p| {
-        crate::notifications::handle::NotificationHandle::new(
-            Arc::clone(p),
-            Arc::new(crate::notifications::push::ExpoPushBackend::new(None)),
-            Arc::new(crate::notifications::handle::NoEvents),
-        )
-        .with_event_channel()
+    // Task 520 (D9 site 2) + shared-event-channel fix: the notifications handle
+    // on the Connect-Web bridge. Boot threads the SAME `with_event_channel`-backed
+    // handle the UDS + Iroh front doors + the live `notify_user` sink use, so a
+    // `notification.read`/`created`/`updated`/`acted` emitted on ANY transport (or
+    // by `notify_user`) reaches the web client's `notification.events` stream and
+    // vice-versa (design/14 R-8, §5.3). When no shared handle is supplied (tests),
+    // fall back to a fresh `with_event_channel` handle from the same `Persistence`.
+    // `None` persistence + no shared handle ⇒ no `Notifications` service.
+    let notif_handle = shared_notif_handle.or_else(|| {
+        persistence.as_ref().map(|p| {
+            crate::notifications::handle::NotificationHandle::new(
+                Arc::clone(p),
+                Arc::new(crate::notifications::push::ExpoPushBackend::new(None)),
+                Arc::new(crate::notifications::handle::NoEvents),
+            )
+            .with_event_channel()
+        })
     });
 
     let runtime_service = RuntimeServer::new(RuntimeHandler::new(started_at, supervisor_view));
