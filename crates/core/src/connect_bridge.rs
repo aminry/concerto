@@ -38,10 +38,27 @@
 //! high-trust, but loopback is the conservative default — the Phase-5 SPA
 //! is served same-host first). LAN-bind is an opt-in config knob; widening
 //! the bind widens exposure and is gated by managed settings later (Task
-//! 211). Loopback here is **plain HTTP** — it never leaves the host; TLS
-//! pinning on the LAN socket is Task 521. **No auth gating** — Task 210
-//! (auth middleware) and Task 522 (browser ephemeral pairing) own that;
-//! this task tags the transport kind but does not gate.
+//! 211). **No auth gating** — Task 210 (auth middleware) and Task 522
+//! (browser ephemeral pairing) own that; this task tags the transport kind
+//! but does not gate.
+//!
+//! # LAN-direct TLS (Task 521)
+//!
+//! By default the bridge serves **plain HTTP** — fine on loopback (the bytes
+//! never leave the host). To reach the bridge from a **LAN** browser the page
+//! must be a secure context, so Task 521 adds an **opt-in TLS mode**
+//! ([`ENV_TLS`] / [`ConnectBridgeConfig::tls`]). When enabled, the bridge wraps
+//! every accepted TCP connection in rustls, serving a **self-signed cert
+//! deterministically derived from the Core's identity public key**
+//! ([`crate::connect_bridge_tls::IdentityTlsCert`]). The cert's SPKI SHA-256
+//! fingerprint is published ([`BoundBridge::cert_fingerprint`]) so a **native /
+//! LAN client pins it** (`design/17 §3.3`); browsers click through the one-time
+//! self-signed interstitial and can use the published fingerprint to *verify*
+//! the cert matches the Core they paired with. TLS stays default-OFF: the
+//! bridge is never exposed beyond loopback over plain HTTP unless explicitly
+//! widened, and never serves TLS unless explicitly enabled. See
+//! [`crate::connect_bridge_tls`] for the derivation + the honest browser-pinning
+//! posture.
 //!
 //! # Cross-platform
 //!
@@ -60,6 +77,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use concerto_error::{Error, Result};
+use futures::StreamExt;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
@@ -98,6 +116,14 @@ const ENV_ENABLE: &str = "CONCERTO_CONNECT_BRIDGE";
 /// `127.0.0.1:0`.
 const ENV_ADDR: &str = "CONCERTO_CONNECT_BRIDGE_ADDR";
 
+/// Environment variable that turns **LAN-direct TLS** ON (Task 521). Any
+/// non-empty value other than `0`/`false` enables it. **Default OFF** — the
+/// bridge serves plain HTTP (safe on loopback) unless TLS is explicitly
+/// requested. When ON, the caller must supply the Core identity pubkey to
+/// [`ConnectBridgeConfig::with_tls_for`] so the bridge can derive its
+/// identity-bound cert.
+const ENV_TLS: &str = "CONCERTO_CONNECT_BRIDGE_TLS";
+
 /// Configuration for the Connect-Web bridge.
 ///
 /// **Loopback-only by default** (`design/11 §3.9`). LAN-bind is opt-in via
@@ -109,6 +135,15 @@ pub struct ConnectBridgeConfig {
     pub enabled: bool,
     /// The socket address to bind. Default `127.0.0.1:0` (OS-assigned).
     pub bind_addr: SocketAddr,
+    /// Whether **LAN-direct TLS** (Task 521) is requested. Default `false`
+    /// (plain HTTP). Set from [`ENV_TLS`]; the actual cert is derived later by
+    /// [`ConnectBridgeConfig::with_tls_for`] (which needs the Core identity).
+    pub tls_requested: bool,
+    /// The derived identity-bound TLS cert, present only after
+    /// [`ConnectBridgeConfig::with_tls_for`] runs with `tls_requested == true`.
+    /// `None` ⇒ serve plain HTTP. Skipped in [`Debug`] of the surrounding
+    /// struct via its own `Debug` (never prints key material).
+    pub tls: Option<crate::connect_bridge_tls::IdentityTlsCert>,
 }
 
 impl Default for ConnectBridgeConfig {
@@ -116,6 +151,8 @@ impl Default for ConnectBridgeConfig {
         Self {
             enabled: false,
             bind_addr: DEFAULT_BIND,
+            tls_requested: false,
+            tls: None,
         }
     }
 }
@@ -144,7 +181,58 @@ impl ConnectBridgeConfig {
             _ => DEFAULT_BIND,
         };
 
-        Ok(Self { enabled, bind_addr })
+        let tls_requested = match std::env::var(ENV_TLS) {
+            Ok(v) => {
+                let v = v.trim();
+                !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+            }
+            Err(_) => false,
+        };
+
+        Ok(Self {
+            enabled,
+            bind_addr,
+            tls_requested,
+            tls: None,
+        })
+    }
+
+    /// Derive the identity-bound TLS cert for this config when TLS was requested
+    /// ([`ENV_TLS`]), binding it to `core_pubkey` (`design/17 §3.3`, Task 521).
+    ///
+    /// A no-op (returns `self` unchanged) when `tls_requested == false`, so a
+    /// caller can always chain it. The cert is valid for the standard LAN names
+    /// (`localhost` / `concerto.local`) plus the loopback IP and the bind IP if
+    /// it is a concrete (non-`0.0.0.0`) address; the Core identity pubkey is
+    /// always embedded for cross-checking. Returns the derived cert's SPKI
+    /// fingerprint alongside `self` via [`ConnectBridgeConfig::cert_fingerprint`]
+    /// once set.
+    pub fn with_tls_for(mut self, core_pubkey: &concerto_identity::PublicKey) -> Result<Self> {
+        if !self.tls_requested {
+            return Ok(self);
+        }
+        let mut sans = vec![
+            "localhost".to_string(),
+            "concerto.local".to_string(),
+            "127.0.0.1".to_string(),
+        ];
+        // Add the concrete bind IP as a SAN so a client dialing the literal LAN
+        // address passes hostname verification (skip the unspecified `0.0.0.0` /
+        // `::` wildcard — there is no single literal to put in the cert).
+        let bind_ip = self.bind_addr.ip();
+        if !bind_ip.is_unspecified() && !bind_ip.is_loopback() {
+            sans.push(bind_ip.to_string());
+        }
+        let cert = crate::connect_bridge_tls::IdentityTlsCert::derive(core_pubkey, &sans)?;
+        self.tls = Some(cert);
+        Ok(self)
+    }
+
+    /// The published SPKI SHA-256 fingerprint a LAN client pins, when TLS is
+    /// derived ([`ConnectBridgeConfig::with_tls_for`]). `None` for the plain-HTTP
+    /// (loopback) default.
+    pub fn cert_fingerprint(&self) -> Option<&str> {
+        self.tls.as_ref().map(|c| c.spki_sha256_hex())
     }
 }
 
@@ -189,11 +277,74 @@ pub struct BridgeServices {
 
 /// The address the bridge actually bound, reported back so tests (and a
 /// future `TransportHandle`) can dial an OS-assigned port.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct BoundBridge {
     /// The concrete `SocketAddr` the listener bound (port resolved when
     /// `bind_addr.port() == 0`).
     pub local_addr: SocketAddr,
+    /// The SPKI SHA-256 fingerprint (lowercase hex) of the identity-bound TLS
+    /// cert the bridge serves, for **client pinning** (Task 521, `design/17
+    /// §3.3`). `None` when TLS is not enabled (plain-HTTP loopback default).
+    /// A native/LAN client pins this; browsers verify against it. The scheme
+    /// to dial is `https://` iff this is `Some`.
+    pub cert_fingerprint: Option<String>,
+}
+
+/// A rustls-terminated bridge connection that tonic can serve.
+///
+/// tonic's `serve_with_incoming` requires the IO type to implement
+/// [`tonic::transport::server::Connected`] (so peer/local addrs land in request
+/// extensions). `tokio_rustls`' `TlsStream` only implements `Connected` under
+/// tonic's own `tls` feature (which we don't enable — we bring our own rustls).
+/// This thin newtype forwards `AsyncRead`/`AsyncWrite` to the TLS stream and
+/// derives the connect-info from the **inner TCP stream** (the peer addr is the
+/// same — TLS is just a layer over it).
+struct TlsBridgeStream(tokio_rustls::server::TlsStream<tokio::net::TcpStream>);
+
+impl tokio::io::AsyncRead for TlsBridgeStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for TlsBridgeStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+impl tonic::transport::server::Connected for TlsBridgeStream {
+    type ConnectInfo = tonic::transport::server::TcpConnectInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        // The underlying TCP stream carries the real peer/local addrs; the TLS
+        // layer is transparent to addressing.
+        let tcp = self.0.get_ref().0;
+        tonic::transport::server::TcpConnectInfo {
+            local_addr: tcp.local_addr().ok(),
+            remote_addr: tcp.peer_addr().ok(),
+        }
+    }
 }
 
 /// Tag every request this bridge accepts with
@@ -226,6 +377,7 @@ fn tag_wss_bridge(
 async fn build_and_serve(
     services: BridgeServices,
     listener: TcpListener,
+    tls: Option<crate::connect_bridge_tls::IdentityTlsCert>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     use crate::handlers::files::FilesHandler;
@@ -409,12 +561,73 @@ async fn build_and_serve(
         builder = builder.add_service(vcs_service);
     }
 
-    let serve_fut =
-        builder.serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
-            shutdown.cancelled().await;
-            tracing::info!("Connect-Web bridge received shutdown signal");
-        });
-    if let Err(e) = serve_fut.await {
+    let shutdown_signal = async move {
+        shutdown.cancelled().await;
+        tracing::info!("Connect-Web bridge received shutdown signal");
+    };
+
+    let serve_result = match tls {
+        // Task 521: LAN-direct TLS. Wrap each accepted TCP connection in rustls
+        // before handing it to tonic. The TLS handshake runs per-connection
+        // inside the incoming stream; a handshake failure (e.g. a plain-HTTP
+        // client hitting the TLS port, or a port scan) is logged and skipped —
+        // it does not tear down the accept loop. The handshake is bounded by a
+        // timeout so a stalled client can't wedge the accept loop. The wrapping
+        // `TlsBridgeStream` is `AsyncRead + AsyncWrite + Connected`, exactly what
+        // tonic's `serve_with_incoming_shutdown` requires.
+        Some(cert) => {
+            const TLS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+            let acceptor = cert.tls_acceptor()?;
+            let tcp = TcpListenerStream::new(listener);
+            let tls_incoming = tcp.then(move |conn| {
+                let acceptor = acceptor.clone();
+                async move {
+                    match conn {
+                        Ok(stream) => {
+                            match tokio::time::timeout(
+                                TLS_HANDSHAKE_TIMEOUT,
+                                acceptor.accept(stream),
+                            )
+                            .await
+                            {
+                                Ok(Ok(tls_stream)) => {
+                                    Some(Ok::<_, std::io::Error>(TlsBridgeStream(tls_stream)))
+                                }
+                                Ok(Err(e)) => {
+                                    // Metadata-only: never the payload. A failed
+                                    // TLS handshake is one bad client, not fatal.
+                                    tracing::debug!(error = %e, "Connect-Web bridge TLS handshake failed; dropping connection");
+                                    None
+                                }
+                                Err(_) => {
+                                    tracing::debug!("Connect-Web bridge TLS handshake timed out; dropping connection");
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Connect-Web bridge TCP accept failed");
+                            None
+                        }
+                    }
+                }
+            });
+            // Drop the `None`s (skipped connections) so the stream yields only
+            // successfully-handshaked TLS streams.
+            let tls_incoming = tls_incoming.filter_map(|opt| async move { opt });
+            builder
+                .serve_with_incoming_shutdown(tls_incoming, shutdown_signal)
+                .await
+        }
+        // Default: plain HTTP (safe on loopback).
+        None => {
+            builder
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown_signal)
+                .await
+        }
+    };
+
+    if let Err(e) = serve_result {
         return Err(Error::Internal(format!(
             "Connect-Web bridge server crashed: {e}"
         )));
@@ -437,25 +650,52 @@ pub async fn bind(config: &ConnectBridgeConfig) -> Result<(TcpListener, BoundBri
     let local_addr = listener
         .local_addr()
         .map_err(|e| Error::Internal(format!("Connect-Web bridge local_addr: {e}")))?;
+    let cert_fingerprint = config.cert_fingerprint().map(str::to_string);
+    let scheme = if cert_fingerprint.is_some() {
+        "https"
+    } else {
+        "http"
+    };
     tracing::info!(
         addr = %local_addr,
         loopback = local_addr.ip().is_loopback(),
+        scheme,
+        cert_fingerprint = cert_fingerprint.as_deref().unwrap_or("(plain http)"),
         "Connect-Web bridge (gRPC-Web) listening"
     );
-    Ok((listener, BoundBridge { local_addr }))
+    if let Some(fp) = &cert_fingerprint {
+        // Task 521: publish the pin so a LAN client can pin it before dialing
+        // (`design/17 §3.3`). Logged at INFO so it appears in the Core's startup
+        // log; also surfaced programmatically via `BoundBridge::cert_fingerprint`.
+        tracing::info!(
+            spki_sha256 = %fp,
+            "Connect-Web bridge LAN-direct TLS cert fingerprint (pin this on the client)"
+        );
+    }
+    Ok((
+        listener,
+        BoundBridge {
+            local_addr,
+            cert_fingerprint,
+        },
+    ))
 }
 
 /// Serve the gRPC-Web bridge on `listener` until `shutdown` is cancelled.
 ///
 /// Registers the same Tonic services as the UDS server, wrapped in
-/// [`GrpcWebLayer`] and tagged `WssBridge`. Resolves `Ok(())` on clean
-/// shutdown; a transport error maps to [`Error::Internal`].
+/// [`GrpcWebLayer`] and tagged `WssBridge`. When `tls` is `Some` (Task 521
+/// LAN-direct TLS), every connection is wrapped in rustls serving the
+/// identity-bound cert; otherwise the bridge serves plain HTTP (loopback
+/// default). Pass `config.tls.clone()` from the bound config. Resolves `Ok(())`
+/// on clean shutdown; a transport error maps to [`Error::Internal`].
 pub async fn serve(
     listener: TcpListener,
     services: BridgeServices,
+    tls: Option<crate::connect_bridge_tls::IdentityTlsCert>,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    build_and_serve(services, listener, shutdown).await
+    build_and_serve(services, listener, tls, shutdown).await
 }
 
 #[cfg(test)]
@@ -468,6 +708,11 @@ mod tests {
         assert!(!c.enabled);
         assert!(c.bind_addr.ip().is_loopback());
         assert_eq!(c.bind_addr.port(), 0);
+        // Task 521: TLS is off by default; the bridge is never auto-exposed over
+        // TLS without an explicit enable.
+        assert!(!c.tls_requested);
+        assert!(c.tls.is_none());
+        assert!(c.cert_fingerprint().is_none());
     }
 
     #[test]
@@ -479,7 +724,55 @@ mod tests {
         let c = ConnectBridgeConfig {
             enabled: false,
             bind_addr: DEFAULT_BIND,
+            tls_requested: false,
+            tls: None,
         };
         assert!(!c.enabled);
+    }
+
+    #[test]
+    fn with_tls_for_is_noop_when_not_requested() {
+        // Task 521: when TLS was not requested, `with_tls_for` leaves the config
+        // plain-HTTP even if a Core pubkey is available.
+        let pk = concerto_identity::KeyPair::from_seed(&[4u8; 32]).verifying_key();
+        let c = ConnectBridgeConfig {
+            enabled: true,
+            bind_addr: DEFAULT_BIND,
+            tls_requested: false,
+            tls: None,
+        }
+        .with_tls_for(&pk)
+        .expect("noop");
+        assert!(c.tls.is_none());
+        assert!(c.cert_fingerprint().is_none());
+    }
+
+    #[test]
+    fn with_tls_for_derives_a_pinnable_fingerprint() {
+        // Task 521: requesting TLS + supplying the Core pubkey yields a derived
+        // cert whose SPKI fingerprint is published for pinning, and is stable for
+        // the identity.
+        let pk = concerto_identity::KeyPair::from_seed(&[4u8; 32]).verifying_key();
+        let c = ConnectBridgeConfig {
+            enabled: true,
+            bind_addr: DEFAULT_BIND,
+            tls_requested: true,
+            tls: None,
+        }
+        .with_tls_for(&pk)
+        .expect("derive tls");
+        let fp = c.cert_fingerprint().expect("fingerprint present");
+        assert_eq!(fp.len(), 64);
+        // Re-deriving for the same identity is stable (pinned clients keep
+        // trusting across restarts).
+        let c2 = ConnectBridgeConfig {
+            enabled: true,
+            bind_addr: DEFAULT_BIND,
+            tls_requested: true,
+            tls: None,
+        }
+        .with_tls_for(&pk)
+        .expect("derive tls 2");
+        assert_eq!(fp, c2.cert_fingerprint().unwrap());
     }
 }

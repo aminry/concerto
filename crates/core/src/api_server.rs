@@ -131,6 +131,14 @@ pub struct ApiServerActor {
     /// bridge's) via `with_privacy_resolver`. `None` ⇒ the pre-resolver default
     /// (`false`), preserving prior behavior on a Core that does not wire it.
     vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
+    /// Optional Core identity public key (Task 521). When `Some` AND
+    /// `CONCERTO_CONNECT_BRIDGE_TLS` is set, the Connect-Web bridge derives an
+    /// identity-bound self-signed TLS cert from it and serves LAN-direct TLS,
+    /// publishing the SPKI fingerprint for client pinning (`design/17 §3.3`).
+    /// `None` (or TLS not requested) ⇒ the bridge serves plain HTTP (loopback
+    /// default). Set at boot via [`ApiServerActor::with_core_pubkey`] from the
+    /// same keychain-loaded identity the issuer uses.
+    core_pubkey: Option<concerto_identity::PublicKey>,
 }
 
 impl ApiServerActor {
@@ -158,6 +166,7 @@ impl ApiServerActor {
             device_manager: None,
             auth_issuer: None,
             vcs_privacy_resolver: None,
+            core_pubkey: None,
         }
     }
 
@@ -169,6 +178,17 @@ impl ApiServerActor {
         resolver: Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>,
     ) -> Self {
         self.vcs_privacy_resolver = Some(resolver);
+        self
+    }
+
+    /// Attach the Core identity public key so the Connect-Web bridge can derive
+    /// an identity-bound LAN-direct TLS cert (Task 521) when
+    /// `CONCERTO_CONNECT_BRIDGE_TLS` is set. Additive builder; `boot.rs` chains
+    /// it from the same keychain-loaded identity the issuer is built from.
+    /// Without it, a TLS-requested bridge logs a warning and falls back to plain
+    /// HTTP (it never serves a non-identity-bound cert).
+    pub fn with_core_pubkey(mut self, core_pubkey: concerto_identity::PublicKey) -> Self {
+        self.core_pubkey = Some(core_pubkey);
         self
     }
 
@@ -202,6 +222,7 @@ impl ApiServerActor {
             device_manager: None,
             auth_issuer: None,
             vcs_privacy_resolver: None,
+            core_pubkey: None,
         }
     }
 
@@ -250,6 +271,7 @@ impl ApiServerActor {
             device_manager,
             auth_issuer,
             vcs_privacy_resolver: None,
+            core_pubkey: None,
         }
     }
 }
@@ -274,7 +296,27 @@ impl Actor for ApiServerActor {
             // `BridgeServices` from clones of the same handles before
             // `run_uds` consumes the originals, then run both serve loops
             // concurrently under the one shutdown token.
-            let bridge_cfg = crate::connect_bridge::ConnectBridgeConfig::from_env()?;
+            let mut bridge_cfg = crate::connect_bridge::ConnectBridgeConfig::from_env()?;
+            // Task 521: when LAN-direct TLS is requested AND the Core identity is
+            // available, derive the identity-bound cert now (so the published
+            // fingerprint is known before any client connects). If TLS is
+            // requested but the identity is absent (a Core that could not reach
+            // its keychain), warn and fall back to plain HTTP — we never serve a
+            // non-identity-bound cert.
+            if bridge_cfg.enabled && bridge_cfg.tls_requested {
+                match &self.core_pubkey {
+                    Some(pk) => {
+                        bridge_cfg = bridge_cfg.with_tls_for(pk)?;
+                    }
+                    None => {
+                        tracing::warn!(
+                            "CONCERTO_CONNECT_BRIDGE_TLS is set but the Core identity is \
+                             unavailable; serving the Connect-Web bridge over plain HTTP. \
+                             LAN-direct TLS needs a keychain-backed Core identity (Task 521)."
+                        );
+                    }
+                }
+            }
             let bridge = if bridge_cfg.enabled {
                 let services = crate::connect_bridge::BridgeServices {
                     started_at: Arc::clone(&self.started_at),
@@ -291,12 +333,15 @@ impl Actor for ApiServerActor {
                     vcs: self.vcs.clone(),
                     vcs_privacy_resolver: self.vcs_privacy_resolver.clone(),
                 };
+                let tls = bridge_cfg.tls.clone();
                 let (listener, bound) = crate::connect_bridge::bind(&bridge_cfg).await?;
                 tracing::info!(
                     addr = %bound.local_addr,
+                    tls = bound.cert_fingerprint.is_some(),
+                    cert_fingerprint = bound.cert_fingerprint.as_deref().unwrap_or("(plain http)"),
                     "Connect-Web bridge enabled alongside UDS server"
                 );
-                Some((listener, services))
+                Some((listener, services, tls))
             } else {
                 None
             };
@@ -323,9 +368,9 @@ impl Actor for ApiServerActor {
             );
 
             match bridge {
-                Some((listener, services)) => {
+                Some((listener, services, tls)) => {
                     let bridge_fut =
-                        crate::connect_bridge::serve(listener, services, ctx.shutdown.clone());
+                        crate::connect_bridge::serve(listener, services, tls, ctx.shutdown.clone());
                     // Both serve loops resolve on the shared shutdown token;
                     // surface the first error from either front door.
                     let (uds_res, bridge_res) = tokio::join!(uds_fut, bridge_fut);
@@ -351,6 +396,7 @@ impl Actor for ApiServerActor {
                 self.device_manager,
                 self.auth_issuer,
                 self.vcs_privacy_resolver,
+                self.core_pubkey,
                 ctx.shutdown,
                 ctx.config,
             );

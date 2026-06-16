@@ -400,6 +400,9 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         Arc<crate::security::pairing::PairingCoordinator>,
         Arc<crate::security::devices::DeviceManager>,
         Arc<dyn concerto_identity::DeviceCertIssuer>,
+        // Task 521: the Core identity public key, carried out so the
+        // Connect-Web bridge can derive its identity-bound LAN-direct TLS cert.
+        concerto_identity::PublicKey,
     )> = match home::home_dir() {
         Some(core_home) => {
             let secrets = concerto_keychain::Secrets::new();
@@ -538,7 +541,12 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                         iroh_enabled,
                         "core device-cert issuer + pairing coordinator + device manager constructed"
                     );
-                    Some((coordinator, Arc::new(device_manager), auth_issuer))
+                    Some((
+                        coordinator,
+                        Arc::new(device_manager),
+                        auth_issuer,
+                        core_pubkey,
+                    ))
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -557,11 +565,17 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         }
     };
     let pairing_coordinator: Option<Arc<crate::security::pairing::PairingCoordinator>> =
-        identity_subsystems.as_ref().map(|(c, _, _)| Arc::clone(c));
-    let auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>> =
-        identity_subsystems.as_ref().map(|(_, _, i)| Arc::clone(i));
+        identity_subsystems
+            .as_ref()
+            .map(|(c, _, _, _)| Arc::clone(c));
+    let auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>> = identity_subsystems
+        .as_ref()
+        .map(|(_, _, i, _)| Arc::clone(i));
+    // Task 521: the Core identity pubkey for LAN-direct TLS cert derivation.
+    let core_identity_pubkey: Option<concerto_identity::PublicKey> =
+        identity_subsystems.as_ref().map(|(_, _, _, pk)| *pk);
     let device_manager: Option<Arc<crate::security::devices::DeviceManager>> =
-        identity_subsystems.map(|(_, d, _)| d);
+        identity_subsystems.map(|(_, d, _, _)| d);
 
     // Task 210 — CLOSE THE TASK-209 STARTUP-MIRROR GAP. The in-memory
     // `revoked_set` the auth middleware + issuer read starts EMPTY each boot;
@@ -1159,12 +1173,14 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let factory_pairing = pairing_coordinator.clone();
     let factory_device_manager = device_manager.clone();
     let factory_auth_issuer = auth_issuer.clone();
+    // Task 521: captured (Copy) for the bridge's identity-bound TLS cert.
+    let factory_core_pubkey = core_identity_pubkey;
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
         .spawn::<ApiServerActor, _>(
             move || {
-                ApiServerActor::with_managers(
+                let mut actor = ApiServerActor::with_managers(
                     Arc::clone(&factory_started_at),
                     factory_view.clone(),
                     Some(factory_repo_handle.clone()),
@@ -1191,7 +1207,15 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                 )
                 // Task 411 (D10): attach the privacy resolver additively after
                 // `with_managers` (kept off the long ctor arg list).
-                .with_vcs_privacy_resolver(factory_vcs_privacy_resolver.clone())
+                .with_vcs_privacy_resolver(factory_vcs_privacy_resolver.clone());
+                // Task 521: attach the Core identity pubkey so the Connect-Web
+                // bridge can derive its identity-bound LAN-direct TLS cert when
+                // `CONCERTO_CONNECT_BRIDGE_TLS` is set. `None` (keychain-less
+                // Core) leaves the bridge plain-HTTP.
+                if let Some(pk) = factory_core_pubkey {
+                    actor = actor.with_core_pubkey(pk);
+                }
+                actor
             },
             ApiServerConfig {
                 socket_path: socket_path.clone(),
