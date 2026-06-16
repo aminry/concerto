@@ -71,6 +71,38 @@ describe("handoff guards", () => {
       .replace(/=+$/, "");
     expect(() => restoreHandoff(bad)).toThrow(/missing required fields/);
   });
+
+  /** Build a base64url token from a raw (possibly hostile) state object. */
+  const token = (s: unknown): string =>
+    Buffer.from(JSON.stringify({ v: 1, s }))
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+
+  it("drops params entirely when params is an array (typeof 'object')", () => {
+    const t = token({ coreId: "c", route: "r", capturedAtMs: 1, params: ["x"] });
+    const restored = restoreHandoff(t);
+    expect(restored.params).toBeUndefined();
+  });
+
+  it("keeps only string-valued params, dropping numeric / nested entries", () => {
+    const t = token({
+      coreId: "c",
+      route: "r",
+      capturedAtMs: 1,
+      params: { id: "ws_1", n: 42, nested: { deep: true } },
+    });
+    const restored = restoreHandoff(t);
+    // Only the string entry survives; the Record<string,string> contract holds.
+    expect(restored.params).toEqual({ id: "ws_1" });
+  });
+
+  it("drops params when every entry is non-string", () => {
+    const t = token({ coreId: "c", route: "r", capturedAtMs: 1, params: { id: 42 } });
+    const restored = restoreHandoff(t);
+    expect(restored.params).toBeUndefined();
+  });
 });
 
 describe("isHandoffFresh", () => {

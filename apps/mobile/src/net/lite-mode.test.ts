@@ -65,6 +65,28 @@ describe("watchLiteMode", () => {
     expect(flips).toEqual([false, true, false]);
   });
 
+  it("a listener event before the initial probe resolves wins over the stale probe", async () => {
+    // Initial probe says wifi (lite OFF), but a real change to cellular arrives
+    // through the listener BEFORE that probe resolves. The live value must win:
+    // the final state is lite ON, not flipped back to the stale wifi snapshot.
+    const net = fakeNetwork(wifi);
+    const flips: boolean[] = [];
+    const snaps: NetworkSnapshot[] = [];
+    watchLiteMode({
+      api: net.api,
+      onChange: (lite, snap) => {
+        flips.push(lite);
+        snaps.push(snap);
+      },
+    });
+    // Listener is registered synchronously; fire a change before the probe's
+    // microtask resolves.
+    net.change(cell); // -> ON (live)
+    await flush(); // now the stale wifi probe resolves — must NOT re-apply
+    expect(flips).toEqual([true]);
+    expect(snaps).toEqual([cell]);
+  });
+
   it("stop() removes the listener and silences further changes", async () => {
     const net = fakeNetwork(wifi);
     const flips: boolean[] = [];

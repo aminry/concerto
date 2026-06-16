@@ -66,10 +66,18 @@ export async function runBiometricGate(
   const api = opts.api ?? defaultBiometricApi();
   const whenNotEnrolled = opts.whenNotEnrolled ?? "block";
 
-  const [hasHardware, enrolled] = await Promise.all([
-    api.hasHardwareAsync(),
-    api.isEnrolledAsync(),
-  ]);
+  // FAIL-CLOSED: the probe is a native call and may reject (degraded build,
+  // missing module, system error). Treat any throw as "no usable enrollment".
+  let hasHardware: boolean;
+  let enrolled: boolean;
+  try {
+    [hasHardware, enrolled] = await Promise.all([
+      api.hasHardwareAsync(),
+      api.isEnrolledAsync(),
+    ]);
+  } catch {
+    return { allowed: false, reason: "not-enrolled" };
+  }
 
   if (!hasHardware || !enrolled) {
     return whenNotEnrolled === "allow"
@@ -77,10 +85,17 @@ export async function runBiometricGate(
       : { allowed: false, reason: "not-enrolled" };
   }
 
-  const res = await api.authenticateAsync({
-    promptMessage: opts.promptMessage ?? "Confirm it's you",
-    cancelLabel: "Cancel",
-  });
+  // FAIL-CLOSED: a native auth call may reject (OS interruption, hardware
+  // error). Treat any throw as a blocked sensitive action.
+  let res: { success: boolean; error?: string };
+  try {
+    res = await api.authenticateAsync({
+      promptMessage: opts.promptMessage ?? "Confirm it's you",
+      cancelLabel: "Cancel",
+    });
+  } catch {
+    return { allowed: false, reason: "failed" };
+  }
   return res.success
     ? { allowed: true, via: "authenticated" }
     : { allowed: false, reason: "failed" };

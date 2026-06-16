@@ -109,8 +109,14 @@ export function watchLiteMode(opts: WatchLiteModeOptions): LiteModeWatcher {
     opts.onChange(lite, snapshot);
   };
 
-  void api.getNetworkStateAsync().then(emit);
+  // Register the live listener FIRST, then fire the async initial probe. A real
+  // connectivity change delivered through the listener before the probe resolves
+  // must WIN: apply the (now-stale) initial snapshot only if no event has set
+  // `last` yet, otherwise it could flip the flag back to a stale value.
   const sub = api.addNetworkStateListener(emit);
+  void api.getNetworkStateAsync().then((s) => {
+    if (last === undefined) emit(s);
+  });
 
   return {
     stop() {

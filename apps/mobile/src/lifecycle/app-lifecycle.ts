@@ -50,6 +50,12 @@ export interface AppLifecycleControllerOptions {
 export class AppLifecycleController {
   private opened: OpenedSession | null = null;
   private phase: "foreground" | "background" = "background";
+  /**
+   * Monotonic transition counter. Bumped at the top of every foreground/background
+   * so an in-flight foreground that resolves after a newer transition can detect it
+   * was superseded and close its now-orphaned session instead of leaking it.
+   */
+  private gen = 0;
 
   constructor(private readonly opts: AppLifecycleControllerOptions) {}
 
@@ -66,17 +72,19 @@ export class AppLifecycleController {
   async foreground(): Promise<void> {
     if (this.phase === "foreground" && this.opened) return;
     this.phase = "foreground";
+    const gen = ++this.gen;
 
     if (this.opts.revalidate) {
       const ok = await this.opts.revalidate();
       if (!ok) return;
     }
-    if (this.phase !== "foreground") return; // raced to background mid-await
+    if (this.phase !== "foreground" || gen !== this.gen) return; // raced mid-await
 
     const opened = await this.opts.openClient();
     if (!opened) return;
-    if (this.phase !== "foreground") {
-      // Backgrounded while opening — close immediately, don't leak the session.
+    if (this.phase !== "foreground" || gen !== this.gen) {
+      // Backgrounded OR superseded by a newer foreground while opening — close
+      // immediately, don't leak (or overwrite) the session.
       await opened.close();
       return;
     }
@@ -91,6 +99,9 @@ export class AppLifecycleController {
    * foreground. No-op if already backgrounded.
    */
   async background(): Promise<void> {
+    // Bump the generation so any in-flight foreground that resolves after us sees
+    // it was superseded and closes its session instead of assigning it.
+    ++this.gen;
     if (this.phase === "background" && !this.opened) {
       this.phase = "background";
       return;

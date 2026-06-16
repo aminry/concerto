@@ -151,4 +151,52 @@ describe("AppLifecycleController", () => {
     await ctrl.background();
     expect(o.closes).toEqual([]);
   });
+
+  it("overlapping foreground -> background -> foreground leaks no session", async () => {
+    const mock = createMockStreamDataClient();
+    // A deferred opener: each openClient() blocks until we resolve its gate, so we
+    // can hold the FIRST foreground in flight while a background + second
+    // foreground interleave (the AppState active->background->active flip).
+    const gates: Array<() => void> = [];
+    const sessions: Array<{ n: number; closed: boolean }> = [];
+    let opens = 0;
+    const openClient = jest.fn(async (): Promise<OpenedSession> => {
+      opens += 1;
+      const n = opens;
+      await new Promise<void>((resolve) => gates.push(resolve));
+      const session = { n, closed: false };
+      sessions.push(session);
+      return {
+        client: mock.client,
+        close: jest.fn(async () => {
+          session.closed = true;
+        }),
+      };
+    });
+    const ctrl = new AppLifecycleController({
+      openClient,
+      streams: new StreamManager(),
+    });
+
+    const p1 = ctrl.foreground(); // A: enters, awaiting openClient #1
+    await flush();
+    await ctrl.background(); // backgrounds while A is in flight
+    const p2 = ctrl.foreground(); // B: enters, awaiting openClient #2
+    await flush();
+
+    // Resolve A's open FIRST, then B's. A must detect it was superseded.
+    gates[0]?.();
+    await p1;
+    gates[1]?.();
+    await p2;
+    await flush();
+
+    expect(opens).toBe(2);
+    // Session #1 (A's) must have been closed, not leaked / overwritten.
+    expect(sessions.find((s) => s.n === 1)?.closed).toBe(true);
+    // Exactly one session remains open — B's (#2) — and the controller holds it.
+    expect(sessions.filter((s) => !s.closed)).toHaveLength(1);
+    expect(sessions.find((s) => s.n === 2)?.closed).toBe(false);
+    expect(ctrl.isOpen).toBe(true);
+  });
 });

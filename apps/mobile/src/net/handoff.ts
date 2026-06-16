@@ -108,7 +108,15 @@ export function restoreHandoff(token: string): HandoffState {
     coreId: s.coreId,
     route: s.route,
     capturedAtMs: s.capturedAtMs,
-    ...(s.params && typeof s.params === "object" ? { params: s.params } : {}),
+    // params is Tier-3 (untrusted): a corrupt token can carry arrays or
+    // non-string values. Keep only string-valued entries; drop arrays entirely
+    // so HandoffState.params honors its Record<string,string> contract.
+    ...((() => {
+      const p = s.params;
+      if (!p || typeof p !== "object" || Array.isArray(p)) return {};
+      const entries = Object.entries(p).filter(([, v]) => typeof v === "string");
+      return entries.length ? { params: Object.fromEntries(entries) } : {};
+    })()),
     ...(typeof s.sessionId === "string" ? { sessionId: s.sessionId } : {}),
     ...(typeof s.sinceOffset === "string" ? { sinceOffset: s.sinceOffset } : {}),
   };

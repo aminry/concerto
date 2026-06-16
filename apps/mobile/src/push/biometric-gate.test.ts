@@ -49,6 +49,38 @@ describe("runBiometricGate", () => {
     expect(out).toEqual({ allowed: true, via: "no-enrollment-allowed" });
   });
 
+  it("fails closed when authenticateAsync rejects (native throw)", async () => {
+    const api = fake({
+      authenticateAsync: jest.fn(async () => {
+        throw new Error("OS interruption");
+      }),
+    });
+    const out = await runBiometricGate({ api });
+    expect(out).toEqual({ allowed: false, reason: "failed" });
+  });
+
+  it("fails closed when the probe rejects (native throw)", async () => {
+    const api = fake({
+      isEnrolledAsync: jest.fn(async () => {
+        throw new Error("native module missing");
+      }),
+    });
+    const out = await runBiometricGate({ api });
+    expect(out).toEqual({ allowed: false, reason: "not-enrolled" });
+    // A failed probe must not reach the auth prompt.
+    expect(api.authenticateAsync).not.toHaveBeenCalled();
+  });
+
+  it("a rejecting probe stays fail-closed even with whenNotEnrolled='allow'", async () => {
+    const api = fake({
+      hasHardwareAsync: jest.fn(async () => {
+        throw new Error("hardware query failed");
+      }),
+    });
+    const out = await runBiometricGate({ api, whenNotEnrolled: "allow" });
+    expect(out).toEqual({ allowed: false, reason: "not-enrolled" });
+  });
+
   it("requireBiometric collapses to a boolean", async () => {
     expect(await requireBiometric({ api: fake() })).toBe(true);
     expect(
