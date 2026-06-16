@@ -288,8 +288,10 @@ web CI workflow). **520** (Notifications on the connect-web bridge — D9 site 2
 (live web inbox vs a running Core — real notifications rendered in a browser, Playwright-screenshotted
 via `scripts/web-live-demo.sh`). ⏳ remaining Track A finishing items: **notify_user live sink**,
 **smoke capability**. ⏳ Track B: **520 refinements** (SSE fallback + AckOffset), **521** (LAN TLS/relay),
-**522** (ephemeral pairing), **523 full** (`@concerto/ui` inbox shared with desktop). ⏳ Track C: **508
-/ 509 / 509.5 / 510–518**.
+**522** (ephemeral pairing), **523 full** (`@concerto/ui` inbox shared with desktop). **Track C started:**
+**508** (`apps/mobile` Expo + RN + TS scaffold: expo-router bottom-tab shell Concerto/Workspaces/Inbox,
+Inbox wired to `@concerto/client` notif types, jest + RN-Testing-Library harness + mobile CI lane;
+native module / `expo prebuild` / EAS native builds are Tier-3). ⏳ Track C: **509 / 509.5 / 510–518**.
 
 ### 8.1 Per-task write-sets (the disjointness oracle)
 

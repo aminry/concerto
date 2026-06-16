@@ -1,0 +1,30 @@
+# Mobile client CI (Task 508, decision D13). Runs the TS typecheck + jest unit
+# tests for apps/mobile (the Expo + React Native app) — the achievable-in-CI
+# gates from the README §5.3 rn-mobile command set. The native legs (`expo
+# prebuild`, EAS build, simulator/Detox, on-device push/biometric/60fps) need
+# Xcode / Android-NDK toolchains not assumed present here and are Tier-3 (the
+# phase-gate checklist); 509.5 adds the cross-compile link-check lane.
+name: mobile
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: install
+        run: pnpm install --frozen-lockfile
+      - name: mobile typecheck
+        run: pnpm -C apps/mobile typecheck
+      - name: mobile unit tests (jest)
+        run: pnpm -C apps/mobile test

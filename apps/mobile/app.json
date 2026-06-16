@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Concerto",
+    "slug": "concerto",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "concerto",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.concerto.app"
+    },
+    "android": {
+      "package": "com.concerto.app",
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
