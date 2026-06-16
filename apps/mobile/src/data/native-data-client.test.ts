@@ -12,6 +12,9 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { createClient } from "@connectrpc/connect";
 
+import { nativeTransport } from "./native-data-client";
+import type { ConcertoIrohModule, StreamEventCallback } from "../native/ConcertoIroh";
+
 import {
   InboxFilterSchema,
   InboxResponseSchema,
@@ -19,6 +22,7 @@ import {
 } from "@concerto/client/gen/concerto/v1/notifications_pb";
 import {
   EventSchema,
+  Streams,
   SubscribeRequestSchema,
 } from "@concerto/client/gen/concerto/v1/streams_pb";
 
@@ -151,6 +155,63 @@ describe("createNativeDataClient", () => {
       );
     });
     expect(String(err)).toContain("core unreachable");
+  });
+
+  it("does not open a native subscription when aborted before the first pull", async () => {
+    // Regression (subscription leak on abort-before-first-pull): the native
+    // subscription must be registered INSIDE the generator body so an abort that
+    // lands before the consumer ever pulls a frame never calls `rpcStream` —
+    // there is no native stream task + callback to leak until `closeSession`.
+    const calls = { rpcStream: 0, cancelSubscription: 0 };
+    const module = createMockConcertoIroh({
+      stream: {
+        [SUBSCRIBE]: (_payload, cb) => {
+          cb.onComplete();
+          return () => {};
+        },
+      },
+    });
+    // Wrap to count the native primitives the leak would touch.
+    const tracking: ConcertoIrohModule = {
+      ...module,
+      rpcStream: (handle, method, payload, cb: StreamEventCallback) => {
+        calls.rpcStream += 1;
+        return module.rpcStream(handle, method, payload, cb);
+      },
+      cancelSubscription: (handle, subId) => {
+        calls.cancelSubscription += 1;
+        return module.cancelSubscription(handle, subId);
+      },
+    };
+
+    const handle = await module.openSession(
+      { endpointId: "ep", directAddrs: [], coreNoisePub: "00" },
+      new Uint8Array([1]),
+    );
+
+    const ac = new AbortController();
+    ac.abort(); // abort BEFORE constructing/iterating the stream
+    const res = await nativeTransport(tracking, handle).stream(
+      Streams.method.subscribe,
+      ac.signal,
+      undefined,
+      undefined,
+      (async function* () {
+        yield create(SubscribeRequestSchema, { subject: "notification.events" });
+      })(),
+    );
+
+    // The iterable exists but was never pulled, so `rpcStream` was never invoked:
+    // nothing was registered, hence nothing to cancel or leak.
+    expect(calls.rpcStream).toBe(0);
+    expect(calls.cancelSubscription).toBe(0);
+
+    // And pulling now (a late consumer of an already-aborted stream) tears down
+    // cleanly via the in-generator subscribe → onAbort path without leaking.
+    const iterator = res.message[Symbol.asyncIterator]();
+    await iterator.next();
+    expect(calls.rpcStream).toBe(1);
+    expect(calls.cancelSubscription).toBeGreaterThanOrEqual(1);
   });
 
   it("cancels the native subscription on unsubscribe", async () => {

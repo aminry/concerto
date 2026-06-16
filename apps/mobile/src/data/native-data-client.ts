@@ -67,9 +67,29 @@ export function nativeTransport(
     ): Promise<UnaryResponse<I, O>> {
       const reqMsg = create(method.input, input);
       const reqBytes = toBinary(method.input, reqMsg);
-      const respBytes = await module.rpcUnary(handle, grpcPath(method), reqBytes);
+      // Race the native call against the abort so the JS caller stops waiting
+      // promptly on cancel. NOTE: the native unary work is only BEST-EFFORT
+      // cancelled — `module.rpcUnary` has no cancellation primitive
+      // (ConcertoIroh.ts exposes none), so it still runs to completion native-side
+      // (consuming the session/network); only the JS-side wait is unblocked. A
+      // true cancel needs a unary-cancellation handle added to the FFI contract.
+      const respBytes = await Promise.race([
+        module.rpcUnary(handle, grpcPath(method), reqBytes),
+        new Promise<never>((_resolve, reject) => {
+          if (!signal) return;
+          if (signal.aborted) {
+            reject(signal.reason ?? new Error("aborted"));
+          } else {
+            signal.addEventListener(
+              "abort",
+              () => reject(signal.reason ?? new Error("aborted")),
+              { once: true },
+            );
+          }
+        }),
+      ]);
       if (signal?.aborted) {
-        // Honor a late abort: surface the same shape connect would on cancel.
+        // Backstop: honor an abort that landed after the native call resolved.
         throw signal.reason ?? new Error("aborted");
       }
       const message = fromBinary(method.output, respBytes);
@@ -102,7 +122,12 @@ export function nativeTransport(
         first = m;
         break;
       }
-      const reqMsg = create(method.input, first as MessageInitShape<I>);
+      if (first === undefined) {
+        throw new Error(
+          "native transport: server-streaming call produced no request message",
+        );
+      }
+      const reqMsg = create(method.input, first);
       const reqBytes = toBinary(method.input, reqMsg);
 
       // A queue bridging the native callback (push) to the connect async-iterable (pull).
@@ -132,11 +157,21 @@ export function nativeTransport(
         },
       };
 
-      const subIdPromise = module.rpcStream(handle, grpcPath(method), reqBytes, callback);
-
       type Out = StreamResponse<I, O>["message"] extends AsyncIterable<infer T> ? T : never;
       async function* messages(): AsyncGenerator<Out> {
-        const subId = await subIdPromise;
+        // Register the native subscription inside the generator so it shares the
+        // abort/finally lifetime: if the consumer aborts (unsubscribes) BEFORE
+        // ever pulling the first frame the generator body never runs, so
+        // `rpcStream` is never invoked — nothing to leak. Driving it eagerly here
+        // instead (outside the generator) would register a native stream task +
+        // callback that the early-abort `finally { cancelSubscription }` never
+        // reaches, leaking until `closeSession`.
+        const subId = await module.rpcStream(
+          handle,
+          grpcPath(method),
+          reqBytes,
+          callback,
+        );
         const onAbort = () => {
           module.cancelSubscription(handle, subId);
           buffer.push({ kind: "done" });

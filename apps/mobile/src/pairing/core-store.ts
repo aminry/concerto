@@ -132,7 +132,15 @@ export async function removeCore(id: string): Promise<void> {
   const idx = await readIndex();
   const cores = idx.cores.filter((c) => c.id !== id);
   const activeId = idx.activeId === id ? (cores[0]?.id ?? null) : idx.activeId;
-  await writeIndex({ activeId, cores });
+  // Delete the secret keys BEFORE writing the trimmed index. `remove` is a plain
+  // non-transactional `deleteItemAsync`, so a process kill mid-op has no
+  // atomicity to rely on — ordering decides what an interrupted remove leaves
+  // behind. Index-last means the worst case is a stale index entry whose secrets
+  // are already gone, which `loadCore` already handles (returns null). The
+  // reverse order would instead orphan the device seed (Ed25519 PRIVATE key) +
+  // signed cert in the Keychain/Keystore with no index entry referencing them,
+  // silently persisting secret material for an un-paired Core.
   await remove(seedKey(id));
   await remove(certKey(id));
+  await writeIndex({ activeId, cores });
 }
