@@ -57,3 +57,51 @@ jest.mock("react-native-webview", () => {
     ),
   };
 });
+
+// ── Task 516 + 518 native-module mocks ──────────────────────────────────────
+// expo-notifications / expo-local-authentication / expo-network are NATIVE
+// modules (push registration + system UI, biometric prompt, the radio). Real
+// behaviour is Tier-3. The push/lifecycle UNITS inject their own seams (see
+// `src/push/expo-notifications.ts`, `biometric-gate.ts`, `src/net/lite-mode.ts`),
+// so these module mocks only keep an accidental real-module import from crashing
+// the jest runtime; the seam-default factories (`defaultNotificationsApi`, …)
+// resolve against them.
+
+// expo-notifications: permission granted, a deterministic token, no-op category +
+// listener registration. `DEFAULT_ACTION_IDENTIFIER` mirrors the real constant.
+jest.mock("expo-notifications", () => ({
+  __esModule: true,
+  DEFAULT_ACTION_IDENTIFIER: "expo.modules.notifications.actions.DEFAULT",
+  getPermissionsAsync: jest.fn(async () => ({ granted: true })),
+  requestPermissionsAsync: jest.fn(async () => ({ granted: true })),
+  getExpoPushTokenAsync: jest.fn(async () => ({ data: "ExponentPushToken[mock]" })),
+  setNotificationCategoryAsync: jest.fn(async () => ({})),
+  addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+  addNotificationReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+}));
+
+// expo-local-authentication: hardware present + enrolled, prompt succeeds.
+jest.mock("expo-local-authentication", () => ({
+  __esModule: true,
+  hasHardwareAsync: jest.fn(async () => true),
+  isEnrolledAsync: jest.fn(async () => true),
+  authenticateAsync: jest.fn(async () => ({ success: true })),
+}));
+
+// expo-network: wifi + connected by default; no-op change listener.
+jest.mock("expo-network", () => ({
+  __esModule: true,
+  NetworkStateType: {
+    NONE: "NONE",
+    UNKNOWN: "UNKNOWN",
+    CELLULAR: "CELLULAR",
+    WIFI: "WIFI",
+    BLUETOOTH: "BLUETOOTH",
+    ETHERNET: "ETHERNET",
+    WIMAX: "WIMAX",
+    VPN: "VPN",
+    OTHER: "OTHER",
+  },
+  getNetworkStateAsync: jest.fn(async () => ({ type: "WIFI", isConnected: true })),
+  addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })),
+}));

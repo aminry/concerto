@@ -38,6 +38,20 @@ import type { DataClient } from "@concerto/client";
 export async function openNativeDataClient(opts?: {
   module?: ConcertoIrohModule;
 }): Promise<DataClient | null> {
+  const opened = await openNativeSession(opts);
+  return opened?.client ?? null;
+}
+
+/**
+ * An opened native session: the [`DataClient`] plus a `close()` that drops the
+ * underlying native session handle (`module.closeSession`, design/16 §3.12). This
+ * is the [`OpenedSession`] the app-lifecycle controller (Task 518) opens on
+ * foreground and closes on background — `openNativeDataClient` above is the
+ * thin wrapper that discards the handle for callers that manage lifetime elsewhere.
+ */
+export async function openNativeSession(opts?: {
+  module?: ConcertoIrohModule;
+}): Promise<{ client: DataClient; close: () => void } | null> {
   const core = await activeCore();
   if (!core) return null;
 
@@ -53,7 +67,10 @@ export async function openNativeDataClient(opts?: {
     },
     core.signedCert,
   );
-  return createNativeDataClient(module, handle);
+  return {
+    client: createNativeDataClient(module, handle),
+    close: () => module.closeSession(handle),
+  };
 }
 
 let cachedWorkspaces: WorkspacesClient | undefined;
