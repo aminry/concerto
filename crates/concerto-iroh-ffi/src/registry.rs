@@ -20,13 +20,18 @@ use tonic::transport::Channel;
 /// channel, the device-cert metadata value attached to every call, and the
 /// classified connection path for `natStats`.
 pub struct Session {
-    /// The client Iroh endpoint backing this session's connection. Held purely
-    /// so it is dropped (and the underlying QUIC endpoint closed) on
-    /// `closeSession` / registry removal — never read after construction, hence
-    /// the allow.
+    /// This device's local client Iroh endpoint. NOTE: the live API connection
+    /// the RPCs actually ride is dialed and owned by the `IrohConnector` INSIDE
+    /// `channel` (see `connect_channel`), NOT by this endpoint — dropping this
+    /// endpoint closes this device's local Iroh endpoint/socket, while dropping
+    /// `channel` is what tears down RPC traffic. Both are dropped together on
+    /// `closeSession` / registry removal. Held purely for that teardown — never
+    /// read after construction, hence the allow.
     #[allow(dead_code)]
     pub endpoint: Endpoint,
-    /// The tonic channel over Iroh + Noise IK (built by `connect_channel`).
+    /// The tonic channel over Iroh + Noise IK (built by `connect_channel`). Its
+    /// `IrohConnector` owns the live API connection the RPCs ride; dropping the
+    /// channel tears down that RPC traffic.
     pub channel: Channel,
     /// STANDARD-base64 of the on-wire signed device cert, pre-parsed as an ASCII
     /// metadata value, attached under `concerto-device-cert` on every RPC.
@@ -80,9 +85,10 @@ impl Registry {
         self.with_session(handle, |s| (s.channel.clone(), s.cert_value.clone()))
     }
 
-    /// Remove + return a session (the `closeSession` path). The caller drops it,
-    /// closing the endpoint/connection; any in-flight subscription oneshots fire
-    /// on drop.
+    /// Remove + return a session (the `closeSession` path). The caller drops it:
+    /// dropping `channel` tears down the RPC connection (owned by its
+    /// `IrohConnector`) and dropping `endpoint` closes this device's local Iroh
+    /// endpoint/socket; any in-flight subscription oneshots fire on drop.
     pub fn remove(&self, handle: u64) -> Option<Session> {
         self.sessions
             .lock()
@@ -98,6 +104,15 @@ impl Registry {
             .values()
             .map(|s| s.path)
             .collect()
+    }
+
+    /// Number of live subscriptions held on a session (`None` if the handle is
+    /// unknown). Introspection for the registry-leak regression: after a stream
+    /// reaches EOS / errors / is cancelled, its `subscriptions` entry must be
+    /// gone (the spawned task removes its own id on EVERY exit path), so a
+    /// drained session reports 0.
+    pub fn subscription_count(&self, handle: u64) -> Option<usize> {
+        self.with_session(handle, |s| s.subscriptions.len())
     }
 
     #[cfg(test)]

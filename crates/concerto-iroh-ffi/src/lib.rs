@@ -139,11 +139,15 @@ pub enum NatPath {
 }
 
 /// Client-side NAT stats for this device's own session(s) (`design/16 §4.6`).
-/// `path` is the classification of the most-recently-opened session; the counts
+/// `path` is the single live session's classification when there is EXACTLY one
+/// live session (the common mobile case), and `None` otherwise; the counts
 /// aggregate across all live sessions.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct NatStats {
-    /// The path of the most-recently-opened live session (None ⇒ no sessions).
+    /// The classified path when there is EXACTLY one live session; `None` when
+    /// there are zero or multiple live sessions (the registry preserves no
+    /// ordering, so it cannot single out a "most-recent" session — use the
+    /// per-path counts below for the multi-session aggregate).
     pub path: Option<NatPath>,
     /// Count of live sessions on a direct (hole-punched) path.
     pub direct: u32,
@@ -243,11 +247,18 @@ pub fn open_session(blob: ConnectBlob, signed_cert: Vec<u8>) -> Result<u64, Iroh
                 .map_err(|e| IrohFfiError::Connect(format!("noise static: {e}")))?,
         );
 
-        // Open the raw Iroh connection FIRST so we can classify its path, then
-        // build the tonic channel over a fresh connection via connect_channel.
-        // (connect_channel dials its own connection internally; we dial a
-        // parallel one only to read the live ConnectionPath — the cheapest way
-        // to expose natStats client-side without re-plumbing connect_channel.)
+        // Classify the path for natStats. ACCEPTED SHORTCUT: connect_channel
+        // dials and OWNS the real RPC connection internally (inside its
+        // IrohConnector) and does not expose its ConnectionPath, so we dial a
+        // SECOND, parallel diagnostic-only connection here purely to read the
+        // live path, then drop it. This costs an extra Iroh/Noise dial (and, on
+        // the remote path, extra relay round trips) per open_session — a real
+        // battery/data cost on mobile that we accept to avoid re-plumbing
+        // connect_channel's signature (out of scope here).
+        // TODO(follow-up): plumb the live ConnectionPath out of connect_channel
+        // (return the underlying Connection / its classify_path result alongside
+        // the Channel) so natStats reads the REAL session's path with no second
+        // dial and no blind latency tax, and delete classify_initial_path.
         let path = classify_initial_path(&client_ep, &server_addr, want_relay).await;
 
         let channel = connect_channel(&client_ep, server_addr, device_static, core_noise_pub)
@@ -328,51 +339,78 @@ pub fn rpc_stream(
     let cert_for_task = cert;
 
     runtime().spawn(async move {
-        let mut grpc = tonic::client::Grpc::new(channel)
-            .max_decoding_message_size(MAX_MESSAGE_SIZE)
-            .max_encoding_message_size(MAX_MESSAGE_SIZE);
-        if let Err(e) = grpc.ready().await {
-            callback.on_error(format!("channel not ready: {e}"));
+        // Run the stream pump in an inner block so that EVERY exit path (channel
+        // not ready, server-streaming error, mid-stream error, clean EOS, and
+        // cancellation) funnels through a single registry-cleanup call below —
+        // otherwise this session's `subscriptions` entry leaks (a dead
+        // oneshot::Sender accumulates) on natural completion, since only
+        // cancel_subscription / close_session ever removed entries.
+        run_stream(channel, path, payload, cert_for_task, &callback, cancel_rx).await;
+        // Remove our own entry on completion. A no-op when the session is gone
+        // (close_session) or cancel_subscription already removed it; with_session
+        // takes the Mutex only briefly with no await held under the lock.
+        registry().with_session(handle, |s| {
+            s.subscriptions.remove(&sub_id);
+        });
+    });
+
+    Ok(sub_id)
+}
+
+/// The server-streaming pump for [`rpc_stream`], factored out so its single
+/// caller can run registry cleanup on EVERY exit path (the spawned task removes
+/// its `subscriptions` entry after this returns, regardless of how it ended).
+/// Drives `on_event` per message and `on_complete`/`on_error` at end-of-stream;
+/// selecting on `cancel_rx` drops the stream immediately on cancellation.
+async fn run_stream(
+    channel: tonic::transport::Channel,
+    path: tonic::codegen::http::uri::PathAndQuery,
+    payload: Vec<u8>,
+    cert: MetadataValue<Ascii>,
+    callback: &Arc<dyn StreamEventCallback>,
+    cancel_rx: oneshot::Receiver<()>,
+) {
+    let mut grpc = tonic::client::Grpc::new(channel)
+        .max_decoding_message_size(MAX_MESSAGE_SIZE)
+        .max_encoding_message_size(MAX_MESSAGE_SIZE);
+    if let Err(e) = grpc.ready().await {
+        callback.on_error(format!("channel not ready: {e}"));
+        return;
+    }
+    let mut req = tonic::Request::new(Bytes::from(payload));
+    req.metadata_mut().insert(DEVICE_CERT_METADATA_KEY, cert);
+
+    let stream = match grpc.server_streaming(req, path, IdentityCodec).await {
+        Ok(resp) => resp.into_inner(),
+        Err(s) => {
+            callback.on_error(s.to_string());
             return;
         }
-        let mut req = tonic::Request::new(Bytes::from(payload));
-        req.metadata_mut()
-            .insert(DEVICE_CERT_METADATA_KEY, cert_for_task);
+    };
+    tokio::pin!(stream);
+    tokio::pin!(cancel_rx);
 
-        let stream = match grpc.server_streaming(req, path, IdentityCodec).await {
-            Ok(resp) => resp.into_inner(),
-            Err(s) => {
-                callback.on_error(s.to_string());
+    loop {
+        tokio::select! {
+            // Cancellation: drop the stream task immediately.
+            _ = &mut cancel_rx => {
                 return;
             }
-        };
-        tokio::pin!(stream);
-        tokio::pin!(cancel_rx);
-
-        loop {
-            tokio::select! {
-                // Cancellation: drop the stream task immediately.
-                _ = &mut cancel_rx => {
-                    return;
-                }
-                item = stream.next() => {
-                    match item {
-                        Some(Ok(msg)) => callback.on_event(msg.to_vec()),
-                        Some(Err(s)) => {
-                            callback.on_error(s.to_string());
-                            return;
-                        }
-                        None => {
-                            callback.on_complete();
-                            return;
-                        }
+            item = stream.next() => {
+                match item {
+                    Some(Ok(msg)) => callback.on_event(msg.to_vec()),
+                    Some(Err(s)) => {
+                        callback.on_error(s.to_string());
+                        return;
+                    }
+                    None => {
+                        callback.on_complete();
+                        return;
                     }
                 }
             }
         }
-    });
-
-    Ok(sub_id)
+    }
 }
 
 /// Cancel a live subscription (drops the stream task). No-op if the handle /
@@ -386,20 +424,24 @@ pub fn cancel_subscription(handle: u64, subscription_id: u64) {
     });
 }
 
-/// Close a session: drop the tonic channel + the Iroh endpoint (closing the
-/// QUIC connection) and deregister the handle. Any live subscriptions are
-/// cancelled (their oneshots fire on drop).
+/// Close a session and deregister the handle. Dropping the tonic `channel` tears
+/// down the live RPC connection (owned by its `IrohConnector`, dialed inside
+/// `connect_channel`); dropping the Iroh `endpoint` closes this device's local
+/// Iroh endpoint/socket. Both are dropped together on removal. Any live
+/// subscriptions are cancelled (their oneshots fire on drop).
 #[uniffi::export]
 pub fn close_session(handle: u64) {
     // Removing the Session drops its `subscriptions` map → each oneshot Sender
     // drops → the stream tasks' `cancel_rx` resolves (Err) → they return.
-    // Dropping `endpoint` + `channel` closes the connection.
+    // Dropping `channel` tears down the RPC connection (its IrohConnector owns
+    // it); dropping `endpoint` closes this device's local Iroh endpoint.
     let _ = registry().remove(handle);
 }
 
 /// Client-side NAT stats for this device's own live session(s) — NOT a Core RPC
-/// (`design/16 §4.6`). `path` is the most-recently-opened session's
-/// classification; the counts aggregate across all live sessions.
+/// (`design/16 §4.6`). `path` is the single session's classification when there
+/// is EXACTLY one live session, and `None` otherwise; the counts aggregate
+/// across all live sessions.
 #[uniffi::export]
 pub fn nat_stats() -> NatStats {
     let paths = registry().all_paths();
@@ -413,11 +455,12 @@ pub fn nat_stats() -> NatStats {
             ConnectionPath::Lan => lan += 1,
         }
     }
-    // `path` = the last-inserted session's path (the registry preserves nothing
-    // ordered, so report the single path when there is exactly one live session,
-    // else None — the most honest single-value summary; the counts carry the
-    // aggregate). For the common mobile case (one session) this is the live
-    // path, which is what 511's diagnostics surface.
+    // `path` is populated ONLY when there is exactly one live session: the
+    // registry preserves no insertion order, so it cannot single out a
+    // "most-recent" session — report the single path when there is exactly one
+    // live session, else None (the most honest single-value summary; the counts
+    // carry the multi-session aggregate). For the common mobile case (one
+    // session) this is the live path, which is what 511's diagnostics surface.
     let path = if paths.len() == 1 {
         Some(nat::to_ffi(paths[0]))
     } else {
@@ -429,6 +472,16 @@ pub fn nat_stats() -> NatStats {
         relayed,
         lan,
     }
+}
+
+/// Test-only introspection: the number of live subscriptions a session holds
+/// (`None` if the handle is unknown). NOT part of the frozen FFI surface (no
+/// `#[uniffi::export]`); it exists so the loopback integration test can assert
+/// the registry-leak fix — a stream that reaches EOS / errors / is cancelled
+/// must remove its own `subscriptions` entry, leaving the session at 0.
+#[doc(hidden)]
+pub fn subscription_count(handle: u64) -> Option<usize> {
+    registry().subscription_count(handle)
 }
 
 // ---------------------------------------------------------------------------
@@ -501,8 +554,10 @@ fn blob_has_relay(blob: &ConnectBlob) -> bool {
 }
 
 /// Dial a parallel raw connection purely to read its live `ConnectionPath` for
-/// `natStats`. Best-effort: a failure (the real channel will surface the error)
-/// degrades to the conservative `Relayed` for remote / `Lan` for loopback.
+/// `natStats` (the ACCEPTED SHORTCUT documented at the open_session call site;
+/// tracked for removal once connect_channel exposes the real path). Best-effort:
+/// a failure (the real channel will surface the error) degrades to the
+/// conservative `Relayed` for remote / `Lan` for loopback.
 async fn classify_initial_path(
     client_ep: &Endpoint,
     server_addr: &EndpointAddr,

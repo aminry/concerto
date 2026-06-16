@@ -289,6 +289,26 @@ fn loopback_pair_open_unary_stream_natstats_close() {
             clone_err.lock().unwrap()
         );
 
+        // REGRESSION (subscription registry leak): a stream that reaches EOS must
+        // remove its own subscriptions entry. The Clone stream above completed
+        // (clone_done), so the session must hold ZERO live subscriptions now —
+        // before this fix the entry (a dead oneshot::Sender) leaked until the
+        // session closed. Give the spawned cleanup a beat to run after EOS.
+        let mut drained = false;
+        for _ in 0..40 {
+            if concerto_iroh_ffi::subscription_count(handle) == Some(0) {
+                drained = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            drained,
+            "after Clone EOS the session must hold 0 subscriptions (registry-leak \
+             fix); got {:?}",
+            concerto_iroh_ffi::subscription_count(handle)
+        );
+
         // Subscribe to workspace.events.
         let events = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
         let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -347,6 +367,23 @@ fn loopback_pair_open_unary_stream_natstats_close() {
         tokio::task::spawn_blocking(move || cancel_subscription(h3, sub_id))
             .await
             .unwrap();
+
+        // REGRESSION (registry leak, cancel path): cancel_subscription removes
+        // the entry synchronously AND the cancelled stream task removes it on its
+        // own exit — either way the session drains back to 0 subscriptions.
+        let mut drained_after_cancel = false;
+        for _ in 0..40 {
+            if concerto_iroh_ffi::subscription_count(handle) == Some(0) {
+                drained_after_cancel = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            drained_after_cancel,
+            "after cancel the session must hold 0 subscriptions; got {:?}",
+            concerto_iroh_ffi::subscription_count(handle)
+        );
 
         // (5) nat_stats() == Lan (loopback path).
         let stats = tokio::task::spawn_blocking(nat_stats).await.unwrap();

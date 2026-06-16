@@ -12,7 +12,7 @@
 
 use concerto_identity::{KeyPair, NoiseHandshake};
 use concerto_transport::api::write_channel_tag;
-use concerto_transport::{ChannelTag, IrohDuplex, ALPN};
+use concerto_transport::{ChannelTag, IrohDuplex, ALPN, MAX_MESSAGE_SIZE};
 use iroh::{Endpoint, EndpointAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -139,13 +139,27 @@ async fn read_frame(duplex: &mut IrohDuplex) -> Result<Vec<u8>, IrohFfiError> {
         .read_exact(&mut len)
         .await
         .map_err(|e| IrohFfiError::Pairing(format!("pair: read len: {e}")))?;
-    let n = u32::from_be_bytes(len) as usize;
+    let n = checked_frame_len(len)?;
     let mut buf = vec![0u8; n];
     duplex
         .read_exact(&mut buf)
         .await
         .map_err(|e| IrohFfiError::Pairing(format!("pair: read body: {e}")))?;
     Ok(buf)
+}
+
+/// Decode a 4-byte-BE frame length and bound it BEFORE the caller allocates:
+/// `read_frame` reads the Noise XX m2 + the encrypted cert reply BEFORE the
+/// dialed responder is authenticated, so a malicious/MITM responder could send a
+/// ~4 GiB length prefix and OOM the (mobile) app — a remote pre-auth DoS. Honest
+/// handshake and cert frames are tiny; capping at `MAX_MESSAGE_SIZE` rejects
+/// hostile prefixes without changing the on-wire format for honest peers.
+fn checked_frame_len(len: [u8; 4]) -> Result<usize, IrohFfiError> {
+    let n = u32::from_be_bytes(len) as usize;
+    if n > MAX_MESSAGE_SIZE {
+        return Err(IrohFfiError::Pairing(format!("pair: frame too large: {n}")));
+    }
+    Ok(n)
 }
 
 #[cfg(test)]
@@ -200,5 +214,34 @@ mod tests {
         assert_eq!(&input[0..32], &token, "signature input is TOKEN-first");
         assert_eq!(&input[32..64], &nonce);
         assert_eq!(&input[64..96], &device_pubkey);
+    }
+
+    /// The pre-auth frame-length bound: a hostile ~4 GiB length prefix is
+    /// REJECTED before any allocation, while honest (tiny) and at-cap lengths
+    /// pass. Guards the read_frame OOM/DoS surface (Noise m2 + cert reply are
+    /// read before the responder is authenticated).
+    #[test]
+    fn frame_len_is_bounded_against_hostile_prefix() {
+        // A 0xFFFFFFFF prefix (~4 GiB) is rejected, not allocated.
+        let huge = u32::MAX.to_be_bytes();
+        let err = checked_frame_len(huge).expect_err("oversized frame must be rejected");
+        assert!(
+            matches!(err, IrohFfiError::Pairing(ref m) if m.contains("frame too large")),
+            "rejection is a typed Pairing error mentioning the oversize, got {err:?}"
+        );
+
+        // Just over the cap is rejected; exactly at the cap and a tiny honest
+        // handshake frame are accepted.
+        let over = ((MAX_MESSAGE_SIZE as u32) + 1).to_be_bytes();
+        assert!(checked_frame_len(over).is_err(), "cap+1 is rejected");
+        let at_cap = (MAX_MESSAGE_SIZE as u32).to_be_bytes();
+        assert_eq!(
+            checked_frame_len(at_cap).expect("at-cap accepted"),
+            MAX_MESSAGE_SIZE
+        );
+        let tiny = 96u32.to_be_bytes();
+        assert_eq!(checked_frame_len(tiny).expect("honest frame accepted"), 96);
+        let zero = 0u32.to_be_bytes();
+        assert_eq!(checked_frame_len(zero).expect("empty frame accepted"), 0);
     }
 }
