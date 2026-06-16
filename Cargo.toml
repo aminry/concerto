@@ -49,6 +49,19 @@ members = [
     # transparently. Unix-only at runtime (`UnixStream`), but the crate
     # builds everywhere.
     "crates/maestro-bridge",
+    # Task 509: the `ConcertoIroh` React Native (iOS/Android) native module — a
+    # hand-rolled `uniffi` cdylib over the EXISTING `concerto-transport` stack
+    # (the D12 fallback: `iroh-ffi` is unusable — git-only, no published 0.98.x,
+    # and it pulls a SECOND, colliding `iroh` with different crypto pins). It is
+    # the FIRST `crate-type = ["cdylib", ...]` crate in the workspace. Added to
+    # `members` (so `-p concerto-iroh-ffi` lints/tests + a `--workspace` lane see
+    # it) but DELIBERATELY NOT to `default-members` below: the mobile FFI link
+    # toolchain (cdylib/staticlib + uniffi scaffolding) must never gate the
+    # default `cargo build` / the Core+CLI CI lanes. Mirrors `tools/pair-dial`'s
+    # MINIMAL dep set (transport/identity/proto + iroh + tonic, NO core/keychain/
+    # sqlx); `concerto-core` + `concerto-test-harness` are DEV-deps only (the
+    # loopback integration test boots an in-process Core, like split-host).
+    "crates/concerto-iroh-ffi",
 ]
 default-members = ["crates/core", "crates/cli"]
 # Task 208: the cargo-fuzz crate (`crates/identity/fuzz`) is EXCLUDED from the
