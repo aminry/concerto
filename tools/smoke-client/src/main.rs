@@ -255,6 +255,15 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         timeout: u64,
     },
+    /// Subscribe to `notification.events` and print each frame until the timeout
+    /// fires. Proves the live notification stream + cross-transport broadcast:
+    /// mark a notification read anywhere (web/desktop) and watch the
+    /// `notification.read` frame arrive over this UDS subscription.
+    WatchNotifications {
+        /// Wall-clock budget, seconds.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+    },
 }
 
 fn main() -> ExitCode {
@@ -413,6 +422,10 @@ async fn dispatch(cli: Cli) -> Result<(), String> {
         Command::MaestroWatch { timeout } => {
             let socket = require_socket(cli.socket)?;
             cmd::maestro::watch(&socket, timeout).await
+        }
+        Command::WatchNotifications { timeout } => {
+            let socket = require_socket(cli.socket)?;
+            cmd::get_inbox::watch(&socket, timeout).await
         }
     }
 }
