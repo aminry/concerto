@@ -1,6 +1,11 @@
 //! Integration test for the live Maestro `read_inbox_summary` tool
 //! (`maestro::tools::read::read_inbox_summary_live`, Task 507b-ii): proves it
 //! returns the up-to-20 most-recent UNREAD notifications from persistence.
+//!
+//! Unix-only: `concerto_core::maestro` is `#[cfg(unix)]`-gated (lib.rs), so this
+//! test compiles to empty on the Windows desktop-client lane (matching
+//! `maestro_e2e.rs` / `maestro_notify_user.rs`).
+#![cfg(unix)]
 
 use concerto_core::maestro::tools::read::read_inbox_summary_live;
 use concerto_persist::notifications::{self, NewNotification};
