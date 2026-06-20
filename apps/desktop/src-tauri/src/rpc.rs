@@ -389,7 +389,11 @@ where
             client
                 .mark_read(MarkReadRequest { id: req.id })
                 .await
-                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+                // MarkRead returns google.protobuf.Empty (unit): mirror the other
+                // mutation arms with `Value::Null` rather than
+                // `serde_json::to_value(r.into_inner())`, which passes `()` and
+                // trips clippy::unit_arg.
+                .map(|_| Value::Null)
         }
         "Workspaces.GetWorkspace" => {
             let req: IdPayload = serde_json::from_value(payload).map_err(|e| {
