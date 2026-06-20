@@ -26,7 +26,7 @@ import { SkillsTab } from "./right-rail/SkillsTab";
 import { TodosTab } from "./right-rail/TodosTab";
 import { McpTab } from "./right-rail/McpTab";
 import { FilesTab } from "./right-rail/FilesTab";
-import { InboxPanel } from "./InboxPanel";
+import { LiveInboxPanel } from "./LiveInboxPanel";
 import { CodePrRegion } from "./center/CodePrRegion";
 
 type TabSpec = { id: RightRailTab; label: string; Icon: LucideIcon };
@@ -121,7 +121,7 @@ function RightRailBody({ tab }: { tab: RightRailTab }): JSX.Element {
     case "files":
       return <FilesTab />;
     case "inbox":
-      return <InboxPanel />;
+      return <LiveInboxPanel />;
     case "diff":
     case "checks":
     case "pr":

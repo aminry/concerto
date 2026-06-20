@@ -13,6 +13,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use concerto_proto::v1::maestro_client::MaestroClient;
+use concerto_proto::v1::notifications_client::NotificationsClient;
 use concerto_proto::v1::repositories_client::RepositoriesClient;
 use concerto_proto::v1::runtime_client::RuntimeClient;
 use concerto_proto::v1::schedules_client::SchedulesClient;
@@ -25,8 +26,9 @@ use concerto_proto::v1::workspaces_client::WorkspacesClient;
 use concerto_proto::v1::{
     AddRepoRequest, CreatePrRequest, CreateSessionRequest, CreateWorkareaRequest,
     CreateWorkspaceRequest, EstimateConeSizeRequest, EstimateRepoSizeRequest, GetChecksRequest,
-    GetDiffRequest, GetDigestRequest, GetHistoryRequest, GetPrRequest, GetStateRequest,
+    GetDiffRequest, GetDigestRequest, GetHistoryRequest, GetPrRequest, GetStateRequest, InboxFilter,
     ListRepositoriesRequest, ListSchedulesRequest, ListSessionsRequest, ListSkillsRequest,
+    MarkReadRequest,
     ListTreeRequest, ListWorkareaReposRequest, ListWorkareasRequest, ListWorkspacesRequest,
     MaestroAttachment, MaestroMessageRequest, McpScopeRequest, MergePrRequest, PermissionMode,
     ResizeSessionRequest, SendMessageRequest, SessionId as ProtoSessionId, SetConesRequest,
@@ -63,6 +65,18 @@ struct ListWorkspacesPayload {
 #[derive(Debug, Deserialize)]
 struct IdPayload {
     id: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct GetInboxPayload {
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workarea_id: Option<String>,
+    #[serde(default)]
+    unread_only: bool,
+    #[serde(default)]
+    limit: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,6 +366,31 @@ where
                 .list_workspaces(ListWorkspacesRequest {
                     include_archived: req.include_archived,
                 })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Notifications.GetInbox" => {
+            let req: GetInboxPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for GetInbox: {e}"))
+            })?;
+            let mut client = NotificationsClient::new(channel);
+            client
+                .get_inbox(InboxFilter {
+                    workspace_id: req.workspace_id,
+                    workarea_id: req.workarea_id,
+                    unread_only: req.unread_only,
+                    limit: req.limit,
+                })
+                .await
+                .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
+        }
+        "Notifications.MarkRead" => {
+            let req: IdPayload = serde_json::from_value(payload).map_err(|e| {
+                CoreClientError::Rpc(format!("invalid payload for MarkRead: {e}"))
+            })?;
+            let mut client = NotificationsClient::new(channel);
+            client
+                .mark_read(MarkReadRequest { id: req.id })
                 .await
                 .map(|r| serde_json::to_value(r.into_inner()).unwrap_or(Value::Null))
         }

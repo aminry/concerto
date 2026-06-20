@@ -105,7 +105,12 @@ export type RpcMethod =
   // chat history the chat seeds its transcript with on mount so the
   // conversation survives a reload (live `maestro.events` messages append after).
   | "Maestro.GetHistory"
-  | "Maestro.SetWorkareaVisibility";
+  | "Maestro.SetWorkareaVisibility"
+  // Task 523 follow-up — the desktop inbox reads the live `Notifications`
+  // service (GetInbox + MarkRead) over this bridge, the same service the web
+  // client uses, so desktop + web show the identical live inbox.
+  | "Notifications.GetInbox"
+  | "Notifications.MarkRead";
 
 export async function callRpc<TRequest, TResponse>(
   method: RpcMethod,
