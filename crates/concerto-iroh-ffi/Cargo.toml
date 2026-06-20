@@ -1,0 +1,127 @@
+[package]
+name = "concerto-iroh-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "ConcertoIroh native module (Task 509): a hand-rolled uniffi cdylib over concerto-transport. Exposes openSession/rpcUnary/rpcStream/closeSession/natStats + pair/generateDeviceKeypair to the React Native (iOS/Android) shell. The D12 fallback: iroh-ffi is unusable (git-only, no 0.98.x, and it pulls a colliding second iroh) — this crate reuses the EXISTING, spike-validated transport stack instead."
+
+# Task 509: the FIRST dynamic-library crate in the workspace. It is added to
+# `members` (so `cargo fmt/clippy/test -p concerto-iroh-ffi` and a `--workspace`
+# lint see it) but DELIBERATELY NOT to `default-members` — the mobile FFI
+# toolchain (cdylib/staticlib link, uniffi scaffolding) must never gate the
+# default `cargo build`/CI lanes. It mirrors `tools/pair-dial`'s MINIMAL dep set
+# (concerto-transport / -identity / -proto + iroh + tonic + prost, NO
+# concerto-core / keychain / sqlx) so the cross-compiled mobile artifact stays
+# small; concerto-core + concerto-test-harness are DEV-deps only (the loopback
+# integration test boots an in-process Core, exactly like split-host-loopback).
+[lib]
+name = "concerto_iroh_ffi"
+path = "src/lib.rs"
+# staticlib + cdylib are what the iOS (.a, static) and Android (.so, dynamic)
+# linkers consume; `lib` keeps the crate usable as a normal Rust dependency so
+# the host unit tests + the loopback integration test can link it directly.
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+# The Iroh transport surface — the WHOLE reuse seam: connect_channel /
+# IrohConnector / IrohDuplex / write_channel_tag / ChannelTag / classify_path /
+# ConnectionPath / ALPN / MAX_MESSAGE_SIZE. This crate adds NO new transport
+# logic; it is a uniffi facade over what `tools/pair-dial` already proves.
+concerto-transport = { path = "../transport" }
+# Device keypair (Ed25519 via OS randomness), Noise XX handshake (pairing),
+# Noise static (the per-session IK identity).
+concerto-identity = { path = "../identity" }
+# The client Iroh endpoint (RelayMode::Default for remote, Disabled for
+# loopback), EndpointAddr reconstruction (relay url + direct addrs), EndpointId.
+iroh = { workspace = true }
+# tonic drives the generic `Grpc::new(channel).unary/.streaming` with the
+# identity codec; same feature set as pair-dial.
+tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+# `prost::bytes::Bytes` is the wire type the identity codec hands tonic.
+prost = { workspace = true }
+# Multi-thread runtime: the FFI surface is sync (uniffi exports block on a
+# shared runtime), so the heavy Iroh/QUIC + Noise work runs on worker threads.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util", "sync"] }
+futures = { workspace = true }
+# Error plumbing: thiserror for the uniffi-exported error enum.
+thiserror = { workspace = true }
+# `bytes::Bytes` round-trips through the identity codec untouched.
+bytes = "1"
+# STANDARD base64 of the on-wire signed cert for the `concerto-device-cert`
+# metadata header (the FROZEN auth encoding pair-dial inlines). Crate-local pin,
+# matching pair-dial's `base64 = "0.22"`.
+base64 = "0.22"
+# hex decode of the pairing_token / core_noise_pub connect-blob fields, matching
+# pair-dial's `hex = "0.4"`.
+hex = "0.4"
+# OS randomness for the per-dial pairing nonce + the device-seed generator (the
+# same `getrandom` the rest of the workspace uses; no `rand` dep).
+getrandom = { workspace = true }
+# BLAKE2b-256 device_id is provided by concerto-identity::device_id; no direct
+# blake2 dep needed here.
+#
+# uniffi: pinned to 0.28 (NOT the latest 0.31.x). 0.28 is the documented
+# MSRV-1.74 line of uniffi — comfortably under the workspace MSRV of 1.82
+# (`[workspace.package].rust-version`). uniffi 0.29/0.30/0.31 progressively
+# raised the floor (newer proc-macro + bindgen deps) and could not be verified
+# 1.82-safe here, so per the Task-509 instruction we pin the older compatible
+# line and document why. `default-features = false` drops the `cargo-metadata`
+# default (it pulls `cargo_metadata` + `clap` + `camino`, none of which the
+# cdylib's runtime scaffolding needs) — the proc-macro mode we use
+# (`uniffi::setup_scaffolding!()` + `#[uniffi::export]`) needs only
+# `uniffi_core` + `uniffi_macros`. uniffi is MPL-2.0, already on the deny.toml
+# allow-list (consumed unmodified, so the copyleft trigger never fires).
+uniffi = { version = "0.28", default-features = false }
+
+# Task 509.5: the bindings generator. uniffi 0.28's `cli` feature gates
+# `uniffi::uniffi_bindgen_main()` (the `generate --library` CLI) behind
+# `clap` + `camino` + `uniffi_bindgen` — deps the SHIPPED cdylib must never
+# carry. So it lives behind an OFF-by-default `cli` feature (below) that flips
+# the SAME `uniffi` dep above into its `cli` mode, plus a dedicated
+# `[[bin]] uniffi-bindgen` (compiled only when that feature is on, exactly like
+# the uniffi book's "setup for crates using only proc-macros" recipe). The
+# default `cargo build -p concerto-iroh-ffi` (and the mobile cross-compile)
+# stay lean — clap/camino/uniffi_bindgen are pulled ONLY by `cargo run
+# --features cli --bin uniffi-bindgen`, which the host-side bindgen script
+# (crates/concerto-iroh-ffi/packaging/gen-bindings.sh) invokes against the
+# already-built cdylib. The version pin stays `0.28` and the runtime build
+# keeps `default-features = false` in either case.
+
+[features]
+# OFF by default. Enables the `uniffi-bindgen` helper bin by turning on
+# `uniffi/cli` (which adds clap/camino/uniffi_bindgen). The host bindgen script
+# (crates/concerto-iroh-ffi/packaging/gen-bindings.sh) turns it on; the
+# cdylib/staticlib the mobile linkers consume never do.
+cli = ["uniffi/cli"]
+
+[[bin]]
+# The bindings generator. `cargo run -p concerto-iroh-ffi --features cli
+# --bin uniffi-bindgen -- generate --library <cdylib> --language swift|kotlin`
+# emits the Swift/Kotlin bindings from the cdylib's embedded uniffi metadata
+# (proc-macro mode → `--library`, no UDL). `required-features = ["cli"]` means
+# a plain `cargo build` / `cargo build --all-targets` never compiles it (so the
+# default lanes never pull clap/camino), but `--features cli` does.
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[dev-dependencies]
+# The loopback Tier-2 test boots an Iroh-enabled Core in-process (mirrors
+# tools/split-host-loopback). DEV-only — NEVER linked into the shipped mobile
+# artifact.
+concerto-core = { path = "../core" }
+concerto-test-harness = { path = "../test-harness" }
+# Decode the RAW GetServerCapabilities response bytes out-of-band in the test
+# (the module returns opaque bytes; the test proves transport_kind == IROH).
+# `concerto-proto` is dev-only: 509 itself is a generic byte passthrough and
+# never references proto types — only the loopback test decodes a response.
+concerto-proto = { path = "../proto" }
+prost = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util", "sync"] }
+futures = { workspace = true }
+# The loopback test boots the Core in a tempdir + hex-encodes the pairing token
+# / core noise pub for the connect-blob (same as split-host-loopback / iroh_boot).
+tempfile = "3"
+hex = "0.4"

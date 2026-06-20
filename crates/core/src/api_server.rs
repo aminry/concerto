@@ -131,6 +131,24 @@ pub struct ApiServerActor {
     /// bridge's) via `with_privacy_resolver`. `None` ⇒ the pre-resolver default
     /// (`false`), preserving prior behavior on a Core that does not wire it.
     vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
+    /// Optional Core identity public key (Task 521). When `Some` AND
+    /// `CONCERTO_CONNECT_BRIDGE_TLS` is set, the Connect-Web bridge derives an
+    /// identity-bound self-signed TLS cert from it and serves LAN-direct TLS,
+    /// publishing the SPKI fingerprint for client pinning (`design/17 §3.3`).
+    /// `None` (or TLS not requested) ⇒ the bridge serves plain HTTP (loopback
+    /// default). Set at boot via [`ApiServerActor::with_core_pubkey`] from the
+    /// same keychain-loaded identity the issuer uses.
+    core_pubkey: Option<concerto_identity::PublicKey>,
+    /// The SHARED notifications handle (shared-event-channel fix). Built ONCE in
+    /// boot via `with_event_channel` and attached via
+    /// [`ApiServerActor::with_notif_handle`]; the actor clones it into BOTH the
+    /// UDS `run_uds` path AND the Connect-Web bridge's `BridgeServices`, and boot
+    /// clones the same handle into the Iroh `CoreServiceSet` + the live
+    /// `notify_user` sink. So every front door shares ONE `notification.events`
+    /// broadcast and cross-device read/created/updated/acted sync works
+    /// (design/14 R-8, §5.3). `None` ⇒ each path falls back to its own
+    /// `with_event_channel` handle (prior behavior; tests + runtime-only).
+    notif_handle: Option<crate::notifications::handle::NotificationHandle>,
 }
 
 impl ApiServerActor {
@@ -158,6 +176,8 @@ impl ApiServerActor {
             device_manager: None,
             auth_issuer: None,
             vcs_privacy_resolver: None,
+            core_pubkey: None,
+            notif_handle: None,
         }
     }
 
@@ -169,6 +189,32 @@ impl ApiServerActor {
         resolver: Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>,
     ) -> Self {
         self.vcs_privacy_resolver = Some(resolver);
+        self
+    }
+
+    /// Attach the Core identity public key so the Connect-Web bridge can derive
+    /// an identity-bound LAN-direct TLS cert (Task 521) when
+    /// `CONCERTO_CONNECT_BRIDGE_TLS` is set. Additive builder; `boot.rs` chains
+    /// it from the same keychain-loaded identity the issuer is built from.
+    /// Without it, a TLS-requested bridge logs a warning and falls back to plain
+    /// HTTP (it never serves a non-identity-bound cert).
+    pub fn with_core_pubkey(mut self, core_pubkey: concerto_identity::PublicKey) -> Self {
+        self.core_pubkey = Some(core_pubkey);
+        self
+    }
+
+    /// Attach the SHARED notifications handle (shared-event-channel fix). Built
+    /// ONCE in boot via `with_event_channel`; the actor clones it into BOTH the
+    /// UDS `run_uds` path and the Connect-Web bridge's `BridgeServices` so both
+    /// front doors publish onto / subscribe from the SAME `notification.events`
+    /// broadcast (the same one boot also threads into the Iroh `CoreServiceSet` +
+    /// the live `notify_user` sink). Additive builder; without it each path
+    /// keeps its prior per-transport `with_event_channel` handle.
+    pub fn with_notif_handle(
+        mut self,
+        handle: crate::notifications::handle::NotificationHandle,
+    ) -> Self {
+        self.notif_handle = Some(handle);
         self
     }
 
@@ -202,6 +248,8 @@ impl ApiServerActor {
             device_manager: None,
             auth_issuer: None,
             vcs_privacy_resolver: None,
+            core_pubkey: None,
+            notif_handle: None,
         }
     }
 
@@ -250,6 +298,8 @@ impl ApiServerActor {
             device_manager,
             auth_issuer,
             vcs_privacy_resolver: None,
+            core_pubkey: None,
+            notif_handle: None,
         }
     }
 }
@@ -274,7 +324,27 @@ impl Actor for ApiServerActor {
             // `BridgeServices` from clones of the same handles before
             // `run_uds` consumes the originals, then run both serve loops
             // concurrently under the one shutdown token.
-            let bridge_cfg = crate::connect_bridge::ConnectBridgeConfig::from_env()?;
+            let mut bridge_cfg = crate::connect_bridge::ConnectBridgeConfig::from_env()?;
+            // Task 521: when LAN-direct TLS is requested AND the Core identity is
+            // available, derive the identity-bound cert now (so the published
+            // fingerprint is known before any client connects). If TLS is
+            // requested but the identity is absent (a Core that could not reach
+            // its keychain), warn and fall back to plain HTTP — we never serve a
+            // non-identity-bound cert.
+            if bridge_cfg.enabled && bridge_cfg.tls_requested {
+                match &self.core_pubkey {
+                    Some(pk) => {
+                        bridge_cfg = bridge_cfg.with_tls_for(pk)?;
+                    }
+                    None => {
+                        tracing::warn!(
+                            "CONCERTO_CONNECT_BRIDGE_TLS is set but the Core identity is \
+                             unavailable; serving the Connect-Web bridge over plain HTTP. \
+                             LAN-direct TLS needs a keychain-backed Core identity (Task 521)."
+                        );
+                    }
+                }
+            }
             let bridge = if bridge_cfg.enabled {
                 let services = crate::connect_bridge::BridgeServices {
                     started_at: Arc::clone(&self.started_at),
@@ -290,13 +360,22 @@ impl Actor for ApiServerActor {
                     maestro: self.maestro.clone(),
                     vcs: self.vcs.clone(),
                     vcs_privacy_resolver: self.vcs_privacy_resolver.clone(),
+                    // Shared-event-channel fix: the bridge shares the SAME
+                    // notifications handle (and thus the SAME `notification.events`
+                    // broadcast) as the UDS path below + the Iroh path + the live
+                    // `notify_user` sink, so cross-device read/created/updated/acted
+                    // sync works over the web front door too (design/14 R-8, §5.3).
+                    notif_handle: self.notif_handle.clone(),
                 };
+                let tls = bridge_cfg.tls.clone();
                 let (listener, bound) = crate::connect_bridge::bind(&bridge_cfg).await?;
                 tracing::info!(
                     addr = %bound.local_addr,
+                    tls = bound.cert_fingerprint.is_some(),
+                    cert_fingerprint = bound.cert_fingerprint.as_deref().unwrap_or("(plain http)"),
                     "Connect-Web bridge enabled alongside UDS server"
                 );
-                Some((listener, services))
+                Some((listener, services, tls))
             } else {
                 None
             };
@@ -319,13 +398,14 @@ impl Actor for ApiServerActor {
                 self.device_manager,
                 self.auth_issuer,
                 self.vcs_privacy_resolver,
+                self.notif_handle,
                 ctx.shutdown.clone(),
             );
 
             match bridge {
-                Some((listener, services)) => {
+                Some((listener, services, tls)) => {
                     let bridge_fut =
-                        crate::connect_bridge::serve(listener, services, ctx.shutdown.clone());
+                        crate::connect_bridge::serve(listener, services, tls, ctx.shutdown.clone());
                     // Both serve loops resolve on the shared shutdown token;
                     // surface the first error from either front door.
                     let (uds_res, bridge_res) = tokio::join!(uds_fut, bridge_fut);
@@ -351,6 +431,8 @@ impl Actor for ApiServerActor {
                 self.device_manager,
                 self.auth_issuer,
                 self.vcs_privacy_resolver,
+                self.core_pubkey,
+                self.notif_handle,
                 ctx.shutdown,
                 ctx.config,
             );
@@ -386,6 +468,7 @@ async fn run_uds(
     device_manager: Option<Arc<crate::security::devices::DeviceManager>>,
     auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>>,
     vcs_privacy_resolver: Option<Arc<dyn crate::handlers::vcs::EnterprisePrivacyResolver>>,
+    notif_handle: Option<crate::notifications::handle::NotificationHandle>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -498,6 +581,9 @@ async fn run_uds(
         // The UDS path has no remote transport: keep the handler's `NoNatStats`
         // default (empty counters). The Iroh serve path supplies `Some(..)`.
         nat_stats: None,
+        // The SHARED notifications handle threaded from boot (same broadcast as
+        // the Iroh + bridge + `notify_user` sink).
+        notif_handle,
     };
     let builder = add_core_services(
         Server::builder().layer(tonic::service::interceptor(auth_interceptor)),
@@ -574,6 +660,17 @@ pub struct CoreServiceSet {
     /// so the booted transport's real counters surface; `None` on the UDS path
     /// (no remote transport), where the handler keeps `NoNatStats` (empty).
     pub nat_stats: Option<Arc<dyn crate::handlers::runtime::NatStatsSource>>,
+    /// The SHARED notifications handle — constructed ONCE in boot (via
+    /// `with_event_channel`) and cloned into every front door (UDS + Iroh + the
+    /// Connect-Web bridge + the live `notify_user` sink) so they all publish onto
+    /// and subscribe from the SAME `notification.events` broadcast. Cloning a
+    /// `NotificationHandle` preserves the same `events_tx` sender + event sink, so
+    /// a `notification.read`/`created`/`updated`/`acted` emitted by any transport
+    /// reaches `notification.events` subscribers on EVERY transport (design/14
+    /// R-8, §5.3). `None` ⇒ no `Notifications` service (the runtime-only / no-
+    /// persistence case). Built from the shared `Persistence`; the prior per-
+    /// transport `with_event_channel` construction fragmented the bus.
+    pub notif_handle: Option<crate::notifications::handle::NotificationHandle>,
 }
 
 impl CoreServiceSet {
@@ -607,6 +704,7 @@ impl CoreServiceSet {
             device_manager: None,
             auth_issuer: None,
             nat_stats: None,
+            notif_handle: None,
         }
     }
 }
@@ -665,7 +763,29 @@ where
         device_manager,
         auth_issuer: _auth_issuer,
         nat_stats,
+        notif_handle: shared_notif_handle,
     } = services;
+
+    // Task 507 + shared-event-channel fix: the notifications handle. BOTH
+    // transports (UDS + Iroh) run this single chain, and boot now constructs ONE
+    // `with_event_channel`-backed handle and threads a clone into the
+    // `CoreServiceSet` (`notif_handle`) so the `Notifications` service + the
+    // `notification.events` producer on every transport share ONE broadcast — a
+    // `notification.read`/`created`/`updated`/`acted` emitted on one transport
+    // (or by the live `notify_user` sink) reaches subscribers on EVERY transport
+    // (design/14 R-8, §5.3). When no shared handle is supplied (the runtime-only
+    // smoke path / tests), fall back to the prior per-call construction from the
+    // shared `Persistence`. `None` persistence + no shared handle ⇒ no service.
+    let notif_handle = shared_notif_handle.or_else(|| {
+        persistence.as_ref().map(|p| {
+            crate::notifications::handle::NotificationHandle::new(
+                Arc::clone(p),
+                Arc::new(crate::notifications::push::ExpoPushBackend::new(None)),
+                Arc::new(crate::notifications::handle::NoEvents),
+            )
+            .with_event_channel()
+        })
+    });
 
     // Build the Runtime handler, attaching the live transport-backed NAT-stats
     // source only when present (the Iroh serve path). With `None` (the UDS path)
@@ -697,6 +817,16 @@ where
     if let Some(workarea_manager) = workarea_manager.clone() {
         let workareas_service = WorkareasServer::new(WorkareasHandler::new(workarea_manager));
         builder = builder.add_service(workareas_service);
+    }
+    // Task 507: the `Notifications` service (cross-platform — `NotificationHandle`
+    // needs only persist + push). The `notification.events` producer is wired
+    // into the `Streams` handler in the `#[cfg(unix)]` block below.
+    if let Some(h) = notif_handle.as_ref() {
+        use concerto_proto::v1::notifications_server::NotificationsServer;
+
+        use crate::handlers::notifications::NotificationsHandler;
+        let notifications_service = NotificationsServer::new(NotificationsHandler::new(h.clone()));
+        builder = builder.add_service(notifications_service);
     }
     // `Sessions` + `Streams` need the `#[cfg(unix)]` agent supervisor; on a
     // non-unix target these handles don't exist, so the services are simply
@@ -744,6 +874,12 @@ where
             // disabled) leaves the subject valid-but-empty.
             if let Some(maestro) = maestro.as_ref() {
                 handler = handler.with_maestro_events(maestro.events_sender());
+            }
+            // Task 507: wire this transport's notifications handle as the
+            // `notification.events` producer so the subject streams live
+            // created/updated/read/acted events.
+            if let Some(tx) = notif_handle.as_ref().and_then(|h| h.events_sender()) {
+                handler = handler.with_notification_events(tx);
             }
             let streams_service = StreamsServer::new(handler);
             builder = builder.add_service(streams_service);

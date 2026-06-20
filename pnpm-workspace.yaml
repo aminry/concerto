@@ -1,0 +1,13 @@
+# Concerto JS/TS monorepo (Phase 5, decision V8).
+#
+# `packages/*` holds the shared, transport-agnostic code: `@concerto/client`
+# (generated proto types + the DataClient seam, 507.5) consumed by web + mobile,
+# and `@concerto/ui` (523, decision D11 — the extracted React-DOM inbox renderer)
+# consumed by desktop + web. `apps/web` (519) + `apps/desktop` (523) consume
+# `@concerto/ui`; `apps/mobile` (508) shares only `@concerto/client` (it builds
+# its own RN tree, D11).
+packages:
+  - 'packages/*'
+  - 'apps/web'
+  - 'apps/desktop'
+  - 'apps/mobile'

@@ -2,6 +2,15 @@
 
 *Sub-system design doc. Inherits locked decisions from `00_Architecture_Overview.md` §6.9 (Expo Push wrapping APNs/FCM in V1.0, direct APNs/FCM as a V1.5 swap). PRD §16.6 + §15.1.6 define the wakeup-only payload contract.*
 
+> **Amendment (2026-06-14 — Phase-5 planning reconciliation).** Reconciles this doc with the built code Phase 5 lands on (`tasks/v1.0/PHASE5_PLANNING.md §1/§4`). Where these bullets conflict with the prose below, these govern; the prose is the product intent.
+> - **`subject_kind` taxonomy (D3):** the enum is `{workspace, workarea, session, pull_request, schedule_run}` — `workarea` is first-class (the FK columns in §4 + §3.3's common case), and it is `session` (not `agent_session`). Task 501 freezes it as the `notifications.proto` enum + the `0017` `subject_kind` CHECK.
+> - **Chip identity & dispatch (D4):** `SuggestionChip`/`chip_id`/`ChipId` referenced in §3.3/§3.5 **do not exist**. The real wire type is `Chip` (`crates/proto/proto/concerto/v1/suggestions.proto:29` — `rule_id=1`/`workarea_id=2`/`title=3`/`priority=4`/`created_at_ms=5`/`action=6`, free-form `action` token, no `chip_id`). Notifications persist chips as this shape in `chips_json`; `ActOnChip` identifies a chip by **`rule_id`**; the `action`-token → dispatch map (`approval`/`resolve_* ⇒ Sessions.ResolveApproval`; `message`/`send_* ⇒ Sessions.SendMessage`; `open_*`/`navigate ⇒ navigate event`) is owned by Task 505.
+> - **First-wins single source of truth (D5):** the atomic guard is the existing `tool_approvals` row / `Sessions.ResolveApproval` idempotency (not a second guard on `notifications.action_taken`, which is a denormalized UI marker set *after* the underlying resolve). Avoids a cross-table double-resolve race.
+> - **`WakeupPayload` shape (D6):** the opaque ID-only carrier (`crates/transport/src/api.rs:912`) carries exactly `{notification_id, kind, source}` and nothing else; Task 506's property test enforces the no-PII invariant.
+> - **`push_platform` + `UpdateDevicePushToken` (D8):** `devices.push_platform` CHECK widens to add `'expo'` (migration `0018`, in-place `writable_schema` rewrite — CHECK-widening is otherwise banned) and the deferred `Devices.UpdateDevicePushToken` RPC (`devices.proto:173`) lands; both in Task 503.
+> - **`notification.events` (D9):** the new stream subject rides the opaque `Event.checks_opaque=17` carrier (the `maestro.events`/`checks.*` precedent), with `Subject::NotificationEvents` + `parse_subject` + `StreamsHandler::with_notification_events` registered at **both** `api_server.rs` and `connect_bridge.rs`. No new `Event.body` oneof arm (the oneof is FROZEN through 16). Task 507.
+> - **Timestamps:** all `int64` unix-ms (the Maestro `generated_at_ms` precedent) — no `google.protobuf.Timestamp`.
+
 ---
 
 ## 1. Purpose & scope

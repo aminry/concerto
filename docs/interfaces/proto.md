@@ -189,6 +189,23 @@ service Devices {
   // Return the Core's identity + host/version (design/12 §5.2). Read-only; the
   // `core_pubkey` clients carry from pairing.
   rpc GetCoreInfo(google.protobuf.Empty) returns (CoreInfo);
+  // Phase 5 (Task 503): register or refresh a device's push token + platform —
+  // writes the already-existing `devices.push_token` / `devices.push_platform`
+  // columns (the DEFERRED RPC noted above). Idempotent; an unknown device id
+  // fails `NOT_FOUND`; a `push_platform` outside {apns,fcm,expo} fails
+  // `INVALID_ARGUMENT`. Appended AFTER GetCoreInfo with a new rpc number; the
+  // RPCs above are untouched.
+  rpc UpdateDevicePushToken(UpdateDevicePushTokenRequest) returns (google.protobuf.Empty);
+}
+```
+
+### message `UpdateDevicePushTokenRequest`
+
+```proto
+message UpdateDevicePushTokenRequest {
+  string device_id = 1;
+  string push_token = 2;
+  string push_platform = 3;
 }
 ```
 
@@ -465,6 +482,178 @@ message MaestroTurn {
   string role = 1;
   string text = 2;
   int64 created_at_ms = 3; // unix epoch ms
+}
+```
+
+## `crates/proto/proto/concerto/v1/notifications.proto`
+
+- package: `concerto.v1`
+
+### enum `NotificationKind`
+
+```proto
+enum NotificationKind {
+  NOTIFICATION_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_KIND_TOOL_APPROVAL_NEEDED = 1;
+  NOTIFICATION_KIND_AGENT_COMPLETED_WITH_MESSAGE = 2;
+  NOTIFICATION_KIND_AGENT_CRASHED = 3;
+  NOTIFICATION_KIND_PR_STATE_CHANGED = 4;
+  NOTIFICATION_KIND_CHECK_RUN_FAILED = 5;
+  NOTIFICATION_KIND_SCHEDULE_RUN_COMPLETED = 6;
+}
+```
+
+### enum `NotificationSubjectKind`
+
+```proto
+enum NotificationSubjectKind {
+  NOTIFICATION_SUBJECT_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_SUBJECT_KIND_WORKSPACE = 1;
+  NOTIFICATION_SUBJECT_KIND_WORKAREA = 2;
+  NOTIFICATION_SUBJECT_KIND_SESSION = 3;
+  NOTIFICATION_SUBJECT_KIND_PULL_REQUEST = 4;
+  NOTIFICATION_SUBJECT_KIND_SCHEDULE_RUN = 5;
+}
+```
+
+### message `ToolApprovalContext`
+
+```proto
+message ToolApprovalContext {
+  string approval_id = 1;
+  string session_id = 2;
+  string tool_name = 3;
+  string payload_json = 4;
+  bool urgent = 5;
+  optional string destructive_label = 6;
+}
+```
+
+### message `Notification`
+
+```proto
+message Notification {
+  string id = 1;                            // ULID
+  NotificationKind kind = 2;
+  NotificationSubjectKind subject_kind = 3;
+  string subject_id = 4;
+  optional string workspace_id = 5;
+  optional string workarea_id = 6;          // most notifications are workarea-scoped
+  optional string session_id = 7;
+  string title = 8;
+  string body = 9;                          // short; full content via GetNotification
+  repeated Chip chips = 10;                 // top suggestion chips (suggestions.proto)
+  string severity = 11;                     // "low" | "medium" | "high"
+  int64 created_at_ms = 12;
+  optional int64 read_at_ms = 13;
+  optional string superseded_by = 14;       // de-dup self-reference
+  optional string action_taken = 15;        // chip rule_id or "opened"
+  optional int64 action_taken_at_ms = 16;
+  optional string action_taken_by_device_id = 17;
+  optional ToolApprovalContext approval = 18;  // set iff kind == TOOL_APPROVAL_NEEDED
+}
+```
+
+### message `NotificationDelivery`
+
+```proto
+message NotificationDelivery {
+  string notification_id = 1;
+  string device_id = 2;
+  optional int64 delivered_at_ms = 3;
+  optional int64 fetched_at_ms = 4;
+}
+```
+
+### message `InboxFilter`
+
+```proto
+message InboxFilter {
+  optional string workspace_id = 1;
+  optional string workarea_id = 2;
+  bool unread_only = 3;
+  uint32 limit = 4;
+}
+```
+
+### service `Notifications`
+
+```proto
+service Notifications {
+  // The chronological inbox feed (design/14 §5.1). Newest-first; de-dup-
+  // superseded rows are excluded.
+  rpc GetInbox(InboxFilter) returns (InboxResponse);
+  // Post-wakeup fetch of one notification's full payload over the E2EE channel
+  // (design/14 §3.3); records the per-device `fetched_at`.
+  rpc GetNotification(GetNotificationRequest) returns (Notification);
+  // Mark a notification read (idempotent; syncs via `notification.read`).
+  rpc MarkRead(MarkReadRequest) returns (google.protobuf.Empty);
+  // Act on an action chip (design/14 §3.5/§6.3): resolve approval / send
+  // message / navigate. First-wins via the existing tool_approvals guard (D5);
+  // the loser gets `already_resolved = true`.
+  rpc ActOnChip(ActOnChipRequest) returns (ActOnChipResponse);
+  // Per-workspace notification opt-out (design/14 §3.8 — enterprise-private).
+  rpc UpdateWorkspaceSettings(UpdateWorkspaceNotifyRequest) returns (google.protobuf.Empty);
+}
+```
+
+### message `InboxResponse`
+
+```proto
+message InboxResponse {
+  repeated Notification notifications = 1;
+}
+```
+
+### message `GetNotificationRequest`
+
+```proto
+message GetNotificationRequest {
+  string id = 1;
+  // The acting device (records `notification_deliveries.fetched_at`).
+  string device_id = 2;
+}
+```
+
+### message `MarkReadRequest`
+
+```proto
+message MarkReadRequest {
+  string id = 1;
+}
+```
+
+### message `ActOnChipRequest`
+
+```proto
+message ActOnChipRequest {
+  string notification_id = 1;
+  // The chip's `rule_id` (D4).
+  string chip_id = 2;
+  string device_id = 3;
+}
+```
+
+### message `ActOnChipResponse`
+
+```proto
+message ActOnChipResponse {
+  // True iff this device lost the first-wins race (already acted on).
+  bool already_resolved = 1;
+  // The dispatch the chip resolved to: "resolve_approval" | "send_message" |
+  // "navigate" (design/14 §6.3).
+  string dispatch_kind = 2;
+  // The dispatch argument (decision token / prompt / navigate target).
+  string dispatch_arg = 3;
+}
+```
+
+### message `UpdateWorkspaceNotifyRequest`
+
+```proto
+message UpdateWorkspaceNotifyRequest {
+  string workspace_id = 1;
+  bool opt_out = 2;
 }
 ```
 

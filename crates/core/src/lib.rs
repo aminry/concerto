@@ -22,6 +22,7 @@ pub mod audit;
 pub mod boot;
 pub mod conn_transport;
 pub mod connect_bridge;
+pub mod connect_bridge_tls;
 pub mod error_map;
 pub mod handlers;
 pub mod llm;
@@ -34,6 +35,7 @@ pub mod logging;
 // `agent_supervisor`/`scheduler`/`suggestions`); the Windows lane omits it.
 #[cfg(unix)]
 pub mod maestro;
+pub mod notifications;
 pub mod pid_file;
 pub mod repo_manager;
 pub mod runtime;

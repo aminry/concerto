@@ -2,6 +2,12 @@
 
 *Sub-system design doc. Inherits locked decisions from `00_Architecture_Overview.md` §6.6 (Connect-Web with HTTP/SSE fallback, V1.0 not Iroh-in-browser) + §6.8 (same React tree as Desktop). PRD §8.5 + §15.3 define the product surface.*
 
+> **Amendment (2026-06-14 — Phase-5 planning reconciliation).** Reconciles this doc with built reality + the Phase-5 plan (`tasks/v1.0/PHASE5_PLANNING.md §1`). These bullets govern where they conflict with the prose.
+> - **TS proto codegen is net-new (D10):** there is no TypeScript codegen today (Desktop hand-mirrors the protos). Task 507.5 stands up the repo's first codegen — **buf + `@connectrpc/connect-web` + `@bufbuild/protobuf`** (the §3.2 named choice) — using **gRPC-Web binary framing** to the bridge (avoids the prost-serde snake_case vs connect-es camelCase JSON mismatch). The "shared package extraction" the prose assumes is therefore *foundational*, not a move.
+> - **Package boundary (D11):** `@concerto/client` (generated proto types + the `DataClient` interface + `createTauriDataClient`) is shared by desktop + web + mobile; `@concerto/ui` (the extracted React-DOM renderer) is reused by desktop + web only. The `DataClient` adapter pattern (§3.1) is real but currently unbuilt — Task 507.5 defines it and refactors Desktop's `client.ts` onto it.
+> - **Connect-Web bridge posture (D15):** the bridge (`crates/core/src/connect_bridge.rs`) is built and live but **default-OFF** (`CONCERTO_CONNECT_BRIDGE`) and currently **auth-less + TLS-less**. It is never exposed on a non-loopback interface until Task 521 adds LAN-direct TLS pinned to the Core identity and Task 522 adds ephemeral session-cert auth (gated by 210's auth middleware). Loopback-only until then.
+> - **Ephemeral pairing double (D... §2):** Task 522's Tier-2 path uses a **stub-phone signer** for the 8h `web_ephemeral` session cert; the real phone-mediated flow (mobile 511 signs for the browser) is Tier-3. So 522 completes in the web track ahead of mobile.
+
 ---
 
 ## 1. Purpose & scope

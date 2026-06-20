@@ -28,6 +28,7 @@ use concerto_proto::v1::devices_server::Devices as DevicesService;
 use concerto_proto::v1::{
     CompletePairingRequest, CompletePairingResponse, CoreInfo as ProtoCoreInfo, DeviceEntry,
     ListDevicesResponse, PairingChallenge as ProtoPairingChallenge, RevokeDeviceRequest,
+    UpdateDevicePushTokenRequest,
 };
 
 use crate::error_map::error_to_status;
@@ -141,6 +142,25 @@ impl DevicesService for DevicesHandler {
         _request: Request<()>,
     ) -> Result<Response<ProtoCoreInfo>, Status> {
         Ok(Response::new(core_info_to_proto(self.devices.core_info())))
+    }
+
+    #[tracing::instrument(skip_all, name = "Devices::UpdateDevicePushToken")]
+    async fn update_device_push_token(
+        &self,
+        request: Request<UpdateDevicePushTokenRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        if req.device_id.is_empty() {
+            return Err(Status::invalid_argument("device_id is required"));
+        }
+        if req.push_token.is_empty() {
+            return Err(Status::invalid_argument("push_token is required"));
+        }
+        self.devices
+            .update_push_token(&req.device_id, &req.push_token, &req.push_platform)
+            .await
+            .map_err(error_to_status)?;
+        Ok(Response::new(()))
     }
 }
 

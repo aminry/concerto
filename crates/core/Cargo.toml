@@ -153,6 +153,22 @@ tempfile = "3"
 # events to a configured endpoint. rustls-tls backend (workspace pin) so
 # it builds on the Windows CI lane and stays cargo-deny clean.
 reqwest = { workspace = true }
+# Task 521: LAN-direct TLS for the Connect-Web bridge (`design/11 §3.4` Path A,
+# `design/17 §3.3`). `rcgen` mints the self-signed cert deterministically derived
+# from the Core's Ed25519 identity pubkey; `tokio-rustls` terminates the LAN
+# browser's outer `https://` TLS. BOTH versions are ALREADY in the workspace tree
+# (rcgen 0.14 + tokio-rustls 0.26 via the relay crate, Task 215), so promoting
+# them to direct core deps adds NO new external crate to the graph and
+# `cargo deny` is unchanged. rustls/ring (NOT native-tls/openssl) — Windows-lane
+# friendly (Task 113); nothing here is `#[cfg(unix)]` (the bridge is the one
+# transport that also serves on Windows).
+rcgen = "0.14"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+# Task 521: SHA-256 of the cert SubjectPublicKeyInfo is the value a LAN client
+# pins (`design/17 §3.3`). `sha2` was a dev-dep (Task 315 webhook HMAC tests);
+# the bridge-TLS derivation needs it in the production graph. Workspace pin;
+# already vetted — no new crate, `cargo deny` unchanged.
+sha2 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Used by pid_file to test whether a recorded PID is still alive via
@@ -201,6 +217,9 @@ notify = { version = "8" }
 [dev-dependencies]
 tempfile = "3"
 serde_json.workspace = true
+# Task 506: property-based privacy test (no PII in WakeupPayload). Test-only;
+# never enters the production graph. cargo-deny-vetted (PHASE5_PLANNING D13).
+proptest = "1"
 # Task 315: the inbound-webhook Tier-2 tests drive `VcsHandle::ingest_webhook`
 # against 313's `testkit` `FakeGitHub` (the targeted-invalidation re-fetch +
 # emit side) + compute reference HMAC signatures with `hmac`/`sha2`. `testkit`
@@ -227,8 +246,9 @@ reqwest = { workspace = true, features = ["stream"] }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 # Task 12: `start_paused = true` requires tokio's `test-util` feature.
 # Layered as a dev-dep so the prod binary doesn't pull in the testing
-# clock primitives.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "net", "test-util"] }
+# clock primitives. Task 521 adds `io-util` so the LAN-direct TLS test can use
+# `AsyncReadExt`/`AsyncWriteExt` on the raw pinned TLS stream.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs", "net", "io-util", "test-util"] }
 # Task 13: in-process gRPC client used by the integration test.
 tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
 tower = { workspace = true }

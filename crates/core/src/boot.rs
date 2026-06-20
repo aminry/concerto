@@ -400,6 +400,9 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         Arc<crate::security::pairing::PairingCoordinator>,
         Arc<crate::security::devices::DeviceManager>,
         Arc<dyn concerto_identity::DeviceCertIssuer>,
+        // Task 521: the Core identity public key, carried out so the
+        // Connect-Web bridge can derive its identity-bound LAN-direct TLS cert.
+        concerto_identity::PublicKey,
     )> = match home::home_dir() {
         Some(core_home) => {
             let secrets = concerto_keychain::Secrets::new();
@@ -538,7 +541,12 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                         iroh_enabled,
                         "core device-cert issuer + pairing coordinator + device manager constructed"
                     );
-                    Some((coordinator, Arc::new(device_manager), auth_issuer))
+                    Some((
+                        coordinator,
+                        Arc::new(device_manager),
+                        auth_issuer,
+                        core_pubkey,
+                    ))
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -557,11 +565,17 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
         }
     };
     let pairing_coordinator: Option<Arc<crate::security::pairing::PairingCoordinator>> =
-        identity_subsystems.as_ref().map(|(c, _, _)| Arc::clone(c));
-    let auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>> =
-        identity_subsystems.as_ref().map(|(_, _, i)| Arc::clone(i));
+        identity_subsystems
+            .as_ref()
+            .map(|(c, _, _, _)| Arc::clone(c));
+    let auth_issuer: Option<Arc<dyn concerto_identity::DeviceCertIssuer>> = identity_subsystems
+        .as_ref()
+        .map(|(_, _, i, _)| Arc::clone(i));
+    // Task 521: the Core identity pubkey for LAN-direct TLS cert derivation.
+    let core_identity_pubkey: Option<concerto_identity::PublicKey> =
+        identity_subsystems.as_ref().map(|(_, _, _, pk)| *pk);
     let device_manager: Option<Arc<crate::security::devices::DeviceManager>> =
-        identity_subsystems.map(|(_, d, _)| d);
+        identity_subsystems.map(|(_, d, _, _)| d);
 
     // Task 210 — CLOSE THE TASK-209 STARTUP-MIRROR GAP. The in-memory
     // `revoked_set` the auth middleware + issuer read starts EMPTY each boot;
@@ -934,6 +948,26 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     };
     let factory_vcs_privacy_resolver = vcs_privacy_resolver.clone();
 
+    // Shared-event-channel fix (design/14 R-8, §5.3): construct ONE
+    // `NotificationHandle` with ONE `notification.events` broadcast here, and
+    // thread a CLONE into every front door — the UDS `ApiServerActor`
+    // (`with_notif_handle`), the Iroh `CoreServiceSet` (`notif_handle`), the
+    // Connect-Web bridge's `BridgeServices` (via the actor), AND the live
+    // `notify_user` sink (`LiveNotifySink`). Cloning a `NotificationHandle`
+    // preserves the same `events_tx` sender + event sink, so a
+    // `notification.read`/`created`/`updated`/`acted` emitted on ANY transport (or
+    // by `notify_user`) reaches `notification.events` subscribers on EVERY
+    // transport. Previously each path built its own `with_event_channel` handle,
+    // fragmenting the bus so cross-device read-sync + live `notify_user` inbox
+    // events never propagated.
+    let shared_notif_handle = crate::notifications::handle::NotificationHandle::new(
+        Arc::clone(&persistence),
+        Arc::new(crate::notifications::push::ExpoPushBackend::new(None)),
+        Arc::new(crate::notifications::handle::NoEvents),
+    )
+    .with_event_channel();
+    let factory_notif_handle = shared_notif_handle.clone();
+
     // Task 414: construct the live Maestro handle, gated on the Maestro being
     // enabled (403's `maestro_state.enabled`, §4.6) AND a managed-policy model
     // permission (D1: `enterpriseDataPrivacy=true` + an external `default_model`
@@ -1040,10 +1074,26 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                     //    dropping the `JoinHandle` does NOT abort the task, so it
                     //    runs for the runtime's lifetime (accept-loops, 0600,
                     //    survives transient accept errors).
+                    // Task 507b-ii + shared-event-channel fix: wire the LIVE
+                    // side-channel handles so `notify_user` lands a real
+                    // notification (via sub-system 14's `NotificationHandle`) and
+                    // `propose_chip` appends to the Maestro-owned slate. The sink
+                    // now uses a CLONE of the SHARED, `with_event_channel`-backed
+                    // handle (the same broadcast every transport's StreamsHandler
+                    // subscribes to) instead of a fresh `NoEvents` handle — so a
+                    // maestro `notify_user` emits `notification.created` live onto
+                    // `notification.events` (design/14 §6.1), not just a silent DB
+                    // row. The subject id falls back to the `"maestro"` sentinel;
+                    // the live session id is not resolved on this fire-and-forget
+                    // path.
+                    let notify_handle = shared_notif_handle.clone();
+                    let live_sink =
+                        crate::maestro::tools::side::LiveNotifySink::new(notify_handle, None);
                     let template = crate::maestro::mcp::MaestroMcpServer::with_read_handles(
                         Arc::clone(&persistence),
                         Arc::clone(&summary_cache),
-                    );
+                    )
+                    .with_side_handles(live_sink, crate::maestro::tools::side::ChipSlate::new());
                     let listen_socket = socket.clone();
                     let _listener = tokio::spawn(async move {
                         if let Err(e) =
@@ -1142,12 +1192,14 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
     let factory_pairing = pairing_coordinator.clone();
     let factory_device_manager = device_manager.clone();
     let factory_auth_issuer = auth_issuer.clone();
+    // Task 521: captured (Copy) for the bridge's identity-bound TLS cert.
+    let factory_core_pubkey = core_identity_pubkey;
     runtime
         .supervisor_mut()
         .expect("supervisor present at boot")
         .spawn::<ApiServerActor, _>(
             move || {
-                ApiServerActor::with_managers(
+                let mut actor = ApiServerActor::with_managers(
                     Arc::clone(&factory_started_at),
                     factory_view.clone(),
                     Some(factory_repo_handle.clone()),
@@ -1175,6 +1227,22 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
                 // Task 411 (D10): attach the privacy resolver additively after
                 // `with_managers` (kept off the long ctor arg list).
                 .with_vcs_privacy_resolver(factory_vcs_privacy_resolver.clone())
+                // Shared-event-channel fix: hand the actor a CLONE of the single
+                // shared notifications handle so the UDS path AND the Connect-Web
+                // bridge it builds both publish onto / subscribe from the SAME
+                // `notification.events` broadcast as the Iroh path + the
+                // `notify_user` sink (design/14 R-8, §5.3). The factory may run
+                // again on actor restart; each restart re-clones the same handle,
+                // preserving the one broadcast.
+                .with_notif_handle(factory_notif_handle.clone());
+                // Task 521: attach the Core identity pubkey so the Connect-Web
+                // bridge can derive its identity-bound LAN-direct TLS cert when
+                // `CONCERTO_CONNECT_BRIDGE_TLS` is set. `None` (keychain-less
+                // Core) leaves the bridge plain-HTTP.
+                if let Some(pk) = factory_core_pubkey {
+                    actor = actor.with_core_pubkey(pk);
+                }
+                actor
             },
             ApiServerConfig {
                 socket_path: socket_path.clone(),
@@ -1226,6 +1294,12 @@ pub async fn start(config: RuntimeConfig) -> Result<BootOutcome> {
             nat_stats: Some(Arc::new(crate::handlers::runtime::IrohNatStatsSource(
                 Arc::clone(&iroh.transport),
             ))),
+            // Shared-event-channel fix: the Iroh front door shares the SAME
+            // notifications handle (and `notification.events` broadcast) as the
+            // UDS path + the Connect-Web bridge + the `notify_user` sink, so an
+            // event emitted on any transport reaches Iroh subscribers and an Iroh
+            // `MarkRead` reaches the others (design/14 R-8, §5.3).
+            notif_handle: Some(shared_notif_handle.clone()),
         };
 
         // The serve loop: `serve_iroh` runs the transport's accept loop (its own

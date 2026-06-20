@@ -1,0 +1,269 @@
+/* Concerto Web Client — design system + shell chrome (Task 519; the inbox
+   component + its scoped styles were extracted to @concerto/ui in 523). This
+   file owns the web app's GLOBAL design tokens (the shell chrome reads them) and
+   the shell itself: the app frame, the sticky top bar, the brand mark, the
+   connect bar, and the shared `.btn`. The inbox component brings its OWN
+   `.inbox`-scoped tokens + rules via `@concerto/ui/inbox.css` (imported first).
+   Dark by default with a light-mode fallback via prefers-color-scheme. */
+
+@import "@concerto/ui/inbox.css";
+
+:root {
+  --bg: #0b0d12;
+  --surface: #14171f;
+  --surface-2: #1b1f29;
+  --border: #262b37;
+  --text: #e7e9ee;
+  --text-dim: #9aa3b2;
+  --text-faint: #6b7280;
+  --accent: #6366f1;
+  --accent-hover: #7c7ff4;
+  --radius: 12px;
+  --radius-sm: 8px;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: radial-gradient(1200px 600px at 50% -10%, #161a24 0%, var(--bg) 60%);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Top bar ---------------------------------------------------------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  padding: 14px 24px;
+  background: rgba(11, 13, 18, 0.8);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.brand-mark {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, var(--accent), #a855f7);
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.6);
+  align-self: center;
+}
+.brand-name {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-size: 16px;
+}
+.brand-sub {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+/* Live-updates indicator (Task 520) — a subtle pill in the shell chrome that
+   shows whether new notifications arrive via the `notification.events` stream
+   ("Live") or the AckOffset polling fallback ("Polling"). It is shell chrome,
+   deliberately NOT part of the @concerto/ui inbox. */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  margin-left: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+.live-badge .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.live-badge.live {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.4);
+}
+.live-badge.live .live-dot {
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.7);
+  animation: live-pulse 1.8s ease-in-out infinite;
+}
+.live-badge.polling {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.4);
+}
+.live-badge.polling .live-dot {
+  background: #fbbf24;
+}
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-badge.live .live-dot {
+    animation: none;
+  }
+}
+
+/* Ephemeral browser pairing (Task 522) — session status chip + remember opt-out.
+   Shell chrome only; the @concerto/ui inbox is untouched. */
+.session {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.session-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+.session-badge .session-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.session-badge.paired {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.4);
+}
+.session-badge.paired .session-dot {
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.7);
+}
+.session-badge.cleared {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.4);
+}
+.session-badge.cleared .session-dot {
+  background: #fbbf24;
+}
+.remember {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.remember input {
+  accent-color: var(--accent);
+}
+
+.connect {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.url {
+  width: 260px;
+  max-width: 42vw;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.url:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+
+/* ---- Shell button (the connect bar's primary action) ----------------- */
+.btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 550;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn.primary {
+  background: var(--accent);
+  color: white;
+}
+.btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+/* ---- Content frame --------------------------------------------------- */
+.content {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+  flex: 1;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #f0f2f5;
+    --border: #e3e6eb;
+    --text: #14171f;
+    --text-dim: #515b6b;
+    --text-faint: #8a93a3;
+    color-scheme: light;
+  }
+  body {
+    background: radial-gradient(1200px 600px at 50% -10%, #eef1f6 0%, var(--bg) 60%);
+  }
+  .topbar {
+    background: rgba(246, 247, 249, 0.8);
+  }
+}

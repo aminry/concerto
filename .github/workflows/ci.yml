@@ -30,22 +30,25 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev
+      # No `version:` here — pnpm/action-setup@v4 reads the pinned version from
+      # the root package.json `packageManager` (pnpm@10.5.0). Specifying both
+      # errors with ERR_PNPM_BAD_PM_VERSION.
       - uses: pnpm/action-setup@v4
         if: matrix.os != 'windows-latest'
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         if: matrix.os != 'windows-latest'
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+          # apps/desktop is now a member of the root pnpm workspace (Task 523 —
+          # it consumes @concerto/ui + @concerto/client), so install from the
+          # root lockfile, not apps/desktop's (which no longer exists).
+          cache-dependency-path: pnpm-lock.yaml
       - name: Build desktop frontend (Tauri build.rs requires Vite dist)
         if: matrix.os != 'windows-latest'
-        working-directory: apps/desktop
         run: |
           pnpm install --frozen-lockfile
-          pnpm build
+          pnpm -C apps/desktop build
       - uses: Swatinem/rust-cache@v2
       # Cross-platform Core lanes (design/18 §3.3, design/00 §10):
       #   * macOS + Linux build/lint/test the FULL workspace, agent-host
@@ -57,11 +60,14 @@ jobs:
       #     ConPTY stub (Task 702 owns the real Windows backend). Its
       #     integration test cfg-gates to empty on Windows. So the Windows
       #     lane is honestly green, not green-by-skipping.
-      #   * Windows STILL excludes four crates that are out of scope here:
+      #   * Windows STILL excludes crates that are out of scope here:
       #     `concerto-desktop` (Tauri 2; Mac+Windows is a later desktop
       #     task — no Windows icons shipped yet), `concerto-smoke-client`,
       #     `concerto-test-harness` and `concerto-pair-serve` (all use
-      #     `tokio::net::UnixStream` — UDS dev/test tooling). Per design/00 §10 Desktop is Mac+
+      #     `tokio::net::UnixStream` — UDS dev/test tooling), and
+      #     `concerto-iroh-ffi` (the iOS/Android uniffi native module — built for
+      #     mobile targets by native.yml, and its loopback test dev-deps the
+      #     UDS-only test-harness). Per design/00 §10 Desktop is Mac+
       #     Windows only (no Linux desktop); the Linux lane builds it via
       #     the Tauri deps installed above.
       # arm64 runners are a Task 706 (release/signing matrix) concern; x64
@@ -69,7 +75,7 @@ jobs:
       - name: cargo check
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo check --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve
+            cargo check --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve --exclude concerto-iroh-ffi
           else
             cargo check --workspace --all-targets
           fi
@@ -77,7 +83,7 @@ jobs:
       - name: cargo clippy
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo clippy --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve -- -D warnings
+            cargo clippy --workspace --all-targets --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve --exclude concerto-iroh-ffi -- -D warnings
           else
             cargo clippy --workspace --all-targets -- -D warnings
           fi
@@ -94,7 +100,7 @@ jobs:
       - name: cargo nextest (auto-retries flaky tests)
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo nextest run --workspace --retries 2 --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve
+            cargo nextest run --workspace --retries 2 --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve --exclude concerto-iroh-ffi
           else
             cargo nextest run --workspace --retries 2
           fi
@@ -102,7 +108,7 @@ jobs:
       - name: cargo test --doc (doctests; nextest does not run these)
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo test --workspace --doc --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve
+            cargo test --workspace --doc --exclude concerto-desktop --exclude concerto-smoke-client --exclude concerto-test-harness --exclude concerto-pair-serve --exclude concerto-iroh-ffi
           else
             cargo test --workspace --doc
           fi

@@ -155,6 +155,105 @@ impl NotifySink for NotifyRecorder {
     }
 }
 
+/// The Phase-5 LIVE [`NotifySink`] (Task 507b-ii): bridges the Maestro's
+/// `notify_user` intent to a real notification via the sub-system 14
+/// [`NotificationHandle`].
+///
+/// This swaps the Phase-4 [`NotifyRecorder`] stub for live delivery with **no**
+/// change to the FROZEN `notify_user` MCP schema or [`notify_user`]'s body — the
+/// MCP server simply holds a `LiveNotifySink` instead of a `NotifyRecorder`
+/// (both are `dyn NotifySink`). The [`NotifySink::record`] trait method is
+/// **sync** (the tool body records synchronously and returns the frozen `Ok`),
+/// but [`NotificationHandle::notify`] is **async**; we bridge by mapping the
+/// intent to a [`NotifyRequest`] and `tokio::spawn`-ing the `notify(..)` call.
+/// The tool therefore returns the frozen success immediately (the Maestro
+/// believes the notification was accepted and does not retry), and the row lands
+/// asynchronously — the same fire-and-forget posture the typed stub had, now
+/// backed by real persistence + fan-out.
+///
+/// Intent → request mapping (PHASE5 Task 507b-ii):
+/// - `kind` = [`NotificationKind::AgentCompletedWithMessage`] (the Maestro is
+///   surfacing a message it composed; not a crash/approval/PR event).
+/// - `subject_kind` = [`SubjectKind::Session`], `subject_id` = the Maestro
+///   session id when known (`subject_id` field), else `"maestro"`.
+/// - `title` = `"Concerto"`, `body` = the intent text.
+/// - `severity` = the intent severity mapped onto the sub-system 14 [`Severity`].
+///
+/// Clone-cheap: holds an `Arc`-backed [`NotificationHandle`] (itself `Clone`) and
+/// a cheap `Arc<str>` subject id, so the MCP server clones it per accepted
+/// connection at no real cost.
+#[derive(Clone)]
+pub struct LiveNotifySink {
+    handle: crate::notifications::handle::NotificationHandle,
+    /// The notification subject id: the live Maestro session id when known, else
+    /// the `"maestro"` sentinel (Task 507b-ii). An `Arc<str>` so cloning the sink
+    /// per connection is cheap.
+    subject_id: Arc<str>,
+}
+
+impl LiveNotifySink {
+    /// Build a live sink over `handle`, using `subject_id` for the notification
+    /// subject (the Maestro session id when known). `None` falls back to the
+    /// `"maestro"` sentinel.
+    pub fn new(
+        handle: crate::notifications::handle::NotificationHandle,
+        subject_id: Option<String>,
+    ) -> Self {
+        Self {
+            handle,
+            subject_id: Arc::from(subject_id.unwrap_or_else(|| "maestro".to_string()).as_str()),
+        }
+    }
+
+    /// Map a Maestro `notify_user` severity onto the sub-system 14 [`Severity`].
+    fn map_severity(sev: NotifySeverity) -> crate::notifications::model::Severity {
+        use crate::notifications::model::Severity;
+        match sev {
+            NotifySeverity::Low => Severity::Low,
+            NotifySeverity::Medium => Severity::Medium,
+            NotifySeverity::High => Severity::High,
+        }
+    }
+
+    /// Build the [`NotifyRequest`] an intent maps to (extracted so the Tier-1
+    /// test can assert the mapping without driving the async handle).
+    fn request_for(&self, intent: &NotifyIntent) -> crate::notifications::model::NotifyRequest {
+        use crate::notifications::model::{NotificationKind, NotifyRequest, SubjectKind};
+        NotifyRequest {
+            kind: NotificationKind::AgentCompletedWithMessage,
+            subject_kind: SubjectKind::Session,
+            subject_id: self.subject_id.to_string(),
+            workspace_id: None,
+            workarea_id: None,
+            session_id: None,
+            title: "Concerto".to_string(),
+            body: intent.text.clone(),
+            chips: Vec::new(),
+            approval: None,
+            severity: Some(Self::map_severity(intent.severity)),
+        }
+    }
+}
+
+impl NotifySink for LiveNotifySink {
+    fn record(&self, intent: NotifyIntent) {
+        let handle = self.handle.clone();
+        let req = self.request_for(&intent);
+        // Bridge sync `record()` → async `notify()`: spawn and let the row land
+        // out-of-band. The tool already returned the frozen `Ok`, so a delivery
+        // failure must not panic the in-process MCP server — log and move on.
+        tokio::spawn(async move {
+            if let Err(e) = handle.notify(req).await {
+                tracing::warn!(
+                    target: "concerto::maestro",
+                    error = %e,
+                    "notify_user live delivery failed"
+                );
+            }
+        });
+    }
+}
+
 /// `notify_user(text, severity) → {}` — record the notification intent and
 /// return the FROZEN success output (`Ok`).
 ///

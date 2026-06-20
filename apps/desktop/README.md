@@ -9,9 +9,15 @@ lands in Phase 2 (Task 24+).
 
 ## Dev workflow
 
+`apps/desktop` is a member of the root pnpm workspace (Task 523 — it consumes
+the shared `@concerto/ui` inbox renderer + `@concerto/client`). Install from the
+repo root, then run the dev server from here:
+
 ```sh
-# from this directory
+# from the repo root (one install for the whole JS workspace)
 pnpm install
+
+# from this directory
 pnpm tauri dev
 ```
 

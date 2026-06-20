@@ -1,0 +1,220 @@
+/* @concerto/ui — shared notifications-inbox styles (Task 523).
+   Extracted from apps/web/src/index.css so desktop + web render the same inbox.
+   The consumer imports this once (`import "@concerto/ui/inbox.css"`).
+
+   IMPORTANT: every rule (and the design tokens it depends on) is scoped under
+   `.inbox` — the root element the `Inbox` component renders. Scoping (rather than
+   `:root`) keeps the inbox self-contained and prevents its token names
+   (--surface / --border / --accent …) from colliding with a host's own global
+   token system (e.g. the desktop shell uses the SAME names as space-separated
+   RGB channels for Tailwind's `rgb(var(--x) / <alpha>)`). Dark by default with a
+   light-mode fallback via prefers-color-scheme. */
+
+.inbox {
+  --bg: #0b0d12;
+  --surface: #14171f;
+  --surface-2: #1b1f29;
+  --border: #262b37;
+  --text: #e7e9ee;
+  --text-dim: #9aa3b2;
+  --text-faint: #6b7280;
+  --accent: #6366f1;
+  --accent-hover: #7c7ff4;
+  --high: #ef4444;
+  --medium: #f59e0b;
+  --low: #38bdf8;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+/* ---- Shared button (the inbox's mark-read affordance) ---------------- */
+.inbox .btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 550;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+}
+.inbox .btn:active {
+  transform: translateY(1px);
+}
+.inbox .btn.ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+.inbox .btn.ghost:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+/* ---- Inbox toolbar ---------------------------------------------------- */
+.inbox .toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.inbox .title {
+  font-size: 22px;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--text);
+}
+.inbox .toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.inbox .toggle input {
+  accent-color: var(--accent);
+}
+
+/* ---- Banners + empty states ------------------------------------------ */
+.inbox .banner {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.inbox .banner.error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.inbox .empty {
+  text-align: center;
+  padding: 72px 24px;
+  color: var(--text-dim);
+}
+.inbox .empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+.inbox .empty-sub {
+  font-size: 14px;
+  margin: 0;
+}
+
+/* ---- Feed ------------------------------------------------------------ */
+.inbox .feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.inbox .card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 18px 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.inbox .card.read {
+  opacity: 0.62;
+}
+.inbox .accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--low);
+}
+.inbox .sev-high .accent {
+  background: var(--high);
+}
+.inbox .sev-medium .accent {
+  background: var(--medium);
+}
+.inbox .card-body {
+  flex: 1;
+  min-width: 0;
+}
+.inbox .card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.inbox .kind {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.inbox .dot {
+  color: var(--text-faint);
+}
+.inbox .sev-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+.inbox .sev-tag.high {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+.inbox .sev-tag.medium {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fcd34d;
+}
+.inbox .sev-tag.low {
+  background: rgba(56, 189, 248, 0.13);
+  color: #7dd3fc;
+}
+.inbox .spacer {
+  flex: 1;
+}
+.inbox .time {
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.inbox .card-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 2px;
+  line-height: 1.35;
+  color: var(--text);
+}
+.inbox .card-text {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-color-scheme: light) {
+  .inbox {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #f0f2f5;
+    --border: #e3e6eb;
+    --text: #14171f;
+    --text-dim: #515b6b;
+    --text-faint: #8a93a3;
+  }
+}

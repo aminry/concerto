@@ -12,6 +12,13 @@
 # Seeded with EXACTLY the V0.1 capabilities (net behavior unchanged).
 
 core-boot
+# Task 507: the live `Notifications` gRPC service (sub-system 14). Seeds a row
+# into the booted Core's SQLite DB and asserts it round-trips via
+# `Notifications.GetInbox` over the loopback UDS. Self-contained — depends ONLY
+# on core-boot's exports (SOCKET / SMOKE_CLIENT / CORE_DATA_DIR), so it runs
+# early and `--only notifications` boots just the shared Core + this check. (The
+# file prefix 92 is cosmetic; manifest order is authoritative.)
+notifications
 persistence-integrity
 project-repo-clone
 # Task 302: blobless+sparse clone + per-(workarea, repo) cone-set + status

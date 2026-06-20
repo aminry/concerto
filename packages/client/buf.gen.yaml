@@ -1,0 +1,14 @@
+# TS proto codegen (Task 507.5, decision D10): generate protobuf-es messages +
+# connect-es service shapes from the canonical Rust protos into `src/gen`.
+# Run via `pnpm -C packages/client generate`. The web client speaks gRPC-Web
+# BINARY framing to the Core's connect-web bridge, so there is no snake_case vs
+# camelCase JSON mismatch (D10).
+version: v2
+inputs:
+  - directory: ../../crates/proto/proto
+plugins:
+  - local: protoc-gen-es
+    out: src/gen
+    opt:
+      - target=ts
+clean: true

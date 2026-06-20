@@ -165,6 +165,12 @@ pub struct MaestroEvent {
     pub frame: Vec<u8>,
 }
 
+// Task 507 — the streams-layer carrier for a `notification.events` event
+// (`NotificationStreamEvent`) is defined in the platform-agnostic
+// `notifications::events` (so the non-`#[cfg(unix)]` producer compiles on every
+// target); this `#[cfg(unix)]`-gated handler imports it for the subject mapping.
+use crate::notifications::events::NotificationStreamEvent;
+
 /// Parsed subject — V0.1 catalog only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject {
@@ -216,6 +222,14 @@ pub enum Subject {
     /// subject is valid but yields no events. Count-bounded like every
     /// non-`session.io` subject.
     MaestroEvents,
+    /// Task 507 — `notification.events`. The notification lifecycle events
+    /// (`notification.created` / `updated` / `read` / `acted`, design/14 §5.3)
+    /// carried as an opaque frame on the non-oneof `Event.checks_opaque = 17`
+    /// field (NO new `body` oneof arm — frozen through 16). Unscoped (a single
+    /// global notifications stream). Producer wired via
+    /// [`StreamsHandler::with_notification_events`] by the 507 service half;
+    /// `None` ⇒ the subject is valid but yields no events. Count-bounded.
+    NotificationEvents,
 }
 
 /// How a [`SubjectBuffer`] bounds its ring: by event count (most
@@ -471,6 +485,13 @@ pub struct StreamsHandler {
     /// Task 414's** — `None` in 401.5, so the subject is valid but produces no
     /// events (the honest "Maestro not running" answer).
     maestro_events: Option<broadcast::Sender<MaestroEvent>>,
+    /// Optional notifications event source (Task 507). The notification actor's
+    /// `notification.events` broadcast, wired via
+    /// [`Self::with_notification_events`]. Each [`NotificationStreamEvent`]
+    /// carries an opaque frame; the `notification.events` subject (unscoped)
+    /// wraps it into `Event.checks_opaque`. `None` ⇒ the subject is valid but
+    /// produces no events.
+    notification_events: Option<broadcast::Sender<NotificationStreamEvent>>,
     /// Per-subject ring-buffer + offset + ack state, keyed by the
     /// canonical subject string. Replaces the V0.1 bare offset map; the
     /// offset counter now lives inside each [`SubjectBuffer`].
@@ -493,6 +514,7 @@ impl StreamsHandler {
             transport_events: None,
             vcs_events: None,
             maestro_events: None,
+            notification_events: None,
             buffers: Arc::new(Mutex::new(HashMap::new())),
             next_subscriber_id: Arc::new(AtomicU64::new(0)),
         }
@@ -533,6 +555,18 @@ impl StreamsHandler {
     /// but yields no events). Returns `self` for chaining.
     pub fn with_maestro_events(mut self, maestro_events: broadcast::Sender<MaestroEvent>) -> Self {
         self.maestro_events = Some(maestro_events);
+        self
+    }
+
+    /// Attach the notification actor's `notification.events` broadcast (Task 507)
+    /// so the `notification.events` subject has a producer. Wired by the
+    /// notifications service half from the `NotificationHandle`'s event sender.
+    /// Returns `self` for chaining.
+    pub fn with_notification_events(
+        mut self,
+        notification_events: broadcast::Sender<NotificationStreamEvent>,
+    ) -> Self {
+        self.notification_events = Some(notification_events);
         self
     }
 
@@ -684,6 +718,24 @@ impl StreamsHandler {
                         let rx = tx.subscribe();
                         let live = BroadcastStream::new(rx)
                             .filter_map(|item| item.ok().map(map_maestro_event));
+                        Ok((Vec::new(), Box::pin(live)))
+                    }
+                    None => {
+                        let empty = futures::stream::pending::<Event>();
+                        Ok((Vec::new(), Box::pin(empty)))
+                    }
+                }
+            }
+            Subject::NotificationEvents => {
+                // Task 507: wrap each notification event's opaque frame into a
+                // body-LESS Event carrying ONLY `checks_opaque` (no new oneof
+                // arm). When no producer is attached the subject is valid but
+                // yields nothing.
+                match &self.notification_events {
+                    Some(tx) => {
+                        let rx = tx.subscribe();
+                        let live = BroadcastStream::new(rx)
+                            .filter_map(|item| item.ok().map(map_notification_event));
                         Ok((Vec::new(), Box::pin(live)))
                     }
                     None => {
@@ -1062,6 +1114,7 @@ pub fn parse_subject(s: &str) -> Result<Subject, Status> {
         // Task 401.5: the Maestro lifecycle subject (`design/08 §5.4`). Bare,
         // unscoped string (a single global Maestro stream).
         "maestro.events" => Ok(Subject::MaestroEvents),
+        "notification.events" => Ok(Subject::NotificationEvents),
         _ => Err(invalid_subject(s)),
     }
 }
@@ -1291,6 +1344,17 @@ fn map_vcs_event(ev: VcsEvent) -> Event {
 /// FROZEN JSON Task 414's Maestro actor builds (design/08 §5.4). `offset` is
 /// left 0; the per-subject pump stamps it.
 fn map_maestro_event(ev: MaestroEvent) -> Event {
+    Event {
+        offset: 0,
+        at: Some(now_ts()),
+        body: None,
+        checks_opaque: Some(ev.frame),
+    }
+}
+
+/// Task 507: wrap a `notification.events` frame into a body-less [`Event`]
+/// carrying ONLY the non-oneof `checks_opaque = 17` field (no oneof arm).
+fn map_notification_event(ev: NotificationStreamEvent) -> Event {
     Event {
         offset: 0,
         at: Some(now_ts()),
@@ -1615,6 +1679,27 @@ mod tests {
         // the non-oneof `checks_opaque = 17` field (no new oneof arm — D7).
         let frame = br#"{"kind":"digest_generated"}"#.to_vec();
         let ev = map_maestro_event(MaestroEvent {
+            frame: frame.clone(),
+        });
+        assert!(ev.body.is_none(), "no oneof body");
+        assert_eq!(ev.checks_opaque, Some(frame));
+    }
+
+    #[test]
+    fn parse_notification_events_subject_ok() {
+        // Task 507: `notification.events` parses to the (unscoped) subject.
+        assert_eq!(
+            parse_subject("notification.events").unwrap(),
+            Subject::NotificationEvents
+        );
+    }
+
+    #[test]
+    fn map_notification_event_carries_only_checks_opaque() {
+        // Task 507: a notification event maps to a body-LESS Event carrying ONLY
+        // the non-oneof `checks_opaque = 17` field (no new oneof arm).
+        let frame = br#"{"kind":"notification.created","id":"n-1"}"#.to_vec();
+        let ev = map_notification_event(NotificationStreamEvent {
             frame: frame.clone(),
         });
         assert!(ev.body.is_none(), "no oneof body");

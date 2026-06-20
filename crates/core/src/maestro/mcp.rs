@@ -59,6 +59,7 @@ use tokio::sync::Mutex;
 use concerto_persist::Persistence;
 
 use super::summary::SummaryCache;
+use super::tools::side::{ChipSlate, LiveNotifySink};
 use super::tools::{self, ToolKind};
 
 /// The MCP server name the Maestro CLI dials. FROZEN (design/08 §3.2): the CLI's
@@ -79,8 +80,14 @@ pub struct MaestroMcpServer {
     // and only exercise registration + the typed-unimplemented seam); `Some`
     // (built via [`with_read_handles`]) routes the 11 read tools to the live
     // `tools::read::dispatch_read`. Write/side-channel tools keep the frozen
-    // typed-unimplemented seam regardless (Milestone 2).
+    // typed-unimplemented seam regardless unless side handles are wired.
     handles: Option<ReadHandles>,
+    // The side-channel handles (Task 507b-ii). `None` keeps `notify_user` /
+    // `propose_chip` on the frozen typed-unimplemented seam; `Some` (built via
+    // [`with_side_handles`]) routes the side-channel tools to the live
+    // `tools::side::dispatch_side` — `notify_user` lands a real notification via
+    // the [`LiveNotifySink`] and `propose_chip` appends to the [`ChipSlate`].
+    side: Option<SideHandles>,
 }
 
 /// The cheap-clone Core handles the 11 read tools query: the persistence the
@@ -90,6 +97,16 @@ pub struct MaestroMcpServer {
 struct ReadHandles {
     persist: Arc<Persistence>,
     cache: Arc<Mutex<SummaryCache>>,
+}
+
+/// The cheap-clone side-channel handles (Task 507b-ii): the live `notify_user`
+/// sink (backed by sub-system 14's `NotificationHandle`) and the Maestro-owned
+/// chip slate `propose_chip` appends to. Both are `Arc`-backed so cloning the
+/// server per accepted connection is cheap.
+#[derive(Clone)]
+struct SideHandles {
+    sink: LiveNotifySink,
+    slate: ChipSlate,
 }
 
 impl MaestroMcpServer {
@@ -109,7 +126,21 @@ impl MaestroMcpServer {
     pub fn with_read_handles(persist: Arc<Persistence>, cache: Arc<Mutex<SummaryCache>>) -> Self {
         Self {
             handles: Some(ReadHandles { persist, cache }),
+            side: None,
         }
+    }
+
+    /// Wire the side-channel handles (Task 507b-ii) onto the server: the live
+    /// `notify_user` [`LiveNotifySink`] (backed by sub-system 14's
+    /// `NotificationHandle`) and the Maestro-owned [`ChipSlate`] `propose_chip`
+    /// appends to. Until this is called the side-channel tools keep the frozen
+    /// typed-unimplemented seam; once wired, `call_tool` routes them through the
+    /// live [`tools::side::dispatch_side`]. Chainable after [`with_read_handles`]
+    /// so boot can wire all live handles on one server. The handles are cheap
+    /// `Arc` clones, so the per-connection server clone stays cheap.
+    pub fn with_side_handles(mut self, sink: LiveNotifySink, slate: ChipSlate) -> Self {
+        self.side = Some(SideHandles { sink, slate });
+        self
     }
 
     /// The full set of registered tools, as `rmcp` [`Tool`]s, built from the
@@ -188,12 +219,39 @@ impl ServerHandler for MaestroMcpServer {
                 .await?;
                 Ok(value_to_call_result(value))
             }
-            // Write + side-channel tools keep the frozen typed-unimplemented
-            // seam (Milestone 2 fills them); unknown names map to invalid_params
-            // via the same `dispatch_tool` path.
-            Some(ToolKind::Write) | Some(ToolKind::SideChannel) | None => {
-                self.dispatch_tool(request)
-            }
+            // Side-channel tools route to the live `side::dispatch_side` when
+            // the side handles are wired (Task 507b-ii): `notify_user` lands a
+            // real notification via the `LiveNotifySink` and `propose_chip`
+            // appends to the `ChipSlate`. A side server built without the side
+            // handles keeps the frozen typed-unimplemented seam.
+            Some(ToolKind::SideChannel) => match self.side.as_ref() {
+                Some(side) => {
+                    // Source `now_ms` from the read cache's injected clock when
+                    // wired (the synthetic-clock seam, shared with the read path)
+                    // so prod/tests use one clock; fall back to wall-clock for a
+                    // side-only server.
+                    let now_ms = match self.handles.as_ref() {
+                        Some(h) => h.cache.lock().await.now_ms(),
+                        None => {
+                            use crate::maestro::summary::Clock as _;
+                            crate::maestro::summary::SystemClock.now_ms()
+                        }
+                    };
+                    let value = tools::side::dispatch_side(
+                        &request.name,
+                        request.arguments,
+                        &side.sink,
+                        &side.slate,
+                        now_ms,
+                    )?;
+                    Ok(value_to_call_result(value))
+                }
+                None => self.dispatch_tool(request),
+            },
+            // Write tools keep the frozen typed-unimplemented seam (Milestone 2
+            // fills them); unknown names map to invalid_params via the same
+            // `dispatch_tool` path.
+            Some(ToolKind::Write) | None => self.dispatch_tool(request),
         }
     }
 }
@@ -534,6 +592,107 @@ mod tests {
         assert_eq!(tools::class_of("create_workspace"), Some(ToolKind::Write));
         assert_eq!(tools::class_of("notify_user"), Some(ToolKind::SideChannel));
         assert_eq!(tools::class_of("not_a_real_tool"), None);
+    }
+
+    // -- Task 507b-ii: live side-channel routing (notify_user) -------------
+
+    /// A side-channel server built WITHOUT side handles keeps the frozen
+    /// typed-unimplemented seam for `notify_user` (the 407 stub error), never a
+    /// panic or empty success.
+    #[tokio::test]
+    async fn notify_user_without_side_handles_stays_typed_unimplemented() {
+        let (_dir, persist) = fresh_persist_with_workspace("ws-no-side", "NoSide").await;
+        let server = MaestroMcpServer::with_read_handles(Arc::new(persist), system_clock_cache());
+        let err = server
+            .dispatch_tool(CallToolRequestParams::new("notify_user"))
+            .expect_err("notify_user keeps the frozen seam without side handles");
+        assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert!(err.message.contains("407"));
+    }
+
+    /// With side handles wired, `notify_user` over the in-process transport
+    /// returns the frozen success AND lands a real notification row that
+    /// surfaces via the same `NotificationHandle` inbox — proving the live sink
+    /// is routed end-to-end through `call_tool` → `dispatch_side`.
+    #[tokio::test]
+    async fn call_tool_notify_user_lands_live_notification() {
+        use crate::maestro::tools::side::LiveNotifySink;
+        use crate::notifications::handle::{NoEvents, NotificationHandle};
+        use crate::notifications::push::ExpoPushBackend;
+        use std::time::Duration;
+
+        let (_dir, persist) = fresh_persist_with_workspace("ws-notify", "Notify").await;
+        let persist = Arc::new(persist);
+        let notif = NotificationHandle::new(
+            Arc::clone(&persist),
+            Arc::new(ExpoPushBackend::new(None)),
+            Arc::new(NoEvents),
+        );
+        let sink = LiveNotifySink::new(notif.clone(), Some("sess-1".into()));
+        let server =
+            MaestroMcpServer::with_read_handles(Arc::clone(&persist), system_clock_cache())
+                .with_side_handles(sink, super::super::tools::side::ChipSlate::new());
+
+        let (server_io, client_io) = tokio::io::duplex(8192);
+        let (sr, sw) = tokio::io::split(server_io);
+        let (cr, cw) = tokio::io::split(client_io);
+
+        let server_task = tokio::spawn(async move {
+            server
+                .serve(AsyncRwTransport::<RoleServer, _, _>::new(sr, sw))
+                .await
+                .expect("server connects")
+                .waiting()
+                .await
+                .ok();
+        });
+
+        let body = async {
+            let client =
+                ().serve(AsyncRwTransport::<rmcp::RoleClient, _, _>::new(cr, cw))
+                    .await
+                    .expect("client connects");
+
+            let mut params = CallToolRequestParams::new("notify_user");
+            let mut args = serde_json::Map::new();
+            args.insert("text".into(), serde_json::json!("deploy finished"));
+            args.insert("severity".into(), serde_json::json!("medium"));
+            params.arguments = Some(args);
+
+            let result = client
+                .call_tool(params)
+                .await
+                .expect("notify_user returns Ok, not a typed error");
+            assert_ne!(
+                result.is_error,
+                Some(true),
+                "live notify_user must succeed (the frozen Ok)"
+            );
+
+            client.cancel().await.ok();
+        };
+
+        tokio::time::timeout(Duration::from_secs(20), body)
+            .await
+            .expect("notify_user round-trip finishes under the guard");
+
+        // The spawned `notify()` lands a real row in the shared persistence.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let inbox = notif.get_inbox(None, None, false, 50).await.expect("inbox");
+            if let Some(n) = inbox.first() {
+                assert_eq!(n.body, "deploy finished");
+                assert_eq!(n.subject_id, "sess-1");
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "notify_user live row never landed"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        server_task.abort();
     }
 
     /// A write tool stays the frozen typed-unimplemented error even on a

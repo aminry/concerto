@@ -1,0 +1,4 @@
+# buf module marker (Task 507.5) so TS codegen (`@concerto/client`'s
+# `buf generate`) can consume these protos. The Rust build (`crates/proto/build.rs`)
+# globs `*.proto` and ignores this file — it is config-only, no build impact.
+version: v2
