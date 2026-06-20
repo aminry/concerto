@@ -8,8 +8,20 @@
 
 use tokio::sync::broadcast;
 
-use crate::handlers::streams::NotificationStreamEvent;
 use crate::notifications::handle::{NotificationEvent, NotificationEvents};
+
+/// The streams-layer carrier for a `notification.events` event: an opaque JSON
+/// frame (`{"kind":"notification.created"|"updated"|"read"|"acted","id":...}`,
+/// design/14 §5.3) that the streams handler wraps onto `Event.checks_opaque = 17`
+/// (NO new oneof arm). Defined here — NOT in the `#[cfg(unix)]`-gated
+/// `handlers::streams` — so the platform-agnostic notifications producer compiles
+/// on every target (incl. the Windows desktop-client lane); `handlers::streams`
+/// imports it for the subject mapping.
+#[derive(Debug, Clone)]
+pub struct NotificationStreamEvent {
+    /// The opaque frame built by [`to_frame`].
+    pub frame: Vec<u8>,
+}
 
 /// Capacity of the `notification.events` broadcast channel (mirrors the other
 /// lifecycle-event channels).

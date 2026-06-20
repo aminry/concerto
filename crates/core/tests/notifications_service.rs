@@ -5,6 +5,12 @@
 //! Notification CREATION is internal (notify() called by 04/13/05 + the maestro
 //! `notify_user` sink, 507b-ii), so a fresh Core has an empty inbox — this test
 //! exercises the read/act/settings RPCs for reachability.
+//!
+//! Unix-only: the harness spawns a `concerto-core` subprocess over UDS (the
+//! locked transport), and `concerto-test-harness` uses `tokio::net::UnixStream`.
+//! Gating to empty on Windows keeps the desktop-client lane (which excludes the
+//! UDS dev/test crates) from pulling the harness — matches `grpc_runtime.rs`.
+#![cfg(unix)]
 
 use concerto_proto::v1::{GetNotificationRequest, InboxFilter, UpdateWorkspaceNotifyRequest};
 use concerto_test_harness::CoreUnderTest;

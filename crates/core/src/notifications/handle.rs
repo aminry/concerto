@@ -17,10 +17,10 @@ use concerto_persist::{workspaces, Persistence, WorkspaceId};
 use concerto_proto::v1 as pb;
 use tokio::sync::broadcast;
 
-use crate::handlers::streams::NotificationStreamEvent;
 use crate::notifications::chip_dispatch::{self, ActOutcome};
 use crate::notifications::dedup::{self, DedupDecision, DEDUP_WINDOW_MS};
 use crate::notifications::events::NotificationEventSender;
+use crate::notifications::events::NotificationStreamEvent;
 use crate::notifications::fanout::{self, ActiveViewing, NoActiveViewing};
 use crate::notifications::model::{row_to_proto, NotifyRequest};
 use crate::notifications::prefs;

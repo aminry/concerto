@@ -165,17 +165,11 @@ pub struct MaestroEvent {
     pub frame: Vec<u8>,
 }
 
-/// Task 507 — the streams-layer carrier for a `notification.events` event. Like
-/// [`MaestroEvent`], it carries an opaque JSON frame (`{"kind":"created"|
-/// "updated"|"read"|"acted", "id": ...}`, design/14 §5.3) wrapped onto the
-/// non-oneof `Event.checks_opaque = 17` field (NO new oneof arm — the oneof is
-/// FROZEN through 16). The producer bridge is
-/// [`crate::notifications::events::NotificationEventSender`].
-#[derive(Debug, Clone)]
-pub struct NotificationStreamEvent {
-    /// The opaque frame built by the notifications producer.
-    pub frame: Vec<u8>,
-}
+// Task 507 — the streams-layer carrier for a `notification.events` event
+// (`NotificationStreamEvent`) is defined in the platform-agnostic
+// `notifications::events` (so the non-`#[cfg(unix)]` producer compiles on every
+// target); this `#[cfg(unix)]`-gated handler imports it for the subject mapping.
+use crate::notifications::events::NotificationStreamEvent;
 
 /// Parsed subject — V0.1 catalog only.
 #[derive(Debug, Clone, PartialEq, Eq)]

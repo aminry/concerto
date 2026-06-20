@@ -65,9 +65,11 @@ jobs:
           name: uniffi-bindings
           path: target/uniffi-bindings/
 
-  # Cross-compile LINK-CHECK for the real mobile targets. `cargo build` (not
-  # just check) so the cdylib/staticlib actually LINK with the cross-linker.
-  # NOT an on-device run.
+  # Cross-compile check for the real mobile targets (NOT an on-device run):
+  #   * Android — `cargo ndk build` links the cdylib (.so) with the runner's NDK.
+  #   * iOS     — builds the staticlib (.a, the XCFramework input); the final
+  #               cdylib link needs Xcode's SDK frameworks and is the Tier-3
+  #               packaging step, so it is not done here.
   link-check:
     name: link-check / ${{ matrix.name }}
     strategy:
@@ -116,6 +118,12 @@ jobs:
           abi="arm64-v8a"
           [ "${{ matrix.target }}" = "x86_64-linux-android" ] && abi="x86_64"
           cargo ndk -t "$abi" --platform 24 build -p concerto-iroh-ffi
-      - name: link-check (ios)
+      # iOS consumes the STATICLIB (.a) into the XCFramework, not a dylib — so
+      # build just that crate-type. It codegens every dependency for the target
+      # and archives them, WITHOUT the final cdylib link, which on iOS needs the
+      # SDK frameworks wired by Xcode (that link is the Tier-3
+      # build-xcframework.sh step). A bare `cargo build` here links the cdylib
+      # and fails with "ld: symbol(s) not found for architecture arm64".
+      - name: link-check (ios staticlib)
         if: startsWith(matrix.target, 'aarch64-apple-ios')
-        run: cargo build -p concerto-iroh-ffi --target ${{ matrix.target }}
+        run: cargo rustc -p concerto-iroh-ffi --lib --crate-type staticlib --target ${{ matrix.target }}
